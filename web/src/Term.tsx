@@ -7,13 +7,32 @@ import { parseTermServerMessage, type TermClientMessage } from './types.ts';
 
 const FONT = 'ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace';
 
-function send(ws: WebSocket | null, msg: TermClientMessage): void {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify(msg));
+export interface TermApi {
+  sendInput: (data: string) => boolean;
+  sendArrow: (direction: 'up' | 'down') => boolean;
+  focus: () => void;
 }
 
-export function Term({ sessionId }: { sessionId: string }) {
+function send(ws: WebSocket | null, msg: TermClientMessage): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  try {
+    ws.send(JSON.stringify(msg));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function Term({
+  sessionId,
+  onApi,
+}: {
+  sessionId: string;
+  onApi?: (api: TermApi | null) => void;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const onApiRef = useRef(onApi);
+  onApiRef.current = onApi;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -54,12 +73,29 @@ export function Term({ sessionId }: { sessionId: string }) {
     term.open(host);
     term.focus();
 
-    let ws: WebSocket | null = null;
+    const socketRef: { current: WebSocket | null } = { current: null };
     let closed = false;
     let retry = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let lastCols = 0;
     let lastRows = 0;
+
+    const api: TermApi = {
+      sendInput(data: string): boolean {
+        return send(socketRef.current, { type: 'input', data });
+      },
+      sendArrow(direction: 'up' | 'down'): boolean {
+        const application = term.modes.applicationCursorKeysMode;
+        const data = direction === 'up'
+          ? (application ? '\x1bOA' : '\x1b[A')
+          : (application ? '\x1bOB' : '\x1b[B');
+        return send(socketRef.current, { type: 'input', data });
+      },
+      focus(): void {
+        term.focus();
+      },
+    };
+    onApiRef.current?.(api);
 
     const sendResize = (): void => {
       const cols = term.cols;
@@ -68,7 +104,7 @@ export function Term({ sessionId }: { sessionId: string }) {
       if (cols === lastCols && rows === lastRows) return;
       lastCols = cols;
       lastRows = rows;
-      send(ws, { type: 'resize', cols, rows });
+      send(socketRef.current, { type: 'resize', cols, rows });
     };
 
     const doFit = (): void => {
@@ -82,7 +118,7 @@ export function Term({ sessionId }: { sessionId: string }) {
     };
 
     const dataSub = term.onData((data) => {
-      send(ws, { type: 'input', data });
+      send(socketRef.current, { type: 'input', data });
     });
 
     const ro = new ResizeObserver(() => {
@@ -93,7 +129,7 @@ export function Term({ sessionId }: { sessionId: string }) {
     const connect = (): void => {
       if (closed) return;
       const socket = new WebSocket(wsUrl(`/ws/term/${sessionId}`));
-      ws = socket;
+      socketRef.current = socket;
       socket.addEventListener('open', () => {
         retry = 0;
         lastCols = 0;
@@ -119,6 +155,7 @@ export function Term({ sessionId }: { sessionId: string }) {
         }
       });
       socket.addEventListener('close', () => {
+        if (socketRef.current === socket) socketRef.current = null;
         if (closed) return;
         const delay = Math.min(8_000, 400 * 2 ** retry);
         retry += 1;
@@ -137,10 +174,12 @@ export function Term({ sessionId }: { sessionId: string }) {
 
     return () => {
       closed = true;
+      onApiRef.current?.(null);
       if (retryTimer !== undefined) clearTimeout(retryTimer);
       dataSub.dispose();
       ro.disconnect();
-      ws?.close();
+      socketRef.current?.close();
+      socketRef.current = null;
       term.dispose();
     };
   }, [sessionId]);

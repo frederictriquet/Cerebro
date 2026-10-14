@@ -34,6 +34,12 @@ export interface AgentInfo {
   available: boolean;
 }
 
+export interface GitInfo {
+  branch: string | null;
+  dirty: number;
+  ahead: number | null;
+}
+
 export type EventsMessage =
   | { type: 'snapshot'; projects: Project[]; sessions: Session[] }
   | { type: 'session'; session: Session }
@@ -161,6 +167,30 @@ export function parseSessionList(v: unknown): Session[] {
     if (s) out.push(s);
   }
   return out;
+}
+
+export function parseGitInfo(v: unknown): GitInfo | null {
+  if (!isRecord(v)) return null;
+  let branch: string | null;
+  if (v.branch === null) branch = null;
+  else if (typeof v.branch === 'string') branch = v.branch;
+  else return null;
+  if (typeof v.dirty !== 'number' || !Number.isFinite(v.dirty)) return null;
+  let ahead: number | null;
+  if (v.ahead === null) ahead = null;
+  else if (typeof v.ahead === 'number' && Number.isFinite(v.ahead)) ahead = v.ahead;
+  else return null;
+  return { branch, dirty: v.dirty, ahead };
+}
+
+export function parseScreenLines(v: unknown): string[] | null {
+  if (!isRecord(v) || !Array.isArray(v.lines)) return null;
+  const lines: string[] = [];
+  for (const line of v.lines) {
+    if (typeof line !== 'string') return null;
+    lines.push(line);
+  }
+  return lines;
 }
 
 export function parseAgentInfoList(v: unknown): AgentInfo[] {

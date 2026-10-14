@@ -45,6 +45,9 @@ export interface Store {
   resumeSession: (id: string) => Promise<Session>;
   deleteSession: (id: string) => Promise<void>;
   markSeen: (id: string) => Promise<void>;
+  renameSession: (id: string, title: string) => Promise<Session>;
+  updateProject: (id: string, patch: { name?: string; path?: string }) => Promise<Project>;
+  sendSessionInput: (id: string, data: string) => Promise<void>;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -220,6 +223,38 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setSessions((list) => list.filter((s) => s.id !== id));
   }, []);
 
+  const renameSession = useCallback(async (id: string, title: string): Promise<Session> => {
+    const raw = await api<unknown>(`/api/sessions/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    });
+    const session = parseSession(raw);
+    if (!session) throw new Error('Réponse session invalide');
+    setSessions((list) => upsertSession(list, session));
+    return session;
+  }, []);
+
+  const updateProject = useCallback(
+    async (id: string, patch: { name?: string; path?: string }): Promise<Project> => {
+      const raw = await api<unknown>(`/api/projects/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      });
+      const project = parseProject(raw);
+      if (!project) throw new Error('Réponse projet invalide');
+      setProjects((list) => list.map((item) => (item.id === project.id ? project : item)));
+      return project;
+    },
+    [],
+  );
+
+  const sendSessionInput = useCallback(async (id: string, data: string): Promise<void> => {
+    await api<unknown>(`/api/sessions/${id}/input`, {
+      method: 'POST',
+      body: JSON.stringify({ data }),
+    });
+  }, []);
+
   const markSeen = useCallback(async (id: string): Promise<void> => {
     setSessions((list) =>
       list.map((s) => (s.id === id ? { ...s, attention: false } : s)),
@@ -246,6 +281,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       resumeSession,
       deleteSession,
       markSeen,
+      renameSession,
+      updateProject,
+      sendSessionInput,
     }),
     [
       projects,
@@ -261,6 +299,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       resumeSession,
       deleteSession,
       markSeen,
+      renameSession,
+      updateProject,
+      sendSessionInput,
     ],
   );
 

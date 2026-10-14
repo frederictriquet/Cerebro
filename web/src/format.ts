@@ -1,4 +1,4 @@
-import type { Agent, Mode, Status } from './types.ts';
+import type { Agent, Mode, Session, Status } from './types.ts';
 
 export const STATUS_LABEL: Record<Status, string> = {
   starting: 'Démarrage',
@@ -9,11 +9,15 @@ export const STATUS_LABEL: Record<Status, string> = {
 };
 
 export const MODE_LABEL: Record<Mode, string> = {
-  default: 'default',
-  acceptEdits: 'acceptEdits',
-  plan: 'plan',
-  bypass: 'bypass',
+  default: "Défaut (config de l'agent)",
+  acceptEdits: 'Accepter les éditions',
+  plan: 'Plan / lecture seule',
+  bypass: 'Bypass (aucune confirmation)',
 };
+
+export function isAwaiting(session: Pick<Session, 'attention' | 'status'>): boolean {
+  return session.attention || session.status === 'waiting';
+}
 
 export const AGENT_LABEL: Record<Agent, string> = {
   claude: 'claude',

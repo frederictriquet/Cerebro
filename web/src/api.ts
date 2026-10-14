@@ -1,3 +1,19 @@
+const unauthorizedListeners = new Set<() => void>();
+let unauthorized = false;
+
+export function subscribeUnauthorized(listener: () => void): () => void {
+  unauthorizedListeners.add(listener);
+  if (unauthorized) listener();
+  return () => {
+    unauthorizedListeners.delete(listener);
+  };
+}
+
+function notifyUnauthorized(): void {
+  unauthorized = true;
+  for (const listener of unauthorizedListeners) listener();
+}
+
 export class ApiError extends Error {
   readonly status: number;
 
@@ -32,6 +48,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     }
   }
   if (!res.ok) {
+    if (res.status === 401) notifyUnauthorized();
     throw new ApiError(res.status, errorMessage(parsed) ?? res.statusText);
   }
   return parsed as T;

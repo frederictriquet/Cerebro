@@ -1,0 +1,13 @@
+[Unit]
+Description=Cerebro - sessions d'agents IA dans le navigateur
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/chemin/vers/cerebro
+ExecStart=/usr/bin/env node server/index.ts
+Restart=on-failure
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target

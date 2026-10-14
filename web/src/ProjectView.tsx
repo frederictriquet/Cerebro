@@ -1,13 +1,65 @@
-import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { AGENT_LABEL, MODE_LABEL, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { api } from './api.ts';
+import { AGENT_LABEL, isAwaiting, MODE_LABEL, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { go, useNow } from './route.ts';
+import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
-import { isAgent, isMode, MODES, type Agent, type Mode, type Session } from './types.ts';
+import { isAgent, isMode, MODES, parseGitInfo, type Agent, type GitInfo, type Mode, type Session } from './types.ts';
+
+function formatDirty(count: number): string {
+  const n = Math.max(0, Math.trunc(count));
+  return n === 1 ? '1 fichier modifié' : `${n} fichiers modifiés`;
+}
+
+function GitStatus({ projectId }: { projectId: string }) {
+  const [git, setGit] = useState<GitInfo | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setGit(null);
+    const load = (): void => {
+      void (async () => {
+        try {
+          const raw = await api<unknown>(`/api/projects/${projectId}/git`);
+          const parsed = parseGitInfo(raw);
+          if (!cancelled && parsed) setGit(parsed);
+        } catch {
+          /* garder la dernière valeur connue */
+        }
+      })();
+    };
+    load();
+    const timer = window.setInterval(load, 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [projectId]);
+
+  if (!git) return null;
+  if (git.branch === null) return <p className="git-line meta">Pas un dépôt git</p>;
+  return (
+    <p className="git-line">
+      <span className="pill">{git.branch}</span>
+      <span className={git.dirty > 0 ? 'git-dirty' : 'meta'}>{formatDirty(git.dirty)}</span>
+    </p>
+  );
+}
 
 export function ProjectView({ projectId }: { projectId: string }) {
-  const { projects, sessions, agents, createSession, killSession, resumeSession, deleteSession, deleteProject } =
-    useStore();
+  const {
+    projects,
+    sessions,
+    agents,
+    createSession,
+    killSession,
+    resumeSession,
+    deleteSession,
+    deleteProject,
+    updateProject,
+    sendSessionInput,
+  } = useStore();
   const project = projects.find((p) => p.id === projectId);
   const kids = sessions.filter((s) => s.projectId === projectId);
   const available = agents.filter((a) => a.available);
@@ -18,6 +70,10 @@ export function ProjectView({ projectId }: { projectId: string }) {
   const [prompt, setPrompt] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editPath, setEditPath] = useState('');
+  const [editBusy, setEditBusy] = useState(false);
 
   useEffect(() => {
     const list = agents.filter((a) => a.available);
@@ -25,6 +81,11 @@ export function ProjectView({ projectId }: { projectId: string }) {
     const first = list[0];
     if (first) setAgent(first.agent);
   }, [agents, agent]);
+
+  useEffect(() => {
+    setEditing(false);
+    setError(null);
+  }, [projectId]);
 
   if (!project) {
     return (
@@ -74,16 +135,79 @@ export function ProjectView({ projectId }: { projectId: string }) {
     })();
   };
 
+  const startEdit = (): void => {
+    setEditName(project.name);
+    setEditPath(project.path);
+    setEditing(true);
+    setError(null);
+  };
+
+  const onSaveProject = async (e: FormEvent): Promise<void> => {
+    e.preventDefault();
+    const name = editName.trim();
+    const path = editPath.trim();
+    if (name.length === 0 || path.length === 0) {
+      setError('Le nom et le chemin sont requis');
+      return;
+    }
+    setEditBusy(true);
+    setError(null);
+    try {
+      await updateProject(project.id, { name, path });
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Modification impossible');
+    } finally {
+      setEditBusy(false);
+    }
+  };
+
   return (
     <div className="pane padded">
       <header className="pane-head">
-        <div>
-          <h1>{project.name}</h1>
-          <p className="path">{project.path}</p>
+        <div className="pane-head-main">
+          {editing ? (
+            <form className="edit-project" onSubmit={(e) => void onSaveProject(e)}>
+              <label>
+                Nom
+                <input required value={editName} onChange={(e) => setEditName(e.target.value)} />
+              </label>
+              <label>
+                Chemin
+                <input
+                  required
+                  value={editPath}
+                  placeholder="Chemin absolu"
+                  onChange={(e) => setEditPath(e.target.value)}
+                />
+              </label>
+              <div className="row-actions">
+                <button type="submit" className="btn primary" disabled={editBusy}>
+                  Enregistrer
+                </button>
+                <button type="button" className="btn" onClick={() => setEditing(false)}>
+                  Annuler
+                </button>
+              </div>
+            </form>
+          ) : (
+            <>
+              <h1>{project.name}</h1>
+              <p className="path">{project.path}</p>
+            </>
+          )}
+          <GitStatus key={project.id} projectId={project.id} />
         </div>
-        <button type="button" className="btn danger-ghost" onClick={onDeleteProject}>
-          Supprimer
-        </button>
+        <div className="row-actions">
+          {editing ? null : (
+            <button type="button" className="btn" onClick={startEdit}>
+              Éditer
+            </button>
+          )}
+          <button type="button" className="btn danger-ghost" onClick={onDeleteProject}>
+            Supprimer
+          </button>
+        </div>
       </header>
 
       <form className="card new-session" onSubmit={onSubmit}>
@@ -181,6 +305,11 @@ export function ProjectView({ projectId }: { projectId: string }) {
                     setError(err instanceof Error ? err.message : 'Suppression impossible');
                   });
                 }}
+                onInput={(data) => {
+                  void sendSessionInput(s.id, data).catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : 'Envoi impossible');
+                  });
+                }}
               />
             ))}
           </ul>
@@ -196,23 +325,53 @@ function SessionRow({
   onKill,
   onResume,
   onDelete,
+  onInput,
 }: {
   session: Session;
   now: number;
   onKill: () => void;
   onResume: () => void;
   onDelete: () => void;
+  onInput: (data: string) => void;
 }) {
+  const awaiting = isAwaiting(session);
+  const preview = usePreviewController();
+  const anchorRef = useRef<HTMLSpanElement>(null);
+  const tone = session.status === 'waiting' ? 'waiting' : 'idle';
+
   return (
-    <li className="session-row">
-      <a href={`#/s/${session.id}`} className="session-main">
-        <StatusDot status={session.status} title={STATUS_LABEL[session.status]} />
-        <span className="session-row-title">{sessionTitle(session.title)}</span>
-        <span className="pill">{AGENT_LABEL[session.agent]}</span>
-        <span className={`pill status ${session.status}`}>{STATUS_LABEL[session.status]}</span>
-        <span className="meta">{relativeTime(session.updatedAt, now)}</span>
-      </a>
+    <li className="session-row" {...(awaiting ? preview.hoverProps : {})}>
+      <div className="session-row-main">
+        <a href={`#/s/${session.id}`} className="session-main">
+          <StatusDot status={session.status} title={STATUS_LABEL[session.status]} />
+          <span className="session-row-title">{sessionTitle(session.title)}</span>
+          <span className="pill">{AGENT_LABEL[session.agent]}</span>
+          <span className={`pill status ${session.status}`}>{STATUS_LABEL[session.status]}</span>
+          <span className="meta">{relativeTime(session.updatedAt, now)}</span>
+        </a>
+        {awaiting && session.attentionReason ? (
+          <p className={`reason-line ${tone}`}>{session.attentionReason}</p>
+        ) : null}
+      </div>
       <div className="row-actions">
+        {awaiting ? (
+          <>
+            {session.status !== 'exited' ? (
+              <>
+                <button type="button" className="btn" onClick={() => onInput('\r')}>
+                  Entrée
+                </button>
+                <button type="button" className="btn" onClick={() => onInput('\x1b')}>
+                  Échap
+                </button>
+              </>
+            ) : null}
+            <a className="btn" href={`#/s/${session.id}`}>
+              Ouvrir
+            </a>
+            <PreviewButton pressed={preview.open} onToggle={preview.toggle} anchorRef={anchorRef} />
+          </>
+        ) : null}
         {session.status !== 'exited' ? (
           <button type="button" className="btn" onClick={onKill}>
             Arrêter
@@ -227,6 +386,9 @@ function SessionRow({
           Supprimer
         </button>
       </div>
+      {awaiting && preview.open ? (
+        <ScreenPopover sessionId={session.id} anchorRef={anchorRef} hoverProps={preview.hoverProps} />
+      ) : null}
     </li>
   );
 }

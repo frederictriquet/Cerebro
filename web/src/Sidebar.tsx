@@ -1,11 +1,12 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { AGENT_LABEL, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { go, useNow, type Route } from './route.ts';
+import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import type { Session } from './types.ts';
 
-export function Sidebar({ route }: { route: Route }) {
+export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () => void }) {
   const { projects, sessions, connected, muted, setMuted, createProject } = useStore();
   const now = useNow();
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
@@ -72,9 +73,9 @@ export function Sidebar({ route }: { route: Route }) {
   };
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" id="sidebar">
       <header className="sidebar-head">
-        <a className="brand" href="#/" onClick={() => go('#/')}>
+        <a className="brand" href="#/" onClick={() => { onNavigate(); go('#/'); }}>
           <span className="brand-mark" aria-hidden="true" />
           Cerebro
         </a>
@@ -107,6 +108,7 @@ export function Sidebar({ route }: { route: Route }) {
                 session={s}
                 active={s.id === activeSessionId}
                 now={now}
+                onNavigate={onNavigate}
               />
             ))}
           </ul>
@@ -132,6 +134,7 @@ export function Sidebar({ route }: { route: Route }) {
                     href={`#/p/${p.id}`}
                     className="project-name"
                     onClick={() => {
+                      onNavigate();
                       setExpanded((prev) => new Set(prev).add(p.id));
                     }}
                   >
@@ -149,6 +152,7 @@ export function Sidebar({ route }: { route: Route }) {
                           <a
                             href={`#/s/${s.id}`}
                             className={`session-link ${s.id === activeSessionId ? 'active' : ''}`}
+                            onClick={onNavigate}
                           >
                             <StatusDot status={s.status} title={STATUS_LABEL[s.status]} />
                             <span className="session-link-title">{sessionTitle(s.title)}</span>
@@ -202,21 +206,36 @@ function AttentionItem({
   session,
   active,
   now,
+  onNavigate,
 }: {
   session: Session;
   active: boolean;
   now: number;
+  onNavigate: () => void;
 }) {
   const tone = session.status === 'waiting' ? 'waiting' : 'idle';
+  const preview = usePreviewController();
+  const anchorRef = useRef<HTMLSpanElement>(null);
   return (
-    <li>
-      <a href={`#/s/${session.id}`} className={`attention-link ${tone} ${active ? 'active' : ''}`}>
+    <li className="attention-item" {...preview.hoverProps}>
+      <a
+        href={`#/s/${session.id}`}
+        className={`attention-link ${tone} ${active ? 'active' : ''}`}
+        onClick={onNavigate}
+      >
         <StatusDot status={session.status === 'waiting' ? 'waiting' : 'idle'} />
         <span className="session-link-title">{sessionTitle(session.title)}</span>
         <span className="meta">
           {AGENT_LABEL[session.agent]} · {relativeTime(session.updatedAt, now)}
         </span>
       </a>
+      <div className="attention-extra">
+        {session.attentionReason ? <p className={`reason-line ${tone}`}>{session.attentionReason}</p> : null}
+        <PreviewButton pressed={preview.open} onToggle={preview.toggle} anchorRef={anchorRef} />
+      </div>
+      {preview.open ? (
+        <ScreenPopover sessionId={session.id} anchorRef={anchorRef} hoverProps={preview.hoverProps} />
+      ) : null}
     </li>
   );
 }

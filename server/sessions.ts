@@ -98,6 +98,7 @@ export class SessionManager {
   readonly db: CerebroDatabase;
   private readonly runtimes = new Map<string, Runtime>();
   private readonly eventListeners = new Set<(event: SessionEvent) => void>();
+  private readonly shutdownWaiters = new Set<() => void>();
 
   constructor(db: CerebroDatabase) {
     this.db = db;
@@ -368,6 +369,12 @@ export class SessionManager {
     return updated;
   }
 
+  rename(id: string, title: string): Session | null {
+    const updated = this.db.updateSession(id, { title });
+    if (updated !== null) this.emit({ type: 'session', session: updated });
+    return updated;
+  }
+
   writeInput(id: string, data: string): boolean {
     const runtime = this.runtimes.get(id);
     if (runtime === undefined) return false;
@@ -481,9 +488,49 @@ export class SessionManager {
     });
     if (updated !== null) this.emit({ type: 'session', session: updated });
     for (const listener of runtime.terminalListeners) listener({ type: 'exit', exitCode });
+    if (this.runtimes.size === 0) {
+      for (const resolve of this.shutdownWaiters) resolve();
+      this.shutdownWaiters.clear();
+    }
   }
 
-  shutdown(): void {
-    for (const id of this.runtimes.keys()) this.kill(id);
+  async shutdown(): Promise<void> {
+    if (this.runtimes.size === 0) return;
+
+    let resolveExited = (): void => {};
+    const exited = new Promise<void>((resolve) => {
+      resolveExited = resolve;
+      this.shutdownWaiters.add(resolve);
+    });
+    for (const id of [...this.runtimes.keys()]) this.kill(id);
+
+    let deadline: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<void>((resolve) => {
+      deadline = setTimeout(resolve, FORCE_KILL_DELAY_MS + 500);
+    });
+    await Promise.race([exited, timedOut]);
+    if (deadline !== undefined) clearTimeout(deadline);
+    this.shutdownWaiters.delete(resolveExited);
+
+    // A broken PTY must not prevent the server from closing its database forever.
+    for (const [id, runtime] of this.runtimes) {
+      this.runtimes.delete(id);
+      if (runtime.idleTimer !== null) clearTimeout(runtime.idleTimer);
+      if (runtime.screenTimer !== null) clearTimeout(runtime.screenTimer);
+      if (runtime.killTimer !== null) clearTimeout(runtime.killTimer);
+      if (runtime.focusTimer !== null) clearTimeout(runtime.focusTimer);
+      try {
+        runtime.pty.kill('SIGKILL');
+      } catch {
+        // The process may have exited just before the forced shutdown.
+      }
+      runtime.log.end();
+      runtime.terminal.dispose();
+      this.db.updateSession(id, {
+        status: 'exited',
+        attention: false,
+        attentionReason: null,
+      });
+    }
   }
 }

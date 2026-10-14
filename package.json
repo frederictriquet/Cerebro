@@ -8,6 +8,7 @@
     "dev": "node --watch server/index.ts & vite --config web/vite.config.ts",
     "build": "vite build --config web/vite.config.ts",
     "start": "node server/index.ts",
+    "start:prod": "npm run build && node server/index.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

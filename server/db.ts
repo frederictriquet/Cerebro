@@ -132,6 +132,15 @@ export class CerebroDatabase {
     return project;
   }
 
+  updateProject(id: string, changes: Partial<Pick<Project, 'name' | 'path'>>): Project | null {
+    const current = this.getProject(id);
+    if (current === null) return null;
+    const next = { ...current, ...changes };
+    this.connection.prepare('UPDATE projects SET name = ?, path = ? WHERE id = ?')
+      .run(next.name, next.path, id);
+    return next;
+  }
+
   deleteProject(id: string): boolean {
     return Number(this.connection.prepare('DELETE FROM projects WHERE id = ?').run(id).changes) > 0;
   }
@@ -174,15 +183,15 @@ export class CerebroDatabase {
     return session;
   }
 
-  updateSession(id: string, changes: Partial<Pick<Session, 'status' | 'attention' | 'attentionReason' | 'agentSessionId' | 'exitCode'>>): Session | null {
+  updateSession(id: string, changes: Partial<Pick<Session, 'title' | 'status' | 'attention' | 'attentionReason' | 'agentSessionId' | 'exitCode'>>): Session | null {
     const current = this.getSession(id);
     if (current === null) return null;
     const next = { ...current, ...changes, updatedAt: Date.now() };
     this.connection.prepare(`
-      UPDATE sessions SET status = ?, attention = ?, attention_reason = ?,
+      UPDATE sessions SET title = ?, status = ?, attention = ?, attention_reason = ?,
         agent_session_id = ?, exit_code = ?, updated_at = ? WHERE id = ?
     `).run(
-      next.status, next.attention ? 1 : 0, next.attentionReason,
+      next.title, next.status, next.attention ? 1 : 0, next.attentionReason,
       next.agentSessionId, next.exitCode, next.updatedAt, id,
     );
     return next;
