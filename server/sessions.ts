@@ -8,6 +8,7 @@ import {
   openSync,
   readFileSync,
   readSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -17,9 +18,10 @@ import { join } from 'node:path';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import * as headlessPackage from '@xterm/headless';
 import { buildAgentCommand } from './agents.ts';
-import { INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
+import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
 import type { Agent, Mode, Project, Session } from './db.ts';
 import { CerebroDatabase } from './db.ts';
+import { findProcessesByArgument, isAlive, processTree, signalProcesses } from './proc.ts';
 
 // @xterm/headless is CommonJS at runtime despite exposing ESM-shaped typings.
 const Terminal = (headlessPackage as unknown as { default: typeof headlessPackage }).default.Terminal;
@@ -90,9 +92,13 @@ const HOLDER_START_TIMEOUT_MS = 10_000;
 const HOLDER_START_RETRY_MS = 100;
 const HOLDER_RECONNECT_ATTEMPTS = 3;
 const HOLDER_RECONNECT_DELAY_MS = 1_000;
+const HOLDER_EXIT_GRACE_MS = 1_500;
+const HOLDER_KILL_WAIT_MS = 2_000;
 
 function titleFor(agent: Agent, prompt: string): string {
-  return prompt === '' ? `${agent} session` : prompt.slice(0, 60);
+  // Pasted images arrive as long attachment paths: show them as a short marker in the title.
+  const text = prompt.split(ATTACHMENTS_DIR).join('\0').replace(/\0\/\S+/g, '[image]').trim();
+  return text === '' ? `${agent} session` : text.slice(0, 60);
 }
 
 function ptyEnvironment(sessionId: string, token: string): Record<string, string | undefined> {
@@ -662,8 +668,9 @@ export class SessionManager {
     const project = this.db.getProject(projectId);
     if (project === null) return false;
     const projectSessions = this.db.listProjectSessions(projectId);
-    await Promise.all(projectSessions.map((session) => this.terminate(session.id)));
+    await Promise.all(projectSessions.map((session) => this.stopProcesses(session.id)));
     this.db.deleteProject(projectId);
+    rmSync(join(ATTACHMENTS_DIR, `project-${projectId}`), { recursive: true, force: true });
     for (const session of projectSessions) {
       this.cleanupAllArtifacts(session.id);
       this.emit({ type: 'session-deleted', id: session.id });
@@ -671,13 +678,46 @@ export class SessionManager {
     return true;
   }
 
+  async purgeProject(projectId: string): Promise<number | null> {
+    if (this.db.getProject(projectId) === null) return null;
+    const inactive = this.db
+      .listProjectSessions(projectId)
+      .filter((session) => session.status === 'exited' || session.status === 'idle');
+    const results = await Promise.allSettled(inactive.map((session) => this.delete(session.id)));
+    const failed = results.filter((result) => result.status === 'rejected');
+    if (failed.length > 0) {
+      const deleted = results.length - failed.length;
+      throw new Error(`${failed.length} session(s) impossible(s) à arrêter (${deleted} supprimée(s))`);
+    }
+    return inactive.length;
+  }
+
   async delete(id: string): Promise<boolean> {
     if (this.db.getSession(id) === null) return false;
-    await this.terminate(id);
+    await this.stopProcesses(id);
     this.db.deleteSession(id);
     this.cleanupAllArtifacts(id);
     this.emit({ type: 'session-deleted', id });
     return true;
+  }
+
+  // Deleting a session must not leave its holder running: once its socket file is removed, nothing
+  // could reach it again. Graceful stop first, then SIGKILL on whatever is left; throws if it survives.
+  private async stopProcesses(id: string): Promise<void> {
+    await this.terminate(id);
+    const holderArgument = this.configPath(id);
+    const deadline = Date.now() + HOLDER_EXIT_GRACE_MS;
+    while (findProcessesByArgument(holderArgument).length > 0 && Date.now() < deadline) {
+      await delay(HOLDER_START_RETRY_MS);
+    }
+    const holders = findProcessesByArgument(holderArgument);
+    if (holders.length === 0) return;
+    this.logHolderError(id, new Error(`Holder toujours actif après l'arrêt, SIGKILL (pid ${holders.map((h) => h.pid).join(', ')})`));
+    const targets = holders.flatMap((holder) => processTree(holder.pid));
+    signalProcesses(targets, 'SIGKILL');
+    const killDeadline = Date.now() + HOLDER_KILL_WAIT_MS;
+    while (targets.some(isAlive) && Date.now() < killDeadline) await delay(HOLDER_START_RETRY_MS);
+    if (targets.some(isAlive)) throw new Error("Impossible d'arrêter les processus de la session");
   }
 
   private async terminate(id: string): Promise<void> {
@@ -784,6 +824,7 @@ export class SessionManager {
     this.cleanupExitArtifacts(id);
     removeFile(this.holderLogPath(id));
     removeFile(join(LOG_DIR, `${id}.log`));
+    rmSync(join(ATTACHMENTS_DIR, id), { recursive: true, force: true });
   }
 
   private configPath(id: string): string {

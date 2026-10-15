@@ -1,15 +1,15 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { AGENT_LABEL, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
+import { useRef, useState, type FormEvent } from 'react';
+import { AGENT_LABEL, relativeTime, sessionTitle } from './format.ts';
 import { go, useNow, type Route } from './route.ts';
+import { PathInput } from './PathInput.tsx';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import type { Session } from './types.ts';
 
 export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () => void }) {
-  const { projects, sessions, connected, muted, setMuted, createProject } = useStore();
+  const { sessions, connected, muted, setMuted, createProject } = useStore();
   const now = useNow();
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [showNew, setShowNew] = useState(false);
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
@@ -18,41 +18,6 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
 
   const attention = sessions.filter((s) => s.attention);
   const activeSessionId = route.kind === 'session' ? route.sessionId : null;
-  const activeProjectId = route.kind === 'project' ? route.projectId : null;
-
-  useEffect(() => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      let changed = false;
-      if (route.kind === 'project' && !next.has(route.projectId)) {
-        next.add(route.projectId);
-        changed = true;
-      }
-      if (route.kind === 'session') {
-        const sess = sessions.find((s) => s.id === route.sessionId);
-        if (sess && !next.has(sess.projectId)) {
-          next.add(sess.projectId);
-          changed = true;
-        }
-      }
-      for (const s of sessions) {
-        if (s.attention && !next.has(s.projectId)) {
-          next.add(s.projectId);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [route, sessions]);
-
-  const toggle = (id: string): void => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
 
   const onCreate = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
@@ -63,7 +28,6 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
       setName('');
       setPath('');
       setShowNew(false);
-      setExpanded((prev) => new Set(prev).add(project.id));
       go(`#/p/${project.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Création impossible');
@@ -116,56 +80,7 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
       </section>
 
       <section className="side-section side-projects">
-        <h2>Projets</h2>
-        <ul className="side-list">
-          {projects.map((p) => {
-            const kids = sessions.filter((s) => s.projectId === p.id);
-            const open = expanded.has(p.id);
-            return (
-              <li key={p.id} className="project-block">
-                <div className={`project-row ${p.id === activeProjectId ? 'active' : ''}`}>
-                  <button
-                    type="button"
-                    className={`chevron ${open ? 'open' : ''}`}
-                    aria-label={open ? 'Replier' : 'Déplier'}
-                    onClick={() => toggle(p.id)}
-                  />
-                  <a
-                    href={`#/p/${p.id}`}
-                    className="project-name"
-                    onClick={() => {
-                      onNavigate();
-                      setExpanded((prev) => new Set(prev).add(p.id));
-                    }}
-                  >
-                    {p.name}
-                    <span className="faint">{kids.length}</span>
-                  </a>
-                </div>
-                {open ? (
-                  <ul className="side-list nested">
-                    {kids.length === 0 ? (
-                      <li className="empty-hint">Aucune session</li>
-                    ) : (
-                      kids.map((s) => (
-                        <li key={s.id}>
-                          <a
-                            href={`#/s/${s.id}`}
-                            className={`session-link ${s.id === activeSessionId ? 'active' : ''}`}
-                            onClick={onNavigate}
-                          >
-                            <StatusDot status={s.status} title={STATUS_LABEL[s.status]} />
-                            <span className="session-link-title">{sessionTitle(s.title)}</span>
-                          </a>
-                        </li>
-                      ))
-                    )}
-                  </ul>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
+        <h2>Nouveau projet</h2>
         {showNew ? (
           <form className="new-project" onSubmit={(e) => void onCreate(e)}>
             <input
@@ -175,13 +90,7 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
-            <input
-              required
-              autoComplete="off"
-              placeholder="Chemin absolu"
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-            />
+            <PathInput required value={path} onChange={setPath} />
             {error ? <p className="form-error">{error}</p> : null}
             <div className="row-actions">
               <button type="submit" className="btn primary" disabled={busy}>

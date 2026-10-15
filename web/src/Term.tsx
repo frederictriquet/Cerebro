@@ -2,7 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
 import { useEffect, useRef } from 'react';
-import { wsUrl } from './api.ts';
+import { clipboardImage, readClipboardImage, uploadImage, wsUrl } from './api.ts';
 import { parseTermServerMessage, type TermClientMessage } from './types.ts';
 
 const FONT = 'ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace';
@@ -70,6 +70,10 @@ export function Term({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
+    // xterm traduit Ctrl+V en ^V et annule l'événement : le navigateur ne colle alors jamais.
+    // On le lui laisse, pour que l'événement paste (texte ou image) ait lieu.
+    term.attachCustomKeyEventHandler((event) =>
+      !(event.ctrlKey && !event.altKey && !event.metaKey && event.code === 'KeyV'));
     term.open(host);
     term.focus();
 
@@ -120,6 +124,46 @@ export function Term({
     const dataSub = term.onData((data) => {
       send(socketRef.current, { type: 'input', data });
     });
+
+    const notice = (text: string): void => {
+      term.write(`\r\n\x1b[31m[cerebro] ${text}\x1b[0m\r\n`);
+    };
+    const sendImage = (image: Blob): void => {
+      uploadImage(sessionId, image).then(
+        (path) => {
+          send(socketRef.current, { type: 'input', data: `${path} ` });
+        },
+        (err: unknown) => {
+          notice(`image non envoyée : ${err instanceof Error ? err.message : 'erreur'}`);
+        },
+      );
+    };
+
+    // Capture : intercepte le collage d'une image avant xterm, qui ne gère que le texte.
+    const onPaste = (event: ClipboardEvent): void => {
+      const image = clipboardImage(event.clipboardData);
+      if (image) {
+        event.preventDefault();
+        event.stopPropagation();
+        sendImage(image);
+        return;
+      }
+      if (event.clipboardData?.getData('text/plain')) return;
+      // Ni image ni texte exposés par l'événement : on interroge directement le presse-papiers.
+      event.preventDefault();
+      event.stopPropagation();
+      const types = Array.from(event.clipboardData?.types ?? []).join(', ') || 'aucun';
+      readClipboardImage().then(
+        (blob) => {
+          if (blob) sendImage(blob);
+          else notice(`aucune image dans le presse-papiers (types : ${types})`);
+        },
+        (err: unknown) => {
+          notice(`presse-papiers illisible (types : ${types}) : ${err instanceof Error ? err.message : 'erreur'}`);
+        },
+      );
+    };
+    host.addEventListener('paste', onPaste, true);
 
     const ro = new ResizeObserver(() => {
       doFit();
@@ -177,6 +221,7 @@ export function Term({
       onApiRef.current?.(null);
       if (retryTimer !== undefined) clearTimeout(retryTimer);
       dataSub.dispose();
+      host.removeEventListener('paste', onPaste, true);
       ro.disconnect();
       socketRef.current?.close();
       socketRef.current = null;

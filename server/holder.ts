@@ -5,6 +5,8 @@ import { basename, dirname, join } from 'node:path';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import * as headlessPackage from '@xterm/headless';
 import * as pty from 'node-pty';
+import { processTree, signalProcesses } from './proc.ts';
+import type { ProcessInfo } from './proc.ts';
 
 // @xterm/headless is CommonJS at runtime despite exposing ESM-shaped typings.
 const Terminal = (headlessPackage as unknown as { default: typeof headlessPackage }).default.Terminal;
@@ -116,6 +118,12 @@ function run(configPath: string): void {
   let terminalLogFinished = false;
   let clientReady = false;
   let pendingClientMessages: unknown[] = [];
+  // Everything the agent spawned: child.kill() alone only reaches the agent itself.
+  const tracked = new Map<number, ProcessInfo>();
+  const collectTree = (): ProcessInfo[] => {
+    for (const info of processTree(child.pid)) tracked.set(info.pid, info);
+    return [...tracked.values()].filter((info) => info.pid !== child.pid);
+  };
 
   const finalize = (): void => {
     if (finalized) return;
@@ -125,6 +133,7 @@ function run(configPath: string): void {
     }
     finalized = true;
     if (exitCleanupTimer !== null) clearTimeout(exitCleanupTimer);
+    signalProcesses(collectTree(), 'SIGKILL');
     removeFile(socketPath);
     terminal.dispose();
     process.exit(0);
@@ -165,12 +174,14 @@ function run(configPath: string): void {
       return;
     }
     if (message.type !== 'kill' || (message.signal !== 'SIGTERM' && message.signal !== 'SIGKILL')) return;
+    const descendants = collectTree();
     try {
       child.kill(message.signal);
     } catch (error) {
       report(error);
       return;
     }
+    signalProcesses(descendants, message.signal);
     if (message.signal === 'SIGTERM') {
       if (forceKillTimer !== null) clearTimeout(forceKillTimer);
       forceKillTimer = setTimeout(() => {
@@ -182,6 +193,7 @@ function run(configPath: string): void {
             report(error);
           }
         }
+        signalProcesses(collectTree(), 'SIGKILL');
       }, FORCE_KILL_DELAY_MS);
     }
   };
@@ -249,6 +261,8 @@ function run(configPath: string): void {
   child.onExit(({ exitCode, signal }) => {
     exited = true;
     if (forceKillTimer !== null) clearTimeout(forceKillTimer);
+    // Leftovers (background jobs, detached helpers) get a chance to stop before finalize() kills them.
+    signalProcesses(collectTree(), 'SIGTERM');
     terminalLog.end(() => {
       terminalLogFinished = true;
       if (finalizeRequested) finalize();

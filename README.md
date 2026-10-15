@@ -70,6 +70,14 @@ Cerebro combine plusieurs signaux, car les trois agents ne publient pas les mêm
 Les alertes fiables sont dédoublonnées. Une saisie validée par Entrée remet une
 session en cours, sans effacer une alerte tant que la session n'a pas été ouverte.
 
+## Captures d'écran
+
+Collez une image (Ctrl+V) dans le terminal ou dans le champ de message, ou
+joignez-la avec le bouton image. Elle est enregistrée dans
+`$CEREBRO_DATA_DIR/attachments/<session>/` et son chemin absolu est inséré dans
+le prompt : Claude, Codex et Grok lisent l'image depuis ce chemin. Les images
+sont supprimées avec la session (PNG, JPEG, GIF, WebP, 20 Mo maximum).
+
 ## Modes de permission
 
 | Mode | Claude | Codex | Grok |

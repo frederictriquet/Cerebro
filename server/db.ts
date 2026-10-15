@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { DATA_DIR } from './config.ts';
 
 export type Agent = 'claude' | 'codex' | 'grok';
-export type Mode = 'default' | 'acceptEdits' | 'plan' | 'bypass';
+export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
 
 export interface Project {
@@ -93,7 +93,7 @@ export class CerebroDatabase {
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         agent TEXT NOT NULL CHECK (agent IN ('claude', 'codex', 'grok')),
-        mode TEXT NOT NULL CHECK (mode IN ('default', 'acceptEdits', 'plan', 'bypass')),
+        mode TEXT NOT NULL CHECK (mode IN ('default', 'auto', 'acceptEdits', 'plan', 'bypass')),
         prompt TEXT NOT NULL,
         title TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('starting', 'running', 'waiting', 'idle', 'exited')),
@@ -111,6 +111,34 @@ export class CerebroDatabase {
     const columns = this.connection.prepare('PRAGMA table_info(sessions)').all() as unknown as { name: string }[];
     if (!columns.some((column) => column.name === 'hook_token')) {
       this.connection.exec('ALTER TABLE sessions ADD COLUMN hook_token TEXT');
+    }
+    this.allowAutoMode();
+  }
+
+  // SQLite ne permet pas de modifier une contrainte CHECK : on reconstruit la table.
+  private allowAutoMode(): void {
+    const row = this.connection.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'")
+      .get() as { sql: string } | undefined;
+    if (row === undefined || row.sql.includes("'auto'")) return;
+    const sql = row.sql.replace("('default', 'acceptEdits'", "('default', 'auto', 'acceptEdits'")
+      .replace(/^CREATE TABLE "?sessions"?/, 'CREATE TABLE sessions_new');
+    this.connection.exec('PRAGMA foreign_keys = OFF');
+    try {
+      this.connection.exec(`
+        BEGIN;
+        ${sql};
+        INSERT INTO sessions_new SELECT * FROM sessions;
+        DROP TABLE sessions;
+        ALTER TABLE sessions_new RENAME TO sessions;
+        CREATE INDEX IF NOT EXISTS sessions_project_id ON sessions(project_id);
+        CREATE INDEX IF NOT EXISTS sessions_updated_at ON sessions(updated_at DESC);
+        COMMIT;
+      `);
+    } catch (error) {
+      this.connection.exec('ROLLBACK');
+      throw error;
+    } finally {
+      this.connection.exec('PRAGMA foreign_keys = ON');
     }
   }
 

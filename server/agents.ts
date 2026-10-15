@@ -55,6 +55,7 @@ function modeArgs(agent: Agent, mode: Mode): string[] {
   if (agent === 'grok') {
     return ['--permission-mode', mode === 'bypass' ? 'bypassPermissions' : mode];
   }
+  if (mode === 'auto') return ['-a', 'on-request', '-s', 'workspace-write'];
   if (mode === 'acceptEdits') return ['-a', 'never', '-s', 'workspace-write'];
   if (mode === 'plan') return ['-s', 'read-only'];
   return ['--dangerously-bypass-approvals-and-sandbox'];

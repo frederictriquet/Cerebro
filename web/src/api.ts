@@ -58,3 +58,46 @@ export function wsUrl(path: string): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${proto}//${window.location.host}${path}`;
 }
+
+export function clipboardImage(data: DataTransfer | null): File | null {
+  if (!data) return null;
+  for (const item of Array.from(data.items)) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (file) return file;
+    }
+  }
+  for (const file of Array.from(data.files)) {
+    if (file.type.startsWith('image/')) return file;
+  }
+  return null;
+}
+
+// Repli quand l'événement paste n'expose pas l'image (selon navigateur et source de la copie).
+export async function readClipboardImage(): Promise<Blob | null> {
+  if (!navigator.clipboard?.read) return null;
+  for (const item of await navigator.clipboard.read()) {
+    const type = item.types.find((t) => t.startsWith('image/'));
+    if (type) return item.getType(type);
+  }
+  return null;
+}
+
+// Stocke l'image côté serveur et renvoie son chemin absolu, que l'agent sait lire.
+export async function uploadImage(sessionId: string, image: Blob): Promise<string> {
+  return postImage(`/api/sessions/${sessionId}/attachments`, image);
+}
+
+// Variante pour le prompt d'une nouvelle session : la session n'existe pas encore.
+export async function uploadProjectImage(projectId: string, image: Blob): Promise<string> {
+  return postImage(`/api/projects/${projectId}/attachments`, image);
+}
+
+async function postImage(url: string, image: Blob): Promise<string> {
+  const { path } = await api<{ path: string }>(url, {
+    method: 'POST',
+    headers: { 'Content-Type': image.type },
+    body: image,
+  });
+  return path;
+}

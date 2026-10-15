@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react';
+import { clipboardImage, uploadImage } from './api.ts';
+import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
 import { AGENT_LABEL, MODE_LABEL, STATUS_LABEL, sessionTitle } from './format.ts';
 import { go } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
@@ -126,11 +136,23 @@ function TitleEditor({ sessionId, title }: { sessionId: string; title: string })
   );
 }
 
+function ImageIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="9" cy="9" r="2" />
+      <path d="m21 15-5-5L5 21" />
+    </svg>
+  );
+}
+
 function QuickReply({
+  sessionId,
   disabled,
   send,
   sendArrow,
 }: {
+  sessionId: string;
   disabled: boolean;
   send: (data: string) => boolean;
   sendArrow: (direction: 'up' | 'down') => boolean;
@@ -138,6 +160,8 @@ function QuickReply({
   const [text, setText] = useState('');
   const [note, setNote] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const mounted = useRef(true);
   const disabledRef = useRef(disabled);
   disabledRef.current = disabled;
@@ -157,16 +181,40 @@ function QuickReply({
     if (!ok) setNote('Terminal non connecté');
   };
 
+  const images = useImageAttachments((image) => uploadImage(sessionId, image));
+
+  // « [Image #N] » est inséré au curseur ; le chemin réel est substitué à l'envoi.
+  const attach = (image: File): void => {
+    const input = inputRef.current;
+    const start = input?.selectionStart ?? text.length;
+    const end = input?.selectionEnd ?? start;
+    setNote(null);
+    const token = images.add(image, (failed, message) => {
+      if (!mounted.current) return;
+      setText((current) => removeToken(current, failed));
+      setNote(message);
+    });
+    setText((current) => insertToken(current, start, end, token));
+  };
+
+  const onPaste = (e: ClipboardEvent<HTMLInputElement>): void => {
+    const image = clipboardImage(e.clipboardData);
+    if (!image) return;
+    e.preventDefault();
+    attach(image);
+  };
+
   const onSubmit = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
-    if (disabled || sending || text.length === 0) return;
-    const value = text;
+    if (disabled || sending || images.pending || text.trim().length === 0) return;
+    const value = images.expand(text);
     setNote(null);
     if (!send(value)) {
       setNote('Terminal non connecté');
       return;
     }
     setText('');
+    images.reset();
     setSending(true);
     // Deux messages distincts : certaines TUI ignorent l'Entrée collée au texte.
     await delay(150);
@@ -192,20 +240,51 @@ function QuickReply({
       </div>
       <form className="quick-send" onSubmit={(e) => void onSubmit(e)}>
         <input
+          ref={inputRef}
           value={text}
           disabled={disabled || sending}
           autoComplete="off"
-          placeholder="Envoyer un message"
+          placeholder="Envoyer un message (Ctrl+V pour joindre une capture d’écran)"
           aria-label="Envoyer un message"
+          onPaste={onPaste}
           onChange={(e) => {
             setText(e.target.value);
+            images.prune(e.target.value);
             setNote(null);
           }}
         />
-        <button type="submit" className="btn primary" disabled={disabled || sending || text.length === 0}>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          hidden
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = '';
+            if (file) attach(file);
+          }}
+        />
+        <button
+          type="button"
+          className="btn icon"
+          aria-label="Joindre une image"
+          title="Joindre une image"
+          disabled={disabled || sending}
+          onClick={() => fileRef.current?.click()}
+        >
+          <ImageIcon />
+        </button>
+        <button type="submit" className="btn primary" disabled={disabled || sending || images.pending || text.trim().length === 0}>
           Envoyer
         </button>
       </form>
+      <AttachmentStrip
+        items={images.items}
+        onRemove={(item) => {
+          images.remove(item.n);
+          setText((current) => removeToken(current, item.token));
+        }}
+      />
       {note ? <p className="form-error">{note}</p> : null}
     </div>
   );
@@ -307,7 +386,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       <div className="term-wrap">
         <Term key={`${session.id}:${live ? 'live' : 'exited'}`} sessionId={session.id} onApi={onApi} />
       </div>
-      <QuickReply key={session.id} disabled={!live} send={send} sendArrow={sendArrow} />
+      <QuickReply key={session.id} sessionId={session.id} disabled={!live} send={send} sendArrow={sendArrow} />
     </div>
   );
 }

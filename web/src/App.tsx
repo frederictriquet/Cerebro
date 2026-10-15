@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { subscribeUnauthorized } from './api.ts';
 import { HomeView } from './HomeView.tsx';
+import { ProjectTabs } from './ProjectTabs.tsx';
 import { ProjectView } from './ProjectView.tsx';
 import { SessionView } from './SessionView.tsx';
 import { Sidebar } from './Sidebar.tsx';
@@ -62,6 +63,7 @@ function Shell() {
       ) : null}
       <Sidebar route={route} onNavigate={() => setNavOpen(false)} />
       <main className="main">
+        <ProjectTabs route={route} />
         {route.kind === 'project' ? (
           <ProjectView projectId={route.projectId} />
         ) : route.kind === 'session' ? (

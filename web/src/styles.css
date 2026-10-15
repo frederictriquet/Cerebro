@@ -438,6 +438,90 @@ textarea {
   background: var(--bg);
 }
 
+.project-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.project-tab {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: min(240px, 100%);
+  padding: 6px 10px;
+  color: var(--muted);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  text-decoration: none;
+}
+
+.project-tab:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+  text-decoration: none;
+}
+
+.project-tab.active {
+  color: var(--text);
+  background: #1e3a6b;
+  border-color: #3d5a8c;
+}
+
+.project-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.project-tab-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: var(--faint);
+  background: var(--bg);
+  font-size: 10px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.project-tab.active .project-tab-count {
+  color: #d6e4ff;
+  background: rgba(11, 13, 17, 0.4);
+}
+
+.project-tab.alert.waiting {
+  border-color: var(--waiting);
+}
+
+.project-tab.alert.idle {
+  border-color: var(--idle);
+}
+
+.project-tab-alert {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--idle);
+}
+
+.project-tab-alert.waiting {
+  background: var(--waiting);
+  box-shadow: 0 0 6px var(--waiting);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
 .pane {
   flex: 1;
   min-height: 0;
@@ -490,6 +574,18 @@ textarea {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--faint);
+}
+
+.session-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.session-table-head h2 {
+  margin: 0;
 }
 
 .form-grid {
@@ -997,4 +1093,147 @@ a.btn:hover {
   .session-row {
     flex-wrap: wrap;
   }
+}
+
+/* Images jointes (prompt de nouvelle session, message rapide) */
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.attachment {
+  position: relative;
+  margin: 0;
+  width: 72px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  overflow: hidden;
+}
+.attachment img {
+  display: block;
+  width: 100%;
+  height: 52px;
+  object-fit: cover;
+}
+.attachment.pending img {
+  opacity: 0.45;
+}
+.attachment figcaption {
+  padding: 2px 6px;
+  font: 11px var(--mono);
+  color: var(--muted);
+}
+.attachment.pending figcaption {
+  color: var(--starting);
+}
+.attachment button {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(11, 13, 17, 0.8);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.attachment button:hover {
+  background: var(--danger);
+}
+
+.path-input {
+  position: relative;
+  min-width: 0;
+}
+
+.path-input-row {
+  display: flex;
+  gap: 6px;
+}
+
+.path-input-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.dir-picker {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.dir-picker-path {
+  display: block;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.dir-picker-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dir-picker-hidden {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dir-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.dir-picker-list button {
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dir-picker-list button:hover {
+  background: var(--bg-hover);
+}
+
+.dir-picker-list .empty-hint {
+  padding: 6px 8px;
+  margin: 0;
 }

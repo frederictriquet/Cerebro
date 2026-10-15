@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { api } from './api.ts';
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
+import { api, clipboardImage, uploadProjectImage } from './api.ts';
+import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
 import { AGENT_LABEL, isAwaiting, MODE_LABEL, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { go, useNow } from './route.ts';
+import { PathInput } from './PathInput.tsx';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
@@ -56,18 +58,47 @@ export function ProjectView({ projectId }: { projectId: string }) {
     killSession,
     resumeSession,
     deleteSession,
+    purgeProjectSessions,
     deleteProject,
     updateProject,
     sendSessionInput,
   } = useStore();
   const project = projects.find((p) => p.id === projectId);
   const kids = sessions.filter((s) => s.projectId === projectId);
+  const inactiveCount = kids.filter((s) => s.status === 'exited' || s.status === 'idle').length;
   const available = agents.filter((a) => a.available);
   const now = useNow();
 
   const [agent, setAgent] = useState<Agent>('claude');
-  const [mode, setMode] = useState<Mode>('default');
+  const [mode, setMode] = useState<Mode>('auto');
   const [prompt, setPrompt] = useState('');
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  const images = useImageAttachments((image) => uploadProjectImage(projectId, image));
+
+  // Image collée ou déposée : « [Image #N] » est inséré au curseur, et remplacé par le chemin
+  // du fichier au lancement (les agents lisent les images référencées par chemin).
+  const attachImage = (image: File): void => {
+    const el = promptRef.current;
+    const start = el?.selectionStart ?? prompt.length;
+    const end = el?.selectionEnd ?? prompt.length;
+    const token = images.add(image, (failed, message) => {
+      setPrompt((current) => removeToken(current, failed));
+      setError(`Image non envoyée : ${message}`);
+    });
+    setPrompt((current) => insertToken(current, start, end, token));
+  };
+  const onPromptPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
+    const image = clipboardImage(event.clipboardData);
+    if (image === null) return;
+    event.preventDefault();
+    attachImage(image);
+  };
+  const onPromptDrop = (event: DragEvent<HTMLTextAreaElement>): void => {
+    const image = clipboardImage(event.dataTransfer);
+    if (image === null) return;
+    event.preventDefault();
+    attachImage(image);
+  };
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -101,9 +132,9 @@ export function ProjectView({ projectId }: { projectId: string }) {
     setError(null);
     setBusy(true);
     try {
-      const session = await createSession(project.id, agent, mode, prompt);
+      await createSession(project.id, agent, mode, images.expand(prompt));
       setPrompt('');
-      go(`#/s/${session.id}`);
+      images.reset();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Lancement impossible');
     } finally {
@@ -133,6 +164,13 @@ export function ProjectView({ projectId }: { projectId: string }) {
         setError(err instanceof Error ? err.message : 'Suppression impossible');
       }
     })();
+  };
+
+  const onPurge = (): void => {
+    if (!window.confirm(`Supprimer les ${inactiveCount} session(s) inactive(s) de « ${project.name} » ? Les sessions en attente (idle) seront arrêtées.`)) return;
+    void purgeProjectSessions(project.id).catch((err: unknown) => {
+      setError(err instanceof Error ? err.message : 'Purge impossible');
+    });
   };
 
   const startEdit = (): void => {
@@ -174,12 +212,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
               </label>
               <label>
                 Chemin
-                <input
-                  required
-                  value={editPath}
-                  placeholder="Chemin absolu"
-                  onChange={(e) => setEditPath(e.target.value)}
-                />
+                <PathInput required value={editPath} onChange={setEditPath} />
               </label>
               <div className="row-actions">
                 <button type="submit" className="btn primary" disabled={editBusy}>
@@ -259,14 +292,27 @@ export function ProjectView({ projectId }: { projectId: string }) {
           <textarea
             rows={5}
             value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            onChange={(e) => {
+              setPrompt(e.target.value);
+              images.prune(e.target.value);
+            }}
             onKeyDown={onKeyDown}
-            placeholder="Ctrl+Entrée pour lancer"
+            onPaste={onPromptPaste}
+            onDrop={onPromptDrop}
+            ref={promptRef}
+            placeholder="Ctrl+Entrée pour lancer · Ctrl+V ou glisser-déposer pour joindre une image"
+          />
+          <AttachmentStrip
+            items={images.items}
+            onRemove={(item) => {
+              images.remove(item.n);
+              setPrompt((current) => removeToken(current, item.token));
+            }}
           />
         </label>
         {error ? <p className="form-error">{error}</p> : null}
         <div className="row-actions">
-          <button type="submit" className="btn primary" disabled={busy || available.length === 0}>
+          <button type="submit" className="btn primary" disabled={busy || images.pending || available.length === 0}>
             Lancer
           </button>
           <span className="hint">Ctrl+Entrée</span>
@@ -274,7 +320,14 @@ export function ProjectView({ projectId }: { projectId: string }) {
       </form>
 
       <section className="session-table-wrap">
-        <h2>Sessions</h2>
+        <div className="session-table-head">
+          <h2>Sessions</h2>
+          {inactiveCount > 0 ? (
+            <button type="button" className="btn danger-ghost" onClick={onPurge}>
+              Purger les inactives ({inactiveCount})
+            </button>
+          ) : null}
+        </div>
         {kids.length === 0 ? (
           <p className="empty-hint">Aucune session pour ce projet.</p>
         ) : (

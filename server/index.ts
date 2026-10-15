@@ -1,27 +1,42 @@
 import { execFile } from 'node:child_process';
-import { timingSafeEqual } from 'node:crypto';
-import { appendFileSync, existsSync, statSync } from 'node:fs';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import Fastify from 'fastify';
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type WebSocket from 'ws';
 import { AGENTS, getAgentAvailability } from './agents.ts';
-import { BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT } from './config.ts';
+import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT } from './config.ts';
 import { CerebroDatabase } from './db.ts';
 import type { Agent, Mode } from './db.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
 import { SessionManager } from './sessions.ts';
 
-const MODES: readonly Mode[] = ['default', 'acceptEdits', 'plan', 'bypass'];
+const MODES: readonly Mode[] = ['default', 'auto', 'acceptEdits', 'plan', 'bypass'];
 const execFileAsync = promisify(execFile);
+const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+};
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
 function error(reply: FastifyReply, statusCode: number, message: string): FastifyReply {
   return reply.code(statusCode).send({ error: message });
+}
+
+async function orError<T>(reply: FastifyReply, run: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; reply: FastifyReply }> {
+  try {
+    return { ok: true, value: await run() };
+  } catch (cause) {
+    return { ok: false, reply: error(reply, 500, cause instanceof Error ? cause.message : String(cause)) };
+  }
 }
 
 function isAgent(value: unknown): value is Agent {
@@ -151,6 +166,23 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.get('/api/projects', async () => db.listProjects());
 
+  app.get<{ Querystring: { path?: string } }>('/api/fs/dirs', async (request, reply) => {
+    const raw = request.query.path?.trim();
+    const dirPath = raw === undefined || raw === '' ? homedir() : expandProjectPath(raw);
+    if (!validDirectory(dirPath)) return error(reply, 400, "Le répertoire n'existe pas ou n'est pas un répertoire");
+    let dirs: string[];
+    try {
+      dirs = readdirSync(dirPath, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() || (entry.isSymbolicLink() && validDirectory(join(dirPath, entry.name))))
+        .map((entry) => entry.name)
+        .sort((a, b) => a.localeCompare(b));
+    } catch {
+      return error(reply, 403, 'Lecture du répertoire impossible');
+    }
+    const parent = dirname(dirPath);
+    return { path: dirPath, parent: parent === dirPath ? null : parent, home: homedir(), dirs };
+  });
+
   app.post('/api/projects', async (request, reply) => {
     const body = bodyRecord(request.body);
     if (body === null || typeof body.name !== 'string' || body.name.trim() === '' || typeof body.path !== 'string' || body.path.trim() === '') {
@@ -195,10 +227,20 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   app.delete<{ Params: { id: string } }>('/api/projects/:id', async (request, reply) => {
-    if (!await sessions.deleteProject(request.params.id)) return error(reply, 404, 'Projet introuvable');
+    const result = await orError(reply, () => sessions.deleteProject(request.params.id));
+    if (!result.ok) return result.reply;
+    if (!result.value) return error(reply, 404, 'Projet introuvable');
     const projects = db.listProjects();
     for (const socket of eventSockets) sendSocket(socket, { type: 'projects', projects });
     return reply.code(204).send();
+  });
+
+  app.post<{ Params: { id: string } }>('/api/projects/:id/purge', async (request, reply) => {
+    const result = await orError(reply, () => sessions.purgeProject(request.params.id));
+    if (!result.ok) return result.reply;
+    const deleted = result.value;
+    if (deleted === null) return error(reply, 404, 'Projet introuvable');
+    return reply.send({ deleted });
   });
 
   app.get('/api/sessions', async () => db.listSessions());
@@ -261,13 +303,50 @@ export async function buildServer(): Promise<FastifyInstance> {
     return reply.code(204).send();
   });
 
+  app.addContentTypeParser(
+    Object.keys(IMAGE_EXTENSIONS),
+    { parseAs: 'buffer', bodyLimit: MAX_IMAGE_BYTES },
+    (_request, body, done) => done(null, body),
+  );
+
+  // Saves a pasted image under DATA_DIR/attachments/<owner>/ and returns its absolute path,
+  // which the agent can read (Claude/Codex turn an image path in the prompt into an attachment).
+  const saveImage = (owner: string, request: FastifyRequest, reply: FastifyReply) => {
+    const type = (request.headers['content-type'] ?? '').split(';', 1)[0]?.trim().toLowerCase() ?? '';
+    const extension = IMAGE_EXTENSIONS[type];
+    if (extension === undefined || !Buffer.isBuffer(request.body) || request.body.length === 0) {
+      return error(reply, 400, 'Image PNG, JPEG, GIF ou WebP attendue');
+    }
+    const dir = join(ATTACHMENTS_DIR, owner);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const path = join(dir, `${stamp}-${randomBytes(3).toString('hex')}.${extension}`);
+    writeFileSync(path, request.body, { mode: 0o600 });
+    return reply.code(201).send({ path });
+  };
+
+  app.post<{ Params: { id: string } }>('/api/sessions/:id/attachments', async (request, reply) => {
+    const session = db.getSession(request.params.id);
+    if (session === null) return error(reply, 404, 'Session introuvable');
+    return saveImage(session.id, request, reply);
+  });
+
+  // Images pasted into the "new session" prompt, before the session exists.
+  app.post<{ Params: { id: string } }>('/api/projects/:id/attachments', async (request, reply) => {
+    const project = db.getProject(request.params.id);
+    if (project === null) return error(reply, 404, 'Projet introuvable');
+    return saveImage(`project-${project.id}`, request, reply);
+  });
+
   app.get<{ Params: { id: string } }>('/api/sessions/:id/screen', async (request, reply) => {
     if (sessions.db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');
     return reply.send({ lines: sessions.screenText(request.params.id) ?? [] });
   });
 
   app.delete<{ Params: { id: string } }>('/api/sessions/:id', async (request, reply) => {
-    if (!await sessions.delete(request.params.id)) return error(reply, 404, 'Session introuvable');
+    const result = await orError(reply, () => sessions.delete(request.params.id));
+    if (!result.ok) return result.reply;
+    if (!result.value) return error(reply, 404, 'Session introuvable');
     return reply.code(204).send();
   });
 

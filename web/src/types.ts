@@ -1,9 +1,9 @@
 export type Agent = 'claude' | 'codex' | 'grok';
-export type Mode = 'default' | 'acceptEdits' | 'plan' | 'bypass';
+export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
 
 export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
-export const MODES: readonly Mode[] = ['default', 'acceptEdits', 'plan', 'bypass'];
+export const MODES: readonly Mode[] = ['auto', 'default', 'acceptEdits', 'plan', 'bypass'];
 export const STATUSES: readonly Status[] = ['starting', 'running', 'waiting', 'idle', 'exited'];
 
 export interface Project {
@@ -65,7 +65,7 @@ export function isAgent(v: unknown): v is Agent {
 }
 
 export function isMode(v: unknown): v is Mode {
-  return v === 'default' || v === 'acceptEdits' || v === 'plan' || v === 'bypass';
+  return (MODES as readonly unknown[]).includes(v);
 }
 
 export function isStatus(v: unknown): v is Status {

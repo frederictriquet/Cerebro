@@ -44,6 +44,7 @@ export interface Store {
   killSession: (id: string) => Promise<void>;
   resumeSession: (id: string) => Promise<Session>;
   deleteSession: (id: string) => Promise<void>;
+  purgeProjectSessions: (projectId: string) => Promise<void>;
   markSeen: (id: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<Session>;
   updateProject: (id: string, patch: { name?: string; path?: string }) => Promise<Project>;
@@ -223,6 +224,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setSessions((list) => list.filter((s) => s.id !== id));
   }, []);
 
+  const purgeProjectSessions = useCallback(async (projectId: string): Promise<void> => {
+    await api<unknown>(`/api/projects/${projectId}/purge`, { method: 'POST' });
+    setSessions((list) => list.filter((s) => s.projectId !== projectId || (s.status !== 'exited' && s.status !== 'idle')));
+  }, []);
+
   const renameSession = useCallback(async (id: string, title: string): Promise<Session> => {
     const raw = await api<unknown>(`/api/sessions/${id}`, {
       method: 'PATCH',
@@ -280,6 +286,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       killSession,
       resumeSession,
       deleteSession,
+      purgeProjectSessions,
       markSeen,
       renameSession,
       updateProject,
@@ -298,6 +305,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       killSession,
       resumeSession,
       deleteSession,
+      purgeProjectSessions,
       markSeen,
       renameSession,
       updateProject,

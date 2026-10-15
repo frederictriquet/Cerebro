@@ -9,10 +9,11 @@ export const STATUS_LABEL: Record<Status, string> = {
 };
 
 export const MODE_LABEL: Record<Mode, string> = {
-  default: "Défaut (config de l'agent)",
-  acceptEdits: 'Accepter les éditions',
-  plan: 'Plan / lecture seule',
-  bypass: 'Bypass (aucune confirmation)',
+  auto: '⏵⏵ auto mode on',
+  default: 'default (config de l’agent)',
+  acceptEdits: '⏵⏵ accept edits on',
+  plan: '⏸ plan mode on',
+  bypass: '⏵⏵ bypass permissions on',
 };
 
 export function isAwaiting(session: Pick<Session, 'attention' | 'status'>): boolean {

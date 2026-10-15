@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { AGENT_LABEL, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { go, useNow } from './route.ts';
+import { PathInput } from './PathInput.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import type { Session } from './types.ts';
@@ -72,13 +73,7 @@ export function HomeView() {
           </label>
           <label className="block">
             Chemin
-            <input
-              required
-              autoComplete="off"
-              placeholder="Chemin absolu"
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-            />
+            <PathInput required value={path} onChange={setPath} />
           </label>
           {error ? <p className="form-error">{error}</p> : null}
           <button type="submit" className="btn primary" disabled={busy}>
