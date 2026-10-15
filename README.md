@@ -38,6 +38,11 @@ npm run dev
 | `CEREBRO_DATA_DIR` | `~/.cerebro` | Base SQLite, sockets des holders, journaux de terminal et `hooks.jsonl`. |
 | `CEREBRO_BIND_TOKEN` | non défini | Protège les API et WebSockets lorsqu'un accès réseau est nécessaire. |
 | `CEREBRO_KILL_ON_EXIT` | non défini | Avec la valeur `1`, tue les agents lorsque le serveur s'arrête (ancien comportement). |
+| `CEREBRO_SLACK_TOKEN` | non défini | Jeton bot Slack `xoxb-…`. Sans ce jeton, l'intégration Slack est inactive. |
+| `CEREBRO_SLACK_USER` | non défini | ID Slack (`U…`) du destinataire des messages privés. |
+| `CEREBRO_SLACK_ALERTS` | `all` | Alertes automatiques : `all`, `waiting` (questions et confirmations seulement) ou `off`. |
+| `CEREBRO_SLACK_DELAY` | `30` | Délai en secondes avant une alerte automatique. |
+| `CEREBRO_PUBLIC_URL` | `http://${CEREBRO_HOST}:${CEREBRO_PORT}` | Base des liens « Ouvrir dans Cerebro » envoyés sur Slack. |
 
 Pour une écoute sur le réseau local, définissez un secret robuste en même temps que
 `CEREBRO_HOST=0.0.0.0`. Ouvrez d'abord `http://hote:4317/?token=SECRET` : Cerebro
@@ -50,6 +55,42 @@ redémarrage, le serveur retrouve les sockets dans
 `$CEREBRO_DATA_DIR/sessions/`, restaure l'écran du terminal et reprend la
 détection d'attente. Le journal brut continue d'être écrit pendant toute
 l'indisponibilité du serveur.
+
+## Notifications Slack
+
+Créez une app depuis [api.slack.com/apps](https://api.slack.com/apps), ajoutez
+les scopes Bot Token `chat:write`, `im:write`, `im:history` et
+`reactions:write`, puis installez l'app dans l'espace de travail. Copiez son
+jeton bot dans `CEREBRO_SLACK_TOKEN`. Dans Slack, ouvrez votre profil, puis
+utilisez ⋮ → « Copier l'ID de membre » pour renseigner
+`CEREBRO_SLACK_USER`. Les deux variables sont nécessaires pour activer
+l'intégration.
+
+Cerebro envoie alors un message privé après le délai configuré lorsqu'une
+session demande une confirmation ou termine son tour. L'alerte est annulée si
+la session est vue, repart ou se termine entre-temps. Un agent peut aussi
+prévenir explicitement l'utilisateur :
+
+```sh
+cerebro-notify "Traitement terminé, le rapport est prêt."
+cerebro-notify --ask "Quel environnement dois-je déployer ?"
+```
+
+La commande est automatiquement disponible dans le `PATH` des sessions
+Cerebro ; sans argument, elle lit le texte sur l'entrée standard. Répondez dans
+le fil du message Slack pour transmettre la réponse au terminal. Les réponses
+`1`, `y` ou `n` sélectionnent directement une option lorsqu'une confirmation
+est affichée ; `entrée`/`enter` et `échap`/`esc` envoient respectivement les
+touches Entrée et Échap. Les fils restent actifs pendant 24 heures ou jusqu'à
+la fin de la session. Avec `CEREBRO_SLACK_ALERTS=off`, les alertes automatiques
+sont coupées, mais `cerebro-notify` reste disponible.
+
+Les variables peuvent aussi être placées dans `$CEREBRO_DATA_DIR/env` (par défaut
+`~/.cerebro/env`, format `CLE=valeur`, à protéger avec `chmod 600`), chargé au démarrage. Les consignes `cerebro-notify` sont données
+aux agents au lancement ou à la reprise d'une session ; le jeton Slack n'est jamais
+transmis à leur environnement. Dans le bac à sable `workspace-write` de Codex, le
+réseau (y compris local) est coupé : Codex doit demander l'autorisation d'exécuter
+`cerebro-notify` hors du bac à sable.
 
 ## Détection de l'attente
 

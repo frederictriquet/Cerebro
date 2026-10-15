@@ -93,6 +93,10 @@ export async function uploadProjectImage(projectId: string, image: Blob): Promis
   return postImage(`/api/projects/${projectId}/attachments`, image);
 }
 
+export function getSlackStatus(): Promise<{ enabled: boolean; alerts: string }> {
+  return api<{ enabled: boolean; alerts: string }>('/api/slack');
+}
+
 async function postImage(url: string, image: Blob): Promise<string> {
   const { path } = await api<{ path: string }>(url, {
     method: 'POST',

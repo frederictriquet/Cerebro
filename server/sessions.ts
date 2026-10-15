@@ -14,7 +14,7 @@ import {
 } from 'node:fs';
 import { createConnection } from 'node:net';
 import type { Socket } from 'node:net';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import * as headlessPackage from '@xterm/headless';
 import { buildAgentCommand } from './agents.ts';
@@ -103,6 +103,7 @@ function titleFor(agent: Agent, prompt: string): string {
 
 function ptyEnvironment(sessionId: string, token: string): Record<string, string | undefined> {
   const env = { ...process.env };
+  const binPath = join(ROOT, 'bin');
   // Strip markers that make a CLI think it runs nested inside another agent session
   // (e.g. when Cerebro itself is started from Claude Code): they disable transcripts/resume.
   for (const key of Object.keys(env)) {
@@ -110,6 +111,8 @@ function ptyEnvironment(sessionId: string, token: string): Record<string, string
       || /^CLAUDE_CODE_(ENTRYPOINT|SSE_PORT|CHILD_SESSION|SESSION_ID|SESSION_ATTENDED|EXECPATH|MESSAGING_)/.test(key)) {
       delete env[key];
     }
+    // Agents reach Slack only through cerebro-notify: never hand them the bot token.
+    if (key.startsWith('CEREBRO_SLACK_')) delete env[key];
   }
   return {
     ...env,
@@ -118,6 +121,8 @@ function ptyEnvironment(sessionId: string, token: string): Record<string, string
     CEREBRO_SESSION_ID: sessionId,
     CEREBRO_TOKEN: token,
     CEREBRO_URL: INTERNAL_URL,
+    CEREBRO_NOTIFY: join(binPath, 'cerebro-notify'),
+    PATH: env.PATH === undefined ? binPath : `${binPath}${delimiter}${env.PATH}`,
   };
 }
 

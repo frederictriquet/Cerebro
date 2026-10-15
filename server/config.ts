@@ -1,7 +1,11 @@
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chmodSync, mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync } from 'node:fs';
+
+// Optional secrets file (e.g. Slack token) so they stay out of the shell profile and the repo.
+const ENV_FILE = join(process.env.CEREBRO_DATA_DIR ?? join(homedir(), '.cerebro'), 'env');
+if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const HOST = process.env.CEREBRO_HOST ?? '127.0.0.1';
@@ -13,6 +17,14 @@ export const LOG_DIR = join(DATA_DIR, 'logs');
 export const SESSIONS_DIR = join(DATA_DIR, 'sessions');
 export const ATTACHMENTS_DIR = join(DATA_DIR, 'attachments');
 export const HOOK_SCRIPT = join(ROOT, 'bin', 'cerebro-hook.mjs');
+export const SLACK_TOKEN = process.env.CEREBRO_SLACK_TOKEN;
+export const SLACK_USER = process.env.CEREBRO_SLACK_USER;
+// Overridable for tests against a fake Slack API.
+export const SLACK_API_URL = process.env.CEREBRO_SLACK_API_URL ?? 'https://slack.com/api';
+export const SLACK_ALERTS = process.env.CEREBRO_SLACK_ALERTS ?? 'all';
+export const SLACK_DELAY_MS = Number(process.env.CEREBRO_SLACK_DELAY ?? 30) * 1_000;
+export const SLACK_ENABLED = SLACK_TOKEN !== undefined && SLACK_USER !== undefined;
+export const PUBLIC_URL = process.env.CEREBRO_PUBLIC_URL ?? `http://${HOST}:${PORT}`;
 // URL used by hook scripts (always local, even when the UI is exposed elsewhere).
 export const INTERNAL_URL = `http://127.0.0.1:${PORT}`;
 

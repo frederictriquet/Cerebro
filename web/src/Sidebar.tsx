@@ -1,4 +1,5 @@
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { getSlackStatus } from './api.ts';
 import { AGENT_LABEL, relativeTime, sessionTitle } from './format.ts';
 import { go, useNow, type Route } from './route.ts';
 import { PathInput } from './PathInput.tsx';
@@ -10,6 +11,7 @@ import type { Session } from './types.ts';
 export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () => void }) {
   const { sessions, connected, muted, setMuted, createProject } = useStore();
   const now = useNow();
+  const [slack, setSlack] = useState<{ enabled: boolean; alerts: string } | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
@@ -18,6 +20,20 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
 
   const attention = sessions.filter((s) => s.attention);
   const activeSessionId = route.kind === 'session' ? route.sessionId : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    void getSlackStatus()
+      .then((status) => {
+        if (!cancelled) setSlack(status);
+      })
+      .catch(() => {
+        /* endpoint missing or Slack unconfigured: pill stays off */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const onCreate = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
@@ -43,6 +59,16 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
           <span className="brand-mark" aria-hidden="true" />
           Cerebro
         </a>
+        <span
+          className={`slack-pill ${slack?.enabled ? 'on' : 'off'}`}
+          title={
+            slack?.enabled
+              ? `Notifications Slack actives (alertes : ${slack.alerts})`
+              : 'Slack non configuré (voir README)'
+          }
+        >
+          Slack
+        </span>
         <button
           type="button"
           className="btn-mute"

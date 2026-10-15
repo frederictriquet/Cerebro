@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { HOOK_SCRIPT } from './config.ts';
+import { HOOK_SCRIPT, SLACK_ENABLED } from './config.ts';
 import type { Agent, Mode } from './db.ts';
 
 const execFileAsync = promisify(execFile);
 export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
 export const HOOK = ['node', HOOK_SCRIPT] as const;
+export const NOTIFY_INSTRUCTIONS = "Tu tournes dans Cerebro. L'utilisateur n'est peut-être pas devant son écran. Pour le prévenir (tâche longue terminée, blocage important) exécute `cerebro-notify \"message\"` ; pour lui poser une question dont la réponse conditionne la suite, exécute `cerebro-notify --ask \"question\"` puis termine ton tour : sa réponse arrivera comme prochain message. Utilise-le avec parcimonie, messages courts et autoportants.";
 
 export interface AgentCommand {
   cmd: string;
@@ -62,11 +63,13 @@ function modeArgs(agent: Agent, mode: Mode): string[] {
 }
 
 function codexConfigArgs(): string[] {
-  return [
+  const args = [
     '-c', `notify=["node",${JSON.stringify(HOOK_SCRIPT)},"codex","notify"]`,
     '-c', 'tui.notifications=true',
     '-c', 'tui.notification_method="osc9"',
   ];
+  if (SLACK_ENABLED) args.push('-c', `developer_instructions=${JSON.stringify(NOTIFY_INSTRUCTIONS)}`);
+  return args;
 }
 
 export function buildAgentCommand(
@@ -84,12 +87,14 @@ export function buildAgentCommand(
     if (resumeSessionId === null) args.push('--session-id', agentSessionId);
     else args.push('--resume', resumeSessionId);
     args.push('--settings', JSON.stringify(hookSettings('claude')), ...modeArgs(agent, mode));
+    if (SLACK_ENABLED) args.push('--append-system-prompt', NOTIFY_INSTRUCTIONS);
     if (resumeSessionId === null && prompt !== '') args.push(prompt);
   } else if (agent === 'grok') {
     agentSessionId = resumeSessionId ?? generatedSessionId;
     if (resumeSessionId === null) args.push('--session-id', agentSessionId);
     else args.push('--resume', resumeSessionId);
     args.push(...modeArgs(agent, mode));
+    if (SLACK_ENABLED) args.push('--rules', NOTIFY_INSTRUCTIONS);
     if (resumeSessionId === null && prompt !== '') args.push(prompt);
   } else {
     if (resumeSessionId === null) {

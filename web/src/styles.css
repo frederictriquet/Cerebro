@@ -124,6 +124,27 @@ textarea {
   border-color: #4a2a32;
 }
 
+.slack-pill {
+  margin-left: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  cursor: default;
+  user-select: none;
+}
+
+.slack-pill.on {
+  color: var(--running);
+  border-color: #1e4a38;
+}
+
+.slack-pill.off {
+  color: var(--faint);
+}
+
 .ws-pill {
   margin: 10px 0 14px;
   font-size: 11px;

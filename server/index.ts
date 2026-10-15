@@ -11,11 +11,12 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type WebSocket from 'ws';
 import { AGENTS, getAgentAvailability } from './agents.ts';
-import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT } from './config.ts';
+import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
 import { CerebroDatabase } from './db.ts';
 import type { Agent, Mode } from './db.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
 import { SessionManager } from './sessions.ts';
+import { SlackNotifier } from './slack.ts';
 
 const MODES: readonly Mode[] = ['default', 'auto', 'acceptEdits', 'plan', 'bypass'];
 const execFileAsync = promisify(execFile);
@@ -132,6 +133,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   const db = new CerebroDatabase();
   const sessions = new SessionManager(db);
   const eventSockets = new Set<WebSocket>();
+  const notifier = new SlackNotifier(sessions, db);
 
   installGrokHook();
   await sessions.initialize();
@@ -147,7 +149,9 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
 
     const path = request.url.split('?', 1)[0] ?? request.url;
-    const protectedRoute = (path.startsWith('/api/') && !path.startsWith('/api/hook/')) || path.startsWith('/ws/');
+    const protectedRoute = (path.startsWith('/api/')
+      && !path.startsWith('/api/hook/')
+      && !path.startsWith('/api/notify/')) || path.startsWith('/ws/');
     if (BIND_TOKEN === undefined || !protectedRoute) return;
     const authorized = tokenMatches(queryToken)
       || tokenMatches(bearerToken(request.headers.authorization))
@@ -156,6 +160,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   app.addHook('onClose', async () => {
+    notifier.stop();
     await sessions.shutdown();
     db.close();
   });
@@ -351,6 +356,40 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   app.get('/api/agents', async () => getAgentAvailability());
+
+  app.get('/api/slack', async () => notifier.status());
+
+  app.post<{ Params: { id: string } }>('/api/notify/:id', async (request, reply) => {
+    const token = request.headers['x-cerebro-token'];
+    if (typeof token !== 'string' || !sessions.tokenMatches(request.params.id, token)) {
+      return error(reply, 403, 'Token de hook invalide');
+    }
+    const session = db.getSession(request.params.id);
+    if (session === null) return error(reply, 404, 'Session introuvable');
+    const body = bodyRecord(request.body);
+    if (body === null || (body.kind !== 'notify' && body.kind !== 'ask') || typeof body.text !== 'string') {
+      return error(reply, 400, 'kind ou text invalide');
+    }
+    const text = body.text.trim();
+    if (text === '' || text.length > 3_000) {
+      return error(reply, 400, 'Le texte doit contenir entre 1 et 3 000 caractères');
+    }
+    appendFileSync(HOOK_LOG, `${JSON.stringify({
+      at: new Date().toISOString(),
+      session: session.id,
+      agent: session.agent,
+      event: 'cerebro-notify',
+      payload: { kind: body.kind, text },
+    })}\n`);
+    if (!SLACK_ENABLED) return error(reply, 503, "Slack n'est pas configuré");
+    try {
+      await notifier.agentMessage(session.id, body.kind, text);
+      return reply.send({ ok: true });
+    } catch (caught) {
+      console.error('[slack]', caught instanceof Error ? caught.message : caught);
+      return error(reply, 502, "Impossible d'envoyer le message Slack");
+    }
+  });
 
   app.post<{ Params: { id: string } }>('/api/hook/:id', async (request, reply) => {
     const token = request.headers['x-cerebro-token'];
