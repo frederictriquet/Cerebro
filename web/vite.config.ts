@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import type { Socket } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,12 +15,31 @@ const api = `http://127.0.0.1:${process.env.CEREBRO_PORT ?? '4317'}`;
 
 // A browser tab closing its websocket (reload, session switch, StrictMode remount)
 // while the PTY is still streaming makes the proxy's write fail with ECONNRESET/EPIPE.
-// Harmless, but Vite logs a full stack trace for each one: drop them before Vite's handler.
+// Harmless, but Vite logs a full stack trace for each one: drop them before Vite's handlers.
+// Two paths reach the logger: the proxy's own 'error' event ("ws proxy error") and an
+// 'error' listener Vite attaches to the client socket on 'proxyReqWs' ("ws proxy socket error").
+const isDisconnect = (err: unknown) => {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'ECONNRESET' || code === 'EPIPE';
+};
+
+const quietSocket = (socket: Socket) => {
+  const emit = socket.emit.bind(socket);
+  socket.emit = ((event: string, ...args: unknown[]) => {
+    if (event === 'error' && isDisconnect(args[0])) {
+      socket.destroy();
+      return true;
+    }
+    return emit(event, ...args);
+  }) as typeof socket.emit;
+};
+
 const quietWsDisconnects: ProxyOptions['configure'] = (proxy) => {
   const emit = proxy.emit.bind(proxy);
   proxy.emit = ((event: string, ...args: unknown[]) => {
-    const [err, , target] = args as [NodeJS.ErrnoException, unknown, { destroy?: () => void } & object];
-    if (event === 'error' && !('req' in target) && (err.code === 'ECONNRESET' || err.code === 'EPIPE')) {
+    if (event === 'proxyReqWs') quietSocket(args[2] as Socket);
+    const [err, , target] = args as [unknown, unknown, { destroy?: () => void } & object];
+    if (event === 'error' && !('req' in target) && isDisconnect(err)) {
       target.destroy?.();
       return true;
     }

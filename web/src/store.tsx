@@ -24,16 +24,21 @@ import {
   parseProjectList,
   parseSession,
   parseSessionList,
+  parseTask,
+  parseTaskList,
   type Agent,
   type AgentInfo,
   type Mode,
   type Project,
   type Session,
+  type Task,
+  type TaskStatus,
 } from './types.ts';
 
 export interface Store {
   projects: Project[];
   sessions: Session[];
+  tasks: Task[];
   agents: AgentInfo[];
   connected: boolean;
   muted: boolean;
@@ -49,12 +54,24 @@ export interface Store {
   renameSession: (id: string, title: string) => Promise<Session>;
   updateProject: (id: string, patch: { name?: string; path?: string }) => Promise<Project>;
   sendSessionInput: (id: string, data: string) => Promise<void>;
+  createTask: (projectId: string, text: string, sourceSessionId?: string) => Promise<Task>;
+  updateTask: (id: string, patch: { text?: string; status?: TaskStatus }) => Promise<Task>;
+  deleteTask: (id: string) => Promise<void>;
+  startTask: (id: string, agent: Agent, mode: Mode, prompt: string) => Promise<Session>;
 }
 
 const StoreContext = createContext<Store | null>(null);
 
 function sortSessions(list: Session[]): Session[] {
   return [...list].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function upsertTask(list: Task[], task: Task): Task[] {
+  const i = list.findIndex((t) => t.id === task.id);
+  if (i === -1) return [...list, task];
+  const next = list.slice();
+  next[i] = task;
+  return next;
 }
 
 function upsertSession(list: Session[], session: Session): Session[] {
@@ -68,6 +85,7 @@ function upsertSession(list: Session[], session: Session): Session[] {
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [connected, setConnected] = useState(false);
   const [muted, setMutedState] = useState<boolean>(() => readMuted());
@@ -93,14 +111,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     void (async () => {
       try {
-        const [pRaw, sRaw, aRaw] = await Promise.all([
+        const [pRaw, sRaw, tRaw, aRaw] = await Promise.all([
           api<unknown>('/api/projects'),
           api<unknown>('/api/sessions'),
+          api<unknown>('/api/tasks'),
           api<unknown>('/api/agents'),
         ]);
         if (cancelled) return;
         setProjects(parseProjectList(pRaw));
         setSessions(sortSessions(parseSessionList(sRaw)));
+        setTasks(parseTaskList(tRaw));
         setAgents(parseAgentInfoList(aRaw));
       } catch {
         /* le snapshot WS prendra le relais */
@@ -139,12 +159,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           case 'snapshot':
             setProjects(msg.projects);
             setSessions(sortSessions(msg.sessions));
+            setTasks(msg.tasks);
             break;
           case 'session':
             setSessions((list) => upsertSession(list, msg.session));
             break;
           case 'session-deleted':
             setSessions((list) => list.filter((s) => s.id !== msg.id));
+            // La base délie la tâche (ON DELETE SET NULL) sans émettre d'événement.
+            setTasks((list) => list.map((t) => (t.sessionId === msg.id ? { ...t, sessionId: null } : t)));
+            break;
+          case 'task':
+            setTasks((list) => upsertTask(list, msg.task));
+            break;
+          case 'task-deleted':
+            setTasks((list) => list.filter((t) => t.id !== msg.id));
             break;
           case 'projects':
             setProjects(msg.projects);
@@ -191,6 +220,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     await api<unknown>(`/api/projects/${id}`, { method: 'DELETE' });
     setProjects((list) => list.filter((p) => p.id !== id));
     setSessions((list) => list.filter((s) => s.projectId !== id));
+    setTasks((list) => list.filter((t) => t.projectId !== id));
   }, []);
 
   const createSession = useCallback(
@@ -261,6 +291,52 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const createTask = useCallback(
+    async (projectId: string, text: string, sourceSessionId?: string): Promise<Task> => {
+      const raw = await api<unknown>(`/api/projects/${projectId}/tasks`, {
+        method: 'POST',
+        body: JSON.stringify({ text, sourceSessionId }),
+      });
+      const task = parseTask(raw);
+      if (!task) throw new Error('Réponse tâche invalide');
+      setTasks((list) => upsertTask(list, task));
+      return task;
+    },
+    [],
+  );
+
+  const updateTask = useCallback(
+    async (id: string, patch: { text?: string; status?: TaskStatus }): Promise<Task> => {
+      const raw = await api<unknown>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+      const task = parseTask(raw);
+      if (!task) throw new Error('Réponse tâche invalide');
+      setTasks((list) => upsertTask(list, task));
+      return task;
+    },
+    [],
+  );
+
+  const deleteTask = useCallback(async (id: string): Promise<void> => {
+    await api<unknown>(`/api/tasks/${id}`, { method: 'DELETE' });
+    setTasks((list) => list.filter((t) => t.id !== id));
+  }, []);
+
+  const startTask = useCallback(
+    async (id: string, agent: Agent, mode: Mode, prompt: string): Promise<Session> => {
+      const raw = await api<{ task: unknown; session: unknown }>(`/api/tasks/${id}/start`, {
+        method: 'POST',
+        body: JSON.stringify({ agent, mode, prompt }),
+      });
+      const session = parseSession(raw.session);
+      if (!session) throw new Error('Réponse session invalide');
+      const task = parseTask(raw.task);
+      setSessions((list) => upsertSession(list, session));
+      if (task) setTasks((list) => upsertTask(list, task));
+      return session;
+    },
+    [],
+  );
+
   const markSeen = useCallback(async (id: string): Promise<void> => {
     setSessions((list) =>
       list.map((s) => (s.id === id ? { ...s, attention: false } : s)),
@@ -276,6 +352,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     () => ({
       projects,
       sessions,
+      tasks,
       agents,
       connected,
       muted,
@@ -291,10 +368,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       renameSession,
       updateProject,
       sendSessionInput,
+      createTask,
+      updateTask,
+      deleteTask,
+      startTask,
     }),
     [
       projects,
       sessions,
+      tasks,
       agents,
       connected,
       muted,
@@ -310,6 +392,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       renameSession,
       updateProject,
       sendSessionInput,
+      createTask,
+      updateTask,
+      deleteTask,
+      startTask,
     ],
   );
 

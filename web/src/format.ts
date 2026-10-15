@@ -20,6 +20,14 @@ export function isAwaiting(session: Pick<Session, 'attention' | 'status'>): bool
   return session.attention || session.status === 'waiting';
 }
 
+export const MODE_CHIP: Record<Mode, string> = {
+  auto: '⏵⏵ auto',
+  default: 'default',
+  acceptEdits: '⏵⏵ accept edits',
+  plan: '⏸ plan',
+  bypass: '⏵⏵ bypass',
+};
+
 export const AGENT_LABEL: Record<Agent, string> = {
   claude: 'claude',
   codex: 'codex',

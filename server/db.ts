@@ -6,6 +6,7 @@ import { DATA_DIR } from './config.ts';
 export type Agent = 'claude' | 'codex' | 'grok';
 export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
+export type TaskStatus = 'todo' | 'started' | 'done';
 
 export interface Project {
   id: string;
@@ -26,6 +27,18 @@ export interface Session {
   attentionReason: string | null;
   agentSessionId: string | null;
   exitCode: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// Élément du backlog d'un projet : un texte à confier plus tard à une session.
+export interface Task {
+  id: string;
+  projectId: string;
+  text: string;
+  status: TaskStatus;
+  sessionId: string | null;
+  sourceSessionId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -52,6 +65,30 @@ interface SessionRow {
   hook_token: string | null;
   created_at: number;
   updated_at: number;
+}
+
+interface TaskRow {
+  id: string;
+  project_id: string;
+  text: string;
+  status: TaskStatus;
+  session_id: string | null;
+  source_session_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function taskFromRow(row: TaskRow): Task {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    text: row.text,
+    status: row.status,
+    sessionId: row.session_id,
+    sourceSessionId: row.source_session_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 function projectFromRow(row: ProjectRow): Project {
@@ -107,6 +144,17 @@ export class CerebroDatabase {
       );
       CREATE INDEX IF NOT EXISTS sessions_project_id ON sessions(project_id);
       CREATE INDEX IF NOT EXISTS sessions_updated_at ON sessions(updated_at DESC);
+      CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        text TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('todo', 'started', 'done')),
+        session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+        source_session_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS tasks_project_id ON tasks(project_id);
     `);
     const columns = this.connection.prepare('PRAGMA table_info(sessions)').all() as unknown as { name: string }[];
     if (!columns.some((column) => column.name === 'hook_token')) {
@@ -239,6 +287,48 @@ export class CerebroDatabase {
 
   deleteSession(id: string): boolean {
     return Number(this.connection.prepare('DELETE FROM sessions WHERE id = ?').run(id).changes) > 0;
+  }
+
+  listTasks(): Task[] {
+    return (this.connection.prepare('SELECT * FROM tasks ORDER BY created_at ASC').all() as unknown as TaskRow[])
+      .map(taskFromRow);
+  }
+
+  getTask(id: string): Task | null {
+    const row = this.connection.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as unknown as TaskRow | undefined;
+    return row === undefined ? null : taskFromRow(row);
+  }
+
+  createTask(projectId: string, text: string, sourceSessionId: string | null): Task {
+    const now = Date.now();
+    const task: Task = {
+      id: randomUUID(),
+      projectId,
+      text,
+      status: 'todo',
+      sessionId: null,
+      sourceSessionId,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.connection.prepare(`
+      INSERT INTO tasks (id, project_id, text, status, session_id, source_session_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(task.id, task.projectId, task.text, task.status, null, sourceSessionId, now, now);
+    return task;
+  }
+
+  updateTask(id: string, changes: Partial<Pick<Task, 'text' | 'status' | 'sessionId'>>): Task | null {
+    const current = this.getTask(id);
+    if (current === null) return null;
+    const next = { ...current, ...changes, updatedAt: Date.now() };
+    this.connection.prepare('UPDATE tasks SET text = ?, status = ?, session_id = ?, updated_at = ? WHERE id = ?')
+      .run(next.text, next.status, next.sessionId, next.updatedAt, id);
+    return next;
+  }
+
+  deleteTask(id: string): boolean {
+    return Number(this.connection.prepare('DELETE FROM tasks WHERE id = ?').run(id).changes) > 0;
   }
 
   close(): void {

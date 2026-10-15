@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { clipboardImage, uploadImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
+import { AddTaskDialog, LaunchSessionDialog } from './Dialog.tsx';
 import { AGENT_LABEL, MODE_LABEL, STATUS_LABEL, sessionTitle } from './format.ts';
 import { go, href } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
@@ -291,7 +292,7 @@ function QuickReply({
 }
 
 export function SessionView({ sessionId }: { sessionId: string }) {
-  const { sessions, projects, killSession, resumeSession, deleteSession, markSeen } = useStore();
+  const { sessions, projects, killSession, resumeSession, deleteSession, markSeen, createSession } = useStore();
   const session = sessions.find((s) => s.id === sessionId);
   const project = session ? projects.find((p) => p.id === session.projectId) : undefined;
   const [error, setError] = useState<string | null>(null);
@@ -310,6 +311,13 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     if (!api) return false;
     return api.sendArrow(direction);
   }, []);
+  const [hasSelection, setHasSelection] = useState(false);
+  // Texte capturé au clic : la sélection xterm peut changer pendant que la modale est ouverte.
+  const [selectionAction, setSelectionAction] = useState<{ kind: 'session' | 'task'; text: string } | null>(null);
+  const openSelection = (kind: 'session' | 'task'): void => {
+    const text = termApi.current?.getSelection() ?? '';
+    if (text !== '') setSelectionAction({ kind, text });
+  };
 
   useEffect(() => {
     void markSeen(sessionId);
@@ -384,8 +392,45 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       </header>
       {error ? <p className="form-error session-error">{error}</p> : null}
       <div className="term-wrap">
-        <Term key={`${session.id}:${live ? 'live' : 'exited'}`} sessionId={session.id} onApi={onApi} />
+        <Term
+          key={`${session.id}:${live ? 'live' : 'exited'}`}
+          sessionId={session.id}
+          onApi={onApi}
+          onSelectionChange={setHasSelection}
+        />
+        {hasSelection ? (
+          // preventDefault au mousedown : le clic ne doit pas effacer la sélection du terminal.
+          <div className="selection-bar" onMouseDown={(e) => e.preventDefault()}>
+            <button type="button" className="btn" onClick={() => openSelection('session')}>
+              Nouvelle session
+            </button>
+            <button type="button" className="btn" onClick={() => openSelection('task')}>
+              Ajouter au backlog
+            </button>
+          </div>
+        ) : null}
       </div>
+      {selectionAction?.kind === 'session' ? (
+        <LaunchSessionDialog
+          title="Nouvelle session depuis la sélection"
+          projectId={session.projectId}
+          initialPrompt={selectionAction.text}
+          onClose={() => setSelectionAction(null)}
+          onLaunch={async (agent, mode, prompt) => {
+            const created = await createSession(session.projectId, agent, mode, prompt);
+            setSelectionAction(null);
+            go(`#/s/${created.id}`);
+          }}
+        />
+      ) : null}
+      {selectionAction?.kind === 'task' ? (
+        <AddTaskDialog
+          projectId={session.projectId}
+          initialText={selectionAction.text}
+          sourceSessionId={session.id}
+          onClose={() => setSelectionAction(null)}
+        />
+      ) : null}
       <QuickReply key={session.id} sessionId={session.id} disabled={!live} send={send} sendArrow={sendArrow} />
     </div>
   );

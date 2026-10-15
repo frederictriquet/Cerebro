@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { getGrokHookSettings } from './agents.ts';
 import type { Agent } from './db.ts';
+import { parseQuestions } from './questions.ts';
 import type { SessionManager } from './sessions.ts';
 
 type HookPayload = Record<string, unknown>;
@@ -58,6 +59,7 @@ export function handleHook(
     sessions.setAgentSessionId(sessionId, threadId);
     if (event === 'notify' && payload.type === 'agent-turn-complete') {
       sessions.setReliableState(sessionId, 'idle', 'Tour terminé');
+      sessions.reportTurnComplete(sessionId, stringField(payload, 'last-assistant-message'));
     }
     return;
   }
@@ -68,16 +70,22 @@ export function handleHook(
     return;
   }
   if (event === 'UserPromptSubmit' || event === 'PostToolUse') {
+    sessions.setPendingQuestions(sessionId, null);
     sessions.setRunning(sessionId);
     return;
   }
   if (event === 'Stop') {
+    sessions.setPendingQuestions(sessionId, null);
     sessions.setReliableState(sessionId, 'idle', 'Tour terminé');
+    sessions.reportTurnComplete(sessionId, stringField(payload, 'last_assistant_message'));
     return;
   }
   if (event === 'PreToolUse') {
     const toolName = stringField(payload, 'tool_name') ?? '';
-    if (/ask.*user/i.test(toolName)) sessions.setReliableState(sessionId, 'waiting', 'Question');
+    if (!/ask.*user/i.test(toolName)) return;
+    // Kept for Slack: the terminal only shows the current tab of a multi-question dialog.
+    sessions.setPendingQuestions(sessionId, parseQuestions(payload.tool_input));
+    sessions.setReliableState(sessionId, 'waiting', 'Question');
     return;
   }
   if (event !== 'Notification') return;

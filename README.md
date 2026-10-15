@@ -40,8 +40,8 @@ npm run dev
 | `CEREBRO_KILL_ON_EXIT` | non défini | Avec la valeur `1`, tue les agents lorsque le serveur s'arrête (ancien comportement). |
 | `CEREBRO_SLACK_TOKEN` | non défini | Jeton bot Slack `xoxb-…`. Sans ce jeton, l'intégration Slack est inactive. |
 | `CEREBRO_SLACK_USER` | non défini | ID Slack (`U…`) du destinataire des messages privés. |
-| `CEREBRO_SLACK_ALERTS` | `all` | Alertes automatiques : `all`, `waiting` (questions et confirmations seulement) ou `off`. |
-| `CEREBRO_SLACK_DELAY` | `30` | Délai en secondes avant une alerte automatique. |
+| `CEREBRO_SLACK_ALERTS` | `all` | Alertes automatiques par défaut : `all`, `waiting` (questions et confirmations seulement) ou `off`. Modifiable ensuite dans l'interface. |
+| `CEREBRO_SLACK_DELAY` | `30` | Délai par défaut en secondes avant une alerte automatique. Modifiable ensuite dans l'interface. |
 | `CEREBRO_MACHINE_NAME` | nom d'hôte | Nom de la machine dans le sélecteur multi-machines. |
 | `CEREBRO_PUBLIC_URL` | `http://${CEREBRO_HOST}:${CEREBRO_PORT}` | Base des liens « Ouvrir dans Cerebro » envoyés sur Slack. |
 
@@ -67,6 +67,14 @@ utilisez ⋮ → « Copier l'ID de membre » pour renseigner
 `CEREBRO_SLACK_USER`. Les deux variables sont nécessaires pour activer
 l'intégration.
 
+Dans le message privé, écrivez `projet: instruction` pour reprendre la session
+active du projet, ou en créer une en mode auto s'il n'y en a pas. Ajoutez `+`
+(`projet+: instruction`) pour forcer une nouvelle session, et `/claude`,
+`/codex` ou `/grok` pour choisir l'agent (`projet/codex+: instruction`). La
+lecture de ces commandes nécessite le scope Bot Token `im:history`. Envoyez `help` (ou
+`aide`, `?`) pour obtenir la syntaxe, la liste des projets avec leur session
+active et la façon de répondre dans un fil.
+
 Cerebro envoie alors un message privé après le délai configuré lorsqu'une
 session demande une confirmation ou termine son tour. L'alerte est annulée si
 la session est vue, repart ou se termine entre-temps. Un agent peut aussi
@@ -83,8 +91,22 @@ le fil du message Slack pour transmettre la réponse au terminal. Les réponses
 `1`, `y` ou `n` sélectionnent directement une option lorsqu'une confirmation
 est affichée ; `entrée`/`enter` et `échap`/`esc` envoient respectivement les
 touches Entrée et Échap. Les fils restent actifs pendant 24 heures ou jusqu'à
-la fin de la session. Avec `CEREBRO_SLACK_ALERTS=off`, les alertes automatiques
-sont coupées, mais `cerebro-notify` reste disponible.
+la fin de la session.
+
+Quand Claude pose des questions à choix (outil AskUserQuestion, avec un ou
+plusieurs onglets), l'alerte Slack les reprend en entier : chaque question,
+ses options numérotées avec leur description et leur aperçu. Répondez dans le
+fil par une réponse par question, dans l'ordre (`2`, `1 3`, `1,3` pour un
+choix multiple), ou en texte libre. Cerebro ferme alors le dialogue (Échap) et
+envoie la réponse, avec le libellé des options choisies, comme message suivant.
+
+Le bouton « Slack » en haut de la barre latérale ouvre les réglages : activer
+séparément les alertes de confirmation, les alertes de fin de tour et les
+messages des agents (`cerebro-notify`), et régler le délai avant alerte. Ils
+sont enregistrés dans `$CEREBRO_DATA_DIR/slack.json` et priment sur
+`CEREBRO_SLACK_ALERTS` et `CEREBRO_SLACK_DELAY`, qui ne servent plus que de
+valeurs initiales. Si les messages des agents sont désactivés, `cerebro-notify`
+échoue avec un message explicite.
 
 Les variables peuvent aussi être placées dans `$CEREBRO_DATA_DIR/env` (par défaut
 `~/.cerebro/env`, format `CLE=valeur`, à protéger avec `chmod 600`), chargé au démarrage par le serveur et par Vite en mode dev. Les consignes `cerebro-notify` sont données
@@ -119,6 +141,32 @@ joignez-la avec le bouton image. Elle est enregistrée dans
 `$CEREBRO_DATA_DIR/attachments/<session>/` et son chemin absolu est inséré dans
 le prompt : Claude, Codex et Grok lisent l'image depuis ce chemin. Les images
 sont supprimées avec la session (PNG, JPEG, GIF, WebP, 20 Mo maximum).
+
+## Backlog
+
+Chaque projet a un backlog de tâches, affiché sur sa page, à confier une par une
+à de nouvelles sessions. Typiquement : lancer une code review dans une session,
+mettre ses findings dans le backlog, puis les traiter séparément.
+
+- **Depuis le terminal** : sélectionnez du texte dans une session ; une barre
+  propose « Nouvelle session » (prompt pré-rempli, agent et mode au choix) et
+  « Ajouter au backlog » (texte modifiable avant l'ajout).
+- **Depuis l'agent** : demandez-lui de « mettre les findings dans le backlog ».
+  Il utilise `cerebro-backlog`, disponible dans le `PATH` des sessions comme
+  `cerebro-notify` :
+
+  ```sh
+  cerebro-backlog "Une tâche"
+  printf 'Tâche 1\ndétails\n---\nTâche 2\n' | cerebro-backlog
+  ```
+
+  Sur l'entrée standard, les tâches sont séparées par une ligne `---`.
+- **À la main** : champ d'ajout en bas du backlog.
+
+« Traiter » ouvre le formulaire de nouvelle session pré-rempli avec le texte de
+la tâche. La tâche passe alors « En cours » et affiche un lien vers sa session.
+Marquez-la « Terminée » une fois le travail validé ; les tâches terminées sont
+masquées par défaut.
 
 ## Modes de permission
 

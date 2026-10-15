@@ -1,10 +1,12 @@
-import { href, type Route } from './route.ts';
+import { useState, type FormEvent } from 'react';
+import { Modal } from './Dialog.tsx';
+import { PathInput } from './PathInput.tsx';
+import { go, href, type Route } from './route.ts';
 import { useStore } from './store.tsx';
 
 export function ProjectTabs({ route }: { route: Route }) {
   const { projects, sessions } = useStore();
-
-  if (projects.length === 0) return null;
+  const [showNew, setShowNew] = useState(false);
 
   const activeProjectId =
     route.kind === 'project'
@@ -46,6 +48,69 @@ export function ProjectTabs({ route }: { route: Route }) {
           </a>
         );
       })}
+      <button
+        type="button"
+        className="project-tab project-tab-add"
+        title="Nouveau projet"
+        aria-label="Nouveau projet"
+        onClick={() => setShowNew(true)}
+      >
+        +
+      </button>
+      {showNew ? <NewProjectDialog onClose={() => setShowNew(false)} /> : null}
     </nav>
+  );
+}
+
+function NewProjectDialog({ onClose }: { onClose: () => void }) {
+  const { createProject } = useStore();
+  const [name, setName] = useState('');
+  const [path, setPath] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const onCreate = async (e: FormEvent): Promise<void> => {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      const project = await createProject(name.trim(), path.trim());
+      onClose();
+      go(`#/p/${project.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Création impossible');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Nouveau projet" onClose={onClose}>
+      <form className="new-project" onSubmit={(e) => void onCreate(e)}>
+        <label>
+          Nom
+          <input
+            required
+            autoFocus
+            autoComplete="off"
+            placeholder="Nom"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        <label className="block">
+          Chemin
+          <PathInput required value={path} onChange={setPath} />
+        </label>
+        {error ? <p className="form-error">{error}</p> : null}
+        <div className="row-actions">
+          <button type="submit" className="btn primary" disabled={busy}>
+            Créer
+          </button>
+          <button type="button" className="btn" onClick={onClose}>
+            Annuler
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }

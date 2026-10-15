@@ -1,3 +1,5 @@
+import type { Agent } from './types.ts';
+
 const unauthorizedListeners = new Set<() => void>();
 let unauthorized = false;
 let base = '';
@@ -117,8 +119,39 @@ export async function uploadProjectImage(projectId: string, image: Blob): Promis
   return postImage(`/api/projects/${projectId}/attachments`, image);
 }
 
-export function getSlackStatus(): Promise<{ enabled: boolean; alerts: string }> {
-  return api<{ enabled: boolean; alerts: string }>('/api/slack');
+export interface SlackSettings {
+  waiting: boolean;
+  idle: boolean;
+  agentMessages: boolean;
+  delaySeconds: number;
+}
+
+export type SlackStatus = { enabled: boolean } & SlackSettings;
+
+export function getSlackStatus(): Promise<SlackStatus> {
+  return api<SlackStatus>('/api/slack');
+}
+
+export function updateSlackSettings(patch: Partial<SlackSettings>): Promise<SlackStatus> {
+  return api<SlackStatus>('/api/slack', { method: 'PATCH', body: JSON.stringify(patch) });
+}
+
+export interface UsageWindow {
+  label: string;
+  percent: number;
+  minutes: number | null;
+  resetsAt: string | null;
+}
+
+export interface AgentUsage {
+  agent: Agent;
+  windows: UsageWindow[];
+  updatedAt: string | null;
+  error: string | null;
+}
+
+export function getUsage(): Promise<AgentUsage[]> {
+  return api<AgentUsage[]>('/api/usage');
 }
 
 async function postImage(url: string, image: Blob): Promise<string> {

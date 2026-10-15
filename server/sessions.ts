@@ -21,6 +21,7 @@ import { buildAgentCommand } from './agents.ts';
 import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
 import type { Agent, Mode, Project, Session } from './db.ts';
 import { CerebroDatabase } from './db.ts';
+import type { AgentQuestion } from './questions.ts';
 import { findProcessesByArgument, isAlive, processTree, signalProcesses } from './proc.ts';
 
 // @xterm/headless is CommonJS at runtime despite exposing ESM-shaped typings.
@@ -29,7 +30,9 @@ const Terminal = (headlessPackage as unknown as { default: typeof headlessPackag
 export type SessionEvent =
   | { type: 'session'; session: Session }
   | { type: 'session-deleted'; id: string }
-  | { type: 'alert'; session: Session };
+  | { type: 'alert'; session: Session }
+  // End of an agent turn, with its final message when the agent's hook provides it.
+  | { type: 'turn-complete'; id: string; message: string | null };
 
 export type TerminalEvent =
   | { type: 'snapshot'; data: string }
@@ -98,7 +101,7 @@ const HOLDER_KILL_WAIT_MS = 2_000;
 function titleFor(agent: Agent, prompt: string): string {
   // Pasted images arrive as long attachment paths: show them as a short marker in the title.
   const text = prompt.split(ATTACHMENTS_DIR).join('\0').replace(/\0\/\S+/g, '[image]').trim();
-  return text === '' ? `${agent} session` : text.slice(0, 60);
+  return text === '' ? `${agent} session` : text.slice(0, 120);
 }
 
 function ptyEnvironment(sessionId: string, token: string): Record<string, string | undefined> {
@@ -122,6 +125,7 @@ function ptyEnvironment(sessionId: string, token: string): Record<string, string
     CEREBRO_TOKEN: token,
     CEREBRO_URL: INTERNAL_URL,
     CEREBRO_NOTIFY: join(binPath, 'cerebro-notify'),
+    CEREBRO_BACKLOG: join(binPath, 'cerebro-backlog'),
     PATH: env.PATH === undefined ? binPath : `${binPath}${delimiter}${env.PATH}`,
   };
 }
@@ -169,6 +173,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export class SessionManager {
   readonly db: CerebroDatabase;
   private readonly runtimes = new Map<string, Runtime>();
+  private readonly questions = new Map<string, AgentQuestion[]>();
   private readonly eventListeners = new Set<(event: SessionEvent) => void>();
   private shuttingDown = false;
 
@@ -584,6 +589,20 @@ export class SessionManager {
     return updated;
   }
 
+  reportTurnComplete(id: string, message: string | null): void {
+    this.emit({ type: 'turn-complete', id, message });
+  }
+
+  /** Structured questions currently shown by the agent (AskUserQuestion), if any. */
+  pendingQuestions(id: string): AgentQuestion[] | null {
+    return this.questions.get(id) ?? null;
+  }
+
+  setPendingQuestions(id: string, questions: AgentQuestion[] | null): void {
+    if (questions === null) this.questions.delete(id);
+    else this.questions.set(id, questions);
+  }
+
   setRunning(id: string): Session | null {
     const session = this.db.getSession(id);
     if (session === null || session.status === 'exited') return null;
@@ -702,6 +721,7 @@ export class SessionManager {
     await this.stopProcesses(id);
     this.db.deleteSession(id);
     this.cleanupAllArtifacts(id);
+    this.questions.delete(id);
     this.emit({ type: 'session-deleted', id });
     return true;
   }
