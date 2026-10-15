@@ -101,7 +101,9 @@ function run(configPath: string): void {
   } catch (error) {
     report(error);
     terminal.dispose();
-    terminalLog.end();
+    // The terminal log is what the UI replays for an exited session: show the failure there.
+    const message = error instanceof Error ? error.message : String(error);
+    terminalLog.end(`\x1b[31mImpossible de lancer « ${config.cmd} » : ${message}\x1b[0m\r\n`);
     writeFileSync(exitPath, `${JSON.stringify({ exitCode: 1, signal: 0, at: Date.now() })}\n`, { mode: 0o600 });
     return;
   }
