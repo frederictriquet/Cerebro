@@ -46,8 +46,10 @@ npm run dev
 | `CEREBRO_PUBLIC_URL` | `http://${CEREBRO_HOST}:${CEREBRO_PORT}` | Base des liens « Ouvrir dans Cerebro » envoyés sur Slack. |
 
 Pour une écoute sur le réseau local, définissez un secret robuste en même temps que
-`CEREBRO_HOST=0.0.0.0`. Ouvrez d'abord `http://hote:4317/?token=SECRET` : Cerebro
-enregistre le secret dans un cookie `httpOnly` et `SameSite=Strict`. Les clients API
+`CEREBRO_HOST=0.0.0.0`. Saisissez le secret dans l'écran « Token requis » (ou ouvrez
+`http://hote:4317/?token=SECRET`) : Cerebro l'enregistre pour un an dans un cookie
+`httpOnly`, `SameSite=Strict` (et `Secure` derrière HTTPS). L'écran passe par
+`POST /api/auth`, ce qui fonctionne aussi derrière le serveur de dev Vite. Les clients API
 peuvent aussi utiliser `?token=SECRET` ou l'en-tête
 `Authorization: Bearer SECRET`. Les hooks d'agents conservent leur jeton propre.
 

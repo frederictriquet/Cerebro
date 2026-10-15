@@ -106,6 +106,12 @@ function cookieValue(header: string | undefined, name: string): string | undefin
   return undefined;
 }
 
+// Cookie persistant (un an) : le jeton ne se ressaisit pas à chaque redémarrage du navigateur.
+function tokenCookie(request: FastifyRequest): string {
+  const secure = request.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
+  return `cerebro_token=${encodeURIComponent(BIND_TOKEN ?? '')}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000${secure}`;
+}
+
 function bearerToken(header: string | undefined): string | undefined {
   const match = /^Bearer\s+(.+)$/i.exec(header ?? '');
   return match?.[1];
@@ -159,14 +165,12 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.addHook('onRequest', async (request, reply) => {
     const queryToken = requestQueryToken(request.query);
     if (BIND_TOKEN !== undefined && request.url.split('?', 1)[0] === '/' && tokenMatches(queryToken)) {
-      reply.header(
-        'set-cookie',
-        `cerebro_token=${encodeURIComponent(queryToken ?? '')}; Path=/; HttpOnly; SameSite=Strict`,
-      );
+      reply.header('set-cookie', tokenCookie(request));
     }
 
     const path = request.url.split('?', 1)[0] ?? request.url;
     const protectedRoute = (path.startsWith('/api/')
+      && path !== '/api/auth'
       && !path.startsWith('/api/hook/')
       && !path.startsWith('/api/notify/')
       && !path.startsWith('/api/backlog/')) || path.startsWith('/ws/') || path.startsWith('/m/');
@@ -175,6 +179,15 @@ export async function buildServer(): Promise<FastifyInstance> {
       || tokenMatches(bearerToken(request.headers.authorization))
       || tokenMatches(cookieValue(request.headers.cookie, 'cerebro_token'));
     if (!authorized) return error(reply, 401, 'Token requis');
+  });
+
+  // Échange du jeton contre le cookie via /api : passe aussi par le proxy de Vite en dev,
+  // contrairement à `/?token=`, servi par Vite.
+  app.post('/api/auth', async (request, reply) => {
+    if (BIND_TOKEN === undefined) return reply.code(204).send();
+    const token = bodyRecord(request.body)?.token;
+    if (typeof token !== 'string' || !tokenMatches(token)) return error(reply, 401, 'Jeton invalide');
+    return reply.header('set-cookie', tokenCookie(request)).code(204).send();
   });
 
   registerRemoteGateway(app);

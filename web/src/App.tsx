@@ -10,24 +10,52 @@ import { StoreProvider } from './store.tsx';
 import { useMachine, useRoute } from './route.ts';
 
 function TokenScreen() {
-  const submit = (event: FormEvent<HTMLFormElement>): void => {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     const field = event.currentTarget.elements.namedItem('token');
     const value = field instanceof HTMLInputElement ? field.value.trim() : '';
     if (value.length === 0) return;
-    window.location.assign(`/?token=${encodeURIComponent(value)}${window.location.hash}`);
+    setError(null);
+    setBusy(true);
+    try {
+      // Le serveur pose un cookie persistant : plus besoin de ressaisir le jeton.
+      const res = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: value }),
+      });
+      if (res.ok) {
+        window.location.reload();
+        return;
+      }
+      setError(res.status === 401 ? 'Jeton invalide' : `Erreur ${res.status}`);
+    } catch {
+      setError('Serveur injoignable');
+    }
+    setBusy(false);
   };
 
   return (
     <div className="token-screen">
-      <form className="card token-card" onSubmit={submit}>
+      <form className="card token-card" onSubmit={(e) => void submit(e)}>
         <h1>Token requis</h1>
-        <p>Cette instance exige un jeton pour accéder à l'API.</p>
+        <p>Cette instance exige un jeton pour accéder à l'API. Il est mémorisé par ce navigateur.</p>
         <label>
           Jeton
-          <input name="token" required autoFocus autoComplete="off" spellCheck={false} />
+          <input
+            name="token"
+            type="password"
+            required
+            autoFocus
+            autoComplete="current-password"
+            spellCheck={false}
+          />
         </label>
-        <button type="submit" className="btn primary">
+        {error ? <p className="form-error">{error}</p> : null}
+        <button type="submit" className="btn primary" disabled={busy}>
           Continuer
         </button>
       </form>
