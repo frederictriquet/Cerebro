@@ -1,0 +1,48 @@
+#!/usr/bin/env node
+
+const { CEREBRO_SESSION_ID, CEREBRO_TOKEN, CEREBRO_URL } = process.env;
+
+if (CEREBRO_SESSION_ID === undefined || CEREBRO_TOKEN === undefined || CEREBRO_URL === undefined) {
+  process.stderr.write('cerebro-backlog : uniquement dans une session Cerebro\n');
+  process.exitCode = 1;
+} else {
+  // Un argument = une tâche ; sur l'entrée standard, les tâches sont séparées par une ligne « --- ».
+  let tasks = process.argv.slice(2);
+  if (tasks.length === 0) {
+    let input = '';
+    process.stdin.setEncoding('utf8');
+    for await (const chunk of process.stdin) input += chunk;
+    tasks = input.split(/^-{3,}[ \t]*$/m);
+  }
+  tasks = tasks.map((task) => task.trim()).filter((task) => task !== '');
+
+  try {
+    if (tasks.length === 0) throw new Error('aucune tâche (argument ou entrée standard, séparateur « --- »)');
+    const response = await fetch(`${CEREBRO_URL.replace(/\/+$/, '')}/api/backlog/${encodeURIComponent(CEREBRO_SESSION_ID)}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'x-cerebro-token': CEREBRO_TOKEN,
+      },
+      body: JSON.stringify({ tasks }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      let message = `Erreur HTTP ${response.status}`;
+      try {
+        const body = await response.json();
+        if (typeof body === 'object' && body !== null && typeof body.error === 'string') message = body.error;
+      } catch {
+        // Keep the HTTP status when the server did not return JSON.
+      }
+      if (response.status === 413) {
+        message = `envoi trop volumineux (${tasks.length} tâche(s)) : découpez-le en plusieurs appels`;
+      }
+      throw new Error(message);
+    }
+    process.stdout.write(`${tasks.length} tâche(s) ajoutée(s) au backlog du projet.\n`);
+  } catch (error) {
+    process.stderr.write(`cerebro-backlog : ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
+}

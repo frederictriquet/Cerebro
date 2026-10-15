@@ -13,7 +13,7 @@ import type WebSocket from 'ws';
 import { AGENTS, getAgentAvailability } from './agents.ts';
 import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
 import { CerebroDatabase } from './db.ts';
-import type { Agent, Mode } from './db.ts';
+import type { Agent, Mode, Project, Session, TaskStatus } from './db.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
 import { SessionManager } from './sessions.ts';
 import { SlackNotifier } from './slack.ts';
@@ -28,6 +28,11 @@ const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
   'image/webp': 'webp',
 };
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_TASK_LENGTH = 20_000;
+const MAX_BACKLOG_TASKS = 100;
+// Worst case: 3 UTF-8 bytes per UTF-16 code unit (non-ASCII text), plus JSON escaping and envelope.
+const BACKLOG_BODY_LIMIT = MAX_BACKLOG_TASKS * MAX_TASK_LENGTH * 3 + 1024 * 1024;
+const TASK_STATUSES: readonly TaskStatus[] = ['todo', 'started', 'done'];
 
 function error(reply: FastifyReply, statusCode: number, message: string): FastifyReply {
   return reply.code(statusCode).send({ error: message });
@@ -47,6 +52,16 @@ function isAgent(value: unknown): value is Agent {
 
 function isMode(value: unknown): value is Mode {
   return typeof value === 'string' && (MODES as readonly string[]).includes(value);
+}
+
+function isTaskStatus(value: unknown): value is TaskStatus {
+  return typeof value === 'string' && (TASK_STATUSES as readonly string[]).includes(value);
+}
+
+function taskText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text === '' || text.length > MAX_TASK_LENGTH ? null : text;
 }
 
 function bodyRecord(value: unknown): Record<string, unknown> | null {
@@ -152,7 +167,8 @@ export async function buildServer(): Promise<FastifyInstance> {
     const path = request.url.split('?', 1)[0] ?? request.url;
     const protectedRoute = (path.startsWith('/api/')
       && !path.startsWith('/api/hook/')
-      && !path.startsWith('/api/notify/')) || path.startsWith('/ws/');
+      && !path.startsWith('/api/notify/')
+      && !path.startsWith('/api/backlog/')) || path.startsWith('/ws/');
     if (BIND_TOKEN === undefined || !protectedRoute) return;
     const authorized = tokenMatches(queryToken)
       || tokenMatches(bearerToken(request.headers.authorization))
@@ -166,8 +182,13 @@ export async function buildServer(): Promise<FastifyInstance> {
     db.close();
   });
 
-  sessions.onEvent((event) => {
+  const broadcast = (event: unknown): void => {
     for (const socket of eventSockets) sendSocket(socket, event);
+  };
+
+  sessions.onEvent((event) => {
+    if (event.type === 'turn-complete') return;
+    broadcast(event);
   });
 
   app.get('/api/projects', async () => db.listProjects());
@@ -261,19 +282,84 @@ export async function buildServer(): Promise<FastifyInstance> {
     return session === null ? error(reply, 404, 'Session introuvable') : reply.send(session);
   });
 
-  app.post<{ Params: { id: string } }>('/api/projects/:id/sessions', async (request, reply) => {
-    const project = db.getProject(request.params.id);
-    if (project === null) return error(reply, 404, 'Projet introuvable');
-    const body = bodyRecord(request.body);
+  // Valide le corps {agent, mode, prompt}, lance la session puis répond 201 avec ce que renvoie `respond`.
+  const launchSession = async (
+    reply: FastifyReply,
+    project: Project,
+    rawBody: unknown,
+    respond: (session: Session) => unknown,
+  ): Promise<FastifyReply> => {
+    const body = bodyRecord(rawBody);
     if (body === null || !isAgent(body.agent) || !isMode(body.mode) || typeof body.prompt !== 'string') {
       return error(reply, 400, 'agent, mode ou prompt invalide');
     }
     try {
-      return reply.code(201).send(await sessions.create(project, body.agent, body.mode, body.prompt));
+      const session = await sessions.create(project, body.agent, body.mode, body.prompt);
+      return reply.code(201).send(respond(session));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'Impossible de lancer la session';
       return error(reply, 500, message);
     }
+  };
+
+  app.post<{ Params: { id: string } }>('/api/projects/:id/sessions', async (request, reply) => {
+    const project = db.getProject(request.params.id);
+    if (project === null) return error(reply, 404, 'Projet introuvable');
+    return launchSession(reply, project, request.body, (session) => session);
+  });
+
+  app.get('/api/tasks', async () => db.listTasks());
+
+  app.post<{ Params: { id: string } }>('/api/projects/:id/tasks', async (request, reply) => {
+    if (db.getProject(request.params.id) === null) return error(reply, 404, 'Projet introuvable');
+    const body = bodyRecord(request.body);
+    const text = taskText(body?.text);
+    if (text === null) return error(reply, 400, `Le texte doit contenir entre 1 et ${MAX_TASK_LENGTH} caractères`);
+    const source = typeof body?.sourceSessionId === 'string' && db.getSession(body.sourceSessionId) !== null
+      ? body.sourceSessionId
+      : null;
+    const task = db.createTask(request.params.id, text, source);
+    broadcast({ type: 'task', task });
+    return reply.code(201).send(task);
+  });
+
+  app.patch<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => {
+    if (db.getTask(request.params.id) === null) return error(reply, 404, 'Tâche introuvable');
+    const body = bodyRecord(request.body);
+    if (body === null) return error(reply, 400, 'Corps invalide');
+    const changes: { text?: string; status?: TaskStatus } = {};
+    if (body.text !== undefined) {
+      const text = taskText(body.text);
+      if (text === null) return error(reply, 400, `Le texte doit contenir entre 1 et ${MAX_TASK_LENGTH} caractères`);
+      changes.text = text;
+    }
+    if (body.status !== undefined) {
+      if (!isTaskStatus(body.status)) return error(reply, 400, 'Statut invalide');
+      changes.status = body.status;
+    }
+    const task = db.updateTask(request.params.id, changes);
+    if (task === null) return error(reply, 404, 'Tâche introuvable');
+    broadcast({ type: 'task', task });
+    return reply.send(task);
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => {
+    if (!db.deleteTask(request.params.id)) return error(reply, 404, 'Tâche introuvable');
+    broadcast({ type: 'task-deleted', id: request.params.id });
+    return reply.code(204).send();
+  });
+
+  // Confie la tâche à une nouvelle session ; le prompt peut différer du texte (édité avant lancement).
+  app.post<{ Params: { id: string } }>('/api/tasks/:id/start', async (request, reply) => {
+    const task = db.getTask(request.params.id);
+    if (task === null) return error(reply, 404, 'Tâche introuvable');
+    const project = db.getProject(task.projectId);
+    if (project === null) return error(reply, 404, 'Projet introuvable');
+    return launchSession(reply, project, request.body, (session) => {
+      const updated = db.updateTask(task.id, { status: 'started', sessionId: session.id });
+      if (updated !== null) broadcast({ type: 'task', task: updated });
+      return { task: updated, session };
+    });
   });
 
   app.post<{ Params: { id: string } }>('/api/sessions/:id/kill', async (request, reply) => {
@@ -407,6 +493,27 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
   });
 
+  // Appelé par bin/cerebro-backlog depuis une session : ajoute des tâches au projet de celle-ci.
+  app.post<{ Params: { id: string } }>('/api/backlog/:id', { bodyLimit: BACKLOG_BODY_LIMIT }, async (request, reply) => {
+    const token = request.headers['x-cerebro-token'];
+    if (typeof token !== 'string' || !sessions.tokenMatches(request.params.id, token)) {
+      return error(reply, 403, 'Token de hook invalide');
+    }
+    const session = db.getSession(request.params.id);
+    if (session === null) return error(reply, 404, 'Session introuvable');
+    const body = bodyRecord(request.body);
+    if (body === null || !Array.isArray(body.tasks) || body.tasks.length === 0 || body.tasks.length > MAX_BACKLOG_TASKS) {
+      return error(reply, 400, `tasks doit contenir entre 1 et ${MAX_BACKLOG_TASKS} textes`);
+    }
+    const texts = body.tasks.map(taskText);
+    if (texts.some((text) => text === null)) {
+      return error(reply, 400, `Chaque tâche doit contenir entre 1 et ${MAX_TASK_LENGTH} caractères`);
+    }
+    const created = (texts as string[]).map((text) => db.createTask(session.projectId, text, session.id));
+    for (const task of created) broadcast({ type: 'task', task });
+    return reply.code(201).send({ count: created.length });
+  });
+
   app.post<{ Params: { id: string } }>('/api/hook/:id', async (request, reply) => {
     const token = request.headers['x-cerebro-token'];
     if (typeof token !== 'string' || !sessions.tokenMatches(request.params.id, token)) {
@@ -427,7 +534,12 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.get('/ws/events', { websocket: true }, (socket) => {
     eventSockets.add(socket);
-    sendSocket(socket, { type: 'snapshot', projects: db.listProjects(), sessions: db.listSessions() });
+    sendSocket(socket, {
+      type: 'snapshot',
+      projects: db.listProjects(),
+      sessions: db.listSessions(),
+      tasks: db.listTasks(),
+    });
     socket.on('close', () => eventSockets.delete(socket));
   });
 

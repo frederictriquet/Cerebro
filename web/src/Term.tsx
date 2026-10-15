@@ -11,6 +11,18 @@ export interface TermApi {
   sendInput: (data: string) => boolean;
   sendArrow: (direction: 'up' | 'down') => boolean;
   focus: () => void;
+  getSelection: () => string;
+}
+
+// Texte sélectionné à l'écran : sans espaces de fin de ligne, lignes vides de bord,
+// ni l'indentation commune ajoutée par les TUI.
+export function cleanSelection(raw: string): string {
+  const lines = raw.split(/\r?\n/).map((line) => line.trimEnd());
+  while (lines.length > 0 && lines[0] === '') lines.shift();
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  const indents = lines.filter((line) => line !== '').map((line) => /^ */.exec(line)?.[0].length ?? 0);
+  const indent = indents.length === 0 ? 0 : Math.min(...indents);
+  return lines.map((line) => line.slice(indent)).join('\n');
 }
 
 function send(ws: WebSocket | null, msg: TermClientMessage): boolean {
@@ -26,13 +38,17 @@ function send(ws: WebSocket | null, msg: TermClientMessage): boolean {
 export function Term({
   sessionId,
   onApi,
+  onSelectionChange,
 }: {
   sessionId: string;
   onApi?: (api: TermApi | null) => void;
+  onSelectionChange?: (hasSelection: boolean) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onApiRef = useRef(onApi);
   onApiRef.current = onApi;
+  const onSelectionRef = useRef(onSelectionChange);
+  onSelectionRef.current = onSelectionChange;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -98,6 +114,9 @@ export function Term({
       focus(): void {
         term.focus();
       },
+      getSelection(): string {
+        return cleanSelection(term.getSelection());
+      },
     };
     onApiRef.current?.(api);
 
@@ -123,6 +142,9 @@ export function Term({
 
     const dataSub = term.onData((data) => {
       send(socketRef.current, { type: 'input', data });
+    });
+    const selectionSub = term.onSelectionChange(() => {
+      onSelectionRef.current?.(term.getSelection().trim() !== '');
     });
 
     const notice = (text: string): void => {
@@ -221,6 +243,8 @@ export function Term({
       onApiRef.current?.(null);
       if (retryTimer !== undefined) clearTimeout(retryTimer);
       dataSub.dispose();
+      selectionSub.dispose();
+      onSelectionRef.current?.(false);
       host.removeEventListener('paste', onPaste, true);
       ro.disconnect();
       socketRef.current?.close();

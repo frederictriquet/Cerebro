@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getSlackStatus, updateSlackSettings, type SlackSettings, type SlackStatus } from './api.ts';
 import { AGENT_LABEL, relativeTime, sessionTitle } from './format.ts';
 import { go, useNow, type Route } from './route.ts';
-import { PathInput } from './PathInput.tsx';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
@@ -10,15 +9,10 @@ import { UsageGauges } from './UsageGauges.tsx';
 import type { Session } from './types.ts';
 
 export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () => void }) {
-  const { sessions, connected, muted, setMuted, createProject } = useStore();
+  const { sessions, connected, muted, setMuted } = useStore();
   const now = useNow();
   const [slack, setSlack] = useState<SlackStatus | null>(null);
   const [showSlack, setShowSlack] = useState(false);
-  const [showNew, setShowNew] = useState(false);
-  const [name, setName] = useState('');
-  const [path, setPath] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
   const attention = sessions.filter((s) => s.attention);
   const activeSessionId = route.kind === 'session' ? route.sessionId : null;
@@ -36,23 +30,6 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
       cancelled = true;
     };
   }, []);
-
-  const onCreate = async (e: FormEvent): Promise<void> => {
-    e.preventDefault();
-    setError(null);
-    setBusy(true);
-    try {
-      const project = await createProject(name.trim(), path.trim());
-      setName('');
-      setPath('');
-      setShowNew(false);
-      go(`#/p/${project.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Création impossible');
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <aside className="sidebar" id="sidebar">
@@ -86,7 +63,7 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
         {connected ? 'connecté' : 'reconnexion…'}
       </div>
 
-      <section className="side-section">
+      <section className="side-section side-attention">
         <h2>
           À traiter
           {attention.length > 0 ? <span className="count">{attention.length}</span> : null}
@@ -105,35 +82,6 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
               />
             ))}
           </ul>
-        )}
-      </section>
-
-      <section className="side-section side-projects">
-        <h2>Nouveau projet</h2>
-        {showNew ? (
-          <form className="new-project" onSubmit={(e) => void onCreate(e)}>
-            <input
-              required
-              autoComplete="off"
-              placeholder="Nom"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-            <PathInput required value={path} onChange={setPath} />
-            {error ? <p className="form-error">{error}</p> : null}
-            <div className="row-actions">
-              <button type="submit" className="btn primary" disabled={busy}>
-                Créer
-              </button>
-              <button type="button" className="btn" onClick={() => setShowNew(false)}>
-                Annuler
-              </button>
-            </div>
-          </form>
-        ) : (
-          <button type="button" className="btn add-project" onClick={() => setShowNew(true)}>
-            + Projet
-          </button>
         )}
       </section>
 

@@ -1,4 +1,7 @@
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { HOOK_SCRIPT, SLACK_ENABLED } from './config.ts';
 import type { Agent, Mode } from './db.ts';
@@ -6,7 +9,10 @@ import type { Agent, Mode } from './db.ts';
 const execFileAsync = promisify(execFile);
 export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
 export const HOOK = ['node', HOOK_SCRIPT] as const;
-export const NOTIFY_INSTRUCTIONS = "Tu tournes dans Cerebro. L'utilisateur n'est peut-être pas devant son écran. Pour le prévenir (tâche longue terminée, blocage important) exécute `cerebro-notify \"message\"` ; pour lui poser une question dont la réponse conditionne la suite, exécute `cerebro-notify --ask \"question\"` puis termine ton tour : sa réponse arrivera comme prochain message. Utilise-le avec parcimonie, messages courts et autoportants.";
+const NOTIFY_INSTRUCTIONS = "Tu tournes dans Cerebro. L'utilisateur n'est peut-être pas devant son écran. Pour le prévenir (tâche longue terminée, blocage important) exécute `cerebro-notify \"message\"` ; pour lui poser une question dont la réponse conditionne la suite, exécute `cerebro-notify --ask \"question\"` puis termine ton tour : sa réponse arrivera comme prochain message. Utilise-le avec parcimonie, messages courts et autoportants.";
+const BACKLOG_INSTRUCTIONS = "Cerebro tient un backlog de tâches par projet. Si l'utilisateur demande de mettre des éléments (par exemple les findings d'une review) dans le backlog, envoie-les sur l'entrée standard de `cerebro-backlog`, une tâche par élément, séparées par une ligne `---` ; chaque tâche doit se suffire à elle-même (fichier:ligne, problème, scénario, correctif attendu), car elle sera confiée telle quelle à une nouvelle session.";
+// Le backlog fonctionne toujours ; cerebro-notify seulement si Slack est configuré.
+export const AGENT_INSTRUCTIONS = SLACK_ENABLED ? `${NOTIFY_INSTRUCTIONS} ${BACKLOG_INSTRUCTIONS}` : `Tu tournes dans Cerebro. ${BACKLOG_INSTRUCTIONS}`;
 
 export interface AgentCommand {
   cmd: string;
@@ -62,13 +68,47 @@ function modeArgs(agent: Agent, mode: Mode): string[] {
   return ['--dangerously-bypass-approvals-and-sandbox'];
 }
 
+const TOML_ESCAPES: Record<string, string> = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', '"': '"', '\\': '\\' };
+
+function unescapeTomlBasic(value: string): string {
+  return value
+    .replace(/\\\s*\n\s*/g, '')
+    .replace(/\\(u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)/g, (_, esc: string) =>
+      esc.length > 1 ? String.fromCodePoint(parseInt(esc.slice(1), 16)) : TOML_ESCAPES[esc] ?? esc);
+}
+
+// Top-level `developer_instructions` of the user's Codex config: our `-c` override replaces it,
+// so Cerebro's instructions are appended to it rather than silently dropping the user's.
+export function readCodexDeveloperInstructions(): string | null {
+  let text: string;
+  try {
+    text = readFileSync(join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'config.toml'), 'utf8');
+  } catch {
+    return null;
+  }
+  const firstTable = text.search(/^\s*\[/m);
+  const topLevel = firstTable === -1 ? text : text.slice(0, firstTable);
+  const match = /^[ \t]*"?developer_instructions"?[ \t]*=[ \t]*("""[\s\S]*?"""(?!")|'''[\s\S]*?'''(?!')|"(?:[^"\\\n]|\\.)*"|'[^'\n]*')/m
+    .exec(topLevel);
+  if (match === null) return null;
+  const raw = match[1];
+  let value: string;
+  if (raw.startsWith('"""')) value = unescapeTomlBasic(raw.slice(3, -3).replace(/^\r?\n/, ''));
+  else if (raw.startsWith("'''")) value = raw.slice(3, -3).replace(/^\r?\n/, '');
+  else if (raw.startsWith('"')) value = unescapeTomlBasic(raw.slice(1, -1));
+  else value = raw.slice(1, -1);
+  return value.trim() === '' ? null : value;
+}
+
 function codexConfigArgs(): string[] {
   const args = [
     '-c', `notify=["node",${JSON.stringify(HOOK_SCRIPT)},"codex","notify"]`,
     '-c', 'tui.notifications=true',
     '-c', 'tui.notification_method="osc9"',
   ];
-  if (SLACK_ENABLED) args.push('-c', `developer_instructions=${JSON.stringify(NOTIFY_INSTRUCTIONS)}`);
+  const userInstructions = readCodexDeveloperInstructions();
+  const instructions = userInstructions === null ? AGENT_INSTRUCTIONS : `${userInstructions}\n\n${AGENT_INSTRUCTIONS}`;
+  args.push('-c', `developer_instructions=${JSON.stringify(instructions)}`);
   return args;
 }
 
@@ -87,14 +127,14 @@ export function buildAgentCommand(
     if (resumeSessionId === null) args.push('--session-id', agentSessionId);
     else args.push('--resume', resumeSessionId);
     args.push('--settings', JSON.stringify(hookSettings('claude')), ...modeArgs(agent, mode));
-    if (SLACK_ENABLED) args.push('--append-system-prompt', NOTIFY_INSTRUCTIONS);
+    args.push('--append-system-prompt', AGENT_INSTRUCTIONS);
     if (resumeSessionId === null && prompt !== '') args.push(prompt);
   } else if (agent === 'grok') {
     agentSessionId = resumeSessionId ?? generatedSessionId;
     if (resumeSessionId === null) args.push('--session-id', agentSessionId);
     else args.push('--resume', resumeSessionId);
     args.push(...modeArgs(agent, mode));
-    if (SLACK_ENABLED) args.push('--rules', NOTIFY_INSTRUCTIONS);
+    args.push('--rules', AGENT_INSTRUCTIONS);
     if (resumeSessionId === null && prompt !== '') args.push(prompt);
   } else {
     if (resumeSessionId === null) {

@@ -141,6 +141,32 @@ joignez-la avec le bouton image. Elle est enregistrée dans
 le prompt : Claude, Codex et Grok lisent l'image depuis ce chemin. Les images
 sont supprimées avec la session (PNG, JPEG, GIF, WebP, 20 Mo maximum).
 
+## Backlog
+
+Chaque projet a un backlog de tâches, affiché sur sa page, à confier une par une
+à de nouvelles sessions. Typiquement : lancer une code review dans une session,
+mettre ses findings dans le backlog, puis les traiter séparément.
+
+- **Depuis le terminal** : sélectionnez du texte dans une session ; une barre
+  propose « Nouvelle session » (prompt pré-rempli, agent et mode au choix) et
+  « Ajouter au backlog » (texte modifiable avant l'ajout).
+- **Depuis l'agent** : demandez-lui de « mettre les findings dans le backlog ».
+  Il utilise `cerebro-backlog`, disponible dans le `PATH` des sessions comme
+  `cerebro-notify` :
+
+  ```sh
+  cerebro-backlog "Une tâche"
+  printf 'Tâche 1\ndétails\n---\nTâche 2\n' | cerebro-backlog
+  ```
+
+  Sur l'entrée standard, les tâches sont séparées par une ligne `---`.
+- **À la main** : champ d'ajout en bas du backlog.
+
+« Traiter » ouvre le formulaire de nouvelle session pré-rempli avec le texte de
+la tâche. La tâche passe alors « En cours » et affiche un lien vers sa session.
+Marquez-la « Terminée » une fois le travail validé ; les tâches terminées sont
+masquées par défaut.
+
 ## Modes de permission
 
 | Mode | Claude | Codex | Grok |

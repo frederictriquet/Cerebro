@@ -85,6 +85,12 @@ interface ActiveThread {
   createdAt: number;
   polledAt: number;
   answered: boolean;
+  // A message was sent from this thread: the end of the agent's turn is posted back into it.
+  awaitingReply: boolean;
+  // The message was queued behind a running turn unrelated to Slack: that turn's end is not the reply.
+  skipTurnEnd: boolean;
+  // Another message was queued while a reply was awaited: keep awaiting after relaying the next turn end.
+  moreTurns: boolean;
   // Questions of the AskUserQuestion dialog this message shows: numeric replies are mapped onto them.
   questions: AgentQuestion[] | null;
 }
@@ -159,8 +165,29 @@ function activeThreadFrom(value: unknown): ActiveThread | null {
     createdAt: value.createdAt,
     polledAt: value.polledAt,
     answered: value.answered,
+    awaitingReply: value.awaitingReply === true,
+    skipTurnEnd: value.skipTurnEnd === true,
+    moreTurns: value.moreTurns === true,
     questions,
   };
+}
+
+function isKeyShortcut(text: string): boolean {
+  return ['entrée', 'enter', 'échap', 'esc'].includes(text.toLocaleLowerCase('fr-FR'));
+}
+
+/** A message typed during a running turn is queued: only the turn it starts carries the reply. */
+function armReply(thread: ActiveThread, queued: boolean): void {
+  if (!queued) {
+    thread.awaitingReply = true;
+    thread.skipTurnEnd = false;
+    thread.moreTurns = false;
+  } else if (!thread.awaitingReply) {
+    thread.awaitingReply = true;
+    thread.skipTurnEnd = true;
+  } else if (!thread.skipTurnEnd) {
+    thread.moreTurns = true;
+  }
 }
 
 function messageFrom(value: unknown): SlackMessage | null {
@@ -217,6 +244,69 @@ function decodeSlackText(value: string): string {
 
 function safeCodeBlock(value: string): string {
   return value.replaceAll('```', '``\u200b`');
+}
+
+// Converts the agent's Markdown to Slack mrkdwn; code spans and blocks are only escaped.
+export function slackMarkdown(markdown: string): string {
+  return markdown.split(/(```[\s\S]*?(?:```|$)|`[^`\n]+`)/).map((part, index) => {
+    // Slack shows a fence's language tag as text, and requires entities even inside code.
+    if (index % 2 === 1) return escapeMrkdwn(part.replace(/^```[\w+#.-]*\n/, '```\n'));
+    return escapeMrkdwn(part)
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<$2|$1>')
+      .replace(/\*\*(.+?)\*\*/g, '*$1*')
+      .replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
+      .replace(/^(\s*)[-*]\s+/gm, '$1• ');
+  }).join('');
+}
+
+const SLACK_CHUNK = 3_500;
+
+// Cuts an over-long line, preferring whitespace and never inside an entity or a `<url|text>` link.
+function hardSplit(text: string): string[] {
+  const pieces: string[] = [];
+  let rest = text;
+  while (rest.length > SLACK_CHUNK) {
+    const window = rest.slice(0, SLACK_CHUNK);
+    const space = Math.max(window.lastIndexOf(' '), window.lastIndexOf('\t'));
+    let cut = space >= SLACK_CHUNK / 2 ? space + 1 : SLACK_CHUNK;
+    const head = rest.slice(0, cut);
+    const openLink = head.lastIndexOf('<');
+    if (openLink > head.lastIndexOf('>')) cut = openLink;
+    else {
+      const entity = /&[a-z]{0,3}$/.exec(head);
+      if (entity) cut = entity.index;
+    }
+    // A single link longer than a chunk cannot stay whole: fall back to a plain cut.
+    if (cut === 0) cut = SLACK_CHUNK;
+    pieces.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest !== '') pieces.push(rest);
+  return pieces;
+}
+
+// Slack truncates long messages: split on line breaks, keeping code blocks balanced.
+export function splitMessage(text: string): string[] {
+  const chunks: string[] = [];
+  let current = '';
+  for (const line of text.split('\n')) {
+    const candidate = current === '' ? line : `${current}\n${line}`;
+    if (candidate.length <= SLACK_CHUNK || current === '') {
+      current = candidate;
+      continue;
+    }
+    chunks.push(current);
+    current = line;
+  }
+  if (current !== '') chunks.push(current);
+  const balanced: string[] = [];
+  let open = false;
+  for (const chunk of chunks.flatMap(hardSplit)) {
+    const prefix = open ? '```\n' : '';
+    if (((chunk.match(/```/g) ?? []).length % 2) === 1) open = !open;
+    balanced.push(`${prefix}${chunk}${open ? '\n```' : ''}`);
+  }
+  return balanced;
 }
 
 function laterThan(left: string, right: string): boolean {
@@ -311,6 +401,10 @@ export class SlackNotifier {
       if (this.threads.delete(event.id)) this.stateChanged();
       return;
     }
+    if (event.type === 'turn-complete') {
+      this.relayTurnEnd(event.id, event.message);
+      return;
+    }
     if (event.type !== 'alert' || !this.alertWanted(event.session.status)) return;
     const previous = this.timers.get(event.session.id);
     if (previous !== undefined) clearTimeout(previous);
@@ -320,6 +414,29 @@ export class SlackNotifier {
     }, this.settings.delaySeconds * 1_000);
     timer.unref();
     this.timers.set(event.session.id, timer);
+  }
+
+  private relayTurnEnd(sessionId: string, message: string | null): void {
+    const thread = this.threads.get(sessionId);
+    if (thread === undefined || !thread.awaitingReply) return;
+    if (thread.skipTurnEnd) {
+      thread.skipTurnEnd = false;
+      this.stateChanged();
+      return;
+    }
+    if (thread.moreTurns) thread.moreTurns = false;
+    else thread.awaitingReply = false;
+    this.stateChanged();
+    // The answer itself lands in the thread: the "turn complete" alert would only repeat it.
+    const timer = this.timers.get(sessionId);
+    if (timer !== undefined) clearTimeout(timer);
+    this.timers.delete(sessionId);
+    const text = message !== null && message.trim() !== ''
+      ? slackMarkdown(message)
+      : `\`\`\`\n${safeCodeBlock((this.sessions.screenText(sessionId, 30) ?? []).join('\n').slice(-3_000))}\n\`\`\``;
+    void (async () => {
+      for (const chunk of splitMessage(text)) await this.postThreadReply(thread.channel, thread.ts, chunk);
+    })().catch((error: unknown) => this.logError(error));
   }
 
   private async sendAutomaticAlert(sessionId: string): Promise<void> {
@@ -372,6 +489,9 @@ export class SlackNotifier {
       createdAt: Date.now(),
       polledAt: Date.now(),
       answered: false,
+      awaitingReply: false,
+      skipTurnEnd: false,
+      moreTurns: false,
       questions,
     });
     this.stateChanged();
@@ -516,6 +636,7 @@ export class SlackNotifier {
       .find((candidate) => candidate.status !== 'exited'
         && (command.agent === null || candidate.agent === command.agent));
     const created = session === undefined;
+    const queued = session?.status === 'running';
     if (session === undefined) {
       try {
         session = await this.sessions.create(project, command.agent ?? 'claude', 'auto', command.text);
@@ -543,6 +664,9 @@ export class SlackNotifier {
       createdAt: Date.now(),
       polledAt: Date.now(),
       answered: false,
+      awaitingReply: true,
+      skipTurnEnd: queued,
+      moreTurns: false,
       questions: null,
     });
     this.stateDirty = true;
@@ -624,11 +748,13 @@ export class SlackNotifier {
       this.stateDirty = true;
       if (message.user !== SLACK_USER || message.bot_id !== undefined || message.text === undefined) continue;
       const text = decodeSlackText(message.text);
+      const queued = this.db.getSession(sessionId)?.status === 'running' && !isKeyShortcut(text);
       const transmitted = thread.questions !== null
         ? await this.answerQuestions(sessionId, thread, text)
         : await this.injectReply(sessionId, thread.kind, text);
       if (transmitted) {
         thread.answered = true;
+        armReply(thread, queued);
         this.stateDirty = true;
         try {
           await this.slackApi('reactions.add', {
@@ -656,8 +782,7 @@ export class SlackNotifier {
    */
   private async answerQuestions(sessionId: string, thread: ActiveThread, text: string): Promise<boolean> {
     const questions = thread.questions ?? [];
-    const shortcut = text.toLocaleLowerCase('fr-FR');
-    if (['entrée', 'enter', 'échap', 'esc'].includes(shortcut)) return this.injectReply(sessionId, thread.kind, text);
+    if (isKeyShortcut(text)) return this.injectReply(sessionId, thread.kind, text);
     const session = this.db.getSession(sessionId);
     if (session === null || session.status === 'exited') return false;
     const interpreted = interpretAnswer(questions, text);

@@ -1,6 +1,7 @@
 export type Agent = 'claude' | 'codex' | 'grok';
 export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
+export type TaskStatus = 'todo' | 'started' | 'done';
 
 export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
 export const MODES: readonly Mode[] = ['auto', 'default', 'acceptEdits', 'plan', 'bypass'];
@@ -29,6 +30,17 @@ export interface Session {
   updatedAt: number;
 }
 
+export interface Task {
+  id: string;
+  projectId: string;
+  text: string;
+  status: TaskStatus;
+  sessionId: string | null;
+  sourceSessionId: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface AgentInfo {
   agent: Agent;
   available: boolean;
@@ -41,9 +53,11 @@ export interface GitInfo {
 }
 
 export type EventsMessage =
-  | { type: 'snapshot'; projects: Project[]; sessions: Session[] }
+  | { type: 'snapshot'; projects: Project[]; sessions: Session[]; tasks: Task[] }
   | { type: 'session'; session: Session }
   | { type: 'session-deleted'; id: string }
+  | { type: 'task'; task: Task }
+  | { type: 'task-deleted'; id: string }
   | { type: 'projects'; projects: Project[] }
   | { type: 'alert'; session: Session };
 
@@ -149,6 +163,40 @@ export function parseSession(v: unknown): Session | null {
   };
 }
 
+export function parseTask(v: unknown): Task | null {
+  if (!isRecord(v)) return null;
+  const id = asString(v.id);
+  const projectId = asString(v.projectId);
+  const text = asString(v.text);
+  const createdAt = asNumber(v.createdAt);
+  const updatedAt = asNumber(v.updatedAt);
+  const sessionId = asNullableString(v.sessionId);
+  const sourceSessionId = asNullableString(v.sourceSessionId);
+  if (
+    id === null ||
+    projectId === null ||
+    text === null ||
+    createdAt === null ||
+    updatedAt === null ||
+    sessionId === undefined ||
+    sourceSessionId === undefined ||
+    (v.status !== 'todo' && v.status !== 'started' && v.status !== 'done')
+  ) {
+    return null;
+  }
+  return { id, projectId, text, status: v.status, sessionId, sourceSessionId, createdAt, updatedAt };
+}
+
+export function parseTaskList(v: unknown): Task[] {
+  if (!Array.isArray(v)) return [];
+  const out: Task[] = [];
+  for (const item of v) {
+    const t = parseTask(item);
+    if (t) out.push(t);
+  }
+  return out;
+}
+
 export function parseProjectList(v: unknown): Project[] {
   if (!Array.isArray(v)) return [];
   const out: Project[] = [];
@@ -207,7 +255,12 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
   if (!isRecord(v) || typeof v.type !== 'string') return null;
   switch (v.type) {
     case 'snapshot':
-      return { type: 'snapshot', projects: parseProjectList(v.projects), sessions: parseSessionList(v.sessions) };
+      return {
+        type: 'snapshot',
+        projects: parseProjectList(v.projects),
+        sessions: parseSessionList(v.sessions),
+        tasks: parseTaskList(v.tasks),
+      };
     case 'session': {
       const session = parseSession(v.session);
       return session ? { type: 'session', session } : null;
@@ -215,6 +268,14 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
     case 'session-deleted': {
       const id = asString(v.id);
       return id ? { type: 'session-deleted', id } : null;
+    }
+    case 'task': {
+      const task = parseTask(v.task);
+      return task ? { type: 'task', task } : null;
+    }
+    case 'task-deleted': {
+      const id = asString(v.id);
+      return id ? { type: 'task-deleted', id } : null;
     }
     case 'projects':
       return { type: 'projects', projects: parseProjectList(v.projects) };

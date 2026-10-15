@@ -59,6 +59,7 @@ export function handleHook(
     sessions.setAgentSessionId(sessionId, threadId);
     if (event === 'notify' && payload.type === 'agent-turn-complete') {
       sessions.setReliableState(sessionId, 'idle', 'Tour terminé');
+      sessions.reportTurnComplete(sessionId, stringField(payload, 'last-assistant-message'));
     }
     return;
   }
@@ -76,6 +77,7 @@ export function handleHook(
   if (event === 'Stop') {
     sessions.setPendingQuestions(sessionId, null);
     sessions.setReliableState(sessionId, 'idle', 'Tour terminé');
+    sessions.reportTurnComplete(sessionId, stringField(payload, 'last_assistant_message'));
     return;
   }
   if (event === 'PreToolUse') {
