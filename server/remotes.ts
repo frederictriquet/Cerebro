@@ -67,7 +67,7 @@ export function registerRemoteGateway(app: FastifyInstance): void {
     } catch {
       // The upstream will return the appropriate error for a malformed path.
     }
-    if (decodedRest.startsWith('hook/') || decodedRest.startsWith('notify/')) {
+    if (/^(hook|notify|backlog)\//.test(decodedRest)) {
       return reply.code(403).send({ error: 'Route non relayée' });
     }
 

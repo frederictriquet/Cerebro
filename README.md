@@ -214,7 +214,7 @@ L'`id` (`a-z`, `0-9`, `-`) apparaît dans l'URL (`#/m/mac/…`). Des pastilles e
 la barre latérale basculent l'interface d'une machine à l'autre. Elles indiquent si
 chaque machine est en ligne et combien de sessions attendent une réponse. Les alertes
 des machines non affichées déclenchent aussi la notification du navigateur et le bip.
-Les routes `/api/hook` et `/api/notify` ne sont jamais relayées. Un jeton refusé ou une
+Les routes d'agents `/api/hook`, `/api/notify` et `/api/backlog` ne sont jamais relayées. Un jeton refusé ou une
 machine injoignable renvoie une erreur 502 explicite.
 
 **macOS.** [`scripts/cerebro.plist`](scripts/cerebro.plist) est un agent launchd. Adaptez
