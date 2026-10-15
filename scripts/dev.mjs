@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const procs = [
-  { name: 'server', color: 36, cmd: process.execPath, args: ['--disable-warning=ExperimentalWarning', '--watch', '--watch-preserve-output', 'server/index.ts'] },
+  { name: 'server', color: 36, cmd: process.execPath, args: ['--disable-warning=ExperimentalWarning', '--watch-path=server', '--watch-path=bin', '--watch-preserve-output', 'server/index.ts'] },
   { name: 'web', color: 35, cmd: process.execPath, args: [join(root, 'node_modules', 'vite', 'bin', 'vite.js'), '--config', 'web/vite.config.ts'] },
 ];
 
