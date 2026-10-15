@@ -1,13 +1,23 @@
+import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { createWriteStream, existsSync, openSync, closeSync, fstatSync, readSync, unlinkSync } from 'node:fs';
-import type { WriteStream } from 'node:fs';
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { createConnection } from 'node:net';
+import type { Socket } from 'node:net';
 import { join } from 'node:path';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import * as headlessPackage from '@xterm/headless';
-import * as pty from 'node-pty';
-import type { IPty } from 'node-pty';
 import { buildAgentCommand } from './agents.ts';
-import { INTERNAL_URL, LOG_DIR } from './config.ts';
+import { INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
 import type { Agent, Mode, Project, Session } from './db.ts';
 import { CerebroDatabase } from './db.ts';
 
@@ -20,28 +30,49 @@ export type SessionEvent =
   | { type: 'alert'; session: Session };
 
 export type TerminalEvent =
+  | { type: 'snapshot'; data: string }
   | { type: 'output'; data: string }
-  | { type: 'exit'; exitCode: number };
+  | { type: 'exit'; exitCode: number | null };
 
 interface Runtime {
   agent: Agent;
-  pty: IPty;
-  token: string;
+  socket: Socket | null;
   terminal: import('@xterm/headless').Terminal;
   serializer: SerializeAddon;
-  log: WriteStream;
   terminalListeners: Set<(event: TerminalEvent) => void>;
   terminalClients: number;
   focusMode: boolean;
   oscTail: string;
   idleTimer: NodeJS.Timeout | null;
   screenTimer: NodeJS.Timeout | null;
-  killTimer: NodeJS.Timeout | null;
   focusTimer: NodeJS.Timeout | null;
+  reconnecting: boolean;
+  detaching: boolean;
+  receivedExit: boolean;
+  cols: number;
+  rows: number;
+  exitWaiters: Set<() => void>;
+  lastOutputAt: number;
+}
+
+interface HolderConfig {
+  cmd: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string | undefined>;
+  cols: number;
+  rows: number;
+}
+
+interface ExitRecord {
+  exitCode: number | null;
+  signal: number | null;
+  at: number;
 }
 
 const IDLE_DELAY_MS = 20_000;
 const SCREEN_CHECK_DELAY_MS = 2_000;
+const CATCH_UP_DELAY_MS = 4_000;
 // Interactive dialogs that hooks do not report (folder trust, y/n confirmations, numbered menus...).
 const PROMPT_PATTERNS = [
   /trust (this|the) (folder|directory|files)/i,
@@ -55,6 +86,10 @@ const PROMPT_PATTERNS = [
 const FORCE_KILL_DELAY_MS = 3_000;
 const FOCUS_OUT_DELAY_MS = 1_500;
 const MAX_LOG_SNAPSHOT = 2 * 1024 * 1024;
+const HOLDER_START_TIMEOUT_MS = 10_000;
+const HOLDER_START_RETRY_MS = 100;
+const HOLDER_RECONNECT_ATTEMPTS = 3;
+const HOLDER_RECONNECT_DELAY_MS = 1_000;
 
 function titleFor(agent: Agent, prompt: string): string {
   return prompt === '' ? `${agent} session` : prompt.slice(0, 60);
@@ -94,14 +129,74 @@ function readLogTail(path: string): string {
   }
 }
 
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function removeFile(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+  }
+}
+
+function createTerminal(cols = 120, rows = 32): {
+  terminal: import('@xterm/headless').Terminal;
+  serializer: SerializeAddon;
+} {
+  const terminal = new Terminal({ allowProposedApi: true, cols, rows, scrollback: 5000 });
+  const serializer = new SerializeAddon();
+  terminal.loadAddon(serializer);
+  return { terminal, serializer };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 export class SessionManager {
   readonly db: CerebroDatabase;
   private readonly runtimes = new Map<string, Runtime>();
   private readonly eventListeners = new Set<(event: SessionEvent) => void>();
-  private readonly shutdownWaiters = new Set<() => void>();
+  private shuttingDown = false;
 
   constructor(db: CerebroDatabase) {
     this.db = db;
+  }
+
+  async initialize(): Promise<void> {
+    for (const session of this.db.listSessions()) {
+      if (session.status === 'exited') {
+        this.cleanupExitArtifacts(session.id);
+        continue;
+      }
+      if (this.db.getHookToken(session.id) === null) {
+        this.db.setHookToken(session.id, randomBytes(32).toString('hex'));
+      }
+      const runtime = this.newRuntime(session.agent);
+      this.runtimes.set(session.id, runtime);
+      if (await this.connectOnce(session.id, runtime)) {
+        // Codex always enables focus reporting, but that escape sequence predates the reattach.
+        if (session.agent === 'codex') runtime.focusMode = true;
+        if (session.status === 'idle' || session.status === 'waiting') {
+          // Keep the known state: re-alerting every idle session at each server restart would be noise.
+          // A dialog that appeared meanwhile is still caught by the screen check below.
+          this.emit({ type: 'session', session });
+        } else {
+          const running = this.db.updateSession(session.id, { status: 'running' });
+          if (running !== null) this.emit({ type: 'session', session: running });
+          this.scheduleIdleCheck(session.id);
+          this.scheduleCatchUpCheck(session.id, runtime);
+        }
+        this.scheduleImmediateScreenCheck(session.id, runtime);
+        this.scheduleFocusOut(session.id, runtime);
+        continue;
+      }
+      const exit = this.readExitRecord(session.id);
+      this.finishSession(session.id, exit?.exitCode ?? null);
+      this.cleanupExitArtifacts(session.id);
+    }
   }
 
   onEvent(listener: (event: SessionEvent) => void): () => void {
@@ -113,11 +208,11 @@ export class SessionManager {
     for (const listener of this.eventListeners) listener(event);
   }
 
-  create(project: Project, agent: Agent, mode: Mode, prompt: string): Session {
+  async create(project: Project, agent: Agent, mode: Mode, prompt: string): Promise<Session> {
     return this.launch(project, agent, mode, prompt, null);
   }
 
-  resume(id: string): Session {
+  async resume(id: string): Promise<Session> {
     const oldSession = this.db.getSession(id);
     if (oldSession === null) throw new Error('Session introuvable');
     if (oldSession.status !== 'exited') throw new Error("La session n'est pas terminée");
@@ -127,16 +222,17 @@ export class SessionManager {
     return this.launch(project, oldSession.agent, oldSession.mode, '', oldSession.agentSessionId, oldSession.id);
   }
 
-  private launch(
+  private async launch(
     project: Project,
     agent: Agent,
     mode: Mode,
     prompt: string,
     resumeSessionId: string | null,
     existingId: string | null = null,
-  ): Session {
+  ): Promise<Session> {
     const id = existingId ?? randomUUID();
     const command = buildAgentCommand(agent, mode, prompt, id, resumeSessionId);
+    const token = this.db.getHookToken(id) ?? randomBytes(32).toString('hex');
     let session: Session;
     if (existingId === null) {
       session = this.db.createSession({
@@ -148,8 +244,9 @@ export class SessionManager {
         title: titleFor(agent, prompt),
         status: 'starting',
         agentSessionId: command.agentSessionId,
-      });
+      }, token);
     } else {
+      this.db.setHookToken(id, token);
       const updated = this.db.updateSession(id, {
         status: 'starting',
         attention: false,
@@ -161,59 +258,45 @@ export class SessionManager {
     }
     this.emit({ type: 'session', session });
 
-    const token = randomBytes(32).toString('hex');
-    const terminal = new Terminal({
-      allowProposedApi: true,
+    this.cleanupLaunchArtifacts(id);
+    const configPath = this.configPath(id);
+    const config: HolderConfig = {
+      cmd: command.cmd,
+      args: command.args,
+      cwd: project.path,
+      env: ptyEnvironment(id, token),
       cols: 120,
       rows: 32,
-      scrollback: 5000,
-    });
-    const serializer = new SerializeAddon();
-    terminal.loadAddon(serializer);
-    const log = createWriteStream(join(LOG_DIR, `${id}.log`), { flags: 'a' });
+    };
+    writeFileSync(configPath, `${JSON.stringify(config)}\n`, { mode: 0o600, flag: 'wx' });
 
-    let child: IPty;
+    const runtime = this.newRuntime(agent);
+    this.runtimes.set(id, runtime);
     try {
-      child = pty.spawn(command.cmd, command.args, {
-        name: 'xterm-256color',
-        cols: 120,
-        rows: 32,
-        cwd: project.path,
-        env: ptyEnvironment(id, token),
-      });
+      spawn(process.execPath, [join(ROOT, 'server', 'holder.ts'), configPath], {
+        detached: true,
+        stdio: 'ignore',
+      }).unref();
     } catch (error) {
-      terminal.dispose();
-      log.end();
-      const failed = this.db.updateSession(id, {
-        status: 'exited',
-        attention: false,
-        attentionReason: null,
-        exitCode: 1,
-      });
-      if (failed !== null) this.emit({ type: 'session', session: failed });
-      throw error;
+      this.logHolderError(id, error);
+      removeFile(configPath);
+      return this.finishSession(id, 1) ?? session;
     }
 
-    const runtime: Runtime = {
-      agent,
-      pty: child,
-      token,
-      terminal,
-      serializer,
-      log,
-      terminalListeners: new Set(),
-      terminalClients: 0,
-      focusMode: false,
-      oscTail: '',
-      idleTimer: null,
-      screenTimer: null,
-      killTimer: null,
-      focusTimer: null,
-    };
-    this.runtimes.set(id, runtime);
-
-    child.onData((data) => this.handleOutput(id, data));
-    child.onExit(({ exitCode }) => this.handleExit(id, exitCode));
+    const deadline = Date.now() + HOLDER_START_TIMEOUT_MS;
+    let connected = false;
+    while (!connected && Date.now() < deadline) {
+      connected = await this.connectOnce(id, runtime);
+      if (!connected) {
+        const exit = this.readExitRecord(id);
+        if (exit !== null) break;
+        await delay(HOLDER_START_RETRY_MS);
+      }
+    }
+    if (!connected) {
+      this.logHolderError(id, new Error('Connexion au holder impossible après 10 secondes'));
+      return this.finishSession(id, 1) ?? session;
+    }
 
     const running = this.db.updateSession(id, { status: 'running' });
     if (running !== null) {
@@ -221,18 +304,141 @@ export class SessionManager {
       this.emit({ type: 'session', session });
     }
     this.scheduleIdleCheck(id);
-    runtime.focusTimer = setTimeout(() => {
-      runtime.focusTimer = null;
-      if (runtime.focusMode && this.runtimes.get(id) === runtime) runtime.pty.write('\x1b[O');
-    }, FOCUS_OUT_DELAY_MS);
+    this.scheduleFocusOut(id, runtime);
     return session;
+  }
+
+  private newRuntime(agent: Agent): Runtime {
+    const { terminal, serializer } = createTerminal();
+    return {
+      agent,
+      socket: null,
+      terminal,
+      serializer,
+      terminalListeners: new Set(),
+      terminalClients: 0,
+      focusMode: false,
+      oscTail: '',
+      idleTimer: null,
+      screenTimer: null,
+      focusTimer: null,
+      reconnecting: false,
+      detaching: false,
+      receivedExit: false,
+      cols: 120,
+      rows: 32,
+      exitWaiters: new Set(),
+      lastOutputAt: 0,
+    };
+  }
+
+  private connectOnce(id: string, runtime: Runtime): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (runtime.detaching || this.runtimes.get(id) !== runtime) {
+        resolve(false);
+        return;
+      }
+      const socket = createConnection(this.socketPath(id));
+      socket.setEncoding('utf8');
+      let connected = false;
+      let settled = false;
+      let input = '';
+      const settle = (value: boolean): void => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      socket.on('connect', () => {
+        if (runtime.detaching || this.runtimes.get(id) !== runtime) {
+          socket.destroy();
+          settle(false);
+          return;
+        }
+        connected = true;
+        runtime.socket?.destroy();
+        runtime.socket = socket;
+        settle(true);
+      });
+      socket.on('data', (chunk) => {
+        input += chunk;
+        let newline = input.indexOf('\n');
+        while (newline >= 0) {
+          const line = input.slice(0, newline);
+          input = input.slice(newline + 1);
+          try {
+            const message: unknown = JSON.parse(line);
+            if (isRecord(message)) this.handleHolderMessage(id, runtime, message);
+          } catch {
+            // Ignore malformed holder messages.
+          }
+          newline = input.indexOf('\n');
+        }
+      });
+      socket.on('error', () => settle(false));
+      socket.on('close', () => {
+        settle(false);
+        if (!connected || runtime.socket !== socket) return;
+        runtime.socket = null;
+        if (!runtime.detaching && !runtime.receivedExit && !this.shuttingDown) void this.reconnect(id, runtime);
+      });
+    });
+  }
+
+  private handleHolderMessage(id: string, runtime: Runtime, message: Record<string, unknown>): void {
+    if (this.runtimes.get(id) !== runtime) return;
+    if (message.type === 'hello') {
+      if (typeof message.cols === 'number' && Number.isInteger(message.cols) && message.cols > 0) runtime.cols = message.cols;
+      if (typeof message.rows === 'number' && Number.isInteger(message.rows) && message.rows > 0) runtime.rows = message.rows;
+      return;
+    }
+    if (message.type === 'snapshot' && typeof message.data === 'string') {
+      runtime.terminal.dispose();
+      const replacement = createTerminal(runtime.cols, runtime.rows);
+      runtime.terminal = replacement.terminal;
+      runtime.serializer = replacement.serializer;
+      runtime.terminal.write(message.data, () => this.scheduleImmediateScreenCheck(id, runtime));
+      if (runtime.agent === 'codex' && message.data.includes('\x1b[?1004h')) runtime.focusMode = true;
+      for (const listener of runtime.terminalListeners) listener({ type: 'snapshot', data: message.data });
+      return;
+    }
+    if (message.type === 'output' && typeof message.data === 'string') {
+      this.handleOutput(id, message.data);
+      return;
+    }
+    if (message.type === 'exit' && (typeof message.exitCode === 'number' || message.exitCode === null)) {
+      runtime.receivedExit = true;
+      const exitCode = typeof message.exitCode === 'number' ? message.exitCode : null;
+      runtime.socket?.end();
+      this.finishSession(id, exitCode);
+    }
+  }
+
+  private async reconnect(id: string, runtime: Runtime): Promise<void> {
+    if (runtime.reconnecting) return;
+    runtime.reconnecting = true;
+    try {
+      for (let attempt = 0; attempt < HOLDER_RECONNECT_ATTEMPTS; attempt += 1) {
+        const exit = this.readExitRecord(id);
+        if (exit !== null) {
+          this.finishSession(id, exit.exitCode);
+          return;
+        }
+        await delay(HOLDER_RECONNECT_DELAY_MS);
+        if (runtime.detaching || this.runtimes.get(id) !== runtime || this.shuttingDown) return;
+        if (await this.connectOnce(id, runtime)) return;
+      }
+      const exit = this.readExitRecord(id);
+      this.finishSession(id, exit?.exitCode ?? null);
+    } finally {
+      runtime.reconnecting = false;
+    }
   }
 
   private handleOutput(id: string, data: string): void {
     const runtime = this.runtimes.get(id);
     if (runtime === undefined) return;
-    runtime.log.write(data);
     runtime.terminal.write(data);
+    runtime.lastOutputAt = Date.now();
     if (runtime.agent === 'codex' && data.includes('\x1b[?1004h')) runtime.focusMode = true;
     this.inspectOsc(id, runtime, data);
     for (const listener of runtime.terminalListeners) listener({ type: 'output', data });
@@ -283,6 +489,36 @@ export class SessionManager {
         if (updated !== null) this.emit({ type: 'session', session: updated });
       }
     }, IDLE_DELAY_MS);
+  }
+
+  /**
+   * The session was working when the server went away: its end-of-turn hook may have been lost.
+   * Agents redraw constantly while working (spinners), so a quiet screen shortly after reattaching
+   * means the turn ended during the outage.
+   */
+  private scheduleCatchUpCheck(id: string, runtime: Runtime): void {
+    const reattachedAt = Date.now();
+    setTimeout(() => {
+      if (this.runtimes.get(id) !== runtime || runtime.lastOutputAt > reattachedAt) return;
+      if (this.db.getSession(id)?.status !== 'running') return;
+      this.setReliableState(id, 'idle', 'Terminé pendant la coupure du serveur');
+    }, CATCH_UP_DELAY_MS);
+  }
+
+  private scheduleImmediateScreenCheck(id: string, runtime: Runtime): void {
+    if (runtime.screenTimer !== null) clearTimeout(runtime.screenTimer);
+    runtime.screenTimer = setTimeout(() => {
+      runtime.screenTimer = null;
+      if (this.runtimes.get(id) === runtime) this.inspectScreen(id, runtime);
+    }, 0);
+  }
+
+  private scheduleFocusOut(id: string, runtime: Runtime): void {
+    if (runtime.focusTimer !== null) clearTimeout(runtime.focusTimer);
+    runtime.focusTimer = setTimeout(() => {
+      runtime.focusTimer = null;
+      if (runtime.focusMode && this.runtimes.get(id) === runtime) this.sendHolder(runtime, { type: 'input', data: '\x1b[O' });
+    }, FOCUS_OUT_DELAY_MS);
   }
 
   private visibleLines(runtime: Runtime, count = 20): string[] {
@@ -356,8 +592,7 @@ export class SessionManager {
   }
 
   tokenMatches(id: string, token: string | undefined): boolean {
-    const runtime = this.runtimes.get(id);
-    return runtime !== undefined && token !== undefined && token === runtime.token;
+    return token !== undefined && token === this.db.getHookToken(id);
   }
 
   seen(id: string): Session | null {
@@ -377,8 +612,7 @@ export class SessionManager {
 
   writeInput(id: string, data: string): boolean {
     const runtime = this.runtimes.get(id);
-    if (runtime === undefined) return false;
-    runtime.pty.write(data);
+    if (runtime === undefined || !this.sendHolder(runtime, { type: 'input', data })) return false;
     const session = this.db.getSession(id);
     if (data.includes('\r') && (session?.status === 'waiting' || session?.status === 'idle')) this.setRunning(id);
     return true;
@@ -388,9 +622,10 @@ export class SessionManager {
     const runtime = this.runtimes.get(id);
     if (runtime === undefined) return false;
     if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return false;
-    runtime.pty.resize(cols, rows);
+    runtime.cols = cols;
+    runtime.rows = rows;
     runtime.terminal.resize(cols, rows);
-    return true;
+    return this.sendHolder(runtime, { type: 'resize', cols, rows });
   }
 
   terminalSnapshot(id: string): string | null {
@@ -409,77 +644,75 @@ export class SessionManager {
       if (!runtime.terminalListeners.delete(listener)) return;
       runtime.terminalClients = Math.max(0, runtime.terminalClients - 1);
       if (runtime.terminalClients === 0 && runtime.focusMode && this.runtimes.get(id) === runtime) {
-        runtime.pty.write('\x1b[O');
+        this.sendHolder(runtime, { type: 'input', data: '\x1b[O' });
       }
     };
   }
 
   kill(id: string): boolean {
     const runtime = this.runtimes.get(id);
-    if (runtime === undefined) return false;
-    try {
-      runtime.pty.kill('SIGTERM');
-    } catch {
-      return false;
-    }
-    if (runtime.killTimer !== null) clearTimeout(runtime.killTimer);
-    runtime.killTimer = setTimeout(() => {
-      runtime.killTimer = null;
-      if (this.runtimes.get(id) !== runtime) return;
-      try {
-        runtime.pty.kill('SIGKILL');
-      } catch {
-        // The PTY may have exited between the map check and kill().
-      }
-    }, FORCE_KILL_DELAY_MS);
-    return true;
+    return runtime !== undefined && this.sendHolder(runtime, { type: 'kill', signal: 'SIGTERM' });
   }
 
   killProject(projectId: string): void {
     for (const session of this.db.listProjectSessions(projectId)) this.kill(session.id);
   }
 
-  deleteProject(projectId: string): boolean {
+  async deleteProject(projectId: string): Promise<boolean> {
     const project = this.db.getProject(projectId);
     if (project === null) return false;
     const projectSessions = this.db.listProjectSessions(projectId);
-    for (const session of projectSessions) this.kill(session.id);
+    await Promise.all(projectSessions.map((session) => this.terminate(session.id)));
     this.db.deleteProject(projectId);
     for (const session of projectSessions) {
-      try {
-        unlinkSync(join(LOG_DIR, `${session.id}.log`));
-      } catch (error) {
-        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
-      }
+      this.cleanupAllArtifacts(session.id);
       this.emit({ type: 'session-deleted', id: session.id });
     }
     return true;
   }
 
-  delete(id: string): boolean {
-    const existed = this.db.getSession(id) !== null;
-    if (!existed) return false;
-    this.kill(id);
+  async delete(id: string): Promise<boolean> {
+    if (this.db.getSession(id) === null) return false;
+    await this.terminate(id);
     this.db.deleteSession(id);
-    try {
-      unlinkSync(join(LOG_DIR, `${id}.log`));
-    } catch (error) {
-      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
-    }
+    this.cleanupAllArtifacts(id);
     this.emit({ type: 'session-deleted', id });
     return true;
   }
 
-  private handleExit(id: string, exitCode: number): void {
+  private async terminate(id: string): Promise<void> {
     const runtime = this.runtimes.get(id);
     if (runtime === undefined) return;
-    this.runtimes.delete(id);
-    if (runtime.idleTimer !== null) clearTimeout(runtime.idleTimer);
-    if (runtime.screenTimer !== null) clearTimeout(runtime.screenTimer);
-    if (runtime.killTimer !== null) clearTimeout(runtime.killTimer);
-    if (runtime.focusTimer !== null) clearTimeout(runtime.focusTimer);
-    runtime.log.end();
-    runtime.terminal.dispose();
+    const exited = new Promise<void>((resolve) => runtime.exitWaiters.add(resolve));
+    const killDeadline = Date.now() + HOLDER_RECONNECT_ATTEMPTS * HOLDER_RECONNECT_DELAY_MS + 500;
+    let killSent = this.kill(id);
+    while (!killSent && this.runtimes.get(id) === runtime && Date.now() < killDeadline) {
+      await delay(HOLDER_START_RETRY_MS);
+      killSent = this.kill(id);
+    }
+    let timeout: NodeJS.Timeout | undefined;
+    await Promise.race([
+      exited,
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, FORCE_KILL_DELAY_MS + 1_000);
+      }),
+    ]);
+    if (timeout !== undefined) clearTimeout(timeout);
+    runtime.exitWaiters.clear();
+    if (this.runtimes.get(id) === runtime) this.detachRuntime(id, runtime);
+  }
+
+  private finishSession(id: string, exitCode: number | null): Session | null {
+    const runtime = this.runtimes.get(id);
+    if (runtime !== undefined) {
+      this.runtimes.delete(id);
+      runtime.receivedExit = true;
+      runtime.detaching = true;
+      this.clearRuntimeTimers(runtime);
+      runtime.socket?.destroy();
+      runtime.socket = null;
+      runtime.terminal.dispose();
+    }
     const updated = this.db.updateSession(id, {
       status: 'exited',
       exitCode,
@@ -487,50 +720,109 @@ export class SessionManager {
       attentionReason: null,
     });
     if (updated !== null) this.emit({ type: 'session', session: updated });
-    for (const listener of runtime.terminalListeners) listener({ type: 'exit', exitCode });
-    if (this.runtimes.size === 0) {
-      for (const resolve of this.shutdownWaiters) resolve();
-      this.shutdownWaiters.clear();
+    if (runtime !== undefined) {
+      for (const listener of runtime.terminalListeners) listener({ type: 'exit', exitCode });
+      for (const resolve of runtime.exitWaiters) resolve();
+      runtime.exitWaiters.clear();
+    }
+    return updated;
+  }
+
+  private sendHolder(runtime: Runtime, message: unknown): boolean {
+    if (runtime.socket === null || runtime.socket.destroyed || !runtime.socket.writable) return false;
+    runtime.socket.write(`${JSON.stringify(message)}\n`);
+    return true;
+  }
+
+  private detachRuntime(id: string, runtime: Runtime): void {
+    if (this.runtimes.get(id) === runtime) this.runtimes.delete(id);
+    runtime.detaching = true;
+    this.clearRuntimeTimers(runtime);
+    runtime.socket?.destroy();
+    runtime.socket = null;
+    runtime.terminal.dispose();
+    for (const resolve of runtime.exitWaiters) resolve();
+    runtime.exitWaiters.clear();
+  }
+
+  private clearRuntimeTimers(runtime: Runtime): void {
+    if (runtime.idleTimer !== null) clearTimeout(runtime.idleTimer);
+    if (runtime.screenTimer !== null) clearTimeout(runtime.screenTimer);
+    if (runtime.focusTimer !== null) clearTimeout(runtime.focusTimer);
+    runtime.idleTimer = null;
+    runtime.screenTimer = null;
+    runtime.focusTimer = null;
+  }
+
+  private readExitRecord(id: string): ExitRecord | null {
+    try {
+      const value: unknown = JSON.parse(readFileSync(this.exitPath(id), 'utf8'));
+      if (!isRecord(value)) return null;
+      return {
+        exitCode: typeof value.exitCode === 'number' ? value.exitCode : null,
+        signal: typeof value.signal === 'number' ? value.signal : null,
+        at: typeof value.at === 'number' ? value.at : 0,
+      };
+    } catch {
+      return null;
     }
   }
 
+  private cleanupLaunchArtifacts(id: string): void {
+    removeFile(this.configPath(id));
+    removeFile(this.socketPath(id));
+    removeFile(this.exitPath(id));
+  }
+
+  private cleanupExitArtifacts(id: string): void {
+    removeFile(this.configPath(id));
+    removeFile(this.socketPath(id));
+    removeFile(this.exitPath(id));
+  }
+
+  private cleanupAllArtifacts(id: string): void {
+    this.cleanupExitArtifacts(id);
+    removeFile(this.holderLogPath(id));
+    removeFile(join(LOG_DIR, `${id}.log`));
+  }
+
+  private configPath(id: string): string {
+    return join(SESSIONS_DIR, `${id}.config.json`);
+  }
+
+  private socketPath(id: string): string {
+    return join(SESSIONS_DIR, `${id}.sock`);
+  }
+
+  private exitPath(id: string): string {
+    return join(SESSIONS_DIR, `${id}.exit.json`);
+  }
+
+  private holderLogPath(id: string): string {
+    return join(SESSIONS_DIR, `${id}.holder.log`);
+  }
+
+  private logHolderError(id: string, error: unknown): void {
+    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    appendFileSync(this.holderLogPath(id), `${new Date().toISOString()} ${message}\n`, { mode: 0o600 });
+  }
+
   async shutdown(): Promise<void> {
-    if (this.runtimes.size === 0) return;
-
-    let resolveExited = (): void => {};
-    const exited = new Promise<void>((resolve) => {
-      resolveExited = resolve;
-      this.shutdownWaiters.add(resolve);
-    });
-    for (const id of [...this.runtimes.keys()]) this.kill(id);
-
-    let deadline: NodeJS.Timeout | undefined;
-    const timedOut = new Promise<void>((resolve) => {
-      deadline = setTimeout(resolve, FORCE_KILL_DELAY_MS + 500);
-    });
-    await Promise.race([exited, timedOut]);
-    if (deadline !== undefined) clearTimeout(deadline);
-    this.shutdownWaiters.delete(resolveExited);
-
-    // A broken PTY must not prevent the server from closing its database forever.
-    for (const [id, runtime] of this.runtimes) {
-      this.runtimes.delete(id);
-      if (runtime.idleTimer !== null) clearTimeout(runtime.idleTimer);
-      if (runtime.screenTimer !== null) clearTimeout(runtime.screenTimer);
-      if (runtime.killTimer !== null) clearTimeout(runtime.killTimer);
-      if (runtime.focusTimer !== null) clearTimeout(runtime.focusTimer);
-      try {
-        runtime.pty.kill('SIGKILL');
-      } catch {
-        // The process may have exited just before the forced shutdown.
-      }
-      runtime.log.end();
-      runtime.terminal.dispose();
-      this.db.updateSession(id, {
-        status: 'exited',
-        attention: false,
-        attentionReason: null,
-      });
+    if (KILL_ON_EXIT) {
+      const pending = [...this.runtimes.keys()].map((id) => this.terminate(id));
+      let timeout: NodeJS.Timeout | undefined;
+      await Promise.race([
+        Promise.all(pending),
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(
+            resolve,
+            HOLDER_RECONNECT_ATTEMPTS * HOLDER_RECONNECT_DELAY_MS + FORCE_KILL_DELAY_MS + 2_000,
+          );
+        }),
+      ]);
+      if (timeout !== undefined) clearTimeout(timeout);
     }
+    this.shuttingDown = true;
+    for (const [id, runtime] of [...this.runtimes]) this.detachRuntime(id, runtime);
   }
 }

@@ -5,10 +5,10 @@
   "type": "module",
   "description": "Pilote des sessions Claude / Codex / Grok par projet, depuis une UI web locale.",
   "scripts": {
-    "dev": "node --watch server/index.ts & vite --config web/vite.config.ts",
+    "dev": "node scripts/dev.mjs",
     "build": "vite build --config web/vite.config.ts",
-    "start": "node server/index.ts",
-    "start:prod": "npm run build && node server/index.ts",
+    "start": "node --disable-warning=ExperimentalWarning server/index.ts",
+    "start:prod": "npm run build && npm start",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

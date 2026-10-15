@@ -119,6 +119,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   const eventSockets = new Set<WebSocket>();
 
   installGrokHook();
+  await sessions.initialize();
   await app.register(fastifyWebsocket);
 
   app.addHook('onRequest', async (request, reply) => {
@@ -194,7 +195,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   app.delete<{ Params: { id: string } }>('/api/projects/:id', async (request, reply) => {
-    if (!sessions.deleteProject(request.params.id)) return error(reply, 404, 'Projet introuvable');
+    if (!await sessions.deleteProject(request.params.id)) return error(reply, 404, 'Projet introuvable');
     const projects = db.listProjects();
     for (const socket of eventSockets) sendSocket(socket, { type: 'projects', projects });
     return reply.code(204).send();
@@ -220,7 +221,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       return error(reply, 400, 'agent, mode ou prompt invalide');
     }
     try {
-      return reply.code(201).send(sessions.create(project, body.agent, body.mode, body.prompt));
+      return reply.code(201).send(await sessions.create(project, body.agent, body.mode, body.prompt));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'Impossible de lancer la session';
       return error(reply, 500, message);
@@ -237,7 +238,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post<{ Params: { id: string } }>('/api/sessions/:id/resume', async (request, reply) => {
     if (db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');
     try {
-      return reply.send(sessions.resume(request.params.id));
+      return reply.send(await sessions.resume(request.params.id));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'Impossible de reprendre la session';
       return error(reply, 409, message);
@@ -266,7 +267,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   app.delete<{ Params: { id: string } }>('/api/sessions/:id', async (request, reply) => {
-    if (!sessions.delete(request.params.id)) return error(reply, 404, 'Session introuvable');
+    if (!await sessions.delete(request.params.id)) return error(reply, 404, 'Session introuvable');
     return reply.code(204).send();
   });
 

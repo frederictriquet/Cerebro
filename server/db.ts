@@ -49,6 +49,7 @@ interface SessionRow {
   attention_reason: string | null;
   agent_session_id: string | null;
   exit_code: number | null;
+  hook_token: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -100,19 +101,17 @@ export class CerebroDatabase {
         attention_reason TEXT,
         agent_session_id TEXT,
         exit_code INTEGER,
+        hook_token TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS sessions_project_id ON sessions(project_id);
       CREATE INDEX IF NOT EXISTS sessions_updated_at ON sessions(updated_at DESC);
     `);
-
-    const now = Date.now();
-    this.connection.prepare(`
-      UPDATE sessions
-      SET status = 'exited', attention = 0, attention_reason = NULL, updated_at = ?
-      WHERE status != 'exited'
-    `).run(now);
+    const columns = this.connection.prepare('PRAGMA table_info(sessions)').all() as unknown as { name: string }[];
+    if (!columns.some((column) => column.name === 'hook_token')) {
+      this.connection.exec('ALTER TABLE sessions ADD COLUMN hook_token TEXT');
+    }
   }
 
   listProjects(): Project[] {
@@ -160,7 +159,10 @@ export class CerebroDatabase {
     return row === undefined ? null : sessionFromRow(row);
   }
 
-  createSession(input: Pick<Session, 'id' | 'projectId' | 'agent' | 'mode' | 'prompt' | 'title' | 'status' | 'agentSessionId'>): Session {
+  createSession(
+    input: Pick<Session, 'id' | 'projectId' | 'agent' | 'mode' | 'prompt' | 'title' | 'status' | 'agentSessionId'>,
+    hookToken: string,
+  ): Session {
     const now = Date.now();
     const session: Session = {
       ...input,
@@ -173,14 +175,24 @@ export class CerebroDatabase {
     this.connection.prepare(`
       INSERT INTO sessions (
         id, project_id, agent, mode, prompt, title, status, attention,
-        attention_reason, agent_session_id, exit_code, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        attention_reason, agent_session_id, exit_code, hook_token, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       session.id, session.projectId, session.agent, session.mode, session.prompt,
-      session.title, session.status, 0, null, session.agentSessionId, null,
+      session.title, session.status, 0, null, session.agentSessionId, null, hookToken,
       session.createdAt, session.updatedAt,
     );
     return session;
+  }
+
+  getHookToken(id: string): string | null {
+    const row = this.connection.prepare('SELECT hook_token FROM sessions WHERE id = ?').get(id) as unknown as
+      { hook_token: string | null } | undefined;
+    return row?.hook_token ?? null;
+  }
+
+  setHookToken(id: string, hookToken: string): boolean {
+    return Number(this.connection.prepare('UPDATE sessions SET hook_token = ? WHERE id = ?').run(hookToken, id).changes) > 0;
   }
 
   updateSession(id: string, changes: Partial<Pick<Session, 'title' | 'status' | 'attention' | 'attentionReason' | 'agentSessionId' | 'exitCode'>>): Session | null {

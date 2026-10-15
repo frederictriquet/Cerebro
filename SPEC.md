@@ -229,3 +229,66 @@ fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jso
   tous les projets triées par attention puis date, et bouton créer un projet si aucun.
 - Responsive : en dessous de 800 px, la barre latérale devient un tiroir (bouton menu) et le terminal prend toute la largeur.
 - Si une requête reçoit 401, afficher un écran « Token requis » avec un champ qui recharge `/?token=…`.
+
+---
+
+# Lot 3 : sessions persistantes (survivent à l'arrêt/redémarrage du serveur)
+
+Objectif : arrêter, redémarrer ou faire crasher le serveur ne doit **plus** tuer les agents. Seuls « Arrêter »,
+« Supprimer » (session ou projet) ou la fin naturelle de l'agent terminent une session.
+
+## Processus « holder » (server/holder.ts)
+
+Un processus Node **détaché par session** possède le PTY. Lancé par le serveur via
+`spawn(process.execPath, [join(ROOT,'server','holder.ts'), configPath], { detached: true, stdio: 'ignore' }).unref()`
+(stdio ignoré ; les erreurs du holder vont dans `DATA_DIR/sessions/<id>.holder.log`).
+
+Fichiers par session dans `DATA_DIR/sessions/` (répertoire créé en 0700) :
+- `<id>.config.json` (0600) : `{cmd, args, cwd, env, cols, rows}` écrit par le serveur, lu **puis supprimé** par le holder
+  (le token de hook ne doit pas traîner sur le disque ni apparaître dans `ps`).
+- `<id>.sock` : socket Unix d'écoute du holder (supprimer un socket orphelin avant `listen`).
+- `<id>.exit.json` : `{exitCode, signal, at}` écrit par le holder quand l'agent se termine.
+- Le log brut reste `LOG_DIR/<id>.log`, **écrit par le holder** (ainsi rien n'est perdu pendant que le serveur est arrêté).
+
+Le holder :
+- lance l'agent avec node-pty, maintient un terminal `@xterm/headless` (scrollback 5000) + `SerializeAddon` ;
+- accepte **un** client à la fois sur le socket (un nouveau client remplace l'ancien) ; protocole = JSON délimité par `\n` :
+  - holder → client : à la connexion `{type:'hello', pid, cols, rows}` puis `{type:'snapshot', data}` (sérialisation),
+    ensuite `{type:'output', data}` en flux et `{type:'exit', exitCode, signal}` ;
+  - client → holder : `{type:'input', data}`, `{type:'resize', cols, rows}` (PTY + headless), `{type:'kill', signal}`
+    (SIGTERM puis SIGKILL 3 s plus tard si toujours vivant) ;
+- à la sortie de l'agent : écrit `<id>.exit.json`, envoie `exit` au client s'il y en a un, attend jusqu'à 5 s qu'il se
+  déconnecte, puis supprime le socket et se termine. Si aucun client n'est connecté, il se termine aussi (le fichier exit suffit).
+- ignore SIGHUP/SIGINT (il ne doit pas mourir avec le terminal ou le groupe de processus du serveur — `detached: true` crée
+  une nouvelle session, vérifier que Ctrl+C sur `npm run dev` ne le tue pas).
+
+## Serveur (sessions.ts)
+
+- `launch` : écrit le fichier config, démarre le holder, puis se connecte au socket (réessais toutes les 100 ms, 10 s max ;
+  échec → session `exited`, exitCode 1, erreur loggée). Le `Runtime` ne contient plus d'`IPty` mais une connexion au holder ;
+  le serveur garde son **propre** terminal headless (nécessaire pour `inspectScreen` / `screenText` / snapshot ws) :
+  à chaque `snapshot` reçu du holder, il recrée ce terminal et y écrit le snapshot, puis applique les `output`.
+  OSC 9, focus 1004, minuteurs d'inactivité/écran : inchangés, alimentés par les `output` du holder.
+- Le token de hook devient persistant : nouvelle colonne `hook_token` dans `sessions` (migration `ALTER TABLE` si absente),
+  jamais exposée dans l'API ni dans les messages ws.
+- **Démarrage du serveur** : remplacer « tout passer à exited » par une réconciliation : pour chaque session non `exited`,
+  se connecter à `<id>.sock` ; si OK → réattacher (statut `running`, puis la détection d'écran/hook reprend ; programmer
+  aussitôt une `inspectScreen`) ; sinon si `<id>.exit.json` existe → `exited` avec ce code ; sinon → `exited` (exitCode null).
+  Nettoyer les fichiers sock/exit des sessions terminées.
+- Si la connexion au holder se coupe sans message `exit` (holder tué) : vérifier `exit.json`, sinon tenter une reconnexion
+  (3 essais espacés de 1 s), sinon `exited`.
+- `kill` → message `kill` au holder. `shutdown()` (SIGINT/SIGTERM du serveur) : **ne tue plus les agents**, ferme seulement
+  les connexions et la base.
+- Supprimer une session/projet : kill puis suppression des fichiers `sessions/<id>.*` et du log.
+- Option `CEREBRO_KILL_ON_EXIT=1` pour retrouver l'ancien comportement (tuer les agents à l'arrêt du serveur).
+
+## README
+
+Mettre à jour : les sessions survivent au redémarrage du serveur ; comment lister/tuer les holders orphelins à la main
+(`pgrep -af server/holder.ts`) ; `CEREBRO_KILL_ON_EXIT`.
+
+## Vérification attendue
+
+`npx tsc --noEmit -p tsconfig.json`. Le bac à sable codex interdit les sockets réseau ; les sockets Unix dans un dossier
+du workspace peuvent fonctionner : tester si possible avec `CEREBRO_DATA_DIR=./.data/test` et un agent factice
+(ex. `bash`), sinon le signaler.

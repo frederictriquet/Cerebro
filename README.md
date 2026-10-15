@@ -3,7 +3,8 @@
 Cerebro est une application web locale qui centralise des sessions interactives de
 Claude Code, Codex et Grok. Les sessions sont regroupées par projet, restent
 pilotables dans un terminal web et signalent les demandes de confirmation ou la fin
-d'un tour.
+d'un tour. Chaque agent est hébergé dans un processus détaché : les sessions en
+cours survivent à l'arrêt, au redémarrage ou au crash du serveur Cerebro.
 
 ## Prérequis
 
@@ -34,14 +35,21 @@ npm run dev
 |---|---:|---|
 | `CEREBRO_HOST` | `127.0.0.1` | Adresse d'écoute du serveur. |
 | `CEREBRO_PORT` | `4317` | Port HTTP et WebSocket. |
-| `CEREBRO_DATA_DIR` | `~/.cerebro` | Base SQLite, journaux de terminal et `hooks.jsonl`. |
+| `CEREBRO_DATA_DIR` | `~/.cerebro` | Base SQLite, sockets des holders, journaux de terminal et `hooks.jsonl`. |
 | `CEREBRO_BIND_TOKEN` | non défini | Protège les API et WebSockets lorsqu'un accès réseau est nécessaire. |
+| `CEREBRO_KILL_ON_EXIT` | non défini | Avec la valeur `1`, tue les agents lorsque le serveur s'arrête (ancien comportement). |
 
 Pour une écoute sur le réseau local, définissez un secret robuste en même temps que
 `CEREBRO_HOST=0.0.0.0`. Ouvrez d'abord `http://hote:4317/?token=SECRET` : Cerebro
 enregistre le secret dans un cookie `httpOnly` et `SameSite=Strict`. Les clients API
 peuvent aussi utiliser `?token=SECRET` ou l'en-tête
 `Authorization: Bearer SECRET`. Les hooks d'agents conservent leur jeton propre.
+
+Les PTY restent attachés à des processus `server/holder.ts` indépendants. Au
+redémarrage, le serveur retrouve les sockets dans
+`$CEREBRO_DATA_DIR/sessions/`, restaure l'écran du terminal et reprend la
+détection d'attente. Le journal brut continue d'être écrit pendant toute
+l'indisponibilité du serveur.
 
 ## Détection de l'attente
 
@@ -96,8 +104,9 @@ utilisateur sans session ouverte, l'administrateur peut activer le linger avec
 
 - Les TUI évoluent : la détection visuelle peut manquer un nouveau dialogue ou
   prendre un texte ressemblant à une question pour une confirmation.
-- Une session en cours ne survit pas au redémarrage du serveur ; elle est marquée
-  terminée. La reprise dépend de l'identifiant de session fourni par l'agent.
+- Un holder tué brutalement ne peut pas préserver son PTY ; la session est marquée
+  terminée après les tentatives de reconnexion. La reprise dépend alors de
+  l'identifiant de session fourni par l'agent.
 - Les notifications OSC de Codex dépendent aussi de sa gestion du focus terminal.
 - Cerebro est conçu pour un utilisateur de confiance. Un jeton protège l'accès
   réseau, mais ne remplace pas TLS ni un reverse proxy correctement configuré.
@@ -114,3 +123,16 @@ non détectée. Avec systemd, consultez aussi les logs avec :
 ```sh
 journalctl --user -u cerebro.service -f
 ```
+
+Les erreurs propres aux holders se trouvent dans
+`$CEREBRO_DATA_DIR/sessions/<id>.holder.log`. Pour repérer des holders devenus
+orphelins d'une base supprimée ou déplacée :
+
+```sh
+pgrep -af server/holder.ts
+```
+
+Après avoir vérifié les identifiants affichés, envoyez `SIGTERM` uniquement aux
+PID concernés avec `kill <pid>`. Pour revenir globalement au comportement où
+l'arrêt de Cerebro termine toutes les sessions, définissez
+`CEREBRO_KILL_ON_EXIT=1` dans l'environnement du serveur.
