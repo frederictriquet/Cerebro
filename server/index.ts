@@ -15,6 +15,7 @@ import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED 
 import { CerebroDatabase } from './db.ts';
 import type { Agent, Mode } from './db.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
+import { registerRemoteGateway } from './remotes.ts';
 import { SessionManager } from './sessions.ts';
 import { SlackNotifier } from './slack.ts';
 
@@ -151,13 +152,15 @@ export async function buildServer(): Promise<FastifyInstance> {
     const path = request.url.split('?', 1)[0] ?? request.url;
     const protectedRoute = (path.startsWith('/api/')
       && !path.startsWith('/api/hook/')
-      && !path.startsWith('/api/notify/')) || path.startsWith('/ws/');
+      && !path.startsWith('/api/notify/')) || path.startsWith('/ws/') || path.startsWith('/m/');
     if (BIND_TOKEN === undefined || !protectedRoute) return;
     const authorized = tokenMatches(queryToken)
       || tokenMatches(bearerToken(request.headers.authorization))
       || tokenMatches(cookieValue(request.headers.cookie, 'cerebro_token'));
     if (!authorized) return error(reply, 401, 'Token requis');
   });
+
+  registerRemoteGateway(app);
 
   app.addHook('onClose', async () => {
     notifier.stop();
@@ -449,7 +452,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     await app.register(fastifyStatic, { root: webDist });
   }
   app.setNotFoundHandler((request, reply) => {
-    if (request.url.startsWith('/api/') || request.url.startsWith('/ws/')) {
+    if (request.url.startsWith('/api/') || request.url.startsWith('/ws/') || request.url.startsWith('/m/')) {
       return error(reply, 404, 'Route introuvable');
     }
     if (existsSync(join(webDist, 'index.html')) && 'sendFile' in reply) return reply.sendFile('index.html');

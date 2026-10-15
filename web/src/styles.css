@@ -81,6 +81,69 @@ textarea {
   overflow: auto;
 }
 
+.machine-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.machine-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 3px 8px 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--muted);
+  text-decoration: none;
+  line-height: 1.2;
+}
+
+.machine-pill:hover {
+  text-decoration: none;
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.machine-pill.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+
+.machine-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--exited);
+  flex: 0 0 auto;
+}
+
+.machine-dot.on {
+  background: var(--running);
+}
+
+.machine-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.machine-badge {
+  background: var(--bg);
+  color: var(--waiting);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .sidebar-head {
   display: flex;
   align-items: center;
@@ -1258,3 +1321,4 @@ a.btn:hover {
   padding: 6px 8px;
   margin: 0;
 }
+

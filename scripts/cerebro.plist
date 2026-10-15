@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Agent launchd macOS : à copier dans ~/Library/LaunchAgents/ après avoir adapté les chemins. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>tech.cerebro</string>
+  <key>WorkingDirectory</key>
+  <string>/chemin/vers/cerebro</string>
+  <!-- Shell de connexion : charge le PATH (node, claude, codex, grok). caffeinate -s empêche
+       la mise en veille sur secteur tant que Cerebro tourne. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>exec caffeinate -s node --disable-warning=ExperimentalWarning server/index.ts</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/tmp/cerebro.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/cerebro.log</string>
+</dict>
+</plist>

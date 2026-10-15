@@ -35,6 +35,8 @@ export default defineConfig({
     proxy: {
       '/api': { target: api },
       '/ws': { target: api, ws: true, configure: quietWsDisconnects },
+      // Passerelle vers les machines distantes (regex : un préfixe '/m' capterait aussi /main.tsx…).
+      '^/m/': { target: api, ws: true, configure: quietWsDisconnects },
     },
   },
 });

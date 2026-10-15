@@ -1,4 +1,4 @@
-import type { Route } from './route.ts';
+import { href, type Route } from './route.ts';
 import { useStore } from './store.tsx';
 
 export function ProjectTabs({ route }: { route: Route }) {
@@ -29,7 +29,7 @@ export function ProjectTabs({ route }: { route: Route }) {
           <a
             key={project.id}
             className={`project-tab${active ? ' active' : ''}${alerts.length > 0 ? ` alert ${alertTone}` : ''}`}
-            href={`#/p/${project.id}`}
+            href={href(`#/p/${project.id}`)}
             aria-current={active ? 'page' : undefined}
             title={alertLabel ? `${project.path}\n${alertLabel}` : project.path}
           >

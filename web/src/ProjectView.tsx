@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type 
 import { api, clipboardImage, uploadProjectImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
 import { AGENT_LABEL, isAwaiting, MODE_LABEL, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
-import { go, useNow } from './route.ts';
+import { go, href, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 import { StatusDot } from './StatusDot.tsx';
@@ -122,7 +122,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
     return (
       <div className="pane padded">
         <p className="empty-hint">Projet introuvable.</p>
-        <a href="#/">Retour</a>
+        <a href={href('#/')}>Retour</a>
       </div>
     );
   }
@@ -395,7 +395,7 @@ function SessionRow({
   return (
     <li className="session-row" {...(awaiting ? preview.hoverProps : {})}>
       <div className="session-row-main">
-        <a href={`#/s/${session.id}`} className="session-main">
+        <a href={href(`#/s/${session.id}`)} className="session-main">
           <StatusDot status={session.status} title={STATUS_LABEL[session.status]} />
           <span className="session-row-title">{sessionTitle(session.title)}</span>
           <span className="pill">{AGENT_LABEL[session.agent]}</span>
@@ -419,7 +419,7 @@ function SessionRow({
                 </button>
               </>
             ) : null}
-            <a className="btn" href={`#/s/${session.id}`}>
+            <a className="btn" href={href(`#/s/${session.id}`)}>
               Ouvrir
             </a>
             <PreviewButton pressed={preview.open} onToggle={preview.toggle} anchorRef={anchorRef} />

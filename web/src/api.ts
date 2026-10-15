@@ -1,5 +1,14 @@
 const unauthorizedListeners = new Set<() => void>();
 let unauthorized = false;
+let base = '';
+
+export function setApiBase(machineId: string | null): void {
+  base = machineId === null || machineId === 'local' ? '' : `/m/${machineId}`;
+}
+
+export function apiBase(): string {
+  return base;
+}
 
 export function subscribeUnauthorized(listener: () => void): () => void {
   unauthorizedListeners.add(listener);
@@ -32,12 +41,12 @@ function errorMessage(parsed: unknown): string | null {
   return null;
 }
 
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(url: string, local: boolean, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body !== undefined && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
-  const res = await fetch(path, { ...init, headers });
+  const res = await fetch(url, { ...init, headers });
   const text = await res.text();
   let parsed: unknown;
   if (text.length > 0) {
@@ -48,15 +57,30 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     }
   }
   if (!res.ok) {
-    if (res.status === 401) notifyUnauthorized();
+    // Un 401 relayé ne doit pas ouvrir l'écran « Token requis » de la machine locale.
+    if (res.status === 401 && local) notifyUnauthorized();
     throw new ApiError(res.status, errorMessage(parsed) ?? res.statusText);
   }
   return parsed as T;
 }
 
-export function wsUrl(path: string): string {
+export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const local = base === '';
+  return request<T>(`${base}${path}`, local, init);
+}
+
+export interface MachinesInfo {
+  local: { name: string };
+  remotes: { id: string; name: string }[];
+}
+
+export function getMachines(): Promise<MachinesInfo> {
+  return request<MachinesInfo>('/api/machines', true);
+}
+
+export function wsUrl(path: string, machineBase = base): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}${path}`;
+  return `${proto}//${window.location.host}${machineBase}${path}`;
 }
 
 export function clipboardImage(data: DataTransfer | null): File | null {

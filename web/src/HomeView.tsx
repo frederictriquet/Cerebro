@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { AGENT_LABEL, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
-import { go, useNow } from './route.ts';
+import { go, href, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
@@ -94,7 +94,7 @@ export function HomeView() {
               return (
                 <li key={session.id} className="session-row">
                   <div className="session-row-main">
-                    <a href={`#/s/${session.id}`} className="session-main">
+                    <a href={href(`#/s/${session.id}`)} className="session-main">
                       <StatusDot status={session.status} title={STATUS_LABEL[session.status]} />
                       <span className="session-row-title">{sessionTitle(session.title)}</span>
                       <span className="pill">{AGENT_LABEL[session.agent]}</span>
@@ -108,7 +108,7 @@ export function HomeView() {
                     ) : null}
                   </div>
                   {project ? (
-                    <a className="meta project-jump" href={`#/p/${project.id}`}>
+                    <a className="meta project-jump" href={href(`#/p/${project.id}`)}>
                       {project.name}
                     </a>
                   ) : null}

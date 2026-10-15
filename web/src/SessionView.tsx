@@ -10,7 +10,7 @@ import {
 import { clipboardImage, uploadImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
 import { AGENT_LABEL, MODE_LABEL, STATUS_LABEL, sessionTitle } from './format.ts';
-import { go } from './route.ts';
+import { go, href } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { Term, type TermApi } from './Term.tsx';
@@ -319,7 +319,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     return (
       <div className="pane padded">
         <p className="empty-hint">Session introuvable.</p>
-        <a href="#/">Retour</a>
+        <a href={href('#/')}>Retour</a>
       </div>
     );
   }
@@ -347,7 +347,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             <span className="pill">{MODE_LABEL[session.mode]}</span>
             <span className={`pill status ${session.status}`}>{STATUS_LABEL[session.status]}</span>
             {project ? (
-              <a className="project-crumb" href={`#/p/${project.id}`}>
+              <a className="project-crumb" href={href(`#/p/${project.id}`)}>
                 {project.name}
               </a>
             ) : null}

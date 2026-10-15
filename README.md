@@ -42,6 +42,7 @@ npm run dev
 | `CEREBRO_SLACK_USER` | non défini | ID Slack (`U…`) du destinataire des messages privés. |
 | `CEREBRO_SLACK_ALERTS` | `all` | Alertes automatiques : `all`, `waiting` (questions et confirmations seulement) ou `off`. |
 | `CEREBRO_SLACK_DELAY` | `30` | Délai en secondes avant une alerte automatique. |
+| `CEREBRO_MACHINE_NAME` | nom d'hôte | Nom de la machine dans le sélecteur multi-machines. |
 | `CEREBRO_PUBLIC_URL` | `http://${CEREBRO_HOST}:${CEREBRO_PORT}` | Base des liens « Ouvrir dans Cerebro » envoyés sur Slack. |
 
 Pour une écoute sur le réseau local, définissez un secret robuste en même temps que
@@ -130,6 +131,49 @@ sont supprimées avec la session (PNG, JPEG, GIF, WebP, 20 Mo maximum).
 
 Le mode `bypass` désactive des protections importantes de l'agent. Il ne doit être
 utilisé que dans un environnement maîtrisé.
+
+## Plusieurs machines
+
+Un Cerebro peut piloter les sessions d'autres instances, par exemple celle d'un MacBook
+resté à la maison. Le serveur local sert de passerelle : il relaie `/m/<id>/api/*` et
+`/m/<id>/ws/*` vers l'instance distante en ajoutant le jeton de celle-ci, qui ne quitte
+jamais le serveur. Chaque machine garde ses agents, sa base et son intégration Slack.
+
+**Réseau : Tailscale.** Installez [Tailscale](https://tailscale.com) sur chaque machine
+avec le même compte, activez MagicDNS, puis sur chaque machine :
+
+```sh
+# ~/.cerebro/env (chmod 600) : CEREBRO_BIND_TOKEN=<secret robuste>
+tailscale serve --bg 4317
+```
+
+Cerebro reste à l'écoute sur `127.0.0.1`, et Tailscale l'expose en HTTPS sur
+`https://<machine>.<tailnet>.ts.net`, uniquement pour vos appareils. L'URL est la même
+sur le réseau local et à l'extérieur, aucun port n'est ouvert sur la box, et un
+téléphone avec Tailscale y accède aussi. Renseignez cette URL dans `CEREBRO_PUBLIC_URL`
+pour que les liens Slack fonctionnent partout.
+
+**Déclarer les machines distantes** dans `$CEREBRO_DATA_DIR/remotes.json` (`chmod 600`,
+relu à chaque requête, sans redémarrage) :
+
+```json
+[
+  { "id": "mac", "name": "MacBook", "url": "https://macbook.tailnet.ts.net", "token": "<CEREBRO_BIND_TOKEN du Mac>" }
+]
+```
+
+L'`id` (`a-z`, `0-9`, `-`) apparaît dans l'URL (`#/m/mac/…`). Des pastilles en haut de
+la barre latérale basculent l'interface d'une machine à l'autre. Elles indiquent si
+chaque machine est en ligne et combien de sessions attendent une réponse. Les alertes
+des machines non affichées déclenchent aussi la notification du navigateur et le bip.
+Les routes `/api/hook` et `/api/notify` ne sont jamais relayées. Un jeton refusé ou une
+machine injoignable renvoie une erreur 502 explicite.
+
+**macOS.** [`scripts/cerebro.plist`](scripts/cerebro.plist) est un agent launchd. Adaptez
+`WorkingDirectory`, copiez-le dans `~/Library/LaunchAgents/`, puis lancez
+`launchctl load ~/Library/LaunchAgents/cerebro.plist`. Il démarre Cerebro sous
+`caffeinate -s`, qui empêche la veille sur secteur. Un MacBook capot fermé sans écran
+externe se met tout de même en veille et devient injoignable.
 
 ## Service systemd utilisateur
 

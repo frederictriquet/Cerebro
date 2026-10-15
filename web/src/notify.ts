@@ -1,4 +1,4 @@
-import { parseHash } from './route.ts';
+import { parseHash, parseMachine } from './route.ts';
 import type { Session } from './types.ts';
 
 const MUTE_KEY = 'cerebro.mute';
@@ -29,25 +29,33 @@ export function armNotificationPermission(): void {
   window.addEventListener('pointerdown', once, { once: true });
 }
 
-export function sessionIsOpenAndVisible(id: string): boolean {
+export function sessionIsOpenAndVisible(id: string, machineId?: string | null): boolean {
   if (document.visibilityState !== 'visible') return false;
   const route = parseHash(window.location.hash);
-  return route.kind === 'session' && route.sessionId === id;
+  if (route.kind !== 'session' || route.sessionId !== id) return false;
+  if (machineId === undefined) return true;
+  return parseMachine(window.location.hash) === machineId;
 }
 
-export function showAlertNotification(session: Session): void {
-  if (sessionIsOpenAndVisible(session.id)) return;
+function sessionHash(sessionId: string, machineId: string | null): string {
+  return machineId === null ? `#/s/${sessionId}` : `#/m/${machineId}/s/${sessionId}`;
+}
+
+export function showAlertNotification(session: Session, machineId?: string | null): void {
+  // Sans machine explicite : celle affichée (le store ne passe pas l'id).
+  const target = machineId === undefined ? parseMachine(window.location.hash) : machineId;
+  if (sessionIsOpenAndVisible(session.id, target)) return;
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
   const reason = session.attentionReason ?? '';
   const body = [reason, session.title].filter((p) => p.length > 0).join(' — ');
   try {
     const n = new Notification(`Cerebro — ${session.agent} attend`, {
       body,
-      tag: session.id,
+      tag: target === null ? session.id : `${target}:${session.id}`,
     });
     n.onclick = () => {
       window.focus();
-      window.location.hash = `#/s/${session.id}`;
+      window.location.hash = sessionHash(session.id, target);
       n.close();
     };
   } catch {

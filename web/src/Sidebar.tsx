@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { getSlackStatus } from './api.ts';
 import { AGENT_LABEL, relativeTime, sessionTitle } from './format.ts';
-import { go, useNow, type Route } from './route.ts';
+import { MachineSwitcher } from './MachineSwitcher.tsx';
+import { go, href, useNow, type Route } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 import { StatusDot } from './StatusDot.tsx';
@@ -54,8 +55,9 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
 
   return (
     <aside className="sidebar" id="sidebar">
+      <MachineSwitcher />
       <header className="sidebar-head">
-        <a className="brand" href="#/" onClick={() => { onNavigate(); go('#/'); }}>
+        <a className="brand" href={href('#/')} onClick={() => { onNavigate(); go('#/'); }}>
           <span className="brand-mark" aria-hidden="true" />
           Cerebro
         </a>
@@ -154,7 +156,7 @@ function AttentionItem({
   return (
     <li className="attention-item" {...preview.hoverProps}>
       <a
-        href={`#/s/${session.id}`}
+        href={href(`#/s/${session.id}`)}
         className={`attention-link ${tone} ${active ? 'active' : ''}`}
         onClick={onNavigate}
       >

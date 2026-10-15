@@ -1,12 +1,13 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { subscribeUnauthorized } from './api.ts';
+import { setApiBase, subscribeUnauthorized } from './api.ts';
 import { HomeView } from './HomeView.tsx';
 import { ProjectTabs } from './ProjectTabs.tsx';
 import { ProjectView } from './ProjectView.tsx';
 import { SessionView } from './SessionView.tsx';
+import { MachineWatchProvider } from './MachineSwitcher.tsx';
 import { Sidebar } from './Sidebar.tsx';
 import { StoreProvider } from './store.tsx';
-import { useRoute } from './route.ts';
+import { useMachine, useRoute } from './route.ts';
 
 function TokenScreen() {
   const submit = (event: FormEvent<HTMLFormElement>): void => {
@@ -77,6 +78,9 @@ function Shell() {
 }
 
 export function App() {
+  const machine = useMachine();
+  // Avant les enfants : leurs fetch et WebSocket lisent cette base dès le premier effet.
+  setApiBase(machine);
   const [locked, setLocked] = useState(false);
 
   useEffect(() => subscribeUnauthorized(() => setLocked(true)), []);
@@ -84,8 +88,10 @@ export function App() {
   if (locked) return <TokenScreen />;
 
   return (
-    <StoreProvider>
-      <Shell />
-    </StoreProvider>
+    <MachineWatchProvider>
+      <StoreProvider key={machine ?? 'local'}>
+        <Shell />
+      </StoreProvider>
+    </MachineWatchProvider>
   );
 }
