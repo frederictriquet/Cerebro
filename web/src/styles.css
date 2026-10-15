@@ -130,10 +130,153 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 2px 8px;
+  font: inherit;
   font-size: 11px;
   letter-spacing: 0.04em;
-  cursor: default;
+  cursor: pointer;
   user-select: none;
+}
+
+.slack-pill:disabled {
+  cursor: default;
+}
+
+.slack-pill[aria-expanded='true'] {
+  background: var(--bg-hover);
+}
+
+.slack-panel {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.slack-panel .side-usage {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.usage-agent + .usage-agent {
+  margin-top: 10px;
+}
+
+.usage-agent-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.usage-agent-name {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.usage-updated,
+.gauge-reset,
+.usage-error {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.usage-error {
+  margin: 2px 0 0;
+}
+
+.gauge + .gauge {
+  margin-top: 6px;
+}
+
+.gauge-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.gauge-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.gauge-value.warn {
+  color: var(--waiting);
+}
+
+.gauge-value.high {
+  color: var(--danger);
+}
+
+.gauge-track {
+  position: relative;
+  height: 6px;
+  margin: 3px 0 2px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.gauge-fill {
+  height: 100%;
+  background: var(--running);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.gauge-fill.warn {
+  background: var(--waiting);
+}
+
+.gauge-fill.high {
+  background: var(--danger);
+}
+
+/* Elapsed share of the window: a fill past this mark burns faster than the window allows. */
+.gauge-pace {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text);
+  opacity: 0.55;
+}
+
+.empty-hint {
+  margin: 0 0 4px;
+}
+
+.slack-toggle,
+.slack-delay {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.slack-toggle input {
+  width: auto;
+  margin: 0;
+}
+
+.slack-delay {
+  color: var(--muted);
+  cursor: default;
+}
+
+.slack-delay input {
+  width: 64px;
+  margin-left: auto;
 }
 
 .slack-pill.on {
@@ -1258,3 +1401,55 @@ a.btn:hover {
   padding: 6px 8px;
   margin: 0;
 }
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.choice-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.choice {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+
+.choice:hover {
+  border-color: #33405a;
+  color: var(--text);
+}
+
+.choice:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.3);
+}
+
+.choice.checked {
+  border-color: var(--accent);
+  background: rgba(122, 162, 247, 0.12);
+  color: var(--text);
+}
+
+.choice.danger.checked {
+  border-color: var(--danger);
+  background: rgba(226, 92, 106, 0.12);
+}
+

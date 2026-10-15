@@ -40,8 +40,8 @@ npm run dev
 | `CEREBRO_KILL_ON_EXIT` | non défini | Avec la valeur `1`, tue les agents lorsque le serveur s'arrête (ancien comportement). |
 | `CEREBRO_SLACK_TOKEN` | non défini | Jeton bot Slack `xoxb-…`. Sans ce jeton, l'intégration Slack est inactive. |
 | `CEREBRO_SLACK_USER` | non défini | ID Slack (`U…`) du destinataire des messages privés. |
-| `CEREBRO_SLACK_ALERTS` | `all` | Alertes automatiques : `all`, `waiting` (questions et confirmations seulement) ou `off`. |
-| `CEREBRO_SLACK_DELAY` | `30` | Délai en secondes avant une alerte automatique. |
+| `CEREBRO_SLACK_ALERTS` | `all` | Alertes automatiques par défaut : `all`, `waiting` (questions et confirmations seulement) ou `off`. Modifiable ensuite dans l'interface. |
+| `CEREBRO_SLACK_DELAY` | `30` | Délai par défaut en secondes avant une alerte automatique. Modifiable ensuite dans l'interface. |
 | `CEREBRO_PUBLIC_URL` | `http://${CEREBRO_HOST}:${CEREBRO_PORT}` | Base des liens « Ouvrir dans Cerebro » envoyés sur Slack. |
 
 Pour une écoute sur le réseau local, définissez un secret robuste en même temps que
@@ -66,6 +66,14 @@ utilisez ⋮ → « Copier l'ID de membre » pour renseigner
 `CEREBRO_SLACK_USER`. Les deux variables sont nécessaires pour activer
 l'intégration.
 
+Dans le message privé, écrivez `projet: instruction` pour reprendre la session
+active du projet, ou en créer une en mode auto s'il n'y en a pas. Ajoutez `+`
+(`projet+: instruction`) pour forcer une nouvelle session, et `/claude`,
+`/codex` ou `/grok` pour choisir l'agent (`projet/codex+: instruction`). La
+lecture de ces commandes nécessite le scope Bot Token `im:history`. Envoyez `help` (ou
+`aide`, `?`) pour obtenir la syntaxe, la liste des projets avec leur session
+active et la façon de répondre dans un fil.
+
 Cerebro envoie alors un message privé après le délai configuré lorsqu'une
 session demande une confirmation ou termine son tour. L'alerte est annulée si
 la session est vue, repart ou se termine entre-temps. Un agent peut aussi
@@ -82,8 +90,22 @@ le fil du message Slack pour transmettre la réponse au terminal. Les réponses
 `1`, `y` ou `n` sélectionnent directement une option lorsqu'une confirmation
 est affichée ; `entrée`/`enter` et `échap`/`esc` envoient respectivement les
 touches Entrée et Échap. Les fils restent actifs pendant 24 heures ou jusqu'à
-la fin de la session. Avec `CEREBRO_SLACK_ALERTS=off`, les alertes automatiques
-sont coupées, mais `cerebro-notify` reste disponible.
+la fin de la session.
+
+Quand Claude pose des questions à choix (outil AskUserQuestion, avec un ou
+plusieurs onglets), l'alerte Slack les reprend en entier : chaque question,
+ses options numérotées avec leur description et leur aperçu. Répondez dans le
+fil par une réponse par question, dans l'ordre (`2`, `1 3`, `1,3` pour un
+choix multiple), ou en texte libre. Cerebro ferme alors le dialogue (Échap) et
+envoie la réponse, avec le libellé des options choisies, comme message suivant.
+
+Le bouton « Slack » en haut de la barre latérale ouvre les réglages : activer
+séparément les alertes de confirmation, les alertes de fin de tour et les
+messages des agents (`cerebro-notify`), et régler le délai avant alerte. Ils
+sont enregistrés dans `$CEREBRO_DATA_DIR/slack.json` et priment sur
+`CEREBRO_SLACK_ALERTS` et `CEREBRO_SLACK_DELAY`, qui ne servent plus que de
+valeurs initiales. Si les messages des agents sont désactivés, `cerebro-notify`
+échoue avec un message explicite.
 
 Les variables peuvent aussi être placées dans `$CEREBRO_DATA_DIR/env` (par défaut
 `~/.cerebro/env`, format `CLE=valeur`, à protéger avec `chmod 600`), chargé au démarrage. Les consignes `cerebro-notify` sont données

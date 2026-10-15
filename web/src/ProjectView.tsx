@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { api, clipboardImage, uploadProjectImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
-import { AGENT_LABEL, isAwaiting, MODE_LABEL, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
+import { AGENT_LABEL, isAwaiting, MODE_CHIP, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { go, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
-import { isAgent, isMode, MODES, parseGitInfo, type Agent, type GitInfo, type Mode, type Session } from './types.ts';
+import { ChoiceGroup } from './ChoiceGroup.tsx';
+import { MODES, parseGitInfo, type Agent, type GitInfo, type Mode, type Session } from './types.ts';
 
 function formatDirty(count: number): string {
   const n = Math.max(0, Math.trunc(count));
@@ -246,43 +247,28 @@ export function ProjectView({ projectId }: { projectId: string }) {
       <form className="card new-session" onSubmit={onSubmit}>
         <h2>Nouvelle session</h2>
         <div className="form-grid">
-          <label>
-            Agent
-            <select
-              value={agent}
-              onChange={(e) => {
-                const v = e.target.value;
-                if (isAgent(v)) setAgent(v);
-              }}
-              disabled={available.length === 0}
-            >
-              {available.length === 0 ? (
-                <option value={agent}>Aucun agent disponible</option>
-              ) : (
-                available.map((a) => (
-                  <option key={a.agent} value={a.agent}>
-                    {AGENT_LABEL[a.agent]}
-                  </option>
-                ))
-              )}
-            </select>
-          </label>
-          <label>
-            Mode
-            <select
+          <div className="field">
+            <span className="field-label">Agent</span>
+            {available.length === 0 ? (
+              <p className="muted">Aucun agent disponible</p>
+            ) : (
+              <ChoiceGroup
+                label="Agent"
+                value={agent}
+                options={available.map((a) => ({ value: a.agent, label: AGENT_LABEL[a.agent] }))}
+                onChange={setAgent}
+              />
+            )}
+          </div>
+          <div className="field">
+            <span className="field-label">Mode</span>
+            <ChoiceGroup
+              label="Mode"
               value={mode}
-              onChange={(e) => {
-                const v = e.target.value;
-                if (isMode(v)) setMode(v);
-              }}
-            >
-              {MODES.map((m) => (
-                <option key={m} value={m}>
-                  {MODE_LABEL[m]}
-                </option>
-              ))}
-            </select>
-          </label>
+              options={MODES.map((m) => ({ value: m, label: MODE_CHIP[m], danger: m === 'bypass' }))}
+              onChange={setMode}
+            />
+          </div>
         </div>
         {mode === 'bypass' ? (
           <p className="warn-bypass">Mode bypass : permissions et sandbox désactivés.</p>

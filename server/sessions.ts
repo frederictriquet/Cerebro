@@ -21,6 +21,7 @@ import { buildAgentCommand } from './agents.ts';
 import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
 import type { Agent, Mode, Project, Session } from './db.ts';
 import { CerebroDatabase } from './db.ts';
+import type { AgentQuestion } from './questions.ts';
 import { findProcessesByArgument, isAlive, processTree, signalProcesses } from './proc.ts';
 
 // @xterm/headless is CommonJS at runtime despite exposing ESM-shaped typings.
@@ -169,6 +170,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export class SessionManager {
   readonly db: CerebroDatabase;
   private readonly runtimes = new Map<string, Runtime>();
+  private readonly questions = new Map<string, AgentQuestion[]>();
   private readonly eventListeners = new Set<(event: SessionEvent) => void>();
   private shuttingDown = false;
 
@@ -584,6 +586,16 @@ export class SessionManager {
     return updated;
   }
 
+  /** Structured questions currently shown by the agent (AskUserQuestion), if any. */
+  pendingQuestions(id: string): AgentQuestion[] | null {
+    return this.questions.get(id) ?? null;
+  }
+
+  setPendingQuestions(id: string, questions: AgentQuestion[] | null): void {
+    if (questions === null) this.questions.delete(id);
+    else this.questions.set(id, questions);
+  }
+
   setRunning(id: string): Session | null {
     const session = this.db.getSession(id);
     if (session === null || session.status === 'exited') return null;
@@ -702,6 +714,7 @@ export class SessionManager {
     await this.stopProcesses(id);
     this.db.deleteSession(id);
     this.cleanupAllArtifacts(id);
+    this.questions.delete(id);
     this.emit({ type: 'session-deleted', id });
     return true;
   }

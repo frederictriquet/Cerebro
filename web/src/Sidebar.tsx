@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { getSlackStatus } from './api.ts';
+import { getSlackStatus, updateSlackSettings, type SlackSettings, type SlackStatus } from './api.ts';
 import { AGENT_LABEL, relativeTime, sessionTitle } from './format.ts';
 import { go, useNow, type Route } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
+import { UsageGauges } from './UsageGauges.tsx';
 import type { Session } from './types.ts';
 
 export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () => void }) {
   const { sessions, connected, muted, setMuted, createProject } = useStore();
   const now = useNow();
-  const [slack, setSlack] = useState<{ enabled: boolean; alerts: string } | null>(null);
+  const [slack, setSlack] = useState<SlackStatus | null>(null);
+  const [showSlack, setShowSlack] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
@@ -59,16 +61,16 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
           <span className="brand-mark" aria-hidden="true" />
           Cerebro
         </a>
-        <span
+        <button
+          type="button"
           className={`slack-pill ${slack?.enabled ? 'on' : 'off'}`}
-          title={
-            slack?.enabled
-              ? `Notifications Slack actives (alertes : ${slack.alerts})`
-              : 'Slack non configuré (voir README)'
-          }
+          aria-expanded={showSlack}
+          disabled={slack === null}
+          title={slack?.enabled ? 'Réglages des notifications Slack' : 'Slack non configuré (voir README)'}
+          onClick={() => setShowSlack(!showSlack)}
         >
           Slack
-        </span>
+        </button>
         <button
           type="button"
           className="btn-mute"
@@ -79,6 +81,7 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
           {muted ? 'Muet' : 'Son'}
         </button>
       </header>
+      {showSlack && slack !== null ? <SlackPanel status={slack} onChange={setSlack} /> : null}
       <div className={`ws-pill ${connected ? 'on' : 'off'}`}>
         {connected ? 'connecté' : 'reconnexion…'}
       </div>
@@ -133,7 +136,78 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
           </button>
         )}
       </section>
+
+      <UsageGauges />
     </aside>
+  );
+}
+
+const SLACK_TOGGLES: { key: 'waiting' | 'idle' | 'agentMessages'; label: string; hint: string }[] = [
+  { key: 'waiting', label: 'Confirmations', hint: 'Une session attend une validation ou une réponse' },
+  { key: 'idle', label: 'Fins de tour', hint: "L'agent a terminé et rend la main" },
+  { key: 'agentMessages', label: 'Messages des agents', hint: 'Envoyés par cerebro-notify (notifications et questions)' },
+];
+
+function SlackPanel({ status, onChange }: { status: SlackStatus; onChange: (status: SlackStatus) => void }) {
+  const [delay, setDelay] = useState(String(status.delaySeconds));
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async (patch: Partial<SlackSettings>): Promise<void> => {
+    setError(null);
+    const previous = status;
+    onChange({ ...status, ...patch });
+    try {
+      onChange(await updateSlackSettings(patch));
+    } catch (err) {
+      onChange(previous);
+      setError(err instanceof Error ? err.message : 'Enregistrement impossible');
+    }
+  };
+
+  const saveDelay = (): void => {
+    const seconds = Number(delay);
+    if (delay.trim() === '' || !Number.isFinite(seconds) || seconds < 0 || seconds > 3600) {
+      setDelay(String(status.delaySeconds));
+      setError('Délai entre 0 et 3600 secondes');
+      return;
+    }
+    if (Math.round(seconds) !== status.delaySeconds) void save({ delaySeconds: Math.round(seconds) });
+  };
+
+  return (
+    <div className="slack-panel">
+      {status.enabled ? null : (
+        <p className="empty-hint">Slack n'est pas configuré : ces réglages s'appliqueront une fois le jeton défini.</p>
+      )}
+      {SLACK_TOGGLES.map((toggle) => (
+        <label key={toggle.key} className="slack-toggle" title={toggle.hint}>
+          <input
+            type="checkbox"
+            checked={status[toggle.key]}
+            onChange={(e) => void save({ [toggle.key]: e.target.checked })}
+          />
+          {toggle.label}
+        </label>
+      ))}
+      <label className="slack-delay">
+        Délai avant alerte
+        <input
+          type="number"
+          min={0}
+          max={3600}
+          step={5}
+          value={delay}
+          disabled={!status.waiting && !status.idle}
+          onChange={(e) => setDelay(e.target.value)}
+          onBlur={saveDelay}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur();
+          }}
+        />
+        s
+      </label>
+      {error ? <p className="form-error">{error}</p> : null}
+    </div>
   );
 }
 

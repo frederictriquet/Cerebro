@@ -17,6 +17,7 @@ import type { Agent, Mode } from './db.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
 import { SessionManager } from './sessions.ts';
 import { SlackNotifier } from './slack.ts';
+import { UsageTracker } from './usage.ts';
 
 const MODES: readonly Mode[] = ['default', 'auto', 'acceptEdits', 'plan', 'bypass'];
 const execFileAsync = promisify(execFile);
@@ -357,7 +358,19 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.get('/api/agents', async () => getAgentAvailability());
 
+  const usage = new UsageTracker();
+  app.get('/api/usage', async () => usage.get());
+
   app.get('/api/slack', async () => notifier.status());
+
+  app.patch('/api/slack', async (request, reply) => {
+    const body = bodyRecord(request.body);
+    if (body === null) return error(reply, 400, 'Corps invalide');
+    const result = await orError(reply, async () => notifier.updateSettings(body));
+    if (!result.ok) return result.reply;
+    if (result.value === null) return error(reply, 400, 'Réglages Slack invalides');
+    return reply.send(notifier.status());
+  });
 
   app.post<{ Params: { id: string } }>('/api/notify/:id', async (request, reply) => {
     const token = request.headers['x-cerebro-token'];
@@ -382,6 +395,9 @@ export async function buildServer(): Promise<FastifyInstance> {
       payload: { kind: body.kind, text },
     })}\n`);
     if (!SLACK_ENABLED) return error(reply, 503, "Slack n'est pas configuré");
+    if (!notifier.agentMessagesAllowed()) {
+      return error(reply, 503, "Messages des agents désactivés dans les réglages Slack de Cerebro");
+    }
     try {
       await notifier.agentMessage(session.id, body.kind, text);
       return reply.send({ ok: true });
