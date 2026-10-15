@@ -87,7 +87,7 @@ la fin de la session. Avec `CEREBRO_SLACK_ALERTS=off`, les alertes automatiques
 sont coupées, mais `cerebro-notify` reste disponible.
 
 Les variables peuvent aussi être placées dans `$CEREBRO_DATA_DIR/env` (par défaut
-`~/.cerebro/env`, format `CLE=valeur`, à protéger avec `chmod 600`), chargé au démarrage. Les consignes `cerebro-notify` sont données
+`~/.cerebro/env`, format `CLE=valeur`, à protéger avec `chmod 600`), chargé au démarrage par le serveur et par Vite en mode dev. Les consignes `cerebro-notify` sont données
 aux agents au lancement ou à la reprise d'une session ; le jeton Slack n'est jamais
 transmis à leur environnement. Dans le bac à sable `workspace-write` de Codex, le
 réseau (y compris local) est coupé : Codex doit demander l'autorisation d'exécuter

@@ -1,7 +1,13 @@
-import { dirname } from 'node:path';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type ProxyOptions } from 'vite';
+
+// Same env file as the server (server/config.ts), so the proxy targets the port it listens on.
+const envFile = join(process.env.CEREBRO_DATA_DIR ?? join(homedir(), '.cerebro'), 'env');
+if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 const root = dirname(fileURLToPath(import.meta.url));
 const api = `http://127.0.0.1:${process.env.CEREBRO_PORT ?? '4317'}`;
