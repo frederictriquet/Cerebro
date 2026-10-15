@@ -1,6 +1,9 @@
+import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import type { Agent } from './db.ts';
 
 export interface UsageWindow {
@@ -61,9 +64,37 @@ function record(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * Claude Code's OAuth credentials: a file on Linux, the login Keychain on macOS (service
+ * "Claude Code-credentials", suffixed with a hash of CLAUDE_CONFIG_DIR when that is set).
+ */
+async function readClaudeCredentials(): Promise<string> {
+  const customDir = process.env.CLAUDE_CONFIG_DIR;
+  const configDir = customDir ?? join(homedir(), '.claude');
+  try {
+    return readFileSync(join(configDir, '.credentials.json'), 'utf8');
+  } catch (cause) {
+    if (process.platform !== 'darwin') throw cause;
+  }
+  const service = 'Claude Code-credentials';
+  const services = customDir === undefined
+    ? [service]
+    : [`${service}-${createHash('sha256').update(customDir).digest('hex').slice(0, 8)}`, service];
+  for (const name of services) {
+    try {
+      const { stdout } = await execFileAsync('security', ['find-generic-password', '-s', name, '-w'], { timeout: 10_000 });
+      if (stdout.trim() !== '') return stdout;
+    } catch {
+      // Try the next service name.
+    }
+  }
+  throw new Error('Identifiants Claude introuvables dans le trousseau macOS');
+}
+
 async function fetchClaude(): Promise<AgentUsage> {
-  const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
-  const credentials = record(JSON.parse(readFileSync(join(configDir, '.credentials.json'), 'utf8')));
+  const credentials = record(JSON.parse(await readClaudeCredentials()));
   const oauth = record(credentials?.claudeAiOauth);
   const token = oauth?.accessToken;
   if (typeof token !== 'string') throw new Error('Pas de connexion OAuth Claude');
