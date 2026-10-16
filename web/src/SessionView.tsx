@@ -336,11 +336,11 @@ export function SessionView({ sessionId }: { sessionId: string }) {
 
   const shown = displayStatus(session, now);
 
-  const act = async (fn: () => Promise<unknown>, thenHome = false): Promise<void> => {
+  const act = async (fn: () => Promise<unknown>, thenGo?: string): Promise<void> => {
     setError(null);
     try {
       await fn();
-      if (thenHome) go('#/');
+      if (thenGo !== undefined) go(thenGo);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action impossible');
     }
@@ -384,7 +384,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               Reprendre
             </button>
           ) : null}
-          <DelayedActionButton onAction={() => void act(() => deleteSession(session.id), true)}>
+          <DelayedActionButton onAction={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}>
             Supprimer
           </DelayedActionButton>
         </div>
