@@ -39,14 +39,13 @@ function Gauge({ window, now }: { window: UsageWindow; now: number }) {
     elapsed === null ? null : `${Math.round(elapsed)} % de la période écoulée`,
     window.resetsAt === null ? null : `réinitialisation ${resetDate(window.resetsAt)}`,
   ].filter(Boolean).join('\n');
+  // Fragment: label, track and value are cells of the section's grid, so columns line up across agents.
   return (
-    <div className="gauge" title={title}>
-      <div className="gauge-head">
-        <span className="gauge-label">{window.label}</span>
-        <span className={`gauge-value ${level(window.percent)}`}>{percent} %</span>
-      </div>
+    <>
+      <span className="gauge-label" title={title}>{window.label}</span>
       <div
         className="gauge-track"
+        title={title}
         role="meter"
         aria-label={`${window.label}`}
         aria-valuemin={0}
@@ -56,10 +55,11 @@ function Gauge({ window, now }: { window: UsageWindow; now: number }) {
         <div className={`gauge-fill ${level(window.percent)}`} style={{ width: `${window.percent}%` }} />
         {elapsed === null ? null : <div className="gauge-pace" style={{ left: `${elapsed}%` }} />}
       </div>
+      <span className={`gauge-value ${level(window.percent)}`} title={title}>{percent} %</span>
       {window.resetsAt === null ? null : (
         <span className="gauge-reset">réinit. dans {untilReset(window.resetsAt, now)}</span>
       )}
-    </div>
+    </>
   );
 }
 
@@ -69,14 +69,14 @@ function fullDate(iso: string): string {
 
 /** Login status: a firm deadline when the CLI records one (Claude), otherwise the last renewal. */
 function AuthLine({ auth, now }: { auth: AgentAuth; now: number }) {
-  if (auth.error !== null) return <p className="auth-line high">{auth.error}</p>;
+  if (auth.error !== null) return <span className="auth-line high">{auth.error}</span>;
   if (auth.loginExpiresAt !== null) {
     const left = Date.parse(auth.loginExpiresAt) - now;
     const tone = left <= DAY_MS ? 'high' : left <= 3 * DAY_MS ? 'warn' : 'ok';
     return (
-      <p className={`auth-line ${tone}`} title={`Le jeton de renouvellement expire le ${fullDate(auth.loginExpiresAt)}`}>
+      <span className={`auth-line ${tone}`} title={`Le jeton de renouvellement expire le ${fullDate(auth.loginExpiresAt)}`}>
         {left <= 0 ? 'Reconnexion requise' : `Reconnexion dans ${untilReset(auth.loginExpiresAt, now)}`}
-      </p>
+      </span>
     );
   }
   const expired = auth.accessExpiresAt !== null && Date.parse(auth.accessExpiresAt) <= now;
@@ -86,11 +86,11 @@ function AuthLine({ auth, now }: { auth: AgentAuth; now: number }) {
     expired ? 'il sera renouvelé au prochain lancement' : null,
   ].filter(Boolean).join('\n');
   return (
-    <p className="auth-line ok" title={title}>
+    <span className="auth-line ok" title={title}>
       {auth.renewedAt === null
         ? 'Connexion renouvelée auto.'
         : `Connexion renouvelée ${relativeTime(Date.parse(auth.renewedAt), now)}`}
-    </p>
+    </span>
   );
 }
 
@@ -100,15 +100,15 @@ function AgentGauges({ usage, now }: { usage: AgentUsage; now: number }) {
     <div className="usage-agent">
       <div className="usage-agent-head">
         <span className="usage-agent-name">{AGENT_LABEL[usage.agent]}</span>
-        {usage.agent === 'codex' && updated !== null ? (
-          <span className="usage-updated" title="Codex ne publie ses quotas que pendant qu'il tourne">
-            {relativeTime(updated, now)}
-          </span>
-        ) : null}
+        {usage.auth === null ? null : <AuthLine auth={usage.auth} now={now} />}
       </div>
       {usage.windows.map((w) => <Gauge key={w.label} window={w} now={now} />)}
+      {usage.agent === 'codex' && updated !== null ? (
+        <span className="usage-updated" title="Codex ne publie ses quotas que pendant qu'il tourne">
+          quotas relevés {relativeTime(updated, now)}
+        </span>
+      ) : null}
       {usage.error === null ? null : <p className="usage-error">{usage.error}</p>}
-      {usage.auth === null ? null : <AuthLine auth={usage.auth} now={now} />}
     </div>
   );
 }
@@ -145,7 +145,9 @@ export function UsageGauges() {
       {usage === null ? (
         <p className="empty-hint">{failed ? 'Indisponible' : 'Chargement…'}</p>
       ) : (
-        usage.map((u) => <AgentGauges key={u.agent} usage={u} now={now} />)
+        <div className="usage-grid">
+          {usage.map((u) => <AgentGauges key={u.agent} usage={u} now={now} />)}
+        </div>
       )}
     </section>
   );

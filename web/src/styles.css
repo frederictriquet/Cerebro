@@ -209,15 +209,29 @@ textarea {
   border-top: 1px solid var(--line);
 }
 
-.usage-agent + .usage-agent {
-  margin-top: 10px;
+.usage-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  column-gap: 8px;
+  row-gap: 3px;
+  align-items: center;
+}
+
+/* Agents, gauges and their lines are cells of .usage-grid: the columns line up across agents. */
+.usage-agent {
+  display: contents;
 }
 
 .usage-agent-head {
+  grid-column: 1 / -1;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  margin-bottom: 4px;
+  gap: 8px;
+}
+
+.usage-agent:not(:first-child) .usage-agent-head {
+  margin-top: 10px;
 }
 
 .usage-agent-name {
@@ -233,12 +247,19 @@ textarea {
   color: var(--faint);
 }
 
+/* Like a reset line: under the tracks. */
+.usage-updated {
+  grid-column: 2 / -1;
+  text-align: right;
+}
+
 .usage-error {
+  grid-column: 1 / -1;
   margin: 2px 0 0;
 }
 
 .auth-line {
-  margin: 4px 0 0;
+  text-align: right;
   font-size: 11px;
   color: var(--faint);
 }
@@ -251,18 +272,21 @@ textarea {
   color: var(--danger);
 }
 
-.gauge + .gauge {
-  margin-top: 6px;
-}
-
-.gauge-head {
-  display: flex;
-  justify-content: space-between;
+.gauge-label {
   font-size: 11px;
   color: var(--muted);
 }
 
+/* Under the track, right-aligned with the percentage. */
+.gauge-reset {
+  grid-column: 2 / -1;
+  text-align: right;
+  margin-bottom: 3px;
+}
+
 .gauge-value {
+  font-size: 11px;
+  text-align: right;
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
@@ -278,7 +302,6 @@ textarea {
 .gauge-track {
   position: relative;
   height: 6px;
-  margin: 3px 0 2px;
   background: var(--bg-2);
   border: 1px solid var(--line);
   border-radius: 999px;
