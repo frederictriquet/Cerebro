@@ -84,8 +84,10 @@ export function AddTaskDialog({
   sourceSessionId?: string;
   onClose: () => void;
 }) {
-  const { createTask } = useStore();
+  const { createTask, projects } = useStore();
   const [text, setText] = useState(initialText);
+  // Projet du backlog cible : celui de la session par défaut, mais un constat peut concerner un autre projet.
+  const [targetId, setTargetId] = useState(projectId);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -94,7 +96,7 @@ export function AddTaskDialog({
     setBusy(true);
     setError(null);
     try {
-      await createTask(projectId, text, sourceSessionId);
+      await createTask(targetId, text, sourceSessionId);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ajout impossible');
@@ -123,6 +125,18 @@ export function AddTaskDialog({
             }
           }}
         />
+        {projects.length > 1 ? (
+          <label className="task-form-project">
+            Backlog du projet
+            <select value={targetId} onChange={(e) => setTargetId(e.target.value)}>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {error ? <p className="form-error">{error}</p> : null}
         <div className="row-actions">
           <button type="submit" className="btn primary" disabled={busy || text.trim() === ''}>
