@@ -12,6 +12,7 @@
   --waiting: #f0a04b;
   --idle: #5ea2d8;
   --exited: #6a7382;
+  --dormant: #8a6fb8;
   --starting: #c9b458;
   --danger: #e25c6a;
   --radius: 6px;
@@ -144,6 +145,19 @@ textarea {
   line-height: 1.4;
 }
 
+/* Type d'attente : question (orange, pulsé) vs tour terminé (bleu). */
+.machine-badge.waiting {
+  color: var(--waiting);
+  border-color: var(--waiting);
+  box-shadow: 0 0 6px var(--waiting);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.machine-badge.idle {
+  color: var(--idle);
+  border-color: var(--idle);
+}
+
 .sidebar-head {
   display: flex;
   align-items: center;
@@ -159,6 +173,12 @@ textarea {
   padding: 2px 8px;
   color: var(--muted);
   cursor: pointer;
+}
+
+/* État désactivé (son ou notif système coupés) : rouge barré. */
+.btn-mute.off {
+  color: var(--danger);
+  text-decoration: line-through;
 }
 
 .btn-mute[aria-pressed='false'] {
@@ -369,7 +389,8 @@ textarea {
 }
 
 .slack-pill.off {
-  color: var(--faint);
+  color: var(--danger);
+  text-decoration: line-through;
 }
 
 .ws-pill {
@@ -565,12 +586,34 @@ textarea {
   background: var(--waiting);
 }
 
+/* Question en attente : pastille élargie portant un « ? » (point de statut, onglet projet). */
+.ask-mark {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--waiting);
+  color: #1b1e24;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  user-select: none;
+}
+
 .dot.idle {
   background: var(--idle);
 }
 
 .dot.exited {
   background: var(--exited);
+}
+
+.dot.dormant {
+  background: transparent;
+  border: 1.5px solid var(--dormant);
+  box-sizing: border-box;
 }
 
 .dot.starting {
@@ -832,6 +875,11 @@ textarea {
   background: var(--idle);
 }
 
+.project-tab-alert.ask-mark {
+  width: 14px;
+  height: 14px;
+}
+
 .project-tab-alert.waiting {
   background: var(--waiting);
   box-shadow: 0 0 6px var(--waiting);
@@ -1043,6 +1091,11 @@ label.block {
   color: var(--exited);
 }
 
+.pill.status.dormant {
+  color: var(--dormant);
+  border-style: dashed;
+}
+
 .pill.status.starting {
   color: var(--starting);
 }
@@ -1111,6 +1164,70 @@ label.block {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.project-head.colored {
+  margin: -8px -12px 20px;
+  padding: 10px 12px 12px;
+  border-left: 4px solid var(--project-color);
+  border-radius: var(--radius);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--project-color) 18%, transparent), transparent 70%);
+}
+
+.project-head h1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-color-dot {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--project-color);
+}
+
+.color-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.color-swatches {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.color-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  outline: 1px solid var(--line);
+}
+
+.color-swatch.selected {
+  border-color: var(--text);
+}
+
+.color-swatch.none {
+  background: linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%), var(--bg-2);
+}
+
+.color-custom {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
 }
 
 .git-line {
@@ -1918,4 +2035,167 @@ a.btn:hover {
 .task-add textarea {
   flex: 1;
   min-width: 0;
+}
+
+.task-add-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.task-add-actions select {
+  max-width: 220px;
+  font-size: 12px;
+}
+
+/* Epics : regroupement de tâches du backlog */
+.epic {
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  overflow: hidden;
+}
+
+.epic-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.epic-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.epic-badge {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(122, 162, 247, 0.16);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.epic-progress {
+  display: inline-block;
+  width: 80px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.epic-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--running);
+}
+
+.epic-description {
+  margin: 0;
+  padding: 0 12px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.epic > .task-list {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+}
+
+.epic > .empty-hint {
+  margin: 0;
+  padding: 0 12px 10px;
+}
+
+.epic-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+}
+
+.epic > .epic-form {
+  margin: 0;
+  padding-top: 0;
+}
+
+.task-index {
+  flex: none;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.backlog-loose {
+  margin: 4px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.slack-lead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.slack-lead .slack-toggle input:disabled {
+  cursor: not-allowed;
+}
+
+.peer-conflict {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.peer-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.peer-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--waiting);
+  font-size: 13px;
+}
+
+.peer-notice .btn {
+  flex-shrink: 0;
 }

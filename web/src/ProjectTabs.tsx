@@ -34,9 +34,11 @@ export function ProjectTabs({ route }: { route: Route }) {
         const sessionCount = projectSessions.length;
         const alerts = projectSessions.filter((session) => session.attention);
         const alertTone = alerts.some((session) => session.status === 'waiting') ? 'waiting' : 'idle';
+        const questions = alerts.filter((session) => session.status === 'waiting').length;
         const alertLabel =
           alerts.length > 0
-            ? `${alerts.length} ${alerts.length > 1 ? 'sessions demandent' : 'session demande'} votre attention`
+            ? `${alerts.length} ${alerts.length > 1 ? 'sessions demandent' : 'session demande'} votre attention` +
+              (questions > 0 ? ` (${questions} question${questions > 1 ? 's' : ''})` : '')
             : undefined;
         return (
           <a
@@ -47,7 +49,13 @@ export function ProjectTabs({ route }: { route: Route }) {
             title={alertLabel ? `${project.path}\n${alertLabel}` : project.path}
           >
             {alerts.length > 0 ? (
-              <span className={`project-tab-alert ${alertTone}`} role="status" aria-label={alertLabel} />
+              <span
+                className={`project-tab-alert ${alertTone}${alertTone === 'waiting' ? ' ask-mark' : ''}`}
+                role="status"
+                aria-label={alertLabel}
+              >
+                {alertTone === 'waiting' ? '?' : null}
+              </span>
             ) : null}
             <span className="project-tab-name">{project.name}</span>
             <span

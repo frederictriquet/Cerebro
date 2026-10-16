@@ -11,8 +11,8 @@ import { clipboardImage, uploadImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { AddTaskDialog, LaunchSessionDialog } from './Dialog.tsx';
-import { AGENT_LABEL, MODE_LABEL, STATUS_LABEL, sessionTitle } from './format.ts';
-import { go, href } from './route.ts';
+import { AGENT_LABEL, displayStatus, MODE_LABEL, STATUS_LABEL, sessionTitle } from './format.ts';
+import { go, href, useNow } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { Term, type TermApi } from './Term.tsx';
@@ -297,6 +297,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const session = sessions.find((s) => s.id === sessionId);
   const project = session ? projects.find((p) => p.id === session.projectId) : undefined;
   const [error, setError] = useState<string | null>(null);
+  const now = useNow();
   const live = session !== undefined && session.status !== 'exited';
   const termApi = useRef<TermApi | null>(null);
   const onApi = useCallback((api: TermApi | null) => {
@@ -333,6 +334,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     );
   }
 
+  const shown = displayStatus(session, now);
+
   const act = async (fn: () => Promise<unknown>, thenHome = false): Promise<void> => {
     setError(null);
     try {
@@ -348,7 +351,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       <header className="session-head">
         <div className="session-head-main">
           <div className="session-title-row">
-            <StatusDot status={session.status} title={STATUS_LABEL[session.status]} />
+            <StatusDot status={shown} title={STATUS_LABEL[shown]} />
             <TitleEditor key={session.id} sessionId={session.id} title={session.title} />
           </div>
           <p className="session-meta">
@@ -356,7 +359,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             <span className="pill">{MODE_LABEL[session.mode]}</span>
             {session.model !== null ? <span className="pill">{agents.find((a) => a.agent === session.agent)?.models.find((m) => m.value === session.model)?.label ?? session.model}</span> : null}
             {session.effort !== null ? <span className="pill">effort {session.effort}</span> : null}
-            <span className={`pill status ${session.status}`}>{STATUS_LABEL[session.status]}</span>
+            <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
             {project ? (
               <a className="project-crumb" href={href(`#/p/${project.id}`)}>
                 {project.name}

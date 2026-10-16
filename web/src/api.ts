@@ -136,6 +136,38 @@ export function updateSlackSettings(patch: Partial<SlackSettings>): Promise<Slac
   return api<SlackStatus>('/api/slack', { method: 'PATCH', body: JSON.stringify(patch) });
 }
 
+/** Prise de main Slack d'un projet présent sur plusieurs machines. */
+export interface ProjectSlackStatus {
+  shared: boolean;
+  conflict: boolean;
+  peerMachine: string | null;
+  owner: 'local' | 'remote' | null;
+  ownerMachine: string | null;
+}
+
+export interface PeerNotice {
+  id: string;
+  at: number;
+  projectName: string;
+  text: string;
+}
+
+export function getProjectSlack(projectId: string): Promise<ProjectSlackStatus> {
+  return api<ProjectSlackStatus>(`/api/projects/${projectId}/slack`);
+}
+
+export function acquireProjectSlack(projectId: string): Promise<ProjectSlackStatus> {
+  return api<ProjectSlackStatus>(`/api/projects/${projectId}/slack/acquire`, { method: 'POST' });
+}
+
+export function getPeerNotices(): Promise<PeerNotice[]> {
+  return api<PeerNotice[]>('/api/peer/notices');
+}
+
+export function dismissPeerNotice(id: string): Promise<void> {
+  return api<void>(`/api/peer/notices/${encodeURIComponent(id)}/dismiss`, { method: 'POST' });
+}
+
 export interface UsageWindow {
   label: string;
   percent: number;

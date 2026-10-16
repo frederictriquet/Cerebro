@@ -23,6 +23,7 @@ export interface Project {
   id: string;
   name: string;
   path: string;
+  color: string | null;
   createdAt: number;
 }
 
@@ -52,6 +53,18 @@ export interface Task {
   sessionId: string | null;
   sourceSessionId: string | null;
   dependsOn: string[];
+  epicId: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// Regroupement de tâches liées à un même sujet, traitable d'un bloc par une seule session.
+export interface Epic {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  sourceSessionId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -78,13 +91,16 @@ export interface GitInfo {
 }
 
 export type EventsMessage =
-  | { type: 'snapshot'; projects: Project[]; sessions: Session[]; tasks: Task[] }
+  | { type: 'snapshot'; projects: Project[]; sessions: Session[]; tasks: Task[]; epics: Epic[] }
   | { type: 'session'; session: Session }
   | { type: 'session-deleted'; id: string }
   | { type: 'task'; task: Task }
   | { type: 'task-deleted'; id: string }
+  | { type: 'epic'; epic: Epic }
+  | { type: 'epic-deleted'; id: string }
   | { type: 'projects'; projects: Project[] }
-  | { type: 'alert'; session: Session };
+  | { type: 'alert'; session: Session }
+  | { type: 'peers' };
 
 export type TermClientMessage =
   | { type: 'input'; data: string }
@@ -144,7 +160,8 @@ export function parseProject(v: unknown): Project | null {
   const path = asString(v.path);
   const createdAt = asNumber(v.createdAt);
   if (id === null || name === null || path === null || createdAt === null) return null;
-  return { id, name, path, createdAt };
+  const color = typeof v.color === 'string' && /^#[0-9a-f]{6}$/i.test(v.color) ? v.color : null;
+  return { id, name, path, color, createdAt };
 }
 
 export function parseSession(v: unknown): Session | null {
@@ -207,6 +224,8 @@ export function parseTask(v: unknown): Task | null {
   const sessionId = asNullableString(v.sessionId);
   const sourceSessionId = asNullableString(v.sourceSessionId);
   const dependsOn = Array.isArray(v.dependsOn) ? v.dependsOn.filter((d): d is string => typeof d === 'string') : [];
+  // Serveur antérieur aux epics (machine distante) : aucune.
+  const epicId = typeof v.epicId === 'string' ? v.epicId : null;
   if (
     id === null ||
     projectId === null ||
@@ -219,7 +238,27 @@ export function parseTask(v: unknown): Task | null {
   ) {
     return null;
   }
-  return { id, projectId, text, status: v.status, sessionId, sourceSessionId, dependsOn, createdAt, updatedAt };
+  return { id, projectId, text, status: v.status, sessionId, sourceSessionId, dependsOn, epicId, createdAt, updatedAt };
+}
+
+export function parseEpic(v: unknown): Epic | null {
+  if (!isRecord(v)) return null;
+  const id = asString(v.id);
+  const projectId = asString(v.projectId);
+  const title = asString(v.title);
+  const description = typeof v.description === 'string' ? v.description : '';
+  const sourceSessionId = asNullableString(v.sourceSessionId);
+  const createdAt = asNumber(v.createdAt);
+  const updatedAt = asNumber(v.updatedAt);
+  if (id === null || projectId === null || title === null || sourceSessionId === undefined || createdAt === null || updatedAt === null) {
+    return null;
+  }
+  return { id, projectId, title, description, sourceSessionId, createdAt, updatedAt };
+}
+
+export function parseEpicList(v: unknown): Epic[] {
+  if (!Array.isArray(v)) return [];
+  return v.map(parseEpic).filter((e): e is Epic => e !== null);
 }
 
 export function parseTaskList(v: unknown): Task[] {
@@ -311,6 +350,7 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
         projects: parseProjectList(v.projects),
         sessions: parseSessionList(v.sessions),
         tasks: parseTaskList(v.tasks),
+        epics: parseEpicList(v.epics),
       };
     case 'session': {
       const session = parseSession(v.session);
@@ -328,12 +368,22 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
       const id = asString(v.id);
       return id ? { type: 'task-deleted', id } : null;
     }
+    case 'epic': {
+      const epic = parseEpic(v.epic);
+      return epic ? { type: 'epic', epic } : null;
+    }
+    case 'epic-deleted': {
+      const id = asString(v.id);
+      return id ? { type: 'epic-deleted', id } : null;
+    }
     case 'projects':
       return { type: 'projects', projects: parseProjectList(v.projects) };
     case 'alert': {
       const session = parseSession(v.session);
       return session ? { type: 'alert', session } : null;
     }
+    case 'peers':
+      return { type: 'peers' };
     default:
       return null;
   }

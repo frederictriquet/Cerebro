@@ -10,7 +10,7 @@ import type { Session } from './types.ts';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 
 export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () => void }) {
-  const { sessions, connected, muted, setMuted } = useStore();
+  const { sessions, connected, muted, setMuted, desktopNotif, setDesktopNotif } = useStore();
   const now = useNow();
   const [slack, setSlack] = useState<SlackStatus | null>(null);
   const [showSlack, setShowSlack] = useState(false);
@@ -51,12 +51,25 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
         </button>
         <button
           type="button"
-          className="btn-mute"
+          className={`btn-mute${muted ? ' off' : ''}`}
           aria-pressed={muted}
           title={muted ? 'Activer le son' : 'Couper le son'}
           onClick={() => setMuted(!muted)}
         >
-          {muted ? 'Muet' : 'Son'}
+          Son
+        </button>
+        <button
+          type="button"
+          className={`btn-mute${desktopNotif ? '' : ' off'}`}
+          aria-pressed={!desktopNotif}
+          title={
+            desktopNotif
+              ? 'Couper les notifications système (toaster du bureau et son de l’OS)'
+              : 'Réactiver les notifications système'
+          }
+          onClick={() => setDesktopNotif(!desktopNotif)}
+        >
+          Notif
         </button>
       </header>
       {showSlack && slack !== null ? <SlackPanel status={slack} onChange={setSlack} /> : null}

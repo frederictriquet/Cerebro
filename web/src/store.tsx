@@ -9,16 +9,21 @@ import {
   type ReactNode,
 } from 'react';
 import { api, wsUrl } from './api.ts';
+import { isDormant } from './format.ts';
 import {
   armNotificationPermission,
-  beep,
+  playAlert,
+  readDesktopNotif,
   readMuted,
   showAlertNotification,
-  updateDocumentTitle,
+  updateAttentionIndicators,
+  writeDesktopNotif,
   writeMuted,
 } from './notify.ts';
 import {
   parseAgentInfoList,
+  parseEpic,
+  parseEpicList,
   parseEventsMessage,
   parseProject,
   parseProjectList,
@@ -27,6 +32,7 @@ import {
   parseTask,
   parseTaskList,
   type AgentInfo,
+  type Epic,
   type LaunchSpec,
   type Project,
   type Session,
@@ -38,10 +44,15 @@ export interface Store {
   projects: Project[];
   sessions: Session[];
   tasks: Task[];
+  epics: Epic[];
   agents: AgentInfo[];
   connected: boolean;
+  // Incrémenté à chaque changement de prise de main Slack entre machines : déclenche un rechargement.
+  peersVersion: number;
   muted: boolean;
   setMuted: (value: boolean) => void;
+  desktopNotif: boolean;
+  setDesktopNotif: (value: boolean) => void;
   createProject: (name: string, path: string) => Promise<Project>;
   deleteProject: (id: string) => Promise<void>;
   createSession: (projectId: string, spec: LaunchSpec) => Promise<Session>;
@@ -51,12 +62,23 @@ export interface Store {
   purgeProjectSessions: (projectId: string) => Promise<void>;
   markSeen: (id: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<Session>;
-  updateProject: (id: string, patch: { name?: string; path?: string }) => Promise<Project>;
+  updateProject: (id: string, patch: { name?: string; path?: string; color?: string | null }) => Promise<Project>;
   sendSessionInput: (id: string, data: string) => Promise<void>;
-  createTask: (projectId: string, text: string, sourceSessionId?: string) => Promise<Task>;
-  updateTask: (id: string, patch: { text?: string; status?: TaskStatus; dependsOn?: string[] }) => Promise<Task>;
+  createTask: (projectId: string, text: string, sourceSessionId?: string, epicId?: string | null) => Promise<Task>;
+  updateTask: (id: string, patch: TaskPatch) => Promise<Task>;
   deleteTask: (id: string) => Promise<void>;
   startTask: (id: string, spec: LaunchSpec) => Promise<Session>;
+  createEpic: (projectId: string, title: string, description?: string) => Promise<Epic>;
+  updateEpic: (id: string, patch: { title?: string; description?: string }) => Promise<Epic>;
+  deleteEpic: (id: string) => Promise<void>;
+  startEpic: (id: string, spec: LaunchSpec) => Promise<Session>;
+}
+
+export interface TaskPatch {
+  text?: string;
+  status?: TaskStatus;
+  dependsOn?: string[];
+  epicId?: string | null;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -73,6 +95,14 @@ function upsertTask(list: Task[], task: Task): Task[] {
   return next;
 }
 
+function upsertEpic(list: Epic[], epic: Epic): Epic[] {
+  const i = list.findIndex((e) => e.id === epic.id);
+  if (i === -1) return [...list, epic];
+  const next = list.slice();
+  next[i] = epic;
+  return next;
+}
+
 function upsertSession(list: Session[], session: Session): Session[] {
   const i = list.findIndex((s) => s.id === session.id);
   if (i === -1) return sortSessions([session, ...list]);
@@ -85,8 +115,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [epics, setEpics] = useState<Epic[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [connected, setConnected] = useState(false);
+  const [peersVersion, setPeersVersion] = useState(0);
   const [muted, setMutedState] = useState<boolean>(() => readMuted());
   const mutedRef = useRef(muted);
   mutedRef.current = muted;
@@ -97,29 +129,40 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     writeMuted(value);
   }, []);
 
+  const [desktopNotif, setDesktopNotifState] = useState<boolean>(() => readDesktopNotif());
+
+  const setDesktopNotif = useCallback((value: boolean) => {
+    setDesktopNotifState(value);
+    writeDesktopNotif(value);
+  }, []);
+
   useEffect(() => {
     armNotificationPermission();
   }, []);
 
   useEffect(() => {
-    const n = sessions.filter((s) => s.attention).length;
-    updateDocumentTitle(n);
+    const awaiting = sessions.filter((s) => s.attention);
+    const waiting = awaiting.filter((s) => s.status === 'waiting').length;
+    updateAttentionIndicators(waiting, awaiting.length - waiting);
   }, [sessions]);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const [pRaw, sRaw, tRaw, aRaw] = await Promise.all([
+        const [pRaw, sRaw, tRaw, aRaw, eRaw] = await Promise.all([
           api<unknown>('/api/projects'),
           api<unknown>('/api/sessions'),
           api<unknown>('/api/tasks'),
           api<unknown>('/api/agents'),
+          // Serveur antérieur aux epics (machine distante) : aucun.
+          api<unknown>('/api/epics').catch(() => []),
         ]);
         if (cancelled) return;
         setProjects(parseProjectList(pRaw));
         setSessions(sortSessions(parseSessionList(sRaw)));
         setTasks(parseTaskList(tRaw));
+        setEpics(parseEpicList(eRaw));
         setAgents(parseAgentInfoList(aRaw));
       } catch {
         /* le snapshot WS prendra le relais */
@@ -159,6 +202,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             setProjects(msg.projects);
             setSessions(sortSessions(msg.sessions));
             setTasks(msg.tasks);
+            setEpics(msg.epics);
             break;
           case 'session':
             setSessions((list) => upsertSession(list, msg.session));
@@ -174,13 +218,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           case 'task-deleted':
             setTasks((list) => list.filter((t) => t.id !== msg.id));
             break;
+          case 'epic':
+            setEpics((list) => upsertEpic(list, msg.epic));
+            break;
+          case 'epic-deleted':
+            setEpics((list) => list.filter((e) => e.id !== msg.id));
+            break;
           case 'projects':
             setProjects(msg.projects);
+            break;
+          case 'peers':
+            setPeersVersion((n) => n + 1);
             break;
           case 'alert':
             setSessions((list) => upsertSession(list, msg.session));
             showAlertNotification(msg.session);
-            if (!mutedRef.current) beep();
+            if (!mutedRef.current) playAlert(msg.session.status);
             break;
         }
       });
@@ -220,6 +273,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setProjects((list) => list.filter((p) => p.id !== id));
     setSessions((list) => list.filter((s) => s.projectId !== id));
     setTasks((list) => list.filter((t) => t.projectId !== id));
+    setEpics((list) => list.filter((e) => e.projectId !== id));
   }, []);
 
   const createSession = useCallback(
@@ -255,7 +309,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const purgeProjectSessions = useCallback(async (projectId: string): Promise<void> => {
     await api<unknown>(`/api/projects/${projectId}/purge`, { method: 'POST' });
-    setSessions((list) => list.filter((s) => s.projectId !== projectId || (s.status !== 'exited' && s.status !== 'idle')));
+    const now = Date.now();
+    setSessions((list) => list.filter((s) => s.projectId !== projectId || !isDormant(s, now)));
   }, []);
 
   const renameSession = useCallback(async (id: string, title: string): Promise<Session> => {
@@ -270,7 +325,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const updateProject = useCallback(
-    async (id: string, patch: { name?: string; path?: string }): Promise<Project> => {
+    async (id: string, patch: { name?: string; path?: string; color?: string | null }): Promise<Project> => {
       const raw = await api<unknown>(`/api/projects/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
@@ -291,10 +346,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const createTask = useCallback(
-    async (projectId: string, text: string, sourceSessionId?: string): Promise<Task> => {
+    async (projectId: string, text: string, sourceSessionId?: string, epicId?: string | null): Promise<Task> => {
       const raw = await api<unknown>(`/api/projects/${projectId}/tasks`, {
         method: 'POST',
-        body: JSON.stringify({ text, sourceSessionId }),
+        body: JSON.stringify({ text, sourceSessionId, epicId: epicId ?? null }),
       });
       const task = parseTask(raw);
       if (!task) throw new Error('Réponse tâche invalide');
@@ -305,7 +360,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   );
 
   const updateTask = useCallback(
-    async (id: string, patch: { text?: string; status?: TaskStatus; dependsOn?: string[] }): Promise<Task> => {
+    async (id: string, patch: TaskPatch): Promise<Task> => {
       const raw = await api<unknown>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
       const task = parseTask(raw);
       if (!task) throw new Error('Réponse tâche invalide');
@@ -336,6 +391,44 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const createEpic = useCallback(async (projectId: string, title: string, description?: string): Promise<Epic> => {
+    const raw = await api<unknown>(`/api/projects/${projectId}/epics`, {
+      method: 'POST',
+      body: JSON.stringify({ title, description }),
+    });
+    const epic = parseEpic(raw);
+    if (!epic) throw new Error('Réponse epic invalide');
+    setEpics((list) => upsertEpic(list, epic));
+    return epic;
+  }, []);
+
+  const updateEpic = useCallback(async (id: string, patch: { title?: string; description?: string }): Promise<Epic> => {
+    const raw = await api<unknown>(`/api/epics/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+    const epic = parseEpic(raw);
+    if (!epic) throw new Error('Réponse epic invalide');
+    setEpics((list) => upsertEpic(list, epic));
+    return epic;
+  }, []);
+
+  const deleteEpic = useCallback(async (id: string): Promise<void> => {
+    await api<unknown>(`/api/epics/${id}`, { method: 'DELETE' });
+    setEpics((list) => list.filter((e) => e.id !== id));
+    setTasks((list) => list.map((t) => (t.epicId === id ? { ...t, epicId: null } : t)));
+  }, []);
+
+  const startEpic = useCallback(async (id: string, spec: LaunchSpec): Promise<Session> => {
+    const raw = await api<{ tasks: unknown; session: unknown }>(`/api/epics/${id}/start`, {
+      method: 'POST',
+      body: JSON.stringify(spec),
+    });
+    const session = parseSession(raw.session);
+    if (!session) throw new Error('Réponse session invalide');
+    const started = parseTaskList(raw.tasks);
+    setSessions((list) => upsertSession(list, session));
+    setTasks((list) => started.reduce(upsertTask, list));
+    return session;
+  }, []);
+
   const markSeen = useCallback(async (id: string): Promise<void> => {
     setSessions((list) =>
       list.map((s) => (s.id === id ? { ...s, attention: false } : s)),
@@ -352,10 +445,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       projects,
       sessions,
       tasks,
+      epics,
       agents,
       connected,
+      peersVersion,
       muted,
       setMuted,
+      desktopNotif,
+      setDesktopNotif,
       createProject,
       deleteProject,
       createSession,
@@ -371,15 +468,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       updateTask,
       deleteTask,
       startTask,
+      createEpic,
+      updateEpic,
+      deleteEpic,
+      startEpic,
     }),
     [
       projects,
       sessions,
       tasks,
+      epics,
       agents,
       connected,
+      peersVersion,
       muted,
       setMuted,
+      desktopNotif,
+      setDesktopNotif,
       createProject,
       deleteProject,
       createSession,
@@ -395,6 +500,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       updateTask,
       deleteTask,
       startTask,
+      createEpic,
+      updateEpic,
+      deleteEpic,
+      startEpic,
     ],
   );
 

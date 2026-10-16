@@ -1,12 +1,27 @@
 import type { Agent, Mode, Session, Status } from './types.ts';
 
-export const STATUS_LABEL: Record<Status, string> = {
+// Statut affiché : une session inactive ou terminée depuis plus d'une heure passe « en sommeil »,
+// signe qu'on n'en aura sans doute plus besoin ; ce sont celles que la purge supprime.
+export type DisplayStatus = Status | 'dormant';
+
+export const DORMANT_AFTER_MS = 60 * 60_000;
+
+export const STATUS_LABEL: Record<DisplayStatus, string> = {
   starting: 'Démarrage',
   running: 'En cours',
   waiting: 'En attente',
   idle: 'Inactif',
   exited: 'Terminé',
+  dormant: 'En sommeil',
 };
+
+export function isDormant(session: Pick<Session, 'status' | 'updatedAt'>, now: number): boolean {
+  return (session.status === 'idle' || session.status === 'exited') && now - session.updatedAt >= DORMANT_AFTER_MS;
+}
+
+export function displayStatus(session: Pick<Session, 'status' | 'updatedAt'>, now: number): DisplayStatus {
+  return isDormant(session, now) ? 'dormant' : session.status;
+}
 
 export const MODE_LABEL: Record<Mode, string> = {
   auto: '⏵⏵ auto mode on',

@@ -133,6 +133,8 @@ Cerebro combine plusieurs signaux, car les trois agents ne publient pas les mêm
   numérotés et confirmations `y/n` que les hooks ne remontent pas.
 - Après 20 secondes sans sortie, une session encore marquée active devient inactive
   par heuristique. Ce signal de secours ne déclenche pas d'alerte.
+- Une session inactive ou terminée depuis plus d'une heure passe « en sommeil ».
+  Le bouton « Purger les sessions en sommeil » d'un projet ne supprime que celles-ci.
 
 Les alertes fiables sont dédoublonnées. Une saisie validée par Entrée remet une
 session en cours, sans effacer une alerte tant que la session n'a pas été ouverte.
@@ -175,6 +177,31 @@ mettre ses findings dans le backlog, puis les traiter séparément.
 la tâche. La tâche passe alors « En cours » et affiche un lien vers sa session.
 Marquez-la « Terminée » une fois le travail validé ; les tâches terminées sont
 masquées par défaut.
+
+### Epics
+
+Un epic regroupe des tâches liées à un même sujet : elles s'affichent dans un
+bloc commun, numérotées dans l'ordre de leurs dépendances, avec l'avancement.
+« Traiter l'epic » confie toutes ses tâches ouvertes à une seule session : le
+prompt les liste dans cet ordre, avec la description de l'epic, et demande à
+l'agent d'exécuter `cerebro-backlog --done <id>` après chacune, ce qui la
+marque terminée dans le backlog. Le lancement est refusé si une tâche de l'epic
+attend une tâche hors de l'epic non terminée, ou si une session active traite
+déjà l'une de ses tâches.
+
+Un epic se crée avant ou après ses tâches, depuis l'interface (« Nouvel epic »,
+puis le sélecteur « Epic » d'une tâche ou du champ d'ajout) ou par l'agent :
+
+```sh
+cerebro-backlog --epic-create "Titre" --description "Contexte"   # epic vide
+printf 'Tâche 1\n---\nafter: 1\nTâche 2\n' | cerebro-backlog --new-epic "Titre"
+cerebro-backlog --epic <epic-id> "Tâche"       # ajout dans un epic existant
+cerebro-backlog --epic-add <epic-id> <id>...   # rattacher des tâches existantes
+```
+
+Sur l'entrée standard, une ligne d'en-tête `epic: <epic-id>` (ou `epic: none`)
+fixe l'epic d'une tâche. `--epics`, `--epic-remove`, `--epic-edit` et
+`--epic-delete` complètent la gestion ; supprimer un epic garde ses tâches.
 
 ## Modes de permission
 
@@ -224,6 +251,29 @@ chaque machine est en ligne et combien de sessions attendent une réponse. Les a
 des machines non affichées déclenchent aussi la notification du navigateur et le bip.
 Les routes d'agents `/api/hook`, `/api/notify` et `/api/backlog` ne sont jamais relayées. Un jeton refusé ou une
 machine injoignable renvoie une erreur 502 explicite.
+
+**Slack partagé entre machines.** Si plusieurs machines utilisent le même bot Slack, elles
+lisent la même conversation. Pour qu'une commande `projet: …` ne soit pas exécutée deux
+fois, les instances échangent toutes les 15 s la liste de leurs projets via
+`POST /api/peer/sync`. Il suffit qu'une seule des deux déclare l'autre dans `remotes.json`.
+Un projet est commun quand il porte le même nom et le même `origin` git (`git@host:a/b.git`
+et `https://host/a/b` sont équivalents) :
+
+- une seule machine traite ses commandes Slack. Quand le projet apparaît sur une deuxième
+  machine, la machine dont le projet est le plus récent (créé ou renommé en dernier) prend
+  la main automatiquement. Un avertissement s'affiche des deux côtés, et un message Slack
+  est envoyé ;
+- le switch « Slack » de la vue projet permet de prendre la main à tout moment depuis
+  l'autre machine. On ne peut pas rendre la main : il faut la prendre ailleurs. La machine
+  qui perd la main ignore les commandes de ce projet et abandonne leurs fils. Elle continue
+  d'envoyer ses alertes de session et de suivre leurs fils ;
+- si un projet du même nom pointe vers un autre dépôt, ses commandes Slack sont bloquées
+  sur les deux machines jusqu'à ce que l'un des projets soit renommé. Une seule machine le
+  signale dans le fil.
+
+L'état est conservé dans `$CEREBRO_DATA_DIR/peers.json`, et l'identifiant de l'instance
+dans `instance-id`. Le nom affiché pour chaque machine vient de `CEREBRO_MACHINE_NAME`
+(par défaut le nom d'hôte). `help` et `list` restent traités par toutes les machines.
 
 **macOS.** [`scripts/cerebro.plist`](scripts/cerebro.plist) est un agent launchd. Adaptez
 `WorkingDirectory`, copiez-le dans `~/Library/LaunchAgents/`, puis lancez

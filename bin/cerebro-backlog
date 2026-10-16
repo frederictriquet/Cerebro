@@ -7,22 +7,49 @@ Ajouter des tâches au backlog du projet de la session :
   cerebro-backlog < taches.txt             tâches séparées par une ligne « --- »
   cerebro-backlog -- "-tâche"              « -- » : les arguments suivants sont des tâches
 
-  Sur l'entrée standard, une tâche peut commencer par une ligne de dépendances :
-    after: 1 3 <id>
-  où un nombre désigne une tâche précédente du même envoi (à partir de 1) et
-  <id> une tâche existante du projet. La commande affiche l'identifiant de
-  chaque tâche créée.
+  Sur l'entrée standard, une tâche peut commencer par des lignes d'en-tête :
+    after: 1 3 <id>      dépendances : un nombre désigne une tâche précédente du
+                         même envoi (à partir de 1), <id> une tâche existante
+    epic: <epic-id>      range la tâche dans cet epic (« epic: none » : aucun)
+  La commande affiche l'identifiant de chaque tâche créée.
+
+  Options d'ajout, avant les tâches :
+    --epic <epic-id>              range toutes les tâches dans cet epic
+    --new-epic "Titre" [--description "Texte"]
+                                  crée un epic et y range toutes les tâches
+
+Epics (regroupement de tâches liées à un même sujet, traitables d'un bloc
+par une seule session depuis l'interface) :
+  --epics                          epics du projet et leurs tâches
+  --epic-create "Titre" [--description "Texte"] [<tâche-id>...]
+                                   crée un epic, vide ou avec des tâches existantes
+  --epic-add <epic-id> <tâche-id> [<tâche-id>...]
+                                   range des tâches existantes dans l'epic
+  --epic-remove <tâche-id> [<tâche-id>...]
+                                   sort des tâches de leur epic
+  --epic-edit <epic-id> [--title "Titre"] [--description "Texte"]
+                                   modifie le titre ou la description
+  --epic-delete <epic-id>          supprime un epic créé par cette session
+                                   (ses tâches restent dans le backlog)
 
 Autres commandes :
-  --list                       tâches du projet : identifiant, statut, dépendances
+  --list                       tâches du projet : identifiant, statut, epic, dépendances
   --depends <id> [<id>...]     remplace les dépendances de la tâche <id>
                                (sans autre identifiant : les retire toutes)
+  --done <id>                  clôt une tâche confiée à cette session (traitement
+                               d'un epic : à exécuter après chaque tâche terminée)
   --delete <id>                supprime une tâche créée par cette session, non démarrée
   --help, -h                   cette aide
 `;
 
 const { CEREBRO_SESSION_ID, CEREBRO_TOKEN, CEREBRO_URL } = process.env;
+// Sortie lue par `head` & co : un tube refermé n'est pas une erreur.
+process.stdout.on('error', (error) => {
+  if (error.code === 'EPIPE') process.exit(process.exitCode ?? 0);
+  throw error;
+});
 const DEPENDENCY_LINE = /^after\s*:\s*(.*)$/i;
+const EPIC_LINE = /^epic\s*:\s*(\S+)\s*$/i;
 
 async function call(method, suffix, body) {
   const url = `${CEREBRO_URL.replace(/\/+$/, '')}/api/backlog/${encodeURIComponent(CEREBRO_SESSION_ID)}${suffix}`;
@@ -54,18 +81,51 @@ function firstLine(text) {
   return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }
 
-// Sur l'entrée standard, une ligne « after: … » en tête de tâche déclare ses dépendances.
+// Sur l'entrée standard, des lignes « after: … » et « epic: … » en tête de tâche déclarent ses
+// dépendances et son epic.
 function parseBlock(block) {
-  const text = block.trim();
-  const [head, ...rest] = text.split('\n');
-  const match = DEPENDENCY_LINE.exec(head);
-  if (match === null) return text;
-  const dependsOn = match[1].split(/[\s,]+/).filter((dep) => dep !== '')
-    .map((dep) => (/^\d+$/.test(dep) ? Number(dep) : dep));
-  return { text: rest.join('\n').trim(), dependsOn };
+  const lines = block.trim().split('\n');
+  const task = {};
+  for (;;) {
+    const dependencies = DEPENDENCY_LINE.exec(lines[0] ?? '');
+    const epic = EPIC_LINE.exec(lines[0] ?? '');
+    if (dependencies !== null) {
+      task.dependsOn = dependencies[1].split(/[\s,]+/).filter((dep) => dep !== '')
+        .map((dep) => (/^\d+$/.test(dep) ? Number(dep) : dep));
+    } else if (epic !== null) {
+      task.epicId = epic[1].toLowerCase() === 'none' ? null : epic[1];
+    } else {
+      break;
+    }
+    lines.shift();
+  }
+  const text = lines.join('\n').trim();
+  return Object.keys(task).length === 0 ? text : { text, ...task };
 }
 
-async function add(args) {
+// Extrait les options « --nom valeur » listées de `args` ; renvoie les options et le reste.
+function takeOptions(args, names) {
+  const options = {};
+  const rest = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const name = args[i].startsWith('--') ? args[i].slice(2) : null;
+    if (name !== null && names.includes(name)) {
+      if (i + 1 >= args.length) throw new Error(`--${name} attend une valeur`);
+      options[name] = args[i + 1];
+      i += 1;
+    } else {
+      rest.push(args[i]);
+    }
+  }
+  return { options, rest };
+}
+
+function epicLabel(epics, id) {
+  const epic = epics.find((e) => e.id === id);
+  return epic === undefined ? id : `${firstLine(epic.title)} (${id})`;
+}
+
+async function add(args, epic) {
   let tasks = args;
   if (tasks.length === 0) {
     let input = '';
@@ -76,24 +136,52 @@ async function add(args) {
     tasks = tasks.map((task) => task.trim()).filter((task) => task !== '');
   }
   if (tasks.length === 0) throw new Error('aucune tâche (argument ou entrée standard, séparateur « --- ») ; voir --help');
-  const { tasks: created } = await call('POST', '', { tasks });
+  const { tasks: created, epic: newEpic } = await call('POST', '', epic === undefined ? { tasks } : { tasks, epic });
+  if (newEpic !== null && newEpic !== undefined) process.stdout.write(`Epic créé : ${newEpic.id}  ${firstLine(newEpic.title)}\n`);
   process.stdout.write(`${created.length} tâche(s) ajoutée(s) au backlog du projet :\n`);
   created.forEach((task, index) => {
     const deps = task.dependsOn.length > 0 ? ` (après ${task.dependsOn.join(', ')})` : '';
-    process.stdout.write(`${index + 1}. ${task.id}  ${firstLine(task.text)}${deps}\n`);
+    const inEpic = task.epicId !== null && task.epicId !== undefined ? ` [epic ${task.epicId}]` : '';
+    process.stdout.write(`${index + 1}. ${task.id}  ${firstLine(task.text)}${deps}${inEpic}\n`);
   });
 }
 
 async function list() {
-  const tasks = await call('GET', '');
+  const [tasks, epics] = await Promise.all([call('GET', ''), call('GET', '/epics')]);
   if (tasks.length === 0) {
     process.stdout.write('Backlog vide.\n');
     return;
   }
   for (const task of tasks) {
     const deps = task.dependsOn.length > 0 ? `\n    après : ${task.dependsOn.join(', ')}` : '';
-    const mine = task.mine ? ' [cette session]' : '';
-    process.stdout.write(`${task.id}  ${task.status}${mine}  ${firstLine(task.text)}${deps}\n`);
+    const inEpic = task.epicId ? `\n    epic : ${epicLabel(epics, task.epicId)}` : '';
+    const mine = task.mine ? ' [créée par cette session]' : '';
+    const assigned = task.assigned ? ' [confiée à cette session]' : '';
+    process.stdout.write(`${task.id}  ${task.status}${mine}${assigned}  ${firstLine(task.text)}${inEpic}${deps}\n`);
+  }
+}
+
+async function listEpics() {
+  const [epics, tasks] = await Promise.all([call('GET', '/epics'), call('GET', '')]);
+  if (epics.length === 0) {
+    process.stdout.write('Aucun epic.\n');
+    return;
+  }
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  for (const epic of epics) {
+    const mine = epic.mine ? ' [cette session]' : '';
+    process.stdout.write(`${epic.id}${mine}  ${firstLine(epic.title)}\n`);
+    if (epic.description !== '') process.stdout.write(`    ${firstLine(epic.description)}\n`);
+    for (const id of epic.tasks) {
+      const task = byId.get(id);
+      process.stdout.write(`    - ${id}  ${task?.status ?? '?'}  ${task === undefined ? '' : firstLine(task.text)}\n`);
+    }
+  }
+}
+
+async function setEpic(epicId, taskIds) {
+  for (const id of taskIds) {
+    await call('PATCH', `/tasks/${encodeURIComponent(id)}`, { epicId });
   }
 }
 
@@ -106,6 +194,61 @@ async function main(argv) {
       return;
     case '--list':
       return list();
+    case '--epics':
+      return listEpics();
+    case '--epic-create': {
+      const { options, rest: positional } = takeOptions(rest, ['description']);
+      const [title, ...taskIds] = positional;
+      if (title === undefined || title.startsWith('--')) throw new Error('--epic-create "Titre" [--description "Texte"] [<tâche-id>...]');
+      const epic = await call('POST', '/epics', { title, description: options.description, taskIds });
+      process.stdout.write(`Epic créé : ${epic.id}  ${firstLine(epic.title)}${taskIds.length > 0 ? ` (${taskIds.length} tâche(s))` : ''}\n`);
+      return;
+    }
+    case '--epic-add': {
+      const [epicId, ...taskIds] = rest;
+      if (epicId === undefined || taskIds.length === 0) throw new Error('--epic-add <epic-id> <tâche-id> [<tâche-id>...]');
+      await setEpic(epicId, taskIds);
+      process.stdout.write(`${taskIds.length} tâche(s) rangée(s) dans l'epic ${epicId}.\n`);
+      return;
+    }
+    case '--epic-remove': {
+      if (rest.length === 0) throw new Error('--epic-remove <tâche-id> [<tâche-id>...]');
+      await setEpic(null, rest);
+      process.stdout.write(`${rest.length} tâche(s) sortie(s) de leur epic.\n`);
+      return;
+    }
+    case '--epic-edit': {
+      const { options, rest: positional } = takeOptions(rest, ['title', 'description']);
+      if (positional.length !== 1 || Object.keys(options).length === 0) {
+        throw new Error('--epic-edit <epic-id> [--title "Titre"] [--description "Texte"]');
+      }
+      const epic = await call('PATCH', `/epics/${encodeURIComponent(positional[0])}`, options);
+      process.stdout.write(`Epic ${epic.id} : ${firstLine(epic.title)}\n`);
+      return;
+    }
+    case '--epic-delete': {
+      if (rest.length !== 1) throw new Error('--epic-delete <epic-id>');
+      await call('DELETE', `/epics/${encodeURIComponent(rest[0])}`);
+      process.stdout.write(`Epic ${rest[0]} supprimé (ses tâches restent dans le backlog).\n`);
+      return;
+    }
+    case '--done': {
+      if (rest.length !== 1) throw new Error('--done <id>');
+      await call('POST', `/tasks/${encodeURIComponent(rest[0])}/done`, {});
+      process.stdout.write(`${rest[0]} terminée.\n`);
+      return;
+    }
+    case '--epic': {
+      const [epicId, ...tasks] = rest;
+      if (epicId === undefined) throw new Error('--epic <epic-id> [tâches]');
+      return addFrom(tasks, epicId);
+    }
+    case '--new-epic': {
+      const { options, rest: positional } = takeOptions(rest, ['description']);
+      const [title, ...tasks] = positional;
+      if (title === undefined) throw new Error('--new-epic "Titre" [--description "Texte"] [tâches]');
+      return addFrom(tasks, { title, description: options.description });
+    }
     case '--depends': {
       if (rest.length === 0) throw new Error('--depends <id> [<id>...]');
       const [id, ...dependsOn] = rest;
@@ -124,13 +267,19 @@ async function main(argv) {
     case '--':
       return add(rest);
     default:
-      // Une option inconnue est refusée plutôt que d'être ajoutée comme tâche.
-      const option = argv.find((arg) => arg.startsWith('-'));
-      if (option !== undefined) {
-        throw new Error(`option inconnue « ${option} » ; voir --help (« -- » pour une tâche commençant par « - »)`);
-      }
-      return add(argv);
+      return addFrom(argv);
   }
+}
+
+// Ajout de tâches : « -- » protège celles qui commencent par « - ».
+function addFrom(args, epic) {
+  if (args[0] === '--') return add(args.slice(1), epic);
+  // Une option inconnue est refusée plutôt que d'être ajoutée comme tâche.
+  const option = args.find((arg) => arg.startsWith('-'));
+  if (option !== undefined) {
+    throw new Error(`option inconnue « ${option} » ; voir --help (« -- » pour une tâche commençant par « - »)`);
+  }
+  return add(args, epic);
 }
 
 if (CEREBRO_SESSION_ID === undefined || CEREBRO_TOKEN === undefined || CEREBRO_URL === undefined) {

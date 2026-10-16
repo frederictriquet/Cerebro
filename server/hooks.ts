@@ -70,6 +70,8 @@ export function handleHook(
     return;
   }
   if (event === 'UserPromptSubmit' || event === 'PostToolUse') {
+    // PostToolUse also follows the cerebro-notify call itself: only a new prompt answers the question.
+    if (event === 'UserPromptSubmit') sessions.clearAsked(sessionId);
     sessions.setPendingQuestions(sessionId, null);
     sessions.setRunning(sessionId);
     return;

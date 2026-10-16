@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { AGENT_LABEL, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
+import { AGENT_LABEL, displayStatus, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { go, href, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { StatusDot } from './StatusDot.tsx';
@@ -91,14 +91,15 @@ export function HomeView() {
             {live.map((session) => {
               const project = projects.find((p) => p.id === session.projectId);
               const awaiting = isAwaiting(session);
+              const shown = displayStatus(session, now);
               return (
                 <li key={session.id} className="session-row">
                   <div className="session-row-main">
                     <a href={href(`#/s/${session.id}`)} className="session-main">
-                      <StatusDot status={session.status} title={STATUS_LABEL[session.status]} />
+                      <StatusDot status={shown} title={STATUS_LABEL[shown]} />
                       <span className="session-row-title">{sessionTitle(session.title)}</span>
                       <span className="pill">{AGENT_LABEL[session.agent]}</span>
-                      <span className={`pill status ${session.status}`}>{STATUS_LABEL[session.status]}</span>
+                      <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
                       <span className="meta">{relativeTime(session.updatedAt, now)}</span>
                     </a>
                     {awaiting && session.attentionReason ? (

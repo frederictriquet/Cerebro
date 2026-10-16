@@ -9,7 +9,7 @@ import {
   type SetStateAction,
 } from 'react';
 import { getMachines, wsUrl, type MachinesInfo } from './api.ts';
-import { beep, readMuted, showAlertNotification } from './notify.ts';
+import { playAlert, readMuted, showAlertNotification } from './notify.ts';
 import { goMachine, useMachine } from './route.ts';
 import { useStore } from './store.tsx';
 import { parseEventsMessage, type Session } from './types.ts';
@@ -17,6 +17,7 @@ import { parseEventsMessage, type Session } from './types.ts';
 interface WatchState {
   online: boolean;
   attention: number;
+  waiting: number;
 }
 
 interface WatchTarget {
@@ -33,12 +34,22 @@ interface MachineWatch {
 const MACHINE_ID = /^[a-z0-9-]{1,32}$/;
 const MachineWatchContext = createContext<MachineWatch>({ info: null, hidden: {} });
 
-function attentionCount(list: Session[]): number {
-  let count = 0;
+interface AttentionCounts {
+  /** Sessions réclamant l'attention, tous types confondus. */
+  total: number;
+  /** Parmi elles, celles en attente d'une réponse/permission (type « question »). */
+  waiting: number;
+}
+
+function countAttention(list: Session[]): AttentionCounts {
+  let total = 0;
+  let waiting = 0;
   for (const session of list) {
-    if (session.attention) count += 1;
+    if (!session.attention) continue;
+    total += 1;
+    if (session.status === 'waiting') waiting += 1;
   }
-  return count;
+  return { total, waiting };
 }
 
 function upsertSession(list: Session[], session: Session): Session[] {
@@ -86,11 +97,18 @@ function startWatcher(
 
   const publish = (online: boolean): void => {
     if (stopped) return;
-    const attention = attentionCount(sessions);
+    const { total, waiting } = countAttention(sessions);
     setState((prev) => {
       const currentState = prev[target.key];
-      if (currentState && currentState.online === online && currentState.attention === attention) return prev;
-      return { ...prev, [target.key]: { online, attention } };
+      if (
+        currentState &&
+        currentState.online === online &&
+        currentState.attention === total &&
+        currentState.waiting === waiting
+      ) {
+        return prev;
+      }
+      return { ...prev, [target.key]: { online, attention: total, waiting } };
     });
   };
 
@@ -130,7 +148,7 @@ function startWatcher(
           sessions = upsertSession(sessions, msg.session);
           publish(true);
           showAlertNotification(msg.session, target.machineId);
-          if (!readMuted()) beep();
+          if (!readMuted()) playAlert(msg.session.status);
           break;
         case 'projects':
           break;
@@ -218,11 +236,21 @@ export function MachineSwitcher() {
         const active = pill.id === current;
         const watched = hidden[pill.id ?? 'local'];
         const online = active ? connected : (watched?.online ?? false);
-        const attention = active ? attentionCount(sessions) : (watched?.attention ?? 0);
+        const counts = active
+          ? countAttention(sessions)
+          : { total: watched?.attention ?? 0, waiting: watched?.waiting ?? 0 };
+        const attention = counts.total;
+        // Priorité au type « question » : une seule session en attente teinte la machine en orange.
+        const tone = counts.waiting > 0 ? 'waiting' : 'idle';
         const hash = pill.id === null ? '#/' : `#/m/${pill.id}/`;
         const status = online ? 'en ligne' : 'hors ligne';
-        const title =
-          attention > 0 ? `${pill.name} — ${status} — ${attention} à traiter` : `${pill.name} — ${status}`;
+        const detail =
+          attention > 0
+            ? counts.waiting > 0
+              ? `${counts.waiting} question(s), ${attention} à traiter`
+              : `${attention} terminée(s)`
+            : null;
+        const title = detail ? `${pill.name} — ${status} — ${detail}` : `${pill.name} — ${status}`;
         return (
           <a
             key={pill.id ?? 'local'}
@@ -237,7 +265,12 @@ export function MachineSwitcher() {
           >
             <span className={`machine-dot${online ? ' on' : ''}`} aria-hidden="true" />
             <span className="machine-name">{pill.name}</span>
-            {attention > 0 ? <span className="machine-badge">{attention}</span> : null}
+            {attention > 0 ? (
+              <span className={`machine-badge ${tone}`} aria-label={detail ?? undefined}>
+                {tone === 'waiting' ? '? ' : null}
+                {attention}
+              </span>
+            ) : null}
           </a>
         );
       })}

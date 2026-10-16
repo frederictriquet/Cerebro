@@ -76,6 +76,12 @@ interface ExitRecord {
 }
 
 const IDLE_DELAY_MS = 20_000;
+// Même seuil que DORMANT_AFTER_MS côté web : au-delà, la session est « en sommeil » et purgeable.
+const DORMANT_AFTER_MS = 60 * 60_000;
+
+function isDormant(session: Session, now: number): boolean {
+  return (session.status === 'idle' || session.status === 'exited') && now - session.updatedAt >= DORMANT_AFTER_MS;
+}
 const SCREEN_CHECK_DELAY_MS = 2_000;
 const CATCH_UP_DELAY_MS = 4_000;
 // Interactive dialogs that hooks do not report (folder trust, y/n confirmations, numbered menus...).
@@ -174,6 +180,8 @@ export class SessionManager {
   readonly db: CerebroDatabase;
   private readonly runtimes = new Map<string, Runtime>();
   private readonly questions = new Map<string, AgentQuestion[]>();
+  /** Free-text question sent by the agent (`cerebro-notify --ask`), unanswered yet. */
+  private readonly askedQuestions = new Map<string, string>();
   private readonly eventListeners = new Set<(event: SessionEvent) => void>();
   private shuttingDown = false;
 
@@ -484,7 +492,10 @@ export class SessionManager {
 
   private handleOscMessage(id: string, message: string): void {
     const waiting = /approv|permission|confirm/i.test(message);
-    this.setReliableState(id, waiting ? 'waiting' : 'idle', message || (waiting ? 'Permission demandée' : 'Tour terminé'));
+    // Claude émet « Claude is waiting for your input » en fin de tour : c'est un idle, pas une question.
+    const genericIdle = /waiting for your input/i.test(message);
+    const reason = waiting ? message || 'Permission demandée' : genericIdle || !message ? 'Tour terminé' : message;
+    this.setReliableState(id, waiting ? 'waiting' : 'idle', reason);
   }
 
   private scheduleIdleCheck(id: string): void {
@@ -573,9 +584,13 @@ export class SessionManager {
     this.setReliableState(id, 'waiting', question.slice(0, 160));
   }
 
-  setReliableState(id: string, status: 'waiting' | 'idle', reason: string): Session | null {
+  setReliableState(id: string, requested: 'waiting' | 'idle', requestedReason: string): Session | null {
     const session = this.db.getSession(id);
     if (session === null || session.status === 'exited') return null;
+    // The agent asked through cerebro-notify then ended its turn: it is waiting for an answer, not done.
+    const asked = requested === 'idle' ? this.askedQuestions.get(id) : undefined;
+    const status = asked === undefined ? requested : 'waiting';
+    const reason = asked === undefined ? requestedReason : `Question : ${asked}`.slice(0, 160);
     if (session.status === status && session.attentionReason === reason) return session;
     // Several signals often report the same transition (codex OSC 9 + notify, Claude Stop + idle_prompt):
     // only the first one alerts, the others just refine the reason.
@@ -599,6 +614,16 @@ export class SessionManager {
   /** Structured questions currently shown by the agent (AskUserQuestion), if any. */
   pendingQuestions(id: string): AgentQuestion[] | null {
     return this.questions.get(id) ?? null;
+  }
+
+  /** Called on `cerebro-notify --ask`: the end of the turn will then show as a question. */
+  markAsked(id: string, question: string): void {
+    this.askedQuestions.set(id, question.replace(/\s+/g, ' ').trim());
+  }
+
+  /** The user answered (prompt submitted): the next end of turn is a plain one again. */
+  clearAsked(id: string): void {
+    this.askedQuestions.delete(id);
   }
 
   setPendingQuestions(id: string, questions: AgentQuestion[] | null): void {
@@ -647,7 +672,10 @@ export class SessionManager {
     const runtime = this.runtimes.get(id);
     if (runtime === undefined || !this.sendHolder(runtime, { type: 'input', data })) return false;
     const session = this.db.getSession(id);
-    if (data.includes('\r') && (session?.status === 'waiting' || session?.status === 'idle')) this.setRunning(id);
+    if (data.includes('\r') && (session?.status === 'waiting' || session?.status === 'idle')) {
+      this.clearAsked(id);
+      this.setRunning(id);
+    }
     return true;
   }
 
@@ -709,7 +737,7 @@ export class SessionManager {
     if (this.db.getProject(projectId) === null) return null;
     const inactive = this.db
       .listProjectSessions(projectId)
-      .filter((session) => session.status === 'exited' || session.status === 'idle');
+      .filter((session) => isDormant(session, Date.now()));
     const results = await Promise.allSettled(inactive.map((session) => this.delete(session.id)));
     const failed = results.filter((result) => result.status === 'rejected');
     if (failed.length > 0) {
@@ -725,6 +753,7 @@ export class SessionManager {
     this.db.deleteSession(id);
     this.cleanupAllArtifacts(id);
     this.questions.delete(id);
+    this.askedQuestions.delete(id);
     this.emit({ type: 'session-deleted', id });
     return true;
   }

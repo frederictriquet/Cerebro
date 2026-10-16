@@ -1,12 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { setApiBase, subscribeUnauthorized } from './api.ts';
+import { dismissPeerNotice, getPeerNotices, setApiBase, subscribeUnauthorized, type PeerNotice } from './api.ts';
 import { HomeView } from './HomeView.tsx';
 import { ProjectTabs } from './ProjectTabs.tsx';
 import { ProjectView } from './ProjectView.tsx';
 import { SessionView } from './SessionView.tsx';
 import { MachineWatchProvider } from './MachineSwitcher.tsx';
 import { Sidebar } from './Sidebar.tsx';
-import { StoreProvider } from './store.tsx';
+import { StoreProvider, useStore } from './store.tsx';
 import { useMachine, useRoute } from './route.ts';
 
 function TokenScreen() {
@@ -63,6 +63,51 @@ function TokenScreen() {
   );
 }
 
+// Avertissements de prise de main Slack entre machines (attribution automatique, perte, conflit de nom).
+function PeerNotices() {
+  const { peersVersion } = useStore();
+  const [notices, setNotices] = useState<PeerNotice[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = (): void => {
+      void getPeerNotices()
+        .then((list) => {
+          if (!cancelled) setNotices(list);
+        })
+        .catch(() => {
+          /* machine sans cette fonctionnalité : rien à afficher */
+        });
+    };
+    load();
+    const timer = window.setInterval(load, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [peersVersion]);
+
+  if (notices.length === 0) return null;
+  const dismiss = (id: string): void => {
+    setNotices((list) => list.filter((notice) => notice.id !== id));
+    void dismissPeerNotice(id).catch(() => {
+      /* réapparaîtra au prochain rechargement */
+    });
+  };
+  return (
+    <div className="peer-notices">
+      {notices.map((notice) => (
+        <div key={notice.id} className="peer-notice" role="status">
+          <span>{notice.text}</span>
+          <button type="button" className="btn" onClick={() => dismiss(notice.id)}>
+            OK
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Shell() {
   const route = useRoute();
   const [navOpen, setNavOpen] = useState(false);
@@ -92,6 +137,7 @@ function Shell() {
       ) : null}
       <Sidebar route={route} onNavigate={() => setNavOpen(false)} />
       <main className="main">
+        <PeerNotices />
         <ProjectTabs route={route} />
         {route.kind === 'project' ? (
           <ProjectView projectId={route.projectId} />

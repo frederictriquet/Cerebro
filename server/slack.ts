@@ -11,6 +11,7 @@ import {
   SLACK_USER,
 } from './config.ts';
 import type { Agent, CerebroDatabase, Session } from './db.ts';
+import { normalizeProjectName, type PeerSync } from './peers.ts';
 import { formatQuestions, interpretAnswer } from './questions.ts';
 import type { AgentQuestion } from './questions.ts';
 import type { SessionEvent, SessionManager } from './sessions.ts';
@@ -93,6 +94,8 @@ interface ActiveThread {
   moreTurns: boolean;
   // Questions of the AskUserQuestion dialog this message shows: numeric replies are mapped onto them.
   questions: AgentQuestion[] | null;
+  // Thread of a DM command: dropped when another machine takes the project over.
+  fromDm: boolean;
 }
 
 interface SlackResponse {
@@ -169,6 +172,7 @@ function activeThreadFrom(value: unknown): ActiveThread | null {
     skipTurnEnd: value.skipTurnEnd === true,
     moreTurns: value.moreTurns === true,
     questions,
+    fromDm: value.fromDm === true,
   };
 }
 
@@ -215,10 +219,6 @@ function parseDmCommand(text: string): DmCommand | null {
     forceNew: match[3] !== undefined,
     text: prompt,
   };
-}
-
-function normalizeProjectName(value: string): string {
-  return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').trim().toLocaleLowerCase('fr-FR');
 }
 
 function slackTimestampNow(): string {
@@ -323,6 +323,7 @@ function delay(milliseconds: number): Promise<void> {
 export class SlackNotifier {
   private readonly sessions: SessionManager;
   private readonly db: CerebroDatabase;
+  private readonly peers: PeerSync;
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly threads = new Map<string, ActiveThread>();
   private readonly unsubscribe: (() => void) | null;
@@ -336,9 +337,10 @@ export class SlackNotifier {
   private stateDirty = false;
   private settings: SlackSettings = loadSettings();
 
-  constructor(sessions: SessionManager, db: CerebroDatabase) {
+  constructor(sessions: SessionManager, db: CerebroDatabase, peers: PeerSync) {
     this.sessions = sessions;
     this.db = db;
+    this.peers = peers;
     if (!SLACK_ENABLED) {
       this.unsubscribe = null;
       this.pollTimer = null;
@@ -348,6 +350,9 @@ export class SlackNotifier {
     this.stateDirty = true;
     this.saveState();
     this.unsubscribe = sessions.onEvent((event) => this.onSessionEvent(event));
+    peers.setSlackPoster(async (text) => {
+      await this.slackApi('chat.postMessage', { channel: await this.openDm(), text, unfurl_links: false });
+    });
     this.pollTimer = setInterval(() => void this.poll(), POLL_INTERVAL_MS);
     this.pollTimer.unref();
   }
@@ -493,6 +498,7 @@ export class SlackNotifier {
       skipTurnEnd: false,
       moreTurns: false,
       questions,
+      fromDm: false,
     });
     this.stateChanged();
   }
@@ -564,6 +570,13 @@ export class SlackNotifier {
           this.stateDirty = true;
           continue;
         }
+        // Another machine took the project over: its commands, and their threads, are now its own.
+        const project = this.db.getProject(session.projectId);
+        if (thread.fromDm && project !== null && !this.peers.owns(project.name)) {
+          this.threads.delete(sessionId);
+          this.stateDirty = true;
+          continue;
+        }
         const age = Date.now() - thread.createdAt;
         if (age > FRESH_THREAD_MS && Date.now() - thread.polledAt < SLOW_POLL_INTERVAL_MS) continue;
         thread.polledAt = Date.now();
@@ -621,12 +634,17 @@ export class SlackNotifier {
       await this.postThreadReply(channel, message.ts, this.helpText('Message non reconnu.'));
       return;
     }
+    await this.peers.ready;
     const projects = this.db.listProjects();
     const normalizedName = normalizeProjectName(command.projectName);
     const exact = projects.filter((project) => normalizeProjectName(project.name) === normalizedName);
+    // An exact name on another machine beats a prefix match here; that machine handles it.
+    if (exact.length === 0 && this.peers.knownRemotely(command.projectName, true)) return;
     const matches = exact.length > 0
       ? exact
       : projects.filter((project) => normalizeProjectName(project.name).startsWith(normalizedName));
+    // Handled by the machine that has this project: no "unknown project" reply from this one.
+    if (matches.length === 0 && this.peers.knownRemotely(command.projectName, false)) return;
     if (matches.length !== 1) {
       const error = matches.length === 0
         ? `Projet introuvable : « ${command.projectName} ».`
@@ -636,6 +654,16 @@ export class SlackNotifier {
     }
     const project = matches[0];
     if (project === undefined) return;
+    const conflicts = this.peers.conflictMachines(project);
+    if (conflicts.length > 0) {
+      // Same name, other repository: nothing runs until one project is renamed; a single machine says so.
+      if (this.peers.conflictResponder(project)) {
+        await this.postThreadReply(channel, message.ts, `:no_entry: « ${escapeMrkdwn(project.name)} » existe aussi sur ${escapeMrkdwn(conflicts.join(', '))} avec un autre dépôt git : commande bloquée. Renomme l'un des deux projets.`);
+      }
+      return;
+    }
+    // Another machine has the Slack lead on this shared project.
+    if (!this.peers.owns(project.name)) return;
     let session = command.forceNew ? undefined : this.db.listProjectSessions(project.id)
       .find((candidate) => candidate.status !== 'exited'
         && (command.agent === null || candidate.agent === command.agent));
@@ -672,6 +700,7 @@ export class SlackNotifier {
       skipTurnEnd: queued,
       moreTurns: false,
       questions: null,
+      fromDm: true,
     });
     this.stateDirty = true;
     try {
@@ -830,7 +859,10 @@ export class SlackNotifier {
     const shortcut = text.toLocaleLowerCase('fr-FR');
     if (shortcut === 'entrée' || shortcut === 'enter') return this.sessions.writeInput(sessionId, '\r');
     if (shortcut === 'échap' || shortcut === 'esc') return this.sessions.writeInput(sessionId, '\x1b');
-    if (session.status === 'waiting' && /^[0-9yYnN]$/.test(text)) return this.sessions.writeInput(sessionId, text);
+    // Single-key shortcut for menus/confirmations; a reply to a free-text question stays a message.
+    if (session.status === 'waiting' && kind !== 'ask' && /^[0-9yYnN]$/.test(text)) {
+      return this.sessions.writeInput(sessionId, text);
+    }
     const message = kind === 'ask' ? `[Réponse Slack] ${text}` : text;
     if (!this.sessions.writeInput(sessionId, message)) return false;
     await delay(150);
