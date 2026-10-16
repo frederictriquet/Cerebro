@@ -88,6 +88,8 @@ export interface GitInfo {
   branch: string | null;
   dirty: number;
   ahead: number | null;
+  hasCommits: boolean;
+  hasUpstream: boolean;
 }
 
 export type EventsMessage =
@@ -302,7 +304,12 @@ export function parseGitInfo(v: unknown): GitInfo | null {
   if (v.ahead === null) ahead = null;
   else if (typeof v.ahead === 'number' && Number.isFinite(v.ahead)) ahead = v.ahead;
   else return null;
-  return { branch, dirty: v.dirty, ahead };
+  // Serveurs antérieurs : ne pas déduire de ahead=null qu'il y a des commits à publier.
+  if (v.hasCommits !== undefined && typeof v.hasCommits !== 'boolean') return null;
+  if (v.hasUpstream !== undefined && typeof v.hasUpstream !== 'boolean') return null;
+  const hasCommits = v.hasCommits ?? ahead !== null;
+  const hasUpstream = v.hasUpstream ?? ahead !== null;
+  return { branch, dirty: v.dirty, ahead, hasCommits, hasUpstream };
 }
 
 export function parseScreenLines(v: unknown): string[] | null {

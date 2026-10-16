@@ -174,26 +174,36 @@ function requestQueryToken(query: unknown): string | undefined {
   return typeof record?.token === 'string' ? record.token : undefined;
 }
 
-async function gitSummary(path: string): Promise<{ branch: string | null; dirty: number; ahead: number | null }> {
-  const empty = { branch: null, dirty: 0, ahead: null };
+async function gitSummary(path: string): Promise<{
+  branch: string | null;
+  dirty: number;
+  ahead: number | null;
+  hasCommits: boolean;
+  hasUpstream: boolean;
+}> {
+  const empty = { branch: null, dirty: 0, ahead: 0, hasCommits: false, hasUpstream: false };
   try {
     const repository = await execFileAsync('git', ['-C', path, 'rev-parse', '--is-inside-work-tree']);
     if (repository.stdout.trim() !== 'true') return empty;
-    const [branchResult, statusResult] = await Promise.all([
+    const [branchResult, statusResult, hasCommits, hasUpstream] = await Promise.all([
       execFileAsync('git', ['-C', path, 'branch', '--show-current']),
       execFileAsync('git', ['-C', path, 'status', '--porcelain']),
+      execFileAsync('git', ['-C', path, 'rev-parse', '--verify', 'HEAD']).then(() => true, () => false),
+      execFileAsync('git', ['-C', path, 'rev-parse', '--verify', '@{upstream}']).then(() => true, () => false),
     ]);
     const branch = branchResult.stdout.trim() || null;
     const status = statusResult.stdout.replace(/\r?\n$/, '');
-    let ahead: number | null = null;
-    try {
-      const aheadResult = await execFileAsync('git', ['-C', path, 'rev-list', '--count', '@{upstream}..HEAD']);
-      const parsed = Number(aheadResult.stdout.trim());
-      if (Number.isInteger(parsed) && parsed >= 0) ahead = parsed;
-    } catch {
-      // No configured upstream (or no commits yet).
+    let ahead: number | null = hasCommits ? null : 0;
+    if (hasCommits && hasUpstream) {
+      try {
+        const aheadResult = await execFileAsync('git', ['-C', path, 'rev-list', '--count', '@{upstream}..HEAD']);
+        const parsed = Number(aheadResult.stdout.trim());
+        if (Number.isInteger(parsed) && parsed >= 0) ahead = parsed;
+      } catch {
+        // Le compteur est indisponible ; les informations HEAD/upstream restent explicites.
+      }
     }
-    return { branch, dirty: status === '' ? 0 : status.split(/\r?\n/).length, ahead };
+    return { branch, dirty: status === '' ? 0 : status.split(/\r?\n/).length, ahead, hasCommits, hasUpstream };
   } catch {
     return empty;
   }
