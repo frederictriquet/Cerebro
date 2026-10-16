@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { clipboardImage, uploadImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
+import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { AddTaskDialog, LaunchSessionDialog } from './Dialog.tsx';
 import { AGENT_LABEL, MODE_LABEL, STATUS_LABEL, sessionTitle } from './format.ts';
 import { go, href } from './route.ts';
@@ -292,7 +293,7 @@ function QuickReply({
 }
 
 export function SessionView({ sessionId }: { sessionId: string }) {
-  const { sessions, projects, killSession, resumeSession, deleteSession, markSeen, createSession } = useStore();
+  const { sessions, projects, agents, killSession, resumeSession, deleteSession, markSeen, createSession } = useStore();
   const session = sessions.find((s) => s.id === sessionId);
   const project = session ? projects.find((p) => p.id === session.projectId) : undefined;
   const [error, setError] = useState<string | null>(null);
@@ -353,6 +354,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           <p className="session-meta">
             <span className="pill">{AGENT_LABEL[session.agent]}</span>
             <span className="pill">{MODE_LABEL[session.mode]}</span>
+            {session.model !== null ? <span className="pill">{agents.find((a) => a.agent === session.agent)?.models.find((m) => m.value === session.model)?.label ?? session.model}</span> : null}
+            {session.effort !== null ? <span className="pill">effort {session.effort}</span> : null}
             <span className={`pill status ${session.status}`}>{STATUS_LABEL[session.status]}</span>
             {project ? (
               <a className="project-crumb" href={href(`#/p/${project.id}`)}>
@@ -378,16 +381,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               Reprendre
             </button>
           ) : null}
-          <button
-            type="button"
-            className="btn danger-ghost"
-            onClick={() => {
-              if (!window.confirm(`Supprimer « ${sessionTitle(session.title)} » ?`)) return;
-              void act(() => deleteSession(session.id), true);
-            }}
-          >
+          <DelayedActionButton onAction={() => void act(() => deleteSession(session.id), true)}>
             Supprimer
-          </button>
+          </DelayedActionButton>
         </div>
       </header>
       {error ? <p className="form-error session-error">{error}</p> : null}
@@ -416,8 +412,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           projectId={session.projectId}
           initialPrompt={selectionAction.text}
           onClose={() => setSelectionAction(null)}
-          onLaunch={async (agent, mode, prompt) => {
-            const created = await createSession(session.projectId, agent, mode, prompt);
+          onLaunch={async (spec) => {
+            const created = await createSession(session.projectId, spec);
             setSelectionAction(null);
             go(`#/s/${created.id}`);
           }}

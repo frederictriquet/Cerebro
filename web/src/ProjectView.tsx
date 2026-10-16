@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api } from './api.ts';
 import { Backlog } from './Backlog.tsx';
+import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { AGENT_LABEL, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
-import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { parseGitInfo, type GitInfo, type Session } from './types.ts';
+import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 
 function formatDirty(count: number): string {
   const n = Math.max(0, Math.trunc(count));
@@ -89,7 +90,6 @@ export function ProjectView({ projectId }: { projectId: string }) {
   }
 
   const onDeleteProject = (): void => {
-    if (!window.confirm(`Supprimer le projet « ${project.name} » et ses sessions ?`)) return;
     void (async () => {
       try {
         await deleteProject(project.id);
@@ -101,7 +101,6 @@ export function ProjectView({ projectId }: { projectId: string }) {
   };
 
   const onPurge = (): void => {
-    if (!window.confirm(`Supprimer les ${inactiveCount} session(s) inactive(s) de « ${project.name} » ? Les sessions en attente (idle) seront arrêtées.`)) return;
     void purgeProjectSessions(project.id).catch((err: unknown) => {
       setError(err instanceof Error ? err.message : 'Purge impossible');
     });
@@ -171,33 +170,35 @@ export function ProjectView({ projectId }: { projectId: string }) {
               Éditer
             </button>
           )}
-          <button type="button" className="btn danger-ghost" onClick={onDeleteProject}>
+          <DelayedActionButton onAction={onDeleteProject} title="Supprime le projet et toutes ses sessions">
             Supprimer
-          </button>
+          </DelayedActionButton>
         </div>
       </header>
 
       {error ? <p className="form-error">{error}</p> : null}
-
-      <NewSessionForm
-        key={project.id}
-        heading="Nouvelle session"
-        projectId={project.id}
-        onLaunch={async (agent, mode, prompt) => {
-          await createSession(project.id, agent, mode, prompt);
-        }}
-      />
 
       <div className="project-columns">
         <section className="session-table-wrap">
           <div className="session-table-head">
             <h2>Sessions</h2>
             {inactiveCount > 0 ? (
-              <button type="button" className="btn danger-ghost" onClick={onPurge}>
+              <DelayedActionButton
+                onAction={onPurge}
+                title="Supprime les sessions inactives ; celles en attente (idle) seront arrêtées"
+              >
                 Purger les inactives ({inactiveCount})
-              </button>
+              </DelayedActionButton>
             ) : null}
           </div>
+          <NewSessionForm
+            key={project.id}
+            heading="Nouvelle session"
+            projectId={project.id}
+            onLaunch={async (spec) => {
+              await createSession(project.id, spec);
+            }}
+          />
           {kids.length === 0 ? (
             <p className="empty-hint">Aucune session pour ce projet.</p>
           ) : (
@@ -223,7 +224,6 @@ export function ProjectView({ projectId }: { projectId: string }) {
                     })();
                   }}
                   onDelete={() => {
-                    if (!window.confirm(`Supprimer « ${sessionTitle(s.title)} » ?`)) return;
                     void deleteSession(s.id).catch((err: unknown) => {
                       setError(err instanceof Error ? err.message : 'Suppression impossible');
                     });
@@ -266,7 +266,7 @@ function SessionRow({
   const tone = session.status === 'waiting' ? 'waiting' : 'idle';
 
   return (
-    <li className="session-row" {...(awaiting ? preview.hoverProps : {})}>
+    <li className="session-row">
       <div className="session-row-main">
         <a href={href(`#/s/${session.id}`)} className="session-main">
           <span className="session-row-titleline">
@@ -312,13 +312,9 @@ function SessionRow({
             Reprendre
           </button>
         ) : null}
-        <button type="button" className="btn danger-ghost" onClick={onDelete}>
-          Supprimer
-        </button>
+        <DelayedActionButton onAction={onDelete}>Supprimer</DelayedActionButton>
       </div>
-      {awaiting && preview.open ? (
-        <ScreenPopover sessionId={session.id} anchorRef={anchorRef} hoverProps={preview.hoverProps} />
-      ) : null}
+      {awaiting && preview.open ? <ScreenPopover sessionId={session.id} anchorRef={anchorRef} /> : null}
     </li>
   );
 }

@@ -7,6 +7,7 @@ export type Agent = 'claude' | 'codex' | 'grok';
 export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
 export type TaskStatus = 'todo' | 'started' | 'done';
+export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export interface Project {
   id: string;
@@ -20,6 +21,9 @@ export interface Session {
   projectId: string;
   agent: Agent;
   mode: Mode;
+  // null : modèle / effort par défaut de la configuration de l'agent.
+  model: string | null;
+  effort: Effort | null;
   prompt: string;
   title: string;
   status: Status;
@@ -39,6 +43,8 @@ export interface Task {
   status: TaskStatus;
   sessionId: string | null;
   sourceSessionId: string | null;
+  // Tâches du même projet à terminer avant de pouvoir lancer celle-ci.
+  dependsOn: string[];
   createdAt: number;
   updatedAt: number;
 }
@@ -55,6 +61,8 @@ interface SessionRow {
   project_id: string;
   agent: Agent;
   mode: Mode;
+  model: string | null;
+  effort: Effort | null;
   prompt: string;
   title: string;
   status: Status;
@@ -78,7 +86,7 @@ interface TaskRow {
   updated_at: number;
 }
 
-function taskFromRow(row: TaskRow): Task {
+function taskFromRow(row: TaskRow, dependsOn: string[]): Task {
   return {
     id: row.id,
     projectId: row.project_id,
@@ -86,6 +94,7 @@ function taskFromRow(row: TaskRow): Task {
     status: row.status,
     sessionId: row.session_id,
     sourceSessionId: row.source_session_id,
+    dependsOn,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -101,6 +110,8 @@ function sessionFromRow(row: SessionRow): Session {
     projectId: row.project_id,
     agent: row.agent,
     mode: row.mode,
+    model: row.model,
+    effort: row.effort,
     prompt: row.prompt,
     title: row.title,
     status: row.status,
@@ -140,7 +151,9 @@ export class CerebroDatabase {
         exit_code INTEGER,
         hook_token TEXT,
         created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        model TEXT,
+        effort TEXT
       );
       CREATE INDEX IF NOT EXISTS sessions_project_id ON sessions(project_id);
       CREATE INDEX IF NOT EXISTS sessions_updated_at ON sessions(updated_at DESC);
@@ -155,10 +168,19 @@ export class CerebroDatabase {
         updated_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS tasks_project_id ON tasks(project_id);
+      CREATE TABLE IF NOT EXISTS task_dependencies (
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        depends_on_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        PRIMARY KEY (task_id, depends_on_id)
+      );
+      CREATE INDEX IF NOT EXISTS task_dependencies_depends_on_id ON task_dependencies(depends_on_id);
     `);
     const columns = this.connection.prepare('PRAGMA table_info(sessions)').all() as unknown as { name: string }[];
     if (!columns.some((column) => column.name === 'hook_token')) {
       this.connection.exec('ALTER TABLE sessions ADD COLUMN hook_token TEXT');
+    }
+    for (const column of ['model', 'effort']) {
+      if (!columns.some((c) => c.name === column)) this.connection.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
     }
     this.allowAutoMode();
   }
@@ -236,7 +258,7 @@ export class CerebroDatabase {
   }
 
   createSession(
-    input: Pick<Session, 'id' | 'projectId' | 'agent' | 'mode' | 'prompt' | 'title' | 'status' | 'agentSessionId'>,
+    input: Pick<Session, 'id' | 'projectId' | 'agent' | 'mode' | 'model' | 'effort' | 'prompt' | 'title' | 'status' | 'agentSessionId'>,
     hookToken: string,
   ): Session {
     const now = Date.now();
@@ -251,12 +273,12 @@ export class CerebroDatabase {
     this.connection.prepare(`
       INSERT INTO sessions (
         id, project_id, agent, mode, prompt, title, status, attention,
-        attention_reason, agent_session_id, exit_code, hook_token, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        attention_reason, agent_session_id, exit_code, hook_token, created_at, updated_at, model, effort
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       session.id, session.projectId, session.agent, session.mode, session.prompt,
       session.title, session.status, 0, null, session.agentSessionId, null, hookToken,
-      session.createdAt, session.updatedAt,
+      session.createdAt, session.updatedAt, session.model, session.effort,
     );
     return session;
   }
@@ -290,13 +312,41 @@ export class CerebroDatabase {
   }
 
   listTasks(): Task[] {
+    const edges = this.connection.prepare('SELECT task_id, depends_on_id FROM task_dependencies').all() as unknown as
+      { task_id: string; depends_on_id: string }[];
+    const deps = new Map<string, string[]>();
+    for (const edge of edges) deps.set(edge.task_id, [...(deps.get(edge.task_id) ?? []), edge.depends_on_id]);
     return (this.connection.prepare('SELECT * FROM tasks ORDER BY created_at ASC').all() as unknown as TaskRow[])
-      .map(taskFromRow);
+      .map((row) => taskFromRow(row, deps.get(row.id) ?? []));
   }
 
   getTask(id: string): Task | null {
     const row = this.connection.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as unknown as TaskRow | undefined;
-    return row === undefined ? null : taskFromRow(row);
+    return row === undefined ? null : taskFromRow(row, this.taskDependencies(id));
+  }
+
+  private taskDependencies(id: string): string[] {
+    return (this.connection.prepare('SELECT depends_on_id FROM task_dependencies WHERE task_id = ?').all(id) as unknown as
+      { depends_on_id: string }[]).map((row) => row.depends_on_id);
+  }
+
+  // Tâches qui dépendent de `id` (à rediffuser quand elle disparaît).
+  listDependents(id: string): string[] {
+    return (this.connection.prepare('SELECT task_id FROM task_dependencies WHERE depends_on_id = ?').all(id) as unknown as
+      { task_id: string }[]).map((row) => row.task_id);
+  }
+
+  setTaskDependencies(id: string, dependsOn: string[]): void {
+    this.connection.exec('BEGIN');
+    try {
+      this.connection.prepare('DELETE FROM task_dependencies WHERE task_id = ?').run(id);
+      const insert = this.connection.prepare('INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?, ?)');
+      for (const dep of new Set(dependsOn)) insert.run(id, dep);
+      this.connection.exec('COMMIT');
+    } catch (error) {
+      this.connection.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   createTask(projectId: string, text: string, sourceSessionId: string | null): Task {
@@ -308,6 +358,7 @@ export class CerebroDatabase {
       status: 'todo',
       sessionId: null,
       sourceSessionId,
+      dependsOn: [],
       createdAt: now,
       updatedAt: now,
     };
@@ -318,12 +369,16 @@ export class CerebroDatabase {
     return task;
   }
 
-  updateTask(id: string, changes: Partial<Pick<Task, 'text' | 'status' | 'sessionId'>>): Task | null {
+  updateTask(id: string, changes: Partial<Pick<Task, 'text' | 'status' | 'sessionId' | 'dependsOn'>>): Task | null {
     const current = this.getTask(id);
     if (current === null) return null;
     const next = { ...current, ...changes, updatedAt: Date.now() };
     this.connection.prepare('UPDATE tasks SET text = ?, status = ?, session_id = ?, updated_at = ? WHERE id = ?')
       .run(next.text, next.status, next.sessionId, next.updatedAt, id);
+    if (changes.dependsOn !== undefined) {
+      this.setTaskDependencies(id, changes.dependsOn);
+      next.dependsOn = this.taskDependencies(id);
+    }
     return next;
   }
 

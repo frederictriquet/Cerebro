@@ -4,15 +4,32 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { HOOK_SCRIPT, SLACK_ENABLED } from './config.ts';
-import type { Agent, Mode } from './db.ts';
+import type { Agent, Effort, Mode } from './db.ts';
 
 const execFileAsync = promisify(execFile);
 export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
 export const HOOK = ['node', HOOK_SCRIPT] as const;
 const NOTIFY_INSTRUCTIONS = "Tu tournes dans Cerebro. L'utilisateur n'est peut-être pas devant son écran. Pour le prévenir (tâche longue terminée, blocage important) exécute `cerebro-notify \"message\"` ; pour lui poser une question dont la réponse conditionne la suite, exécute `cerebro-notify --ask \"question\"` puis termine ton tour : sa réponse arrivera comme prochain message. Utilise-le avec parcimonie, messages courts et autoportants.";
-const BACKLOG_INSTRUCTIONS = "Cerebro tient un backlog de tâches par projet. Si l'utilisateur demande de mettre des éléments (par exemple les findings d'une review) dans le backlog, envoie-les sur l'entrée standard de `cerebro-backlog`, une tâche par élément, séparées par une ligne `---` ; chaque tâche doit se suffire à elle-même (fichier:ligne, problème, scénario, correctif attendu), car elle sera confiée telle quelle à une nouvelle session.";
+const BACKLOG_INSTRUCTIONS = "Cerebro tient un backlog de tâches par projet. Si l'utilisateur demande de mettre des éléments (par exemple les findings d'une review) dans le backlog, envoie-les sur l'entrée standard de `cerebro-backlog`, une tâche par élément, séparées par une ligne `---` ; chaque tâche doit se suffire à elle-même (fichier:ligne, problème, scénario, correctif attendu), car elle sera confiée telle quelle à une nouvelle session. `cerebro-backlog --help` décrit les dépendances entre tâches et les autres commandes.";
 // Le backlog fonctionne toujours ; cerebro-notify seulement si Slack est configuré.
 export const AGENT_INSTRUCTIONS = SLACK_ENABLED ? `${NOTIFY_INSTRUCTIONS} ${BACKLOG_INSTRUCTIONS}` : `Tu tournes dans Cerebro. ${BACKLOG_INSTRUCTIONS}`;
+
+export interface Tuning {
+  model: string | null;
+  effort: Effort | null;
+}
+
+function tuningArgs(agent: Agent, { model, effort }: Tuning): string[] {
+  const args: string[] = [];
+  if (agent === 'codex') {
+    if (model !== null) args.push('-m', model);
+    if (effort !== null) args.push('-c', `model_reasoning_effort="${effort}"`);
+    return args;
+  }
+  if (model !== null) args.push('--model', model);
+  if (effort !== null) args.push(agent === 'claude' ? '--effort' : '--reasoning-effort', effort);
+  return args;
+}
 
 export interface AgentCommand {
   cmd: string;
@@ -118,6 +135,7 @@ export function buildAgentCommand(
   prompt: string,
   generatedSessionId: string,
   resumeSessionId: string | null = null,
+  tuning: Tuning = { model: null, effort: null },
 ): AgentCommand {
   const args: string[] = [];
   let agentSessionId: string | null = null;
@@ -126,23 +144,23 @@ export function buildAgentCommand(
     agentSessionId = resumeSessionId ?? generatedSessionId;
     if (resumeSessionId === null) args.push('--session-id', agentSessionId);
     else args.push('--resume', resumeSessionId);
-    args.push('--settings', JSON.stringify(hookSettings('claude')), ...modeArgs(agent, mode));
+    args.push('--settings', JSON.stringify(hookSettings('claude')), ...modeArgs(agent, mode), ...tuningArgs(agent, tuning));
     args.push('--append-system-prompt', AGENT_INSTRUCTIONS);
     if (resumeSessionId === null && prompt !== '') args.push(prompt);
   } else if (agent === 'grok') {
     agentSessionId = resumeSessionId ?? generatedSessionId;
     if (resumeSessionId === null) args.push('--session-id', agentSessionId);
     else args.push('--resume', resumeSessionId);
-    args.push(...modeArgs(agent, mode));
+    args.push(...modeArgs(agent, mode), ...tuningArgs(agent, tuning));
     args.push('--rules', AGENT_INSTRUCTIONS);
     if (resumeSessionId === null && prompt !== '') args.push(prompt);
   } else {
     if (resumeSessionId === null) {
-      args.push(...codexConfigArgs(), ...modeArgs(agent, mode));
+      args.push(...codexConfigArgs(), ...modeArgs(agent, mode), ...tuningArgs(agent, tuning));
       if (prompt !== '') args.push(prompt);
     } else {
       agentSessionId = resumeSessionId;
-      args.push('resume', resumeSessionId, ...codexConfigArgs(), ...modeArgs(agent, mode));
+      args.push('resume', resumeSessionId, ...codexConfigArgs(), ...modeArgs(agent, mode), ...tuningArgs(agent, tuning));
     }
   }
   return { cmd: agent, args, agentSessionId };

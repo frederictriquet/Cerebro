@@ -1,4 +1,5 @@
 import { useState, type FormEvent, type KeyboardEvent } from 'react';
+import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { LaunchSessionDialog } from './Dialog.tsx';
 import { STATUS_LABEL, sessionTitle } from './format.ts';
 import { href } from './route.ts';
@@ -16,9 +17,26 @@ const TASK_STATUS_LABEL: Record<Task['status'], string> = {
   done: 'Terminée',
 };
 
+// Tâches de `tasks` dont `id` dépend, directement ou non : en dépendre créerait un cycle.
+function dependents(id: string, tasks: Task[]): Set<string> {
+  const found = new Set<string>();
+  const stack = [id];
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    for (const t of tasks) {
+      if (t.dependsOn.includes(current) && !found.has(t.id)) {
+        found.add(t.id);
+        stack.push(t.id);
+      }
+    }
+  }
+  return found;
+}
+
 // Une tâche lancée suit l'état de sa session : « En cours » tant que l'agent travaille,
 // puis « À valider » une fois son tour fini (la clôture reste manuelle).
-function taskPill(task: Task, session: Session | undefined): { label: string; className: string } {
+function taskPill(task: Task, session: Session | undefined, blocked: boolean): { label: string; className: string } {
+  if (task.status === 'todo' && blocked) return { label: 'Bloquée', className: 'blocked' };
   if (task.status !== 'started') return { label: TASK_STATUS_LABEL[task.status], className: task.status };
   switch (session?.status) {
     case 'starting':
@@ -32,7 +50,7 @@ function taskPill(task: Task, session: Session | undefined): { label: string; cl
 }
 
 export function Backlog({ projectId }: { projectId: string }) {
-  const { tasks, sessions, createTask, startTask } = useStore();
+  const { tasks, sessions, createTask, startTask, deleteTask } = useStore();
   const own = tasks.filter((t) => t.projectId === projectId);
   const open = own.filter((t) => t.status !== 'done');
   const done = own.filter((t) => t.status === 'done');
@@ -56,6 +74,13 @@ export function Backlog({ projectId }: { projectId: string }) {
     }
   };
 
+  const deleteDone = (): void => {
+    setError(null);
+    void Promise.all(done.map((t) => deleteTask(t.id))).catch((err: unknown) =>
+      setError(err instanceof Error ? err.message : 'Suppression impossible'),
+    );
+  };
+
   const shown = showDone ? [...open, ...done] : open;
 
   return (
@@ -63,9 +88,14 @@ export function Backlog({ projectId }: { projectId: string }) {
       <div className="session-table-head">
         <h2>Backlog{open.length > 0 ? ` (${open.length})` : ''}</h2>
         {done.length > 0 ? (
-          <button type="button" className="btn" onClick={() => setShowDone((v) => !v)}>
-            {showDone ? 'Masquer les terminées' : `Afficher les terminées (${done.length})`}
-          </button>
+          <div className="row-actions">
+            {showDone ? (
+              <DelayedActionButton onAction={deleteDone}>Supprimer toutes les terminées</DelayedActionButton>
+            ) : null}
+            <button type="button" className="btn" onClick={() => setShowDone((v) => !v)}>
+              {showDone ? 'Masquer les terminées' : `Afficher les terminées (${done.length})`}
+            </button>
+          </div>
         ) : null}
       </div>
       {shown.length === 0 ? (
@@ -78,6 +108,7 @@ export function Backlog({ projectId }: { projectId: string }) {
             <TaskRow
               key={task.id}
               task={task}
+              projectTasks={own}
               session={sessions.find((s) => s.id === task.sessionId)}
               source={sessions.find((s) => s.id === task.sourceSessionId)}
               onStart={() => setStarting(task)}
@@ -116,8 +147,8 @@ export function Backlog({ projectId }: { projectId: string }) {
           projectId={projectId}
           initialPrompt={starting.text}
           onClose={() => setStarting(null)}
-          onLaunch={async (agent, mode, prompt) => {
-            await startTask(starting.id, agent, mode, prompt);
+          onLaunch={async (spec) => {
+            await startTask(starting.id, spec);
             setStarting(null);
           }}
         />
@@ -128,12 +159,14 @@ export function Backlog({ projectId }: { projectId: string }) {
 
 function TaskRow({
   task,
+  projectTasks,
   session,
   source,
   onStart,
   onError,
 }: {
   task: Task;
+  projectTasks: Task[];
   session: Session | undefined;
   source: Session | undefined;
   onStart: () => void;
@@ -143,7 +176,17 @@ function TaskRow({
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.text);
-  const pill = taskPill(task, session);
+  const byId = new Map(projectTasks.map((t) => [t.id, t]));
+  const dependencies = task.dependsOn.map((id) => byId.get(id)).filter((t): t is Task => t !== undefined);
+  const blockers = dependencies.filter((t) => t.status !== 'done');
+  const pill = taskPill(task, session, blockers.length > 0);
+  // Relancer pendant que la session tourne en démarrerait une seconde et détacherait la première.
+  const sessionActive = task.status === 'started' && session !== undefined && session.status !== 'exited';
+  const excluded = dependents(task.id, projectTasks);
+  const candidates = projectTasks.filter((t) => t.id !== task.id && !task.dependsOn.includes(t.id) && !excluded.has(t.id));
+  const setDependencies = (dependsOn: string[]): void => {
+    run(() => updateTask(task.id, { dependsOn }), 'Modification des dépendances impossible');
+  };
 
   const run = (fn: () => Promise<unknown>, fallback: string): void => {
     void fn().catch((err: unknown) => onError(err instanceof Error ? err.message : fallback));
@@ -177,11 +220,22 @@ function TaskRow({
               {sessionTitle(session.title)}
             </a>
           ) : null}
+          {blockers.length > 0 && task.status !== 'done' ? (
+            <span className="task-blockers">
+              Attend : {blockers.map((t) => taskTitle(t.text).slice(0, 60)).join(' · ')}
+            </span>
+          ) : null}
         </div>
       </div>
       <div className="row-actions">
-        {task.status !== 'done' ? (
-          <button type="button" className="btn primary" onClick={onStart}>
+        {task.status !== 'done' && !sessionActive ? (
+          <button
+            type="button"
+            className="btn primary"
+            onClick={onStart}
+            disabled={blockers.length > 0}
+            title={blockers.length > 0 ? 'Terminez d\'abord les tâches dont celle-ci dépend' : undefined}
+          >
             {task.status === 'started' ? 'Relancer' : 'Traiter'}
           </button>
         ) : null}
@@ -192,16 +246,9 @@ function TaskRow({
         >
           {task.status === 'done' ? 'Rouvrir' : 'Marquer terminée'}
         </button>
-        <button
-          type="button"
-          className="btn danger-ghost"
-          onClick={() => {
-            if (!window.confirm(`Supprimer « ${taskTitle(task.text).slice(0, 80)} » ?`)) return;
-            run(() => deleteTask(task.id), 'Suppression impossible');
-          }}
-        >
+        <DelayedActionButton onAction={() => run(() => deleteTask(task.id), 'Suppression impossible')}>
           Supprimer
-        </button>
+        </DelayedActionButton>
       </div>
       {expanded ? (
         <div className="task-detail">
@@ -227,6 +274,39 @@ function TaskRow({
           ) : (
             <>
               <pre className="task-text">{task.text}</pre>
+              <div className="task-deps">
+                <span className="meta">Dépend de :</span>
+                {dependencies.length === 0 ? <span className="meta">aucune tâche</span> : null}
+                {dependencies.map((dep) => (
+                  <span key={dep.id} className={`task-dep ${dep.status}`}>
+                    {taskTitle(dep.text).slice(0, 60)}
+                    <button
+                      type="button"
+                      className="task-dep-remove"
+                      aria-label="Retirer la dépendance"
+                      onClick={() => setDependencies(task.dependsOn.filter((id) => id !== dep.id))}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                {candidates.length > 0 ? (
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      if (e.target.value !== '') setDependencies([...task.dependsOn, e.target.value]);
+                    }}
+                  >
+                    <option value="">Ajouter une dépendance…</option>
+                    {candidates.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {taskTitle(t.text).slice(0, 80)}
+                        {t.status === 'done' ? ' (terminée)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+              </div>
               <div className="row-actions">
                 <button
                   type="button"

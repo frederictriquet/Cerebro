@@ -612,6 +612,10 @@ export class SlackNotifier {
       await this.postThreadReply(channel, message.ts, this.helpText());
       return;
     }
+    if (shortcut === 'list' || shortcut === 'liste' || shortcut === 'projets') {
+      await this.postThreadReply(channel, message.ts, this.projectListText());
+      return;
+    }
     const command = parseDmCommand(text);
     if (command === null) {
       await this.postThreadReply(channel, message.ts, this.helpText('Message non reconnu.'));
@@ -690,15 +694,22 @@ export class SlackNotifier {
     });
   }
 
-  private helpText(error?: string): string {
-    const projects = this.db.listProjects();
-    const projectLines = projects.map((project) => {
+  private projectLines(): string[] {
+    const lines = this.db.listProjects().map((project) => {
       const active = this.db.listProjectSessions(project.id).find((session) => session.status !== 'exited');
       const detail = active === undefined
         ? '_aucune session active_'
         : `${escapeMrkdwn(active.title)} (${active.agent}, statut : ${active.status})`;
       return `• *${escapeMrkdwn(project.name)}* — ${detail}`;
     });
+    return lines.length > 0 ? lines : ['_Aucun projet configuré._'];
+  }
+
+  private projectListText(): string {
+    return ['*Projets connus*', ...this.projectLines()].join('\n');
+  }
+
+  private helpText(error?: string): string {
     return [
       ...(error === undefined ? [] : [`:warning: ${escapeMrkdwn(error)}`, '']),
       '*Piloter Cerebro depuis Slack*',
@@ -706,9 +717,10 @@ export class SlackNotifier {
       '`projet+: instruction` — toujours créer une nouvelle session',
       '`projet/agent: instruction` — choisir `claude`, `codex` ou `grok`',
       '`projet/agent+: instruction` — choisir l’agent et créer une nouvelle session',
+      '`list` — lister les projets et leur session active',
       '',
       '*Projets connus*',
-      ...(projectLines.length > 0 ? projectLines : ['_Aucun projet configuré._']),
+      ...this.projectLines(),
       '',
       '*Répondre dans un fil de session*',
       'Le texte libre est injecté dans la session. `entrée`/`enter` envoie Entrée ; `échap`/`esc` envoie Échap.',

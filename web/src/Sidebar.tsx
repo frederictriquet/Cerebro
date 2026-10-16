@@ -2,12 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { getSlackStatus, updateSlackSettings, type SlackSettings, type SlackStatus } from './api.ts';
 import { AGENT_LABEL, relativeTime, sessionTitle } from './format.ts';
 import { MachineSwitcher } from './MachineSwitcher.tsx';
-import { go, href, useNow, type Route } from './route.ts';
-import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
+import { href, useNow, type Route } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { UsageGauges } from './UsageGauges.tsx';
 import type { Session } from './types.ts';
+import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 
 export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () => void }) {
   const { sessions, connected, muted, setMuted } = useStore();
@@ -36,10 +36,9 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
     <aside className="sidebar" id="sidebar">
       <MachineSwitcher />
       <header className="sidebar-head">
-        <a className="brand" href={href('#/')} onClick={() => { onNavigate(); go('#/'); }}>
-          <span className="brand-mark" aria-hidden="true" />
-          Cerebro
-        </a>
+        <div className={`ws-pill ${connected ? 'on' : 'off'}`}>
+          {connected ? 'connecté' : 'reconnexion…'}
+        </div>
         <button
           type="button"
           className={`slack-pill ${slack?.enabled ? 'on' : 'off'}`}
@@ -61,9 +60,6 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
         </button>
       </header>
       {showSlack && slack !== null ? <SlackPanel status={slack} onChange={setSlack} /> : null}
-      <div className={`ws-pill ${connected ? 'on' : 'off'}`}>
-        {connected ? 'connecté' : 'reconnexion…'}
-      </div>
 
       <section className="side-section side-attention">
         <h2>
@@ -176,7 +172,7 @@ function AttentionItem({
   const preview = usePreviewController();
   const anchorRef = useRef<HTMLSpanElement>(null);
   return (
-    <li className="attention-item" {...preview.hoverProps}>
+    <li className="attention-item">
       <a
         href={href(`#/s/${session.id}`)}
         className={`attention-link ${tone} ${active ? 'active' : ''}`}
@@ -192,9 +188,7 @@ function AttentionItem({
         {session.attentionReason ? <p className={`reason-line ${tone}`}>{session.attentionReason}</p> : null}
         <PreviewButton pressed={preview.open} onToggle={preview.toggle} anchorRef={anchorRef} />
       </div>
-      {preview.open ? (
-        <ScreenPopover sessionId={session.id} anchorRef={anchorRef} hoverProps={preview.hoverProps} />
-      ) : null}
+      {preview.open ? <ScreenPopover sessionId={session.id} anchorRef={anchorRef} /> : null}
     </li>
   );
 }

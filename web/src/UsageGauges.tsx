@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { getUsage, type AgentUsage, type UsageWindow } from './api.ts';
+import { getUsage, type AgentAuth, type AgentUsage, type UsageWindow } from './api.ts';
 import { AGENT_LABEL, relativeTime } from './format.ts';
 import { useNow } from './route.ts';
 
 const REFRESH_MS = 60_000;
+const DAY_MS = 86_400_000;
 
 function untilReset(resetsAt: string, now: number): string {
   const minutes = Math.max(0, Math.round((Date.parse(resetsAt) - now) / 60_000));
@@ -62,6 +63,37 @@ function Gauge({ window, now }: { window: UsageWindow; now: number }) {
   );
 }
 
+function fullDate(iso: string): string {
+  return new Date(iso).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+/** Login status: a firm deadline when the CLI records one (Claude), otherwise the last renewal. */
+function AuthLine({ auth, now }: { auth: AgentAuth; now: number }) {
+  if (auth.error !== null) return <p className="auth-line high">{auth.error}</p>;
+  if (auth.loginExpiresAt !== null) {
+    const left = Date.parse(auth.loginExpiresAt) - now;
+    const tone = left <= DAY_MS ? 'high' : left <= 3 * DAY_MS ? 'warn' : 'ok';
+    return (
+      <p className={`auth-line ${tone}`} title={`Le jeton de renouvellement expire le ${fullDate(auth.loginExpiresAt)}`}>
+        {left <= 0 ? 'Reconnexion requise' : `Reconnexion dans ${untilReset(auth.loginExpiresAt, now)}`}
+      </p>
+    );
+  }
+  const expired = auth.accessExpiresAt !== null && Date.parse(auth.accessExpiresAt) <= now;
+  const title = [
+    "Renouvelée automatiquement : la date de reconnexion n'est pas publiée par le CLI",
+    auth.accessExpiresAt === null ? null : `jeton d'accès valable jusqu'au ${fullDate(auth.accessExpiresAt)}`,
+    expired ? 'il sera renouvelé au prochain lancement' : null,
+  ].filter(Boolean).join('\n');
+  return (
+    <p className="auth-line ok" title={title}>
+      {auth.renewedAt === null
+        ? 'Connexion renouvelée auto.'
+        : `Connexion renouvelée ${relativeTime(Date.parse(auth.renewedAt), now)}`}
+    </p>
+  );
+}
+
 function AgentGauges({ usage, now }: { usage: AgentUsage; now: number }) {
   const updated = usage.updatedAt === null ? null : Date.parse(usage.updatedAt);
   return (
@@ -76,6 +108,7 @@ function AgentGauges({ usage, now }: { usage: AgentUsage; now: number }) {
       </div>
       {usage.windows.map((w) => <Gauge key={w.label} window={w} now={now} />)}
       {usage.error === null ? null : <p className="usage-error">{usage.error}</p>}
+      {usage.auth === null ? null : <AuthLine auth={usage.auth} now={now} />}
     </div>
   );
 }

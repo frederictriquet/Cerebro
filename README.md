@@ -75,7 +75,8 @@ active du projet, ou en créer une en mode auto s'il n'y en a pas. Ajoutez `+`
 `/codex` ou `/grok` pour choisir l'agent (`projet/codex+: instruction`). La
 lecture de ces commandes nécessite le scope Bot Token `im:history`. Envoyez `help` (ou
 `aide`, `?`) pour obtenir la syntaxe, la liste des projets avec leur session
-active et la façon de répondre dans un fil.
+active et la façon de répondre dans un fil. `list` (ou `liste`, `projets`) affiche seulement
+la liste des projets avec leur session active.
 
 Cerebro envoie alors un message privé après le délai configuré lorsqu'une
 session demande une confirmation ou termine son tour. L'alerte est annulée si
@@ -162,7 +163,12 @@ mettre ses findings dans le backlog, puis les traiter séparément.
   printf 'Tâche 1\ndétails\n---\nTâche 2\n' | cerebro-backlog
   ```
 
-  Sur l'entrée standard, les tâches sont séparées par une ligne `---`.
+  Sur l'entrée standard, les tâches sont séparées par une ligne `---`. Une
+  tâche peut commencer par `after: 1 <id>` pour dépendre d'une tâche
+  précédente du même envoi (numéro) ou d'une tâche existante (identifiant).
+  La commande affiche les identifiants créés ; `--list`, `--depends` et
+  `--delete` (tâches créées par la session) agissent avec le seul jeton de
+  session. `cerebro-backlog --help` détaille l'usage.
 - **À la main** : champ d'ajout en bas du backlog.
 
 « Traiter » ouvre le formulaire de nouvelle session pré-rempli avec le texte de

@@ -17,7 +17,7 @@ import type { Socket } from 'node:net';
 import { delimiter, join } from 'node:path';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import * as headlessPackage from '@xterm/headless';
-import { buildAgentCommand } from './agents.ts';
+import { buildAgentCommand, type Tuning } from './agents.ts';
 import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
 import type { Agent, Mode, Project, Session } from './db.ts';
 import { CerebroDatabase } from './db.ts';
@@ -224,8 +224,8 @@ export class SessionManager {
     for (const listener of this.eventListeners) listener(event);
   }
 
-  async create(project: Project, agent: Agent, mode: Mode, prompt: string): Promise<Session> {
-    return this.launch(project, agent, mode, prompt, null);
+  async create(project: Project, agent: Agent, mode: Mode, prompt: string, tuning: Tuning = { model: null, effort: null }): Promise<Session> {
+    return this.launch(project, agent, mode, tuning, prompt, null);
   }
 
   async resume(id: string): Promise<Session> {
@@ -235,19 +235,21 @@ export class SessionManager {
     if (oldSession.agentSessionId === null) throw new Error("Cette session ne peut pas être reprise");
     const project = this.db.getProject(oldSession.projectId);
     if (project === null) throw new Error('Projet introuvable');
-    return this.launch(project, oldSession.agent, oldSession.mode, '', oldSession.agentSessionId, oldSession.id);
+    const tuning = { model: oldSession.model, effort: oldSession.effort };
+    return this.launch(project, oldSession.agent, oldSession.mode, tuning, '', oldSession.agentSessionId, oldSession.id);
   }
 
   private async launch(
     project: Project,
     agent: Agent,
     mode: Mode,
+    tuning: Tuning,
     prompt: string,
     resumeSessionId: string | null,
     existingId: string | null = null,
   ): Promise<Session> {
     const id = existingId ?? randomUUID();
-    const command = buildAgentCommand(agent, mode, prompt, id, resumeSessionId);
+    const command = buildAgentCommand(agent, mode, prompt, id, resumeSessionId, tuning);
     const token = this.db.getHookToken(id) ?? randomBytes(32).toString('hex');
     let session: Session;
     if (existingId === null) {
@@ -256,6 +258,7 @@ export class SessionManager {
         projectId: project.id,
         agent,
         mode,
+        ...tuning,
         prompt,
         title: titleFor(agent, prompt),
         status: 'starting',

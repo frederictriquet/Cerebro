@@ -1,46 +1,148 @@
 #!/usr/bin/env node
 
-const { CEREBRO_SESSION_ID, CEREBRO_TOKEN, CEREBRO_URL } = process.env;
+const USAGE = `Usage : cerebro-backlog [commande]
 
-if (CEREBRO_SESSION_ID === undefined || CEREBRO_TOKEN === undefined || CEREBRO_URL === undefined) {
-  process.stderr.write('cerebro-backlog : uniquement dans une session Cerebro\n');
-  process.exitCode = 1;
-} else {
-  // Un argument = une tâche ; sur l'entrée standard, les tâches sont séparées par une ligne « --- ».
-  let tasks = process.argv.slice(2);
+Ajouter des tâches au backlog du projet de la session :
+  cerebro-backlog "Tâche 1" "Tâche 2"      une tâche par argument
+  cerebro-backlog < taches.txt             tâches séparées par une ligne « --- »
+  cerebro-backlog -- "-tâche"              « -- » : les arguments suivants sont des tâches
+
+  Sur l'entrée standard, une tâche peut commencer par une ligne de dépendances :
+    after: 1 3 <id>
+  où un nombre désigne une tâche précédente du même envoi (à partir de 1) et
+  <id> une tâche existante du projet. La commande affiche l'identifiant de
+  chaque tâche créée.
+
+Autres commandes :
+  --list                       tâches du projet : identifiant, statut, dépendances
+  --depends <id> [<id>...]     remplace les dépendances de la tâche <id>
+                               (sans autre identifiant : les retire toutes)
+  --delete <id>                supprime une tâche créée par cette session, non démarrée
+  --help, -h                   cette aide
+`;
+
+const { CEREBRO_SESSION_ID, CEREBRO_TOKEN, CEREBRO_URL } = process.env;
+const DEPENDENCY_LINE = /^after\s*:\s*(.*)$/i;
+
+async function call(method, suffix, body) {
+  const url = `${CEREBRO_URL.replace(/\/+$/, '')}/api/backlog/${encodeURIComponent(CEREBRO_SESSION_ID)}${suffix}`;
+  const response = await fetch(url, {
+    method,
+    headers: {
+      ...(body === undefined ? {} : { 'content-type': 'application/json; charset=utf-8' }),
+      'x-cerebro-token': CEREBRO_TOKEN,
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) {
+    let message = `Erreur HTTP ${response.status}`;
+    try {
+      const payload = await response.json();
+      if (typeof payload === 'object' && payload !== null && typeof payload.error === 'string') message = payload.error;
+    } catch {
+      // Keep the HTTP status when the server did not return JSON.
+    }
+    if (response.status === 413) message = 'envoi trop volumineux : découpez-le en plusieurs appels';
+    throw new Error(message);
+  }
+  return response.status === 204 ? null : response.json();
+}
+
+function firstLine(text) {
+  const line = text.split('\n', 1)[0];
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line;
+}
+
+// Sur l'entrée standard, une ligne « after: … » en tête de tâche déclare ses dépendances.
+function parseBlock(block) {
+  const text = block.trim();
+  const [head, ...rest] = text.split('\n');
+  const match = DEPENDENCY_LINE.exec(head);
+  if (match === null) return text;
+  const dependsOn = match[1].split(/[\s,]+/).filter((dep) => dep !== '')
+    .map((dep) => (/^\d+$/.test(dep) ? Number(dep) : dep));
+  return { text: rest.join('\n').trim(), dependsOn };
+}
+
+async function add(args) {
+  let tasks = args;
   if (tasks.length === 0) {
     let input = '';
     process.stdin.setEncoding('utf8');
     for await (const chunk of process.stdin) input += chunk;
-    tasks = input.split(/^-{3,}[ \t]*$/m);
+    tasks = input.split(/^-{3,}[ \t]*$/m).filter((block) => block.trim() !== '').map(parseBlock);
+  } else {
+    tasks = tasks.map((task) => task.trim()).filter((task) => task !== '');
   }
-  tasks = tasks.map((task) => task.trim()).filter((task) => task !== '');
+  if (tasks.length === 0) throw new Error('aucune tâche (argument ou entrée standard, séparateur « --- ») ; voir --help');
+  const { tasks: created } = await call('POST', '', { tasks });
+  process.stdout.write(`${created.length} tâche(s) ajoutée(s) au backlog du projet :\n`);
+  created.forEach((task, index) => {
+    const deps = task.dependsOn.length > 0 ? ` (après ${task.dependsOn.join(', ')})` : '';
+    process.stdout.write(`${index + 1}. ${task.id}  ${firstLine(task.text)}${deps}\n`);
+  });
+}
 
-  try {
-    if (tasks.length === 0) throw new Error('aucune tâche (argument ou entrée standard, séparateur « --- »)');
-    const response = await fetch(`${CEREBRO_URL.replace(/\/+$/, '')}/api/backlog/${encodeURIComponent(CEREBRO_SESSION_ID)}`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        'x-cerebro-token': CEREBRO_TOKEN,
-      },
-      body: JSON.stringify({ tasks }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) {
-      let message = `Erreur HTTP ${response.status}`;
-      try {
-        const body = await response.json();
-        if (typeof body === 'object' && body !== null && typeof body.error === 'string') message = body.error;
-      } catch {
-        // Keep the HTTP status when the server did not return JSON.
-      }
-      if (response.status === 413) {
-        message = `envoi trop volumineux (${tasks.length} tâche(s)) : découpez-le en plusieurs appels`;
-      }
-      throw new Error(message);
+async function list() {
+  const tasks = await call('GET', '');
+  if (tasks.length === 0) {
+    process.stdout.write('Backlog vide.\n');
+    return;
+  }
+  for (const task of tasks) {
+    const deps = task.dependsOn.length > 0 ? `\n    après : ${task.dependsOn.join(', ')}` : '';
+    const mine = task.mine ? ' [cette session]' : '';
+    process.stdout.write(`${task.id}  ${task.status}${mine}  ${firstLine(task.text)}${deps}\n`);
+  }
+}
+
+async function main(argv) {
+  const [command, ...rest] = argv;
+  switch (command) {
+    case '--help':
+    case '-h':
+      process.stdout.write(USAGE);
+      return;
+    case '--list':
+      return list();
+    case '--depends': {
+      if (rest.length === 0) throw new Error('--depends <id> [<id>...]');
+      const [id, ...dependsOn] = rest;
+      const task = await call('PATCH', `/tasks/${encodeURIComponent(id)}`, { dependsOn });
+      process.stdout.write(dependsOn.length === 0
+        ? `${task.id} : plus aucune dépendance.\n`
+        : `${task.id} : après ${task.dependsOn.join(', ')}.\n`);
+      return;
     }
-    process.stdout.write(`${tasks.length} tâche(s) ajoutée(s) au backlog du projet.\n`);
+    case '--delete': {
+      if (rest.length !== 1) throw new Error('--delete <id>');
+      await call('DELETE', `/tasks/${encodeURIComponent(rest[0])}`);
+      process.stdout.write(`${rest[0]} supprimée.\n`);
+      return;
+    }
+    case '--':
+      return add(rest);
+    default:
+      // Une option inconnue est refusée plutôt que d'être ajoutée comme tâche.
+      const option = argv.find((arg) => arg.startsWith('-'));
+      if (option !== undefined) {
+        throw new Error(`option inconnue « ${option} » ; voir --help (« -- » pour une tâche commençant par « - »)`);
+      }
+      return add(argv);
+  }
+}
+
+if (CEREBRO_SESSION_ID === undefined || CEREBRO_TOKEN === undefined || CEREBRO_URL === undefined) {
+  if (process.argv.includes('--help') || process.argv.includes('-h')) {
+    process.stdout.write(USAGE);
+  } else {
+    process.stderr.write('cerebro-backlog : uniquement dans une session Cerebro\n');
+    process.exitCode = 1;
+  }
+} else {
+  try {
+    await main(process.argv.slice(2));
   } catch (error) {
     process.stderr.write(`cerebro-backlog : ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;

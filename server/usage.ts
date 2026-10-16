@@ -16,9 +16,21 @@ export interface UsageWindow {
   resetsAt: string | null;
 }
 
+/** When the CLI's login lapses, read from its credentials file (no token leaves the server). */
+export interface AgentAuth {
+  /** Date a new login will be required (ISO), when the CLI records it: only Claude does. */
+  loginExpiresAt: string | null;
+  /** Access token expiry (ISO): the CLI renews it by itself the next time it runs. */
+  accessExpiresAt: string | null;
+  /** Last login or token renewal (ISO), when known. */
+  renewedAt: string | null;
+  error: string | null;
+}
+
 export interface AgentUsage {
   agent: Agent;
   windows: UsageWindow[];
+  auth: AgentAuth | null;
   /** When the figures were measured (ISO); for Codex, the last time it ran. */
   updatedAt: string | null;
   error: string | null;
@@ -93,9 +105,77 @@ async function readClaudeCredentials(): Promise<string> {
   throw new Error('Identifiants Claude introuvables dans le trousseau macOS');
 }
 
-async function fetchClaude(): Promise<AgentUsage> {
-  const credentials = record(JSON.parse(await readClaudeCredentials()));
-  const oauth = record(credentials?.claudeAiOauth);
+function isoFromMillis(value: unknown): string | null {
+  return typeof value === 'number' && Number.isFinite(value) ? new Date(value).toISOString() : null;
+}
+
+function isoFromString(value: unknown): string | null {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? new Date(value).toISOString() : null;
+}
+
+/** Expiry of a JWT, read from its payload without checking the signature (display only). */
+function jwtExpiry(token: unknown): string | null {
+  if (typeof token !== 'string') return null;
+  try {
+    const payload = record(JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8')));
+    return typeof payload?.exp === 'number' ? isoFromMillis(payload.exp * 1_000) : null;
+  } catch {
+    return null;
+  }
+}
+
+function claudeAuth(oauth: Record<string, unknown> | null): AgentAuth {
+  return {
+    loginExpiresAt: isoFromMillis(oauth?.refreshTokenExpiresAt),
+    accessExpiresAt: isoFromMillis(oauth?.expiresAt),
+    renewedAt: null,
+    error: oauth === null ? 'Pas de connexion OAuth Claude' : null,
+  };
+}
+
+function readCodexAuth(): AgentAuth {
+  const auth = record(JSON.parse(readFileSync(join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json'), 'utf8')));
+  const tokens = record(auth?.tokens);
+  if (tokens === null) {
+    const apiKey = typeof auth?.OPENAI_API_KEY === 'string' && auth.OPENAI_API_KEY !== '';
+    return { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: apiKey ? null : 'Pas de connexion Codex' };
+  }
+  return {
+    loginExpiresAt: null,
+    accessExpiresAt: jwtExpiry(tokens.access_token),
+    renewedAt: isoFromString(auth?.last_refresh),
+    error: null,
+  };
+}
+
+/** ~/.grok/auth.json maps "<issuer>::<id>" to a login: take the most recently renewed one. */
+function readGrokAuth(): AgentAuth {
+  const auth = record(JSON.parse(readFileSync(join(homedir(), '.grok', 'auth.json'), 'utf8')));
+  let latest: AgentAuth | null = null;
+  for (const value of Object.values(auth ?? {})) {
+    const entry = record(value);
+    if (entry === null) continue;
+    const candidate: AgentAuth = {
+      loginExpiresAt: null,
+      accessExpiresAt: isoFromString(entry.expires_at) ?? jwtExpiry(entry.key),
+      renewedAt: isoFromString(entry.create_time),
+      error: null,
+    };
+    if (latest === null || (candidate.renewedAt ?? '') > (latest.renewedAt ?? '')) latest = candidate;
+  }
+  return latest ?? { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: 'Pas de connexion Grok' };
+}
+
+function readAuth(read: () => AgentAuth): AgentAuth {
+  try {
+    return read();
+  } catch (cause) {
+    const missing = (cause as NodeJS.ErrnoException).code === 'ENOENT';
+    return { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: missing ? 'Non connecté' : errorText(cause) };
+  }
+}
+
+async function fetchClaude(oauth: Record<string, unknown> | null): Promise<AgentUsage> {
   const token = oauth?.accessToken;
   if (typeof token !== 'string') throw new Error('Pas de connexion OAuth Claude');
   if (typeof oauth?.expiresAt === 'number' && oauth.expiresAt < Date.now()) {
@@ -119,7 +199,7 @@ async function fetchClaude(): Promise<AgentUsage> {
       resetsAt: typeof entry.resets_at === 'string' ? entry.resets_at : null,
     });
   }
-  return { agent: 'claude', windows, updatedAt: new Date().toISOString(), error: null };
+  return { agent: 'claude', windows, auth: null, updatedAt: new Date().toISOString(), error: null };
 }
 
 function codexRollouts(): string[] {
@@ -191,37 +271,44 @@ function readCodex(): AgentUsage {
     }
     if (latest !== null) break;
   }
-  if (latest === null) return { agent: 'codex', windows: [], updatedAt: null, error: 'Aucune session Codex récente' };
+  if (latest === null) return { agent: 'codex', windows: [], auth: null, updatedAt: null, error: 'Aucune session Codex récente' };
   const windows = [codexWindow(latest.limits.primary), codexWindow(latest.limits.secondary)]
     .filter((w): w is UsageWindow => w !== null);
-  return { agent: 'codex', windows, updatedAt: latest.timestamp, error: null };
+  return { agent: 'codex', windows, auth: null, updatedAt: latest.timestamp, error: null };
 }
 
 const GROK_USAGE: AgentUsage = {
   agent: 'grok',
   windows: [],
+  auth: null,
   updatedAt: null,
   error: "Compte d'équipe xAI : aucun quota publié (même /usage dans grok n'en affiche pas)",
 };
 
 export class UsageTracker {
-  private claude: AgentUsage = { agent: 'claude', windows: [], updatedAt: null, error: 'Chargement…' };
+  private claude: AgentUsage = { agent: 'claude', windows: [], auth: null, updatedAt: null, error: 'Chargement…' };
+  private claudeAuth: AgentAuth | null = null;
   private claudeFetchedAt = 0;
   private claudePending: Promise<void> | null = null;
-  private codex: AgentUsage = { agent: 'codex', windows: [], updatedAt: null, error: 'Chargement…' };
+  private codex: AgentUsage = { agent: 'codex', windows: [], auth: null, updatedAt: null, error: 'Chargement…' };
   private codexReadAt = 0;
+  private codexAuth: AgentAuth | null = null;
+  private grokAuth: AgentAuth | null = null;
 
   async get(): Promise<AgentUsage[]> {
     const now = Date.now();
     if (now - this.claudeFetchedAt >= CLAUDE_MIN_INTERVAL_MS) {
       this.claudeFetchedAt = now;
-      this.claudePending = fetchClaude()
-        .then((usage) => {
-          this.claude = usage;
+      this.claudePending = readClaudeCredentials()
+        .then(async (raw) => {
+          const oauth = record(record(JSON.parse(raw))?.claudeAiOauth);
+          this.claudeAuth = claudeAuth(oauth);
+          this.claude = await fetchClaude(oauth);
         })
         .catch((cause: unknown) => {
           // Keep the last good figures and say why they are not refreshed.
           this.claude = { ...this.claude, error: errorText(cause) };
+          this.claudeAuth ??= { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: errorText(cause) };
         })
         .finally(() => {
           this.claudePending = null;
@@ -236,10 +323,14 @@ export class UsageTracker {
       } catch (cause) {
         this.codex = { ...this.codex, error: errorText(cause) };
       }
+      this.codexAuth = readAuth(readCodexAuth);
+      this.grokAuth = readAuth(readGrokAuth);
     }
 
+    const auth: Record<Agent, AgentAuth | null> = { claude: this.claudeAuth, codex: this.codexAuth, grok: this.grokAuth };
     return [this.claude, this.codex, GROK_USAGE].map((usage) => ({
       ...usage,
+      auth: auth[usage.agent],
       windows: usage.windows.map((w) => freshen(w, now)),
     }));
   }

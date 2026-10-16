@@ -143,9 +143,17 @@ export interface UsageWindow {
   resetsAt: string | null;
 }
 
+export interface AgentAuth {
+  loginExpiresAt: string | null;
+  accessExpiresAt: string | null;
+  renewedAt: string | null;
+  error: string | null;
+}
+
 export interface AgentUsage {
   agent: Agent;
   windows: UsageWindow[];
+  auth: AgentAuth | null;
   updatedAt: string | null;
   error: string | null;
 }

@@ -2,9 +2,21 @@ export type Agent = 'claude' | 'codex' | 'grok';
 export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
 export type TaskStatus = 'todo' | 'started' | 'done';
+export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
 export const MODES: readonly Mode[] = ['auto', 'default', 'acceptEdits', 'plan', 'bypass'];
+const EFFORTS: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+// Ce que le formulaire de nouvelle session envoie au serveur.
+export interface LaunchSpec {
+  agent: Agent;
+  mode: Mode;
+  model: string | null;
+  effort: Effort | null;
+  prompt: string;
+}
+
 export const STATUSES: readonly Status[] = ['starting', 'running', 'waiting', 'idle', 'exited'];
 
 export interface Project {
@@ -19,6 +31,8 @@ export interface Session {
   projectId: string;
   agent: Agent;
   mode: Mode;
+  model: string | null;
+  effort: Effort | null;
   prompt: string;
   title: string;
   status: Status;
@@ -37,13 +51,24 @@ export interface Task {
   status: TaskStatus;
   sessionId: string | null;
   sourceSessionId: string | null;
+  dependsOn: string[];
   createdAt: number;
   updatedAt: number;
 }
 
+export interface ModelChoice {
+  value: string;
+  label: string;
+  description: string;
+  efforts: Effort[];
+}
+
+// Catalogue découvert par le serveur ; `efforts` : ceux du modèle par défaut de l'agent.
 export interface AgentInfo {
   agent: Agent;
   available: boolean;
+  models: ModelChoice[];
+  efforts: Effort[];
 }
 
 export interface GitInfo {
@@ -80,6 +105,10 @@ export function isAgent(v: unknown): v is Agent {
 
 export function isMode(v: unknown): v is Mode {
   return (MODES as readonly unknown[]).includes(v);
+}
+
+function isEffort(v: unknown): v is Effort {
+  return (EFFORTS as readonly unknown[]).includes(v);
 }
 
 export function isStatus(v: unknown): v is Status {
@@ -146,11 +175,16 @@ export function parseSession(v: unknown): Session | null {
   if (attentionReason === undefined || agentSessionId === undefined || exitCode === undefined) {
     return null;
   }
+  // Absents des serveurs antérieurs (machines distantes) : défaut de l'agent.
+  const model = typeof v.model === 'string' ? v.model : null;
+  const effort = isEffort(v.effort) ? v.effort : null;
   return {
     id,
     projectId,
     agent: v.agent,
     mode: v.mode,
+    model,
+    effort,
     prompt,
     title,
     status: v.status,
@@ -172,6 +206,7 @@ export function parseTask(v: unknown): Task | null {
   const updatedAt = asNumber(v.updatedAt);
   const sessionId = asNullableString(v.sessionId);
   const sourceSessionId = asNullableString(v.sourceSessionId);
+  const dependsOn = Array.isArray(v.dependsOn) ? v.dependsOn.filter((d): d is string => typeof d === 'string') : [];
   if (
     id === null ||
     projectId === null ||
@@ -184,7 +219,7 @@ export function parseTask(v: unknown): Task | null {
   ) {
     return null;
   }
-  return { id, projectId, text, status: v.status, sessionId, sourceSessionId, createdAt, updatedAt };
+  return { id, projectId, text, status: v.status, sessionId, sourceSessionId, dependsOn, createdAt, updatedAt };
 }
 
 export function parseTaskList(v: unknown): Task[] {
@@ -241,12 +276,28 @@ export function parseScreenLines(v: unknown): string[] | null {
   return lines;
 }
 
+function parseEfforts(v: unknown): Effort[] {
+  return Array.isArray(v) ? v.filter(isEffort) : [];
+}
+
+function parseModelChoices(v: unknown): ModelChoice[] {
+  if (!Array.isArray(v)) return [];
+  const out: ModelChoice[] = [];
+  for (const item of v) {
+    if (!isRecord(item) || typeof item.value !== 'string' || typeof item.label !== 'string') continue;
+    const description = typeof item.description === 'string' ? item.description : '';
+    out.push({ value: item.value, label: item.label, description, efforts: parseEfforts(item.efforts) });
+  }
+  return out;
+}
+
 export function parseAgentInfoList(v: unknown): AgentInfo[] {
   if (!Array.isArray(v)) return [];
   const out: AgentInfo[] = [];
   for (const item of v) {
     if (!isRecord(item) || !isAgent(item.agent) || typeof item.available !== 'boolean') continue;
-    out.push({ agent: item.agent, available: item.available });
+    // Serveur antérieur au catalogue (machine distante) : seulement « défaut ».
+    out.push({ agent: item.agent, available: item.available, models: parseModelChoices(item.models), efforts: parseEfforts(item.efforts) });
   }
   return out;
 }

@@ -1,59 +1,13 @@
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from './api.ts';
 import { parseScreenLines } from './types.ts';
 
-const OPEN_DELAY_MS = 250;
-const CLOSE_DELAY_MS = 180;
 const POPOVER_WIDTH = 440;
 
-export function usePreviewController(): {
-  open: boolean;
-  toggle: () => void;
-  hoverProps: { onMouseEnter: () => void; onMouseLeave: () => void };
-} {
-  const [hover, setHover] = useState(false);
-  const [pinned, setPinned] = useState(false);
-  const [suppressHover, setSuppressHover] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  const cancel = (): void => {
-    if (timer.current !== undefined) {
-      clearTimeout(timer.current);
-      timer.current = undefined;
-    }
-  };
-
-  useEffect(() => cancel, []);
-
-  const onMouseEnter = (): void => {
-    cancel();
-    timer.current = setTimeout(() => {
-      timer.current = undefined;
-      setSuppressHover(false);
-      setHover(true);
-    }, OPEN_DELAY_MS);
-  };
-
-  const onMouseLeave = (): void => {
-    cancel();
-    timer.current = setTimeout(() => {
-      timer.current = undefined;
-      setHover(false);
-      setSuppressHover(false);
-    }, CLOSE_DELAY_MS);
-  };
-
-  return {
-    open: pinned || (hover && !suppressHover),
-    toggle: () => {
-      setPinned((value) => {
-        if (value) setSuppressHover(true);
-        return !value;
-      });
-    },
-    hoverProps: { onMouseEnter, onMouseLeave },
-  };
+export function usePreviewController(): { open: boolean; toggle: () => void } {
+  const [open, setOpen] = useState(false);
+  return { open, toggle: () => setOpen((value) => !value) };
 }
 
 function tailLines(lines: string[]): string[] {
@@ -65,11 +19,9 @@ function tailLines(lines: string[]): string[] {
 export function ScreenPopover({
   sessionId,
   anchorRef,
-  hoverProps,
 }: {
   sessionId: string;
   anchorRef: RefObject<HTMLElement | null>;
-  hoverProps: { onMouseEnter: () => void; onMouseLeave: () => void };
 }) {
   const [lines, setLines] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -124,12 +76,7 @@ export function ScreenPopover({
   else if (lines !== null) body = lines.length === 0 ? '(vide)' : lines.join('\n');
 
   return createPortal(
-    <pre
-      className="screen-popover"
-      style={{ top: pos.top, left: pos.left }}
-      onMouseEnter={hoverProps.onMouseEnter}
-      onMouseLeave={hoverProps.onMouseLeave}
-    >
+    <pre className="screen-popover" style={{ top: pos.top, left: pos.left }}>
       {body}
     </pre>,
     document.body,
@@ -149,11 +96,11 @@ export function PreviewButton({
     <span className="preview-anchor" ref={anchorRef}>
       <button
         type="button"
-        className="btn tiny"
+        className="btn preview-btn"
         aria-expanded={pressed}
         onClick={onToggle}
       >
-        aperçu
+        Aperçu
       </button>
     </span>
   );

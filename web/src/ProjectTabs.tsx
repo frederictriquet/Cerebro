@@ -17,6 +17,17 @@ export function ProjectTabs({ route }: { route: Route }) {
 
   return (
     <nav className="project-tabs" aria-label="Projets">
+      <a
+        className={`project-tab project-tab-home${route.kind === 'home' ? ' active' : ''}`}
+        href={href('#/')}
+        aria-current={route.kind === 'home' ? 'page' : undefined}
+        title="Accueil"
+        aria-label="Accueil"
+      >
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <path d="M2 7.5 8 2.5l6 5M3.5 6.5V13.5h3.5v-4h2v4h3.5V6.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+        </svg>
+      </a>
       {projects.map((project) => {
         const active = project.id === activeProjectId;
         const projectSessions = sessions.filter((session) => session.projectId === project.id);

@@ -11,9 +11,10 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type WebSocket from 'ws';
 import { AGENTS, getAgentAvailability } from './agents.ts';
+import { getCatalog, parseTuning, startCatalogRefresh } from './catalog.ts';
 import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
 import { CerebroDatabase } from './db.ts';
-import type { Agent, Mode, Project, Session, TaskStatus } from './db.ts';
+import type { Agent, Mode, Project, Session, Task, TaskStatus } from './db.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
 import { registerRemoteGateway } from './remotes.ts';
 import { SessionManager } from './sessions.ts';
@@ -63,6 +64,28 @@ function taskText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const text = value.trim();
   return text === '' || text.length > MAX_TASK_LENGTH ? null : text;
+}
+
+// Valide la liste de dépendances proposée pour `task` : tâches existantes du même projet, sans cycle.
+function checkDependencies(task: Task, value: unknown, projectTasks: Task[]): { ok: true; ids: string[] } | { ok: false; message: string } {
+  if (!Array.isArray(value) || !value.every((id) => typeof id === 'string')) {
+    return { ok: false, message: 'dependsOn doit être une liste d\'identifiants' };
+  }
+  const ids = [...new Set(value as string[])];
+  const byId = new Map(projectTasks.map((t) => [t.id, t]));
+  if (ids.some((id) => !byId.has(id))) return { ok: false, message: 'Dépendance introuvable dans ce projet' };
+  if (ids.includes(task.id)) return { ok: false, message: 'Une tâche ne peut pas dépendre d\'elle-même' };
+  // Cycle si `task` est atteignable depuis l'une des nouvelles dépendances.
+  const seen = new Set<string>();
+  const stack = [...ids];
+  while (stack.length > 0) {
+    const id = stack.pop() as string;
+    if (id === task.id) return { ok: false, message: 'Cette dépendance créerait un cycle' };
+    if (seen.has(id)) continue;
+    seen.add(id);
+    stack.push(...(byId.get(id)?.dependsOn ?? []));
+  }
+  return { ok: true, ids };
 }
 
 function bodyRecord(value: unknown): Record<string, unknown> | null {
@@ -298,7 +321,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     return session === null ? error(reply, 404, 'Session introuvable') : reply.send(session);
   });
 
-  // Valide le corps {agent, mode, prompt}, lance la session puis répond 201 avec ce que renvoie `respond`.
+  // Valide le corps {agent, mode, model?, effort?, prompt}, lance la session puis répond 201 avec ce que renvoie `respond`.
   const launchSession = async (
     reply: FastifyReply,
     project: Project,
@@ -309,8 +332,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (body === null || !isAgent(body.agent) || !isMode(body.mode) || typeof body.prompt !== 'string') {
       return error(reply, 400, 'agent, mode ou prompt invalide');
     }
+    const tuning = parseTuning(body.agent, body);
+    if (tuning === null) return error(reply, 400, 'modèle ou effort invalide pour cet agent');
     try {
-      const session = await sessions.create(project, body.agent, body.mode, body.prompt);
+      const session = await sessions.create(project, body.agent, body.mode, body.prompt, tuning);
       return reply.code(201).send(respond(session));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'Impossible de lancer la session';
@@ -343,7 +368,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (db.getTask(request.params.id) === null) return error(reply, 404, 'Tâche introuvable');
     const body = bodyRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps invalide');
-    const changes: { text?: string; status?: TaskStatus } = {};
+    const changes: { text?: string; status?: TaskStatus; dependsOn?: string[] } = {};
     if (body.text !== undefined) {
       const text = taskText(body.text);
       if (text === null) return error(reply, 400, `Le texte doit contenir entre 1 et ${MAX_TASK_LENGTH} caractères`);
@@ -353,6 +378,12 @@ export async function buildServer(): Promise<FastifyInstance> {
       if (!isTaskStatus(body.status)) return error(reply, 400, 'Statut invalide');
       changes.status = body.status;
     }
+    if (body.dependsOn !== undefined) {
+      const current = db.getTask(request.params.id) as Task;
+      const checked = checkDependencies(current, body.dependsOn, db.listTasks().filter((t) => t.projectId === current.projectId));
+      if (!checked.ok) return error(reply, 400, checked.message);
+      changes.dependsOn = checked.ids;
+    }
     const task = db.updateTask(request.params.id, changes);
     if (task === null) return error(reply, 404, 'Tâche introuvable');
     broadcast({ type: 'task', task });
@@ -360,8 +391,13 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   app.delete<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => {
+    const dependents = db.listDependents(request.params.id);
     if (!db.deleteTask(request.params.id)) return error(reply, 404, 'Tâche introuvable');
     broadcast({ type: 'task-deleted', id: request.params.id });
+    for (const id of dependents) {
+      const dependent = db.getTask(id);
+      if (dependent !== null) broadcast({ type: 'task', task: dependent });
+    }
     return reply.code(204).send();
   });
 
@@ -371,6 +407,9 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (task === null) return error(reply, 404, 'Tâche introuvable');
     const project = db.getProject(task.projectId);
     if (project === null) return error(reply, 404, 'Projet introuvable');
+    if (task.dependsOn.some((id) => db.getTask(id)?.status !== 'done')) {
+      return error(reply, 409, 'Tâche bloquée : ses dépendances ne sont pas toutes terminées');
+    }
     return launchSession(reply, project, request.body, (session) => {
       const updated = db.updateTask(task.id, { status: 'started', sessionId: session.id });
       if (updated !== null) broadcast({ type: 'task', task: updated });
@@ -458,7 +497,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     return reply.code(204).send();
   });
 
-  app.get('/api/agents', async () => getAgentAvailability());
+  app.get('/api/agents', async () => {
+    const [availability, catalog] = await Promise.all([getAgentAvailability(), getCatalog()]);
+    return availability.map((info) => ({ ...info, ...catalog[info.agent] }));
+  });
 
   const usage = new UsageTracker();
   app.get('/api/usage', async () => usage.get());
@@ -509,25 +551,95 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
   });
 
-  // Appelé par bin/cerebro-backlog depuis une session : ajoute des tâches au projet de celle-ci.
-  app.post<{ Params: { id: string } }>('/api/backlog/:id', { bodyLimit: BACKLOG_BODY_LIMIT }, async (request, reply) => {
+  // Routes de bin/cerebro-backlog, authentifiées par le jeton de session : elles n'agissent que sur le
+  // backlog du projet de la session.
+  const backlogSession = (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply): Session | null => {
     const token = request.headers['x-cerebro-token'];
     if (typeof token !== 'string' || !sessions.tokenMatches(request.params.id, token)) {
-      return error(reply, 403, 'Token de hook invalide');
+      error(reply, 403, 'Token de hook invalide');
+      return null;
     }
     const session = db.getSession(request.params.id);
-    if (session === null) return error(reply, 404, 'Session introuvable');
+    if (session === null) error(reply, 404, 'Session introuvable');
+    return session;
+  };
+  const projectTasks = (projectId: string): Task[] => db.listTasks().filter((t) => t.projectId === projectId);
+
+  app.get<{ Params: { id: string } }>('/api/backlog/:id', async (request, reply) => {
+    const session = backlogSession(request, reply);
+    if (session === null) return reply;
+    return projectTasks(session.projectId).map(({ id, status, text, dependsOn, sourceSessionId }) =>
+      ({ id, status, text, dependsOn, mine: sourceSessionId === session.id }));
+  });
+
+  // Ajoute des tâches. Chacune est un texte ou { text, dependsOn } ; une dépendance est l'identifiant
+  // d'une tâche du projet ou le numéro (à partir de 1) d'une tâche précédente du même envoi.
+  app.post<{ Params: { id: string } }>('/api/backlog/:id', { bodyLimit: BACKLOG_BODY_LIMIT }, async (request, reply) => {
+    const session = backlogSession(request, reply);
+    if (session === null) return reply;
     const body = bodyRecord(request.body);
     if (body === null || !Array.isArray(body.tasks) || body.tasks.length === 0 || body.tasks.length > MAX_BACKLOG_TASKS) {
-      return error(reply, 400, `tasks doit contenir entre 1 et ${MAX_BACKLOG_TASKS} textes`);
+      return error(reply, 400, `tasks doit contenir entre 1 et ${MAX_BACKLOG_TASKS} tâches`);
     }
-    const texts = body.tasks.map(taskText);
-    if (texts.some((text) => text === null)) {
-      return error(reply, 400, `Chaque tâche doit contenir entre 1 et ${MAX_TASK_LENGTH} caractères`);
+    const existing = new Set(projectTasks(session.projectId).map((t) => t.id));
+    const items: { text: string; deps: (string | number)[] }[] = [];
+    for (const [index, raw] of (body.tasks as unknown[]).entries()) {
+      const item = typeof raw === 'string' ? { text: raw } : bodyRecord(raw);
+      const text = taskText(item?.text);
+      if (text === null) return error(reply, 400, `Tâche ${index + 1} : le texte doit contenir entre 1 et ${MAX_TASK_LENGTH} caractères`);
+      const deps = item?.dependsOn ?? [];
+      if (!Array.isArray(deps)) return error(reply, 400, `Tâche ${index + 1} : dependsOn doit être une liste`);
+      for (const dep of deps) {
+        const valid = typeof dep === 'number'
+          ? Number.isInteger(dep) && dep >= 1 && dep <= index
+          : typeof dep === 'string' && existing.has(dep);
+        if (!valid) {
+          return error(reply, 400, `Tâche ${index + 1} : dépendance invalide ${JSON.stringify(dep)} (identifiant d'une tâche du projet ou numéro d'une tâche précédente de l'envoi)`);
+        }
+      }
+      items.push({ text, deps: deps as (string | number)[] });
     }
-    const created = (texts as string[]).map((text) => db.createTask(session.projectId, text, session.id));
+    // Les nouvelles tâches ne dépendent que de tâches existantes ou antérieures : pas de cycle possible.
+    const created: Task[] = [];
+    for (const { text, deps } of items) {
+      const task = db.createTask(session.projectId, text, session.id);
+      const dependsOn = deps.map((dep) => typeof dep === 'number' ? (created[dep - 1] as Task).id : dep);
+      created.push(dependsOn.length === 0 ? task : db.updateTask(task.id, { dependsOn }) ?? task);
+    }
     for (const task of created) broadcast({ type: 'task', task });
-    return reply.code(201).send({ count: created.length });
+    return reply.code(201).send({ count: created.length, tasks: created.map(({ id, text, dependsOn }) => ({ id, text, dependsOn })) });
+  });
+
+  // Remplace les dépendances d'une tâche du projet.
+  app.patch<{ Params: { id: string; taskId: string } }>('/api/backlog/:id/tasks/:taskId', async (request, reply) => {
+    const session = backlogSession(request, reply);
+    if (session === null) return reply;
+    const current = db.getTask(request.params.taskId);
+    if (current === null || current.projectId !== session.projectId) return error(reply, 404, 'Tâche introuvable dans ce projet');
+    const checked = checkDependencies(current, bodyRecord(request.body)?.dependsOn, projectTasks(session.projectId));
+    if (!checked.ok) return error(reply, 400, checked.message);
+    const task = db.updateTask(current.id, { dependsOn: checked.ids });
+    if (task === null) return error(reply, 404, 'Tâche introuvable');
+    broadcast({ type: 'task', task });
+    return reply.send({ id: task.id, text: task.text, dependsOn: task.dependsOn });
+  });
+
+  // Supprime une tâche, uniquement si elle a été créée par cette session et n'a pas été démarrée.
+  app.delete<{ Params: { id: string; taskId: string } }>('/api/backlog/:id/tasks/:taskId', async (request, reply) => {
+    const session = backlogSession(request, reply);
+    if (session === null) return reply;
+    const task = db.getTask(request.params.taskId);
+    if (task === null || task.projectId !== session.projectId) return error(reply, 404, 'Tâche introuvable dans ce projet');
+    if (task.sourceSessionId !== session.id) return error(reply, 403, "Seules les tâches créées par cette session peuvent être supprimées ici");
+    if (task.status !== 'todo') return error(reply, 409, 'Tâche déjà démarrée : à supprimer depuis l\'interface');
+    const dependents = db.listDependents(task.id);
+    db.deleteTask(task.id);
+    broadcast({ type: 'task-deleted', id: task.id });
+    for (const id of dependents) {
+      const dependent = db.getTask(id);
+      if (dependent !== null) broadcast({ type: 'task', task: dependent });
+    }
+    return reply.code(204).send();
   });
 
   app.post<{ Params: { id: string } }>('/api/hook/:id', async (request, reply) => {
@@ -605,6 +717,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 
 export async function startServer(): Promise<FastifyInstance> {
   const app = await buildServer();
+  startCatalogRefresh();
   await app.listen({ host: HOST, port: PORT });
   return app;
 }

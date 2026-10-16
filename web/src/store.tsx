@@ -26,9 +26,8 @@ import {
   parseSessionList,
   parseTask,
   parseTaskList,
-  type Agent,
   type AgentInfo,
-  type Mode,
+  type LaunchSpec,
   type Project,
   type Session,
   type Task,
@@ -45,7 +44,7 @@ export interface Store {
   setMuted: (value: boolean) => void;
   createProject: (name: string, path: string) => Promise<Project>;
   deleteProject: (id: string) => Promise<void>;
-  createSession: (projectId: string, agent: Agent, mode: Mode, prompt: string) => Promise<Session>;
+  createSession: (projectId: string, spec: LaunchSpec) => Promise<Session>;
   killSession: (id: string) => Promise<void>;
   resumeSession: (id: string) => Promise<Session>;
   deleteSession: (id: string) => Promise<void>;
@@ -55,9 +54,9 @@ export interface Store {
   updateProject: (id: string, patch: { name?: string; path?: string }) => Promise<Project>;
   sendSessionInput: (id: string, data: string) => Promise<void>;
   createTask: (projectId: string, text: string, sourceSessionId?: string) => Promise<Task>;
-  updateTask: (id: string, patch: { text?: string; status?: TaskStatus }) => Promise<Task>;
+  updateTask: (id: string, patch: { text?: string; status?: TaskStatus; dependsOn?: string[] }) => Promise<Task>;
   deleteTask: (id: string) => Promise<void>;
-  startTask: (id: string, agent: Agent, mode: Mode, prompt: string) => Promise<Session>;
+  startTask: (id: string, spec: LaunchSpec) => Promise<Session>;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -224,10 +223,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const createSession = useCallback(
-    async (projectId: string, agent: Agent, mode: Mode, prompt: string): Promise<Session> => {
+    async (projectId: string, spec: LaunchSpec): Promise<Session> => {
       const raw = await api<unknown>(`/api/projects/${projectId}/sessions`, {
         method: 'POST',
-        body: JSON.stringify({ agent, mode, prompt }),
+        body: JSON.stringify(spec),
       });
       const session = parseSession(raw);
       if (!session) throw new Error('Réponse session invalide');
@@ -306,7 +305,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   );
 
   const updateTask = useCallback(
-    async (id: string, patch: { text?: string; status?: TaskStatus }): Promise<Task> => {
+    async (id: string, patch: { text?: string; status?: TaskStatus; dependsOn?: string[] }): Promise<Task> => {
       const raw = await api<unknown>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
       const task = parseTask(raw);
       if (!task) throw new Error('Réponse tâche invalide');
@@ -318,14 +317,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const deleteTask = useCallback(async (id: string): Promise<void> => {
     await api<unknown>(`/api/tasks/${id}`, { method: 'DELETE' });
-    setTasks((list) => list.filter((t) => t.id !== id));
+    setTasks((list) => list.filter((t) => t.id !== id).map((t) => (t.dependsOn.includes(id) ? { ...t, dependsOn: t.dependsOn.filter((d) => d !== id) } : t)));
   }, []);
 
   const startTask = useCallback(
-    async (id: string, agent: Agent, mode: Mode, prompt: string): Promise<Session> => {
+    async (id: string, spec: LaunchSpec): Promise<Session> => {
       const raw = await api<{ task: unknown; session: unknown }>(`/api/tasks/${id}/start`, {
         method: 'POST',
-        body: JSON.stringify({ agent, mode, prompt }),
+        body: JSON.stringify(spec),
       });
       const session = parseSession(raw.session);
       if (!session) throw new Error('Réponse session invalide');

@@ -149,28 +149,7 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text);
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-decoration: none;
-}
-
-.brand:hover {
-  text-decoration: none;
-}
-
-.brand-mark {
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  background: linear-gradient(135deg, #7aa2f7 0%, #3ecf8e 100%);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  margin-bottom: 14px;
 }
 
 .btn-mute {
@@ -180,6 +159,11 @@ textarea {
   padding: 2px 8px;
   color: var(--muted);
   cursor: pointer;
+}
+
+.btn-mute[aria-pressed='false'] {
+  color: var(--running);
+  border-color: #1f4a37;
 }
 
 .btn-mute[aria-pressed='true'] {
@@ -209,7 +193,7 @@ textarea {
 }
 
 .slack-panel {
-  margin-top: 10px;
+  margin-bottom: 14px;
   padding: 10px 12px;
   background: var(--bg-2);
   border: 1px solid var(--line);
@@ -251,6 +235,20 @@ textarea {
 
 .usage-error {
   margin: 2px 0 0;
+}
+
+.auth-line {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.auth-line.warn {
+  color: var(--waiting);
+}
+
+.auth-line.high {
+  color: var(--danger);
 }
 
 .gauge + .gauge {
@@ -352,7 +350,7 @@ textarea {
 }
 
 .ws-pill {
-  margin: 10px 0 14px;
+  margin: 0 auto 0 0;
   font-size: 11px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -622,6 +620,56 @@ textarea {
   border-color: #3a2429;
 }
 
+/* DelayedActionButton : le clic programme l'action, un second clic l'annule avant 5 s. */
+.delayed-btn {
+  position: relative;
+  display: inline-grid;
+  overflow: hidden;
+}
+
+.delayed-btn-label {
+  grid-area: 1 / 1;
+  text-align: center;
+}
+
+.delayed-btn > .delayed-btn-label:last-child,
+.delayed-btn.pending > .delayed-btn-label:first-child {
+  visibility: hidden;
+}
+
+.delayed-btn.pending > .delayed-btn-label:last-child {
+  visibility: visible;
+}
+
+.delayed-btn.pending,
+.delayed-btn.pending:hover:not(:disabled) {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+/* Barre qui se vide sur tout le délai de rétractation. */
+.delayed-btn.pending::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 100%;
+  background: currentColor;
+  transform-origin: left;
+  animation: undo-countdown var(--undo-window) linear forwards;
+}
+
+@keyframes undo-countdown {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
 .row-actions {
   display: flex;
   align-items: center;
@@ -708,6 +756,12 @@ textarea {
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
+}
+
+.project-tab-home {
+  justify-content: center;
+  min-width: 32px;
+  align-self: stretch;
 }
 
 .project-tab.active {
@@ -831,6 +885,10 @@ textarea {
   margin-bottom: 0;
 }
 
+.project-columns .card.new-session {
+  margin-bottom: 16px;
+}
+
 @media (max-width: 1100px) {
   .project-columns {
     grid-template-columns: minmax(0, 1fr);
@@ -847,13 +905,6 @@ textarea {
 
 .session-table-head h2 {
   margin: 0;
-}
-
-.form-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-bottom: 10px;
 }
 
 label {
@@ -1093,13 +1144,7 @@ label.block {
   padding: 0 8px 6px 28px;
 }
 
-.btn.tiny {
-  padding: 1px 7px;
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.btn.tiny[aria-expanded='true'] {
+.btn.preview-btn[aria-expanded='true'] {
   color: var(--text);
   border-color: #3d5a8c;
 }
@@ -1362,10 +1407,6 @@ a.btn:hover {
     width: 100%;
   }
 
-  .form-grid {
-    grid-template-columns: 1fr;
-  }
-
   .pane.padded {
     padding: 16px 14px 28px;
   }
@@ -1519,13 +1560,6 @@ a.btn:hover {
   margin: 0;
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
 .field-label {
   color: var(--muted);
   font-size: 12px;
@@ -1570,6 +1604,56 @@ a.btn:hover {
   background: rgba(226, 92, 106, 0.12);
 }
 
+/* Agent / mode / modèle / effort du formulaire de session : contrôles segmentés compacts. */
+/* Une ligne par choix : colonne des libellés, puis colonne des contrôles alignés à gauche. */
+.tuning-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: 10px;
+}
+
+.tuning {
+  display: contents;
+}
+
+.tuning-row .choice-group.compact {
+  justify-self: start;
+  max-width: 100%;
+}
+
+.choice-group.compact {
+  gap: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.choice-group.compact .choice {
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.choice-group.compact .choice + .choice {
+  border-left: 1px solid var(--line);
+}
+
+.choice-group.compact .choice.checked {
+  background: rgba(122, 162, 247, 0.16);
+  color: var(--accent);
+}
+
+.choice-group.compact .choice.danger.checked {
+  background: rgba(226, 92, 106, 0.16);
+  color: var(--danger);
+}
 
 /* Actions sur la sélection du terminal */
 .selection-bar {
@@ -1705,6 +1789,60 @@ a.btn:hover {
 
 .pill.task-status.review {
   color: var(--idle);
+}
+
+.pill.task-status.blocked {
+  color: var(--faint);
+  border-style: dashed;
+}
+
+.task-blockers {
+  color: var(--faint);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.task-deps {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.task-dep {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.task-dep.done {
+  color: var(--faint);
+  text-decoration: line-through;
+}
+
+.task-dep-remove {
+  padding: 0 4px;
+  background: none;
+  border: 0;
+  color: var(--faint);
+  font: inherit;
+  cursor: pointer;
+}
+
+.task-dep-remove:hover {
+  color: var(--text);
+}
+
+.task-deps select {
+  max-width: 100%;
+  font-size: 12px;
 }
 
 .pill.task-status.done {

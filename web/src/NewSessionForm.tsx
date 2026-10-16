@@ -4,9 +4,9 @@ import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from '
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { AGENT_LABEL, MODE_CHIP } from './format.ts';
 import { useStore } from './store.tsx';
-import { MODES, type Agent, type Mode } from './types.ts';
+import { MODES, type Agent, type Effort, type LaunchSpec, type Mode } from './types.ts';
 
-// Agent, mode et prompt d'une nouvelle session : page projet, et modales lancées depuis une
+// Agent, mode, modèle, effort et prompt d'une nouvelle session : page projet, et modales lancées depuis une
 // sélection du terminal ou une tâche du backlog.
 export function NewSessionForm({
   projectId,
@@ -24,13 +24,16 @@ export function NewSessionForm({
   submitLabel?: string;
   autoFocus?: boolean;
   className?: string;
-  onLaunch: (agent: Agent, mode: Mode, prompt: string) => Promise<void>;
+  onLaunch: (spec: LaunchSpec) => Promise<void>;
   onCancel?: () => void;
 }) {
   const { agents } = useStore();
   const available = agents.filter((a) => a.available);
   const [agent, setAgent] = useState<Agent>('claude');
   const [mode, setMode] = useState<Mode>('auto');
+  // null : défaut de la configuration de l'agent.
+  const [model, setModel] = useState<string | null>(null);
+  const [effort, setEffort] = useState<Effort | null>(null);
   const [prompt, setPrompt] = useState(initialPrompt);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -43,6 +46,15 @@ export function NewSessionForm({
     const first = list[0];
     if (first) setAgent(first.agent);
   }, [agents, agent]);
+
+  // Modèles proposés selon l'agent, efforts selon le modèle (catalogue découvert par le serveur).
+  const info = agents.find((a) => a.agent === agent);
+  const models = info?.models ?? [];
+  const efforts = (model === null ? info?.efforts : models.find((m) => m.value === model)?.efforts) ?? [];
+  useEffect(() => {
+    if (model !== null && !models.some((m) => m.value === model)) setModel(null);
+    else if (effort !== null && !efforts.includes(effort)) setEffort(null);
+  }, [models, efforts, model, effort]);
 
   useEffect(() => {
     setError(null);
@@ -82,7 +94,7 @@ export function NewSessionForm({
     setError(null);
     setBusy(true);
     try {
-      await onLaunch(agent, mode, images.expand(prompt));
+      await onLaunch({ agent, mode, model, effort, prompt: images.expand(prompt) });
       setPrompt('');
       images.reset();
     } catch (err) {
@@ -107,13 +119,14 @@ export function NewSessionForm({
   return (
     <form className={`card new-session ${className}`.trim()} onSubmit={onSubmit}>
       {heading ? <h2>{heading}</h2> : null}
-      <div className="form-grid">
-        <div className="field">
+      <div className="tuning-row">
+        <div className="tuning">
           <span className="field-label">Agent</span>
           {available.length === 0 ? (
-            <p className="muted">Aucun agent disponible</p>
+            <span className="muted">Aucun agent disponible</span>
           ) : (
             <ChoiceGroup
+              compact
               label="Agent"
               value={agent}
               options={available.map((a) => ({ value: a.agent, label: AGENT_LABEL[a.agent] }))}
@@ -121,9 +134,40 @@ export function NewSessionForm({
             />
           )}
         </div>
-        <div className="field">
+        {models.length > 0 ? (
+          <div className="tuning">
+            <span className="field-label">Modèle</span>
+            <ChoiceGroup
+              compact
+              label="Modèle"
+              value={model ?? ''}
+              options={[
+                { value: '', label: 'défaut', title: "Modèle configuré pour l'agent" },
+                ...models.map((m) => ({ value: m.value, label: m.label, title: m.description || undefined })),
+              ]}
+              onChange={(v) => setModel(v === '' ? null : v)}
+            />
+          </div>
+        ) : null}
+        {efforts.length > 0 ? (
+          <div className="tuning">
+            <span className="field-label">Effort</span>
+            <ChoiceGroup<Effort | ''>
+              compact
+              label="Effort"
+              value={effort ?? ''}
+              options={[
+                { value: '', label: 'défaut', title: "Effort configuré pour l'agent" },
+                ...efforts.map((e) => ({ value: e, label: e })),
+              ]}
+              onChange={(v) => setEffort(v === '' ? null : v)}
+            />
+          </div>
+        ) : null}
+        <div className="tuning">
           <span className="field-label">Mode</span>
           <ChoiceGroup
+            compact
             label="Mode"
             value={mode}
             options={MODES.map((m) => ({ value: m, label: MODE_CHIP[m], danger: m === 'bypass' }))}

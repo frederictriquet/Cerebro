@@ -1,0 +1,91 @@
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+
+/** Délai de rétractation : l'action ne part qu'une fois ce délai écoulé. */
+const UNDO_WINDOW_MS = 5000;
+
+/**
+ * Bouton à action différée pour les actions destructrices (remplace window.confirm).
+ * Le clic programme l'action et ouvre un délai de rétractation de 5 s : un second
+ * clic (ou Échap) l'annule et rend au bouton son état initial ; sinon l'action
+ * s'exécute à l'expiration du délai. Si le bouton disparaît entre-temps (navigation),
+ * l'action part quand même à l'échéance : elle a été demandée et n'a pas été annulée.
+ */
+export function DelayedActionButton({
+  children,
+  cancelLabel = 'Annuler',
+  onAction,
+  className = 'btn danger-ghost',
+  disabled,
+  title,
+}: {
+  children: ReactNode;
+  cancelLabel?: ReactNode;
+  onAction: () => void;
+  className?: string;
+  disabled?: boolean;
+  title?: string;
+}) {
+  const [remaining, setRemaining] = useState<number | null>(null);
+  const fire = useRef<number | undefined>(undefined);
+  const tick = useRef<number | undefined>(undefined);
+
+  const stopTick = (): void => {
+    window.clearInterval(tick.current);
+    tick.current = undefined;
+  };
+
+  const cancel = (): void => {
+    window.clearTimeout(fire.current);
+    fire.current = undefined;
+    stopTick();
+    setRemaining(null);
+  };
+
+  // Au démontage, seul le compte à rebours s'arrête : l'action programmée reste due.
+  useEffect(() => stopTick, []);
+  useEffect(() => {
+    if (disabled) cancel();
+  }, [disabled]);
+
+  const pending = remaining !== null;
+
+  const onClick = (): void => {
+    if (pending) {
+      cancel();
+      return;
+    }
+    const deadline = performance.now() + UNDO_WINDOW_MS;
+    setRemaining(Math.ceil(UNDO_WINDOW_MS / 1000));
+    tick.current = window.setInterval(() => {
+      setRemaining(Math.max(1, Math.ceil((deadline - performance.now()) / 1000)));
+    }, 250);
+    fire.current = window.setTimeout(() => {
+      fire.current = undefined;
+      stopTick();
+      setRemaining(null);
+      onAction();
+    }, UNDO_WINDOW_MS);
+  };
+
+  return (
+    <button
+      type="button"
+      className={`${className} delayed-btn${pending ? ' pending' : ''}`}
+      disabled={disabled}
+      title={title}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (pending && e.key === 'Escape') cancel();
+      }}
+      style={{ ['--undo-window' as string]: `${UNDO_WINDOW_MS}ms` }}
+    >
+      {/* Les deux libellés occupent la même cellule : la largeur ne bouge pas. */}
+      <span className="delayed-btn-label" aria-hidden={pending}>
+        {children}
+      </span>
+      <span className="delayed-btn-label" aria-hidden={!pending}>
+        {cancelLabel} ({remaining ?? Math.ceil(UNDO_WINDOW_MS / 1000)} s)
+      </span>
+    </button>
+  );
+}
