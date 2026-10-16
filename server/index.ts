@@ -20,6 +20,7 @@ import { PeerSync, syncPayloadFrom } from './peers.ts';
 import { registerRemoteGateway } from './remotes.ts';
 import { SessionManager } from './sessions.ts';
 import { SlackNotifier } from './slack.ts';
+import { UpdateManager } from './updates.ts';
 import { UsageTracker } from './usage.ts';
 import { VscodeServer } from './vscode.ts';
 
@@ -704,6 +705,28 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   const usage = new UsageTracker();
   app.get('/api/usage', async () => usage.get());
+
+  const updates = new UpdateManager();
+  updates.start();
+  app.addHook('onClose', async () => updates.stop());
+  app.get('/api/updates', async () => updates.list());
+
+  app.post('/api/updates/check', async () => {
+    await updates.checkAll();
+    return updates.list();
+  });
+
+  app.post<{ Params: { agent: string } }>('/api/updates/:agent', async (request, reply) => {
+    if (!isAgent(request.params.agent)) return error(reply, 404, 'Agent inconnu');
+    return reply.code(202).send(updates.update(request.params.agent));
+  });
+
+  app.patch<{ Params: { agent: string } }>('/api/updates/:agent', async (request, reply) => {
+    if (!isAgent(request.params.agent)) return error(reply, 404, 'Agent inconnu');
+    const body = bodyRecord(request.body);
+    if (body === null || typeof body.auto !== 'boolean') return error(reply, 400, 'auto (booléen) attendu');
+    return reply.send(updates.setAuto(request.params.agent, body.auto));
+  });
 
   app.get('/api/slack', async () => notifier.status());
 

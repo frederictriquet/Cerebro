@@ -278,6 +278,76 @@ textarea {
   margin: 2px 0 0;
 }
 
+/* Installed version, update badge and auto switch, under the agent's name. */
+.update-line {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.update-version {
+  font-family: var(--mono);
+}
+
+.update-badge {
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-family: var(--mono);
+  cursor: pointer;
+}
+
+.update-badge:hover {
+  background: var(--bg-hover);
+}
+
+.update-badge.busy {
+  border-color: var(--starting);
+  color: var(--starting);
+  cursor: default;
+}
+
+.update-ok {
+  color: var(--running);
+}
+
+.update-error {
+  color: var(--waiting);
+  cursor: help;
+}
+
+/* Overrides the global form label (column) and input (full width) styles. */
+.update-auto {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--faint);
+  cursor: pointer;
+}
+
+.update-auto input {
+  width: auto;
+  margin: 0;
+  padding: 0;
+}
+
+.update-line .usage-error {
+  flex-basis: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .auth-line {
   text-align: right;
   font-size: 11px;

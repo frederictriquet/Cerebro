@@ -1,9 +1,20 @@
 import { useEffect, useState } from 'react';
-import { getUsage, type AgentAuth, type AgentUsage, type UsageWindow } from './api.ts';
+import {
+  getUpdates,
+  getUsage,
+  setAutoUpdate,
+  startUpdate,
+  type AgentAuth,
+  type AgentUpdate,
+  type AgentUsage,
+  type UsageWindow,
+} from './api.ts';
 import { AGENT_LABEL, relativeTime } from './format.ts';
 import { useNow } from './route.ts';
 
 const REFRESH_MS = 60_000;
+// While a CLI updates, follow it closely.
+const UPDATING_REFRESH_MS = 3_000;
 const DAY_MS = 86_400_000;
 
 function untilReset(resetsAt: string, now: number): string {
@@ -94,7 +105,68 @@ function AuthLine({ auth, now }: { auth: AgentAuth; now: number }) {
   );
 }
 
-function AgentGauges({ usage, now }: { usage: AgentUsage; now: number }) {
+/** Installed version, update button when a newer one exists, and the auto-update switch. */
+function UpdateLine({ update, onChange }: { update: AgentUpdate; onChange: (next: AgentUpdate) => void }) {
+  const [failed, setFailed] = useState<string | null>(null);
+  const act = (call: () => Promise<AgentUpdate>): void => {
+    setFailed(null);
+    void call().then(onChange, (cause: unknown) => setFailed(cause instanceof Error ? cause.message : String(cause)));
+  };
+  const lastFailure = update.lastRun !== null && !update.lastRun.ok ? update.lastRun : null;
+  const checked = update.checkedAt === null ? null : `vérifié le ${fullDate(update.checkedAt)}`;
+  return (
+    <div className="update-line">
+      <span className="update-version" title={[update.error, checked].filter(Boolean).join('\n')}>
+        {update.installed === null ? 'version inconnue' : `v${update.installed}`}
+      </span>
+      {update.updating ? (
+        <span className="update-badge busy">Mise à jour…</span>
+      ) : update.available ? (
+        <button
+          type="button"
+          className="update-badge"
+          title={`Installer ${update.latest ?? ''} (les sessions ouvertes gardent leur version jusqu'à relance)`}
+          onClick={() => act(() => startUpdate(update.agent))}
+        >
+          ↑ {update.latest}
+        </button>
+      ) : update.error === null ? (
+        <span className="update-ok" title={checked ?? undefined}>à jour</span>
+      ) : (
+        <span className="update-error" title={update.error}>⚠</span>
+      )}
+      <label className="update-auto" title="Installer automatiquement les nouvelles versions (vérification toutes les heures)">
+        <input
+          type="checkbox"
+          checked={update.auto}
+          onChange={(event) => {
+            const auto = event.target.checked;
+            act(() => setAutoUpdate(update.agent, auto));
+          }}
+        />
+        auto update
+      </label>
+      {lastFailure === null ? null : (
+        <p className="usage-error" title={lastFailure.output}>
+          Échec de la mise à jour ({fullDate(lastFailure.at)}) : {lastFailure.output.split('\n').at(-1)}
+        </p>
+      )}
+      {failed === null ? null : <p className="usage-error">{failed}</p>}
+    </div>
+  );
+}
+
+function AgentGauges({
+  usage,
+  update,
+  now,
+  onUpdate,
+}: {
+  usage: AgentUsage;
+  update: AgentUpdate | undefined;
+  now: number;
+  onUpdate: (next: AgentUpdate) => void;
+}) {
   const updated = usage.updatedAt === null ? null : Date.parse(usage.updatedAt);
   return (
     <div className="usage-agent">
@@ -102,6 +174,7 @@ function AgentGauges({ usage, now }: { usage: AgentUsage; now: number }) {
         <span className="usage-agent-name">{AGENT_LABEL[usage.agent]}</span>
         {usage.auth === null ? null : <AuthLine auth={usage.auth} now={now} />}
       </div>
+      {update === undefined ? null : <UpdateLine update={update} onChange={onUpdate} />}
       {usage.windows.map((w) => <Gauge key={w.label} window={w} now={now} />)}
       {usage.agent === 'codex' && updated !== null ? (
         <span className="usage-updated" title="Codex ne publie ses quotas que pendant qu'il tourne">
@@ -139,6 +212,29 @@ export function UsageGauges() {
     };
   }, []);
 
+  const [updates, setUpdates] = useState<AgentUpdate[]>([]);
+  const updating = updates.some((u) => u.updating);
+  useEffect(() => {
+    let cancelled = false;
+    const load = (): void => {
+      void getUpdates().then(
+        (result) => {
+          if (!cancelled) setUpdates(result);
+        },
+        () => {},
+      );
+    };
+    load();
+    const timer = window.setInterval(load, updating ? UPDATING_REFRESH_MS : REFRESH_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [updating]);
+  const replaceUpdate = (next: AgentUpdate): void => {
+    setUpdates((current) => current.map((u) => (u.agent === next.agent ? next : u)));
+  };
+
   return (
     <section className="side-section side-usage">
       <h2>Consommation</h2>
@@ -146,7 +242,15 @@ export function UsageGauges() {
         <p className="empty-hint">{failed ? 'Indisponible' : 'Chargement…'}</p>
       ) : (
         <div className="usage-grid">
-          {usage.map((u) => <AgentGauges key={u.agent} usage={u} now={now} />)}
+          {usage.map((u) => (
+            <AgentGauges
+              key={u.agent}
+              usage={u}
+              update={updates.find((x) => x.agent === u.agent)}
+              now={now}
+              onUpdate={replaceUpdate}
+            />
+          ))}
         </div>
       )}
     </section>

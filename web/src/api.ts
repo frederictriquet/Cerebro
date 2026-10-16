@@ -194,6 +194,34 @@ export function getUsage(): Promise<AgentUsage[]> {
   return api<AgentUsage[]>('/api/usage');
 }
 
+export interface AgentUpdate {
+  agent: Agent;
+  installed: string | null;
+  latest: string | null;
+  available: boolean;
+  auto: boolean;
+  updating: boolean;
+  checkedAt: string | null;
+  lastRun: { at: string; ok: boolean; output: string } | null;
+  error: string | null;
+}
+
+export function getUpdates(): Promise<AgentUpdate[]> {
+  return api<AgentUpdate[]>('/api/updates');
+}
+
+export function checkUpdates(): Promise<AgentUpdate[]> {
+  return api<AgentUpdate[]>('/api/updates/check', { method: 'POST' });
+}
+
+export function startUpdate(agent: Agent): Promise<AgentUpdate> {
+  return api<AgentUpdate>(`/api/updates/${agent}`, { method: 'POST' });
+}
+
+export function setAutoUpdate(agent: Agent, auto: boolean): Promise<AgentUpdate> {
+  return api<AgentUpdate>(`/api/updates/${agent}`, { method: 'PATCH', body: JSON.stringify({ auto }) });
+}
+
 async function postImage(url: string, image: Blob): Promise<string> {
   const { path } = await api<{ path: string }>(url, {
     method: 'POST',
