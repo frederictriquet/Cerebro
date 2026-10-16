@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { acquireProjectSlack, api, getProjectSlack, type ProjectSlackStatus } from './api.ts';
 import { Backlog } from './Backlog.tsx';
-import { CodeEditor, vscodeAvailable } from './CodeEditor.tsx';
+import { CodeEditor } from './CodeEditor.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { AGENT_LABEL, displayStatus, isAwaiting, isDormant, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { NewSessionForm } from './NewSessionForm.tsx';
@@ -281,11 +281,9 @@ export function ProjectView({ projectId }: { projectId: string }) {
           <SlackLead key={`slack-${project.id}`} projectId={project.id} />
         </div>
         <div className="row-actions">
-          {vscodeAvailable() ? (
-            <button type="button" className="btn" onClick={() => setCodeOpen(true)} title="Ouvrir le projet dans VS Code">
-              VS Code
-            </button>
-          ) : null}
+          <button type="button" className="btn" onClick={() => setCodeOpen(true)} title="Ouvrir le projet dans VS Code">
+            VS Code
+          </button>
           {editing ? null : (
             <button type="button" className="btn" onClick={startEdit}>
               Éditer

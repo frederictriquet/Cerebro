@@ -22,7 +22,7 @@ import { SessionManager } from './sessions.ts';
 import { SlackNotifier } from './slack.ts';
 import { UpdateManager } from './updates.ts';
 import { UsageTracker } from './usage.ts';
-import { VscodeServer } from './vscode.ts';
+import { registerVscodeRelay, VscodeServer } from './vscode.ts';
 
 const MODES: readonly Mode[] = ['default', 'auto', 'acceptEdits', 'plan', 'bypass'];
 const execFileAsync = promisify(execFile);
@@ -229,7 +229,8 @@ export async function buildServer(): Promise<FastifyInstance> {
       && path !== '/api/auth'
       && !path.startsWith('/api/hook/')
       && !path.startsWith('/api/notify/')
-      && !path.startsWith('/api/backlog/')) || path.startsWith('/ws/') || path.startsWith('/m/');
+      && !path.startsWith('/api/backlog/')) || path.startsWith('/ws/') || path.startsWith('/m/')
+      || path === '/vscode' || path.startsWith('/vscode/');
     if (BIND_TOKEN === undefined || !protectedRoute) return;
     const authorized = tokenMatches(queryToken)
       || tokenMatches(bearerToken(request.headers.authorization))
@@ -247,6 +248,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   registerRemoteGateway(app);
+  registerVscodeRelay(app, vscode);
 
   app.addHook('onClose', async () => {
     peers.stop();
@@ -341,7 +343,8 @@ export async function buildServer(): Promise<FastifyInstance> {
     const project = db.getProject(request.params.id);
     if (project === null) return error(reply, 404, 'Projet introuvable');
     try {
-      return reply.send(await vscode.open(project.path));
+      const opened = await vscode.open(project.path);
+      return reply.code(opened.ready ? 200 : 202).send(opened);
     } catch (caught) {
       return error(reply, 502, caught instanceof Error ? caught.message : 'VS Code indisponible');
     }

@@ -1,7 +1,14 @@
 import type { OutgoingHttpHeaders } from 'node:http';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { loadRemotes, MACHINE_NAME, type RemoteMachine } from './config.ts';
-import { filteredHeaders, relayHttp, relayWebSocket } from './proxy.ts';
+import {
+  filteredHeaders,
+  isWebSocketUpgrade,
+  relayHttp,
+  relayWebSocket,
+  websocketHeaders,
+  withoutCookie,
+} from './proxy.ts';
 
 const RESPONSE_TIMEOUT_MS = 10_000;
 
@@ -24,9 +31,35 @@ function authorization(remote: RemoteMachine): OutgoingHttpHeaders {
   return remote.token === undefined ? {} : { authorization: `Bearer ${remote.token}` };
 }
 
+// VS Code distant : ses cookies (jeton VS Code) passent, pas celui de Cerebro. Les en-têtes x-forwarded
+// lui font générer ses URLs sous /m/<id>/vscode, sur l'hôte du navigateur.
+function vscodeHeaders(request: FastifyRequest, remote: RemoteMachine, base: OutgoingHttpHeaders): OutgoingHttpHeaders {
+  const headers: OutgoingHttpHeaders = { ...base, ...authorization(remote) };
+  const cookie = withoutCookie(request.headers.cookie, 'cerebro_token');
+  if (cookie === undefined) delete headers.cookie;
+  else headers.cookie = cookie;
+  headers['x-forwarded-host'] = request.headers['x-forwarded-host'] ?? request.headers.host;
+  headers['x-forwarded-prefix'] = `/m/${remote.id}/vscode`;
+  return headers;
+}
+
 export function registerRemoteGateway(app: FastifyInstance): void {
   app.addHook('onRequest', async (request, reply) => {
     const incomingUrl = new URL(request.raw.url ?? request.url, 'http://localhost');
+
+    const vscode = /^\/m\/([^/]+)\/vscode(\/.*)?$/.exec(incomingUrl.pathname);
+    if (vscode !== null) {
+      if (isWebSocketUpgrade(request)) return;
+      const remote = loadRemotes().find((candidate) => candidate.id === vscode[1]);
+      if (remote === undefined) return reply.code(404).send({ error: 'Machine inconnue' });
+      const headers = vscodeHeaders(request, remote, filteredHeaders(request.headers, ['host', 'authorization']));
+      relayHttp(request, reply, upstreamUrl(remote, `/vscode${vscode[2] ?? '/'}`, incomingUrl.search), headers, {
+        unreachable: `Machine ${remote.name} injoignable`,
+        unauthorized: `Jeton refusé par ${remote.name}`,
+      });
+      return;
+    }
+
     const match = /^\/m\/([^/]+)\/api\/(.*)$/.exec(incomingUrl.pathname);
     if (match === null) return;
 
@@ -64,5 +97,16 @@ export function registerRemoteGateway(app: FastifyInstance): void {
       return;
     }
     relayWebSocket(socket, upstreamUrl(remote, `/ws/${request.params['*']}`, incomingSearch(request), true), authorization(remote));
+  });
+
+  app.get<{ Params: { id: string; '*': string } }>('/m/:id/vscode/*', { websocket: true }, (socket, request) => {
+    const remote = loadRemotes().find((candidate) => candidate.id === request.params.id);
+    if (remote === undefined) {
+      socket.close(1008, 'Machine inconnue');
+      return;
+    }
+    const search = new URL(request.raw.url ?? request.url, 'http://localhost').search;
+    const headers = vscodeHeaders(request, remote, websocketHeaders(request.headers, ['authorization']));
+    relayWebSocket(socket, upstreamUrl(remote, `/vscode/${request.params['*']}`, search, true), headers);
   });
 }

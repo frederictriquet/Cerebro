@@ -2,42 +2,45 @@ import { useEffect, useState } from 'react';
 import { api, apiBase } from './api.ts';
 import type { Project } from './types.ts';
 
-interface VscodeTarget {
-  port: number;
-  path: string;
-}
+type VscodeOpen = { ready: false } | { ready: true; path: string };
 
-function isVscodeTarget(v: unknown): v is VscodeTarget {
-  if (typeof v !== 'object' || v === null) return false;
+function parseVscodeOpen(v: unknown): VscodeOpen | null {
+  if (typeof v !== 'object' || v === null) return null;
   const r = v as Record<string, unknown>;
-  return typeof r.port === 'number' && typeof r.path === 'string';
+  if (r.ready === false) return { ready: false };
+  if (r.ready === true && typeof r.path === 'string') return { ready: true, path: r.path };
+  return null;
 }
 
-// L'iframe pointe directement sur `code serve-web` : même hôte que l'UI, autre port.
-export function vscodeAvailable(): boolean {
-  return apiBase() === '';
-}
+const RETRY_MS = 2_000;
 
+// VS Code est relayé par Cerebro sous /vscode/ (sous /m/<id>/vscode/ pour une machine distante).
 export function CodeEditor({ project, onClose }: { project: Project; onClose: () => void }) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    let timer: number | undefined;
     setUrl(null);
     setError(null);
-    void (async () => {
+    const base = apiBase();
+    const load = async (): Promise<void> => {
       try {
-        const target = await api<unknown>(`/api/projects/${project.id}/vscode`, { method: 'POST' });
-        if (!isVscodeTarget(target)) throw new Error('Réponse inattendue du serveur');
-        const { protocol, hostname } = window.location;
-        if (!cancelled) setUrl(`${protocol}//${hostname}:${target.port}${target.path}`);
+        const opened = parseVscodeOpen(await api<unknown>(`/api/projects/${project.id}/vscode`, { method: 'POST' }));
+        if (cancelled) return;
+        if (opened === null) throw new Error('Réponse inattendue du serveur');
+        // Premier lancement : le serveur VS Code est en cours de téléchargement.
+        if (!opened.ready) timer = window.setTimeout(() => void load(), RETRY_MS);
+        else setUrl(`${base}${opened.path}`);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'VS Code indisponible');
       }
-    })();
+    };
+    void load();
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [project.id, project.path]);
 
