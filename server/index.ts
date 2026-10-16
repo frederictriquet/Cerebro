@@ -21,6 +21,7 @@ import { registerRemoteGateway } from './remotes.ts';
 import { SessionManager } from './sessions.ts';
 import { SlackNotifier } from './slack.ts';
 import { UsageTracker } from './usage.ts';
+import { VscodeServer } from './vscode.ts';
 
 const MODES: readonly Mode[] = ['default', 'auto', 'acceptEdits', 'plan', 'bypass'];
 const execFileAsync = promisify(execFile);
@@ -210,6 +211,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     for (const socket of eventSockets) sendSocket(socket, { type: 'peers' });
   });
   const notifier = new SlackNotifier(sessions, db, peers);
+  const vscode = new VscodeServer();
 
   installGrokHook();
   await sessions.initialize();
@@ -248,6 +250,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.addHook('onClose', async () => {
     peers.stop();
     notifier.stop();
+    vscode.stop();
     await sessions.shutdown();
     db.close();
   });
@@ -331,6 +334,16 @@ export async function buildServer(): Promise<FastifyInstance> {
     const project = db.getProject(request.params.id);
     if (project === null) return error(reply, 404, 'Projet introuvable');
     return reply.send(await gitSummary(project.path));
+  });
+
+  app.post<{ Params: { id: string } }>('/api/projects/:id/vscode', async (request, reply) => {
+    const project = db.getProject(request.params.id);
+    if (project === null) return error(reply, 404, 'Projet introuvable');
+    try {
+      return reply.send(await vscode.open(project.path));
+    } catch (caught) {
+      return error(reply, 502, caught instanceof Error ? caught.message : 'VS Code indisponible');
+    }
   });
 
   // Prise de main Slack entre machines partageant un projet (voir server/peers.ts).
