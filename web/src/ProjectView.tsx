@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { acquireProjectSlack, api, getProjectSlack, type ProjectSlackStatus } from './api.ts';
 import { Backlog } from './Backlog.tsx';
+import { CodeEditor, vscodeAvailable } from './CodeEditor.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { AGENT_LABEL, displayStatus, isAwaiting, isDormant, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { NewSessionForm } from './NewSessionForm.tsx';
@@ -147,9 +148,11 @@ export function ProjectView({ projectId }: { projectId: string }) {
   const [editPath, setEditPath] = useState('');
   const [editColor, setEditColor] = useState<string | null>(null);
   const [editBusy, setEditBusy] = useState(false);
+  const [codeOpen, setCodeOpen] = useState(false);
 
   useEffect(() => {
     setEditing(false);
+    setCodeOpen(false);
     setError(null);
   }, [projectId]);
 
@@ -206,6 +209,8 @@ export function ProjectView({ projectId }: { projectId: string }) {
       setEditBusy(false);
     }
   };
+
+  if (codeOpen) return <CodeEditor project={project} onClose={() => setCodeOpen(false)} />;
 
   return (
     <div className="pane padded">
@@ -276,6 +281,11 @@ export function ProjectView({ projectId }: { projectId: string }) {
           <SlackLead key={`slack-${project.id}`} projectId={project.id} />
         </div>
         <div className="row-actions">
+          {vscodeAvailable() ? (
+            <button type="button" className="btn" onClick={() => setCodeOpen(true)} title="Ouvrir le projet dans VS Code">
+              VS Code
+            </button>
+          ) : null}
           {editing ? null : (
             <button type="button" className="btn" onClick={startEdit}>
               Éditer

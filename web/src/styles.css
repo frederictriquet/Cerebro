@@ -2199,3 +2199,41 @@ a.btn:hover {
 .peer-notice .btn {
   flex-shrink: 0;
 }
+
+.code-editor {
+  min-width: 0;
+}
+
+.code-editor-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+  min-width: 0;
+}
+
+.code-editor-bar .path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.code-editor-bar .row-actions {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.code-editor-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: var(--bg);
+}
+
+.code-editor-msg {
+  padding: 22px 28px;
+}
