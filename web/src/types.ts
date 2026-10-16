@@ -2,11 +2,11 @@ export type Agent = 'claude' | 'codex' | 'grok';
 export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
 export type TaskStatus = 'todo' | 'started' | 'done';
-export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
 export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
 export const MODES: readonly Mode[] = ['auto', 'default', 'acceptEdits', 'plan', 'bypass'];
-const EFFORTS: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORTS: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 // Ce que le formulaire de nouvelle session envoie au serveur.
 export interface LaunchSpec {

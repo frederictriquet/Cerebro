@@ -25,7 +25,7 @@ export interface AgentCatalog {
 }
 
 const CLAUDE_EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-const EFFORT_ORDER: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORT_ORDER: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 // Repli quand la découverte échoue.
 const FALLBACK: Record<Agent, AgentCatalog> = {
@@ -37,8 +37,8 @@ const FALLBACK: Record<Agent, AgentCatalog> = {
     ],
     efforts: CLAUDE_EFFORTS,
   },
-  codex: { models: [], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
-  grok: { models: [], efforts: ['low', 'high'] },
+  codex: { models: [], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  grok: { models: [], efforts: ['low', 'medium', 'high', 'xhigh'] },
 };
 
 const catalogs: Record<Agent, AgentCatalog> = { ...FALLBACK };
