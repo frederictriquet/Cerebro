@@ -12,6 +12,7 @@ import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from '
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { AddTaskDialog, LaunchSessionDialog } from './Dialog.tsx';
 import { AGENT_LABEL, displayStatus, MODE_LABEL, STATUS_LABEL, sessionTitle } from './format.ts';
+import { SessionGitActions } from './GitActions.tsx';
 import { go, href, useNow } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
@@ -374,6 +375,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           </p>
         </div>
         <div className="row-actions">
+          <SessionGitActions sessionId={session.id} live={live} />
           {session.status !== 'exited' ? (
             <button type="button" className="btn" onClick={() => void act(() => killSession(session.id))}>
               Arrêter

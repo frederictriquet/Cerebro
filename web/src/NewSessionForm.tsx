@@ -11,8 +11,10 @@ import { MODES, type Agent, type Effort, type LaunchSpec, type Mode } from './ty
 export function NewSessionForm({
   projectId,
   initialPrompt = '',
+  promptFor,
   heading,
   submitLabel = 'Lancer',
+  launchDisabled = false,
   autoFocus = false,
   className = '',
   onLaunch,
@@ -20,8 +22,11 @@ export function NewSessionForm({
 }: {
   projectId: string;
   initialPrompt?: string;
+  // Prompt prérempli propre à l'agent choisi ; remplace initialPrompt tant que l'utilisateur ne l'a pas modifié.
+  promptFor?: (agent: Agent) => string;
   heading?: string;
   submitLabel?: string;
+  launchDisabled?: boolean;
   autoFocus?: boolean;
   className?: string;
   onLaunch: (spec: LaunchSpec) => Promise<void>;
@@ -34,7 +39,8 @@ export function NewSessionForm({
   // null : défaut de la configuration de l'agent.
   const [model, setModel] = useState<string | null>(null);
   const [effort, setEffort] = useState<Effort | null>(null);
-  const [prompt, setPrompt] = useState(initialPrompt);
+  const [prompt, setPrompt] = useState(() => promptFor?.(agent) ?? initialPrompt);
+  const generatedRef = useRef(prompt);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
@@ -46,6 +52,15 @@ export function NewSessionForm({
     const first = list[0];
     if (first) setAgent(first.agent);
   }, [agents, agent]);
+
+  useEffect(() => {
+    if (!promptFor) return;
+    const next = promptFor(agent);
+    // Copie locale : l'updater s'exécute au rendu suivant, après la mise à jour de la ref.
+    const previous = generatedRef.current;
+    setPrompt((current) => (current === previous ? next : current));
+    generatedRef.current = next;
+  }, [agent, promptFor]);
 
   // Modèles proposés selon l'agent, efforts selon le modèle (catalogue découvert par le serveur).
   const info = agents.find((a) => a.agent === agent);
@@ -90,7 +105,7 @@ export function NewSessionForm({
   };
 
   const launch = async (): Promise<void> => {
-    if (available.length === 0 || busy || images.pending) return;
+    if (launchDisabled || available.length === 0 || busy || images.pending) return;
     setError(null);
     setBusy(true);
     try {
@@ -203,7 +218,7 @@ export function NewSessionForm({
       </label>
       {error ? <p className="form-error">{error}</p> : null}
       <div className="row-actions">
-        <button type="submit" className="btn primary" disabled={busy || images.pending || available.length === 0}>
+        <button type="submit" className="btn primary" disabled={launchDisabled || busy || images.pending || available.length === 0}>
           {submitLabel}
         </button>
         {onCancel ? (

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
-import type { LaunchSpec } from './types.ts';
+import type { Agent, LaunchSpec } from './types.ts';
 
 // Modale native : Échap et un clic hors du contenu la ferment.
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
@@ -50,12 +50,14 @@ export function LaunchSessionDialog({
   title,
   projectId,
   initialPrompt,
+  promptFor,
   onLaunch,
   onClose,
 }: {
   title: string;
   projectId: string;
   initialPrompt: string;
+  promptFor?: (agent: Agent) => string;
   onLaunch: (spec: LaunchSpec) => Promise<void>;
   onClose: () => void;
 }) {
@@ -65,6 +67,7 @@ export function LaunchSessionDialog({
         className="bare"
         projectId={projectId}
         initialPrompt={initialPrompt}
+        promptFor={promptFor}
         autoFocus
         onLaunch={onLaunch}
         onCancel={onClose}

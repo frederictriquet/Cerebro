@@ -3,6 +3,7 @@ import { acquireProjectSlack, api, getProjectSlack, type ProjectSlackStatus } fr
 import { Backlog } from './Backlog.tsx';
 import { CodeEditor } from './CodeEditor.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
+import { GitActions } from './GitActions.tsx';
 import { AGENT_LABEL, displayStatus, isAwaiting, isDormant, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href, useNow } from './route.ts';
@@ -17,6 +18,10 @@ const PROJECT_COLORS = ['#e5484d', '#f76b15', '#ffc53d', '#46a758', '#12a594', '
 function formatDirty(count: number): string {
   const n = Math.max(0, Math.trunc(count));
   return n === 1 ? '1 fichier modifié' : `${n} fichiers modifiés`;
+}
+
+function formatAhead(count: number): string {
+  return count === 1 ? '1 commit à pousser' : `${count} commits à pousser`;
 }
 
 function GitStatus({ projectId }: { projectId: string }) {
@@ -50,6 +55,9 @@ function GitStatus({ projectId }: { projectId: string }) {
     <p className="git-line">
       <span className="pill">{git.branch}</span>
       <span className={git.dirty > 0 ? 'git-dirty' : 'meta'}>{formatDirty(git.dirty)}</span>
+      {git.ahead ? <span className="meta">{formatAhead(git.ahead)}</span> : null}
+      {!git.hasUpstream ? <span className="meta">pas d'upstream</span> : null}
+      <GitActions projectId={projectId} git={git} />
     </p>
   );
 }
