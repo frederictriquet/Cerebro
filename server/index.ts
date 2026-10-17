@@ -17,6 +17,7 @@ import { CerebroDatabase } from './db.ts';
 import type { Agent, Epic, Mode, Project, Session, Task, TaskStatus } from './db.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
 import { PeerSync, syncPayloadFrom } from './peers.ts';
+import { assertLoopbackPortFree } from './ports.ts';
 import { registerRemoteGateway } from './remotes.ts';
 import { SessionManager } from './sessions.ts';
 import { SlackNotifier } from './slack.ts';
@@ -1059,6 +1060,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 }
 
 export async function startServer(): Promise<FastifyInstance> {
+  await assertLoopbackPortFree(HOST, PORT, 'Serveur Cerebro');
   const app = await buildServer();
   startCatalogRefresh();
   await app.listen({ host: HOST, port: PORT });

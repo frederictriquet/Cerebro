@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type ProxyOptions } from 'vite';
+import { assertLoopbackPortFree } from '../server/ports.ts';
 
 // Same env file as the server (server/config.ts), so the proxy targets the port it listens on.
 const envFile = join(process.env.CEREBRO_DATA_DIR ?? join(homedir(), '.cerebro'), 'env');
@@ -47,24 +48,31 @@ const quietWsDisconnects: ProxyOptions['configure'] = (proxy) => {
   }) as typeof proxy.emit;
 };
 
-export default defineConfig({
-  root,
-  plugins: [react()],
-  build: {
-    outDir: 'dist',
-    emptyOutDir: true,
-  },
-  server: {
-    host: '127.0.0.1',
-    port: 5173,
-    strictPort: true,
-    proxy: {
-      '/api': { target: api },
-      '/ws': { target: api, ws: true, configure: quietWsDisconnects },
-      // VS Code relayé par le serveur (regex : '/vscode' seul capterait aussi d'éventuels /vscode*.ts).
-      '^/vscode(/|$|\\?)': { target: api, ws: true, configure: quietWsDisconnects },
-      // Passerelle vers les machines distantes (regex : un préfixe '/m' capterait aussi /main.tsx…).
-      '^/m/': { target: api, ws: true, configure: quietWsDisconnects },
+const DEV_HOST = '127.0.0.1';
+const DEV_PORT = 5173;
+
+export default defineConfig(async ({ command }) => {
+  // strictPort only covers 127.0.0.1: also refuse a port already taken on [::1].
+  if (command === 'serve') await assertLoopbackPortFree(DEV_HOST, DEV_PORT, 'Vite (Cerebro)');
+  return {
+    root,
+    plugins: [react()],
+    build: {
+      outDir: 'dist',
+      emptyOutDir: true,
     },
-  },
+    server: {
+      host: DEV_HOST,
+      port: DEV_PORT,
+      strictPort: true,
+      proxy: {
+        '/api': { target: api },
+        '/ws': { target: api, ws: true, configure: quietWsDisconnects },
+        // VS Code relayé par le serveur (regex : '/vscode' seul capterait aussi d'éventuels /vscode*.ts).
+        '^/vscode(/|$|\\?)': { target: api, ws: true, configure: quietWsDisconnects },
+        // Passerelle vers les machines distantes (regex : un préfixe '/m' capterait aussi /main.tsx…).
+        '^/m/': { target: api, ws: true, configure: quietWsDisconnects },
+      },
+    },
+  };
 });
