@@ -353,7 +353,8 @@ function EpicBlock({
     .map((t) => (t.status === 'started' ? sessions.find((s) => s.id === t.sessionId) : undefined))
     .find((s) => s !== undefined && s.status !== 'exited');
   const position = new Map(open.map((t, i) => [t.id, i + 1]));
-  const shown = showDone ? ordered : open;
+  // Displayed in creation order; the number gives the processing rank (dependency order).
+  const shown = showDone ? members : members.filter((t) => t.status !== 'done');
   const startHint = open.length === 0
     ? 'Aucune tâche ouverte dans cet epic'
     : outsideBlockers.length > 0

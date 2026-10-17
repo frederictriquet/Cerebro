@@ -374,7 +374,7 @@ export class CerebroDatabase {
       { task_id: string; depends_on_id: string }[];
     const deps = new Map<string, string[]>();
     for (const edge of edges) deps.set(edge.task_id, [...(deps.get(edge.task_id) ?? []), edge.depends_on_id]);
-    return (this.connection.prepare('SELECT * FROM tasks ORDER BY created_at ASC').all() as unknown as TaskRow[])
+    return (this.connection.prepare('SELECT * FROM tasks ORDER BY created_at ASC, rowid ASC').all() as unknown as TaskRow[])
       .map((row) => taskFromRow(row, deps.get(row.id) ?? []));
   }
 
@@ -446,7 +446,7 @@ export class CerebroDatabase {
   }
 
   listEpics(): Epic[] {
-    return (this.connection.prepare('SELECT * FROM epics ORDER BY created_at ASC').all() as unknown as EpicRow[])
+    return (this.connection.prepare('SELECT * FROM epics ORDER BY created_at ASC, rowid ASC').all() as unknown as EpicRow[])
       .map(epicFromRow);
   }
 
