@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { clipboardImage, uploadProjectImage } from './api.ts';
-import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
+import { AttachmentStrip, insertToken, removeToken, restoredAttachment, useImageAttachments } from './attachments.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
+import { readDraft, writeDraft } from './drafts.ts';
 import { AGENT_LABEL, MODE_CHIP } from './format.ts';
 import { useStore } from './store.tsx';
 import { MODES, type Agent, type Effort, type LaunchSpec, type Mode } from './types.ts';
@@ -11,6 +12,7 @@ import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
 // sélection du terminal ou une tâche du backlog.
 export function NewSessionForm({
   projectId,
+  draftKey,
   initialPrompt = '',
   promptFor,
   heading,
@@ -22,6 +24,8 @@ export function NewSessionForm({
   onCancel,
 }: {
   projectId: string;
+  // Clé de brouillon : le prompt non lancé est conservé dans le navigateur. [SPEC UI web › Vue projet]
+  draftKey?: string;
   initialPrompt?: string;
   // Prompt prérempli propre à l'agent choisi ; remplace initialPrompt tant que l'utilisateur ne l'a pas modifié.
   promptFor?: (agent: Agent) => string;
@@ -40,12 +44,23 @@ export function NewSessionForm({
   // null : défaut de la configuration de l'agent.
   const [model, setModel] = useState<string | null>(null);
   const [effort, setEffort] = useState<Effort | null>(null);
-  const [prompt, setPrompt] = useState(() => promptFor?.(agent) ?? initialPrompt);
+  const [draft] = useState(() => (draftKey === undefined ? null : readDraft(draftKey)));
+  const [prompt, setPrompt] = useState(() => draft?.prompt ?? promptFor?.(agent) ?? initialPrompt);
   const generatedRef = useRef(prompt);
+  const [draftError, setDraftError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const promptRef = useRef<HTMLTextAreaElement>(null);
-  const images = useImageAttachments((image) => uploadProjectImage(projectId, image));
+  const images = useImageAttachments(
+    (image) => uploadProjectImage(projectId, image),
+    draft?.images.map((i) => restoredAttachment(i.n, i.token, i.path)),
+  );
+
+  useEffect(() => {
+    if (draftKey === undefined) return;
+    const uploaded = images.items.flatMap((i) => (i.path === null ? [] : [{ n: i.n, token: i.token, path: i.path }]));
+    setDraftError(writeDraft(draftKey, { prompt, images: uploaded }));
+  }, [draftKey, prompt, images.items]);
 
   useEffect(() => {
     const list = agents.filter((a) => a.available);
@@ -218,6 +233,7 @@ export function NewSessionForm({
         />
       </label>
       {error ? <p className="form-error">{error}</p> : null}
+      {draftError ? <p className="form-error">Brouillon non sauvegardé : {draftError}</p> : null}
       <div className="row-actions">
         <button type="submit" className="btn primary" disabled={launchDisabled || busy || images.pending || available.length === 0}>
           {submitLabel}
@@ -228,6 +244,11 @@ export function NewSessionForm({
           </button>
         ) : null}
         <span className="hint">{SUBMIT_HINT}</span>
+        {draftKey !== undefined && prompt.trim() !== '' && draftError === null ? (
+          <span className="hint" title="Le prompt est conservé dans ce navigateur jusqu'au lancement">
+            Brouillon enregistré
+          </span>
+        ) : null}
       </div>
     </form>
   );

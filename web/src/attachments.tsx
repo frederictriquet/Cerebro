@@ -11,6 +11,11 @@ export interface Attachment {
   path: string | null; // null tant que l'envoi n'est pas terminé
 }
 
+// Image restaurée d'un brouillon : déjà sur le serveur, mais sans miniature (le blob est perdu).
+export function restoredAttachment(n: number, token: string, path: string): Attachment {
+  return { n, token, previewUrl: '', path };
+}
+
 const TOKEN = /\[Image #(\d+)\]/g;
 
 export function imageToken(n: number): string {
@@ -31,9 +36,9 @@ export function removeToken(text: string, token: string): string {
   return text.split(`${token} `).join('').split(token).join('');
 }
 
-export function useImageAttachments(upload: (image: Blob) => Promise<string>) {
-  const [items, setItems] = useState<Attachment[]>([]);
-  const counter = useRef(0);
+export function useImageAttachments(upload: (image: Blob) => Promise<string>, initial: Attachment[] = []) {
+  const [items, setItems] = useState<Attachment[]>(initial);
+  const counter = useRef(initial.reduce((max, item) => Math.max(max, item.n), 0));
   const itemsRef = useRef(items);
   itemsRef.current = items;
   const uploadRef = useRef(upload);
@@ -101,7 +106,13 @@ export function AttachmentStrip({ items, onRemove }: { items: Attachment[]; onRe
     <div className="attachments">
       {items.map((item) => (
         <figure key={item.n} className={item.path === null ? 'attachment pending' : 'attachment'}>
-          <img src={item.previewUrl} alt={item.token} />
+          {item.previewUrl === '' ? (
+            <span className="attachment-restored" title={item.path ?? undefined}>
+              Image
+            </span>
+          ) : (
+            <img src={item.previewUrl} alt={item.token} />
+          )}
           <figcaption>{item.path === null ? 'Envoi…' : `#${item.n}`}</figcaption>
           <button type="button" aria-label={`Retirer ${item.token}`} title="Retirer" onClick={() => onRemove(item)}>
             ×

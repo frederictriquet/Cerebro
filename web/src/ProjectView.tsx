@@ -322,6 +322,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
             key={project.id}
             heading="Nouvelle session"
             projectId={project.id}
+            draftKey={`project.${project.id}`}
             onLaunch={async (spec) => {
               await createSession(project.id, spec);
             }}
