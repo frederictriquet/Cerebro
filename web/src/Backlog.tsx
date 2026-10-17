@@ -6,6 +6,7 @@ import { href } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import type { Epic, Session, Task } from './types.ts';
+import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
 
 export function taskTitle(text: string): string {
   return text.split('\n').find((line) => line.trim() !== '')?.trim() ?? text;
@@ -203,10 +204,10 @@ export function Backlog({ projectId }: { projectId: string }) {
         <textarea
           rows={2}
           value={draft}
-          placeholder="Nouvelle tâche (Ctrl+Entrée pour ajouter)"
+          placeholder={`Nouvelle tâche (${SUBMIT_HINT} pour ajouter)`}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
-            if (e.key === 'Enter' && e.ctrlKey) {
+            if (isSubmitShortcut(e)) {
               e.preventDefault();
               void add();
             }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type R
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
 import type { Agent, LaunchSpec } from './types.ts';
+import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
 
 // Modale native : Échap et un clic hors du contenu la ferment.
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
@@ -122,7 +123,7 @@ export function AddTaskDialog({
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
-            if (e.key === 'Enter' && e.ctrlKey) {
+            if (isSubmitShortcut(e)) {
               e.preventDefault();
               void add();
             }
@@ -148,7 +149,7 @@ export function AddTaskDialog({
           <button type="button" className="btn" onClick={onClose}>
             Annuler
           </button>
-          <span className="hint">Ctrl+Entrée</span>
+          <span className="hint">{SUBMIT_HINT}</span>
         </div>
       </form>
     </Modal>

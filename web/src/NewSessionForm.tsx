@@ -5,6 +5,7 @@ import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { AGENT_LABEL, MODE_CHIP } from './format.ts';
 import { useStore } from './store.tsx';
 import { MODES, type Agent, type Effort, type LaunchSpec, type Mode } from './types.ts';
+import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
 
 // Agent, mode, modèle, effort et prompt d'une nouvelle session : page projet, et modales lancées depuis une
 // sélection du terminal ou une tâche du backlog.
@@ -125,7 +126,7 @@ export function NewSessionForm({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (e.key === 'Enter' && e.ctrlKey) {
+    if (isSubmitShortcut(e)) {
       e.preventDefault();
       void launch();
     }
@@ -206,7 +207,7 @@ export function NewSessionForm({
           onPaste={onPromptPaste}
           onDrop={onPromptDrop}
           ref={promptRef}
-          placeholder="Ctrl+Entrée pour lancer · Ctrl+V ou glisser-déposer pour joindre une image"
+          placeholder={`${SUBMIT_HINT} pour lancer · Ctrl+V ou glisser-déposer pour joindre une image`}
         />
         <AttachmentStrip
           items={images.items}
@@ -226,7 +227,7 @@ export function NewSessionForm({
             Annuler
           </button>
         ) : null}
-        <span className="hint">Ctrl+Entrée</span>
+        <span className="hint">{SUBMIT_HINT}</span>
       </div>
     </form>
   );

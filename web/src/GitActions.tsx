@@ -4,6 +4,7 @@ import { LaunchSessionDialog, Modal } from './Dialog.tsx';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
 import type { Agent, GitInfo, LaunchSpec } from './types.ts';
+import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
 
 type CommitStrategy = 'atomic' | 'single';
 
@@ -231,7 +232,7 @@ function SendToSessionDialog({
           value={text}
           onChange={(e) => setEdited(e.target.value)}
           onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
-            if (e.key === 'Enter' && e.ctrlKey) {
+            if (isSubmitShortcut(e)) {
               e.preventDefault();
               void send();
             }
@@ -250,7 +251,7 @@ function SendToSessionDialog({
               Rétablir le prompt
             </button>
           ) : null}
-          <span className="hint">Ctrl+Entrée</span>
+          <span className="hint">{SUBMIT_HINT}</span>
         </div>
       </form>
     </Modal>
