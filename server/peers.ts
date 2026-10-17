@@ -20,6 +20,11 @@ const SYNC_INTERVAL_MS = 15_000;
 const SYNC_TIMEOUT_MS = 5_000;
 const PEER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_NOTICES = 50;
+// Pair encore joignable : vu lors des dernières synchronisations.
+const ACTIVE_PEER_MS = 4 * SYNC_INTERVAL_MS;
+// Claim des commandes Slack générales (aide, liste, questions…). Un nom de projet normalisé est trimé :
+// il ne commence jamais par une espace, d'où aucune collision.
+const GENERAL_CLAIM = ' general';
 
 export interface Claim {
   owner: string;
@@ -61,6 +66,16 @@ export interface SyncPayload {
   machine: string;
   projects: PeerProject[];
   claims: Record<string, Claim>;
+}
+
+/** Machine qui traite les commandes Slack générales, quand plusieurs machines lisent le même DM. */
+export interface GeneralSlackStatus {
+  // Au moins une autre machine active : sinon la question ne se pose pas.
+  shared: boolean;
+  owner: 'local' | 'remote';
+  ownerMachine: string;
+  // Choisie par l'utilisateur (sinon : plus petit identifiant parmi les machines actives).
+  manual: boolean;
 }
 
 export interface ProjectSlackStatus {
@@ -309,6 +324,44 @@ export class PeerSync {
       }));
   }
 
+  /** Cette machine traite-t-elle les commandes Slack générales (aide, liste, questions « ? », messages non reconnus) ? */
+  generalResponder(): boolean {
+    return this.generalOwner().id === this.instanceId;
+  }
+
+  generalStatus(): GeneralSlackStatus {
+    const owner = this.generalOwner();
+    const local = owner.id === this.instanceId;
+    return {
+      shared: this.activePeers().length > 0,
+      owner: local ? 'local' : 'remote',
+      ownerMachine: local ? MACHINE_NAME : this.state.peers[owner.id]?.machine ?? owner.id,
+      manual: owner.manual,
+    };
+  }
+
+  /** Projets des autres machines actives (un projet présent sur plusieurs machines apparaît pour chacune). */
+  activePeerProjects(): { machine: string; name: string }[] {
+    return this.activePeers().flatMap((id) => {
+      const peer = this.state.peers[id];
+      return peer === undefined ? [] : peer.projects.map((project) => ({ machine: peer.machine, name: project.name }));
+    });
+  }
+
+  /** Prend la main sur les commandes Slack générales. */
+  acquireGeneral(): GeneralSlackStatus {
+    this.mutate(() => {
+      this.state.claims[GENERAL_CLAIM] = {
+        owner: this.instanceId,
+        ownerName: MACHINE_NAME,
+        at: Math.max(Date.now(), (this.state.claims[GENERAL_CLAIM]?.at ?? 0) + 1),
+        auto: false,
+      };
+    });
+    void this.sync();
+    return this.generalStatus();
+  }
+
   notices(): PeerNotice[] {
     return this.state.notices;
   }
@@ -394,6 +447,22 @@ export class PeerSync {
       result.push({ id, machine: peer.machine, sameRepository: origin != null && project.origin === origin });
     }
     return result;
+  }
+
+  private activePeers(): string[] {
+    return Object.entries(this.state.peers)
+      .filter(([id, peer]) => id !== this.instanceId && Date.now() - peer.lastSeen <= ACTIVE_PEER_MS)
+      .map(([id]) => id);
+  }
+
+  /** Le détenteur du claim s'il est actif, sinon le plus petit identifiant parmi les machines actives. */
+  private generalOwner(): { id: string; manual: boolean } {
+    const active = this.activePeers();
+    const claim = this.state.claims[GENERAL_CLAIM];
+    if (claim !== undefined && (claim.owner === this.instanceId || active.includes(claim.owner))) {
+      return { id: claim.owner, manual: true };
+    }
+    return { id: [this.instanceId, ...active].sort()[0] ?? this.instanceId, manual: false };
   }
 
   /** Propriétaire effectif : un claim ne compte que si son détenteur a toujours le même projet. */

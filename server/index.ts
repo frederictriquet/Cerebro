@@ -371,6 +371,17 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.get('/api/peer/notices', async () => peers.notices());
 
+  // Commandes Slack sans projet (aide, liste, questions « ? ») : une seule machine les traite.
+  app.get('/api/slack/general', async () => {
+    await peers.ready;
+    return peers.generalStatus();
+  });
+
+  app.post('/api/slack/general/acquire', async () => {
+    await peers.ready;
+    return peers.acquireGeneral();
+  });
+
   app.post<{ Params: { id: string } }>('/api/peer/notices/:id/dismiss', async (request, reply) => {
     if (!peers.dismissNotice(request.params.id)) return error(reply, 404, 'Avertissement introuvable');
     return reply.code(204).send();

@@ -85,6 +85,14 @@ machine et des machines déclarées dans `remotes.json` ; il peut aussi lire (sa
 rien modifier) les fichiers des projets locaux. Un sablier marque la question
 pendant la recherche.
 
+Si plusieurs machines lisent le même message privé, une seule traite les
+commandes sans projet : `help`, `list`, `? question`, messages non reconnus et
+projets introuvables. Par défaut, Cerebro la choisit automatiquement parmi les
+machines actives. Pour imposer la machine, cochez « Commandes générales » dans
+le panneau Slack de la barre latérale de cette machine. Le choix est partagé
+avec les autres machines ; pour le changer, cochez la case sur une autre machine.
+`list` montre aussi les projets présents seulement sur les autres machines.
+
 Cerebro envoie alors un message privé après le délai configuré lorsqu'une
 session demande une confirmation ou termine son tour. L'alerte est annulée si
 la session est vue, repart ou se termine entre-temps. Un agent peut aussi

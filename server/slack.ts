@@ -622,26 +622,33 @@ export class SlackNotifier {
   private async handleDmMessage(channel: string, message: SlackMessage): Promise<void> {
     const text = decodeSlackText(message.text ?? '');
     const shortcut = text.toLocaleLowerCase('fr-FR');
+    await this.peers.ready;
+    // Machines sharing the DM: a single one handles commands that target no project.
+    const general = this.peers.generalResponder();
     if (shortcut === 'help' || shortcut === 'aide' || shortcut === '?') {
+      if (!general) return;
       await this.postThreadReply(channel, message.ts, this.helpText());
       return;
     }
     if (shortcut === 'list' || shortcut === 'liste' || shortcut === 'projets') {
+      if (!general) return;
       await this.postThreadReply(channel, message.ts, this.projectListText());
       return;
     }
     const question = text.match(/^\?\s*([\s\S]+)$/)?.[1]?.trim();
     if (question !== undefined && question !== '') {
+      // Answered with the state of the other machines it can reach.
+      if (!general) return;
       // The answer can take minutes: thread polling must not wait for it.
       void this.answerDmQuestion(channel, message.ts, question);
       return;
     }
     const command = parseDmCommand(text);
     if (command === null) {
+      if (!general) return;
       await this.postThreadReply(channel, message.ts, this.helpText('Message non reconnu.'));
       return;
     }
-    await this.peers.ready;
     const projects = this.db.listProjects();
     const normalizedName = normalizeProjectName(command.projectName);
     const exact = projects.filter((project) => normalizeProjectName(project.name) === normalizedName);
@@ -653,6 +660,8 @@ export class SlackNotifier {
     // Handled by the machine that has this project: no "unknown project" reply from this one.
     if (matches.length === 0 && this.peers.knownRemotely(command.projectName, false)) return;
     if (matches.length !== 1) {
+      // Unknown everywhere: a single machine says so. An ambiguous prefix is only ambiguous here.
+      if (matches.length === 0 && !general) return;
       const error = matches.length === 0
         ? `Projet introuvable : « ${command.projectName} ».`
         : `Nom de projet ambigu : « ${command.projectName} ».`;
@@ -758,6 +767,13 @@ export class SlackNotifier {
         : `${escapeMrkdwn(active.title)} (${active.agent}, statut : ${active.status})`;
       return `• *${escapeMrkdwn(project.name)}* — ${detail}`;
     });
+    // A single machine answers `list`: projects only present on the other active machines are shown too.
+    const local = new Set(this.db.listProjects().map((project) => normalizeProjectName(project.name)));
+    for (const remote of this.peers.activePeerProjects()) {
+      if (local.has(normalizeProjectName(remote.name))) continue;
+      local.add(normalizeProjectName(remote.name));
+      lines.push(`• *${escapeMrkdwn(remote.name)}* — _sur ${escapeMrkdwn(remote.machine)}_`);
+    }
     return lines.length > 0 ? lines : ['_Aucun projet configuré._'];
   }
 

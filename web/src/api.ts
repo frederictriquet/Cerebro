@@ -136,6 +136,22 @@ export function updateSlackSettings(patch: Partial<SlackSettings>): Promise<Slac
   return api<SlackStatus>('/api/slack', { method: 'PATCH', body: JSON.stringify(patch) });
 }
 
+/** Machine qui traite les commandes Slack sans projet (aide, liste, questions « ? »). */
+export interface GeneralSlackStatus {
+  shared: boolean;
+  owner: 'local' | 'remote';
+  ownerMachine: string;
+  manual: boolean;
+}
+
+export function getGeneralSlack(): Promise<GeneralSlackStatus> {
+  return api<GeneralSlackStatus>('/api/slack/general');
+}
+
+export function acquireGeneralSlack(): Promise<GeneralSlackStatus> {
+  return api<GeneralSlackStatus>('/api/slack/general/acquire', { method: 'POST' });
+}
+
 /** Prise de main Slack d'un projet présent sur plusieurs machines. */
 export interface ProjectSlackStatus {
   shared: boolean;

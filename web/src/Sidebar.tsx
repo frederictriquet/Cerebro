@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { getSlackStatus, updateSlackSettings, type SlackSettings, type SlackStatus } from './api.ts';
+import {
+  acquireGeneralSlack,
+  getGeneralSlack,
+  getSlackStatus,
+  updateSlackSettings,
+  type GeneralSlackStatus,
+  type SlackSettings,
+  type SlackStatus,
+} from './api.ts';
 import { AGENT_LABEL, relativeTime, sessionTitle } from './format.ts';
 import { MachineSwitcher } from './MachineSwitcher.tsx';
 import { href, useNow, type Route } from './route.ts';
@@ -166,7 +174,66 @@ function SlackPanel({ status, onChange }: { status: SlackStatus; onChange: (stat
         s
       </label>
       {error ? <p className="form-error">{error}</p> : null}
+      <GeneralSlackLead />
     </div>
+  );
+}
+
+// Plusieurs machines lisent le même DM : une seule traite les commandes sans projet. On prend la main, on ne la rend pas.
+function GeneralSlackLead() {
+  const { peersVersion } = useStore();
+  const [status, setStatus] = useState<GeneralSlackStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getGeneralSlack()
+      .then((value) => {
+        if (!cancelled) setStatus(value);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'État de la prise de main indisponible');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [peersVersion]);
+
+  if (!status?.shared && error === null) return null;
+  const local = status?.owner === 'local';
+  const acquire = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await acquireGeneralSlack());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Prise de main impossible');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      {status ? (
+        <label
+          className="slack-toggle"
+          title={local ? "On ne rend pas la main : prends-la depuis l'autre machine." : 'Traiter ici help, list et les questions « ? »'}
+        >
+          <input type="checkbox" checked={local} disabled={local || busy} onChange={() => void acquire()} />
+          Commandes générales
+        </label>
+      ) : null}
+      {status ? (
+        <p className="meta">
+          {local
+            ? `help, list et « ? » traités par cette machine${status.manual ? '' : ' (choix automatique)'}`
+            : `help, list et « ? » traités par ${status.ownerMachine}${status.manual ? '' : ' (choix automatique)'}`}
+        </p>
+      ) : null}
+      {error ? <p className="form-error">{error}</p> : null}
+    </>
   );
 }
 
