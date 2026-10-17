@@ -10,6 +10,7 @@ import {
   SLACK_TOKEN,
   SLACK_USER,
 } from './config.ts';
+import { answerQuestion } from './ask.ts';
 import type { Agent, CerebroDatabase, Session } from './db.ts';
 import { normalizeProjectName, type PeerSync } from './peers.ts';
 import { formatQuestions, interpretAnswer } from './questions.ts';
@@ -629,6 +630,12 @@ export class SlackNotifier {
       await this.postThreadReply(channel, message.ts, this.projectListText());
       return;
     }
+    const question = text.match(/^\?\s*([\s\S]+)$/)?.[1]?.trim();
+    if (question !== undefined && question !== '') {
+      // The answer can take minutes: thread polling must not wait for it.
+      void this.answerDmQuestion(channel, message.ts, question);
+      return;
+    }
     const command = parseDmCommand(text);
     if (command === null) {
       await this.postThreadReply(channel, message.ts, this.helpText('Message non reconnu.'));
@@ -714,6 +721,26 @@ export class SlackNotifier {
     }
   }
 
+  /** `? question`: free-form question answered by Claude from Cerebro's state. */
+  private async answerDmQuestion(channel: string, threadTs: string, question: string): Promise<void> {
+    await this.slackApi('reactions.add', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' })
+      .catch((error: unknown) => this.logError(error));
+    let text: string;
+    try {
+      text = slackMarkdown(await answerQuestion(this.db, question));
+    } catch (error) {
+      this.logError(error);
+      text = `:x: Impossible de répondre : ${escapeMrkdwn(error instanceof Error ? error.message : String(error))}`;
+    }
+    try {
+      for (const chunk of splitMessage(text)) await this.postThreadReply(channel, threadTs, chunk);
+    } catch (error) {
+      this.logError(error);
+    }
+    await this.slackApi('reactions.remove', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' })
+      .catch((error: unknown) => this.logError(error));
+  }
+
   private async postThreadReply(channel: string, threadTs: string, text: string): Promise<void> {
     await this.slackApi('chat.postMessage', {
       channel,
@@ -747,6 +774,7 @@ export class SlackNotifier {
       '`projet/agent: instruction` — choisir `claude`, `codex` ou `grok`',
       '`projet/agent+: instruction` — choisir l’agent et créer une nouvelle session',
       '`list` — lister les projets et leur session active',
+      '`? question` — poser une question sur les projets, sessions et backlogs (ex. `? où en sont les tâches du projet ACME ?`)',
       '',
       '*Projets connus*',
       ...this.projectLines(),

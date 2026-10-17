@@ -78,6 +78,13 @@ lecture de ces commandes nécessite le scope Bot Token `im:history`. Envoyez `he
 active et la façon de répondre dans un fil. `list` (ou `liste`, `projets`) affiche seulement
 la liste des projets avec leur session active.
 
+Écrivez `? question` pour interroger Cerebro en langage libre, par exemple
+`? où en sont les tâches du projet ACME ?`. Claude (CLI `claude` locale, via le SDK)
+répond dans le fil à partir de l'état des projets, sessions, epics et tâches de la
+machine et des machines déclarées dans `remotes.json` ; il peut aussi lire (sans
+rien modifier) les fichiers des projets locaux. Un sablier marque la question
+pendant la recherche.
+
 Cerebro envoie alors un message privé après le délai configuré lorsqu'une
 session demande une confirmation ou termine son tour. L'alerte est annulée si
 la session est vue, repart ou se termine entre-temps. Un agent peut aussi
