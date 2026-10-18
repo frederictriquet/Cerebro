@@ -68,7 +68,7 @@ Au démarrage du serveur, toute session non `exited` passe à `exited` (les PTY 
 | POST | /api/projects | `{name, path}` → `Project`. `path` : `~` expansé, doit être un répertoire existant (sinon 400 `{error}`) |
 | DELETE | /api/projects/:id | tue les sessions vivantes du projet, supprime projet + sessions |
 | GET | /api/sessions | `Session[]` (toutes, triées updatedAt desc) |
-| POST | /api/projects/:id/sessions | `{agent, mode, prompt}` → `Session` (lance le PTY) |
+| POST | /api/projects/:id/sessions | `{agent?, mode?, model?, effort?, prompt?}` → `Session` (lance le PTY) ; les champs omis héritent de `Project.sessionDefaults`, `null` remet modèle/effort au défaut de la CLI |
 | POST | /api/sessions/:id/kill | envoie SIGTERM (puis SIGKILL après 3 s) |
 | POST | /api/sessions/:id/resume | relance une session `exited` qui a un `agentSessionId` → `Session` |
 | POST | /api/sessions/:id/seen | `attention=false` |
@@ -171,7 +171,7 @@ Thème sombre, sobre, dense. Routage par hash : `#/` accueil, `#/p/<projectId>`,
 - **Barre latérale** : en haut, la section « À traiter » qui liste les sessions `attention=true` (pastille orange pour waiting, bleue pour idle) ;
   puis les projets, chacun dépliable avec ses sessions (pastille de statut : running = vert animé, waiting = orange, idle = bleu, exited = gris) ;
   bouton « + Projet » (formulaire : nom, chemin absolu).
-- **Vue projet** : nom + chemin, formulaire « Nouvelle session » (agent : liste des agents disponibles, mode : default / acceptEdits / plan / bypass avec un avertissement rouge pour bypass, prompt multi-ligne, Ctrl+Entrée (ou Cmd+Entrée sur Mac) pour lancer → navigue vers la session ; le prompt non lancé et ses images jointes sont conservés par projet dans le navigateur et restaurés au retour sur le projet, effacés au lancement), puis la liste des sessions du projet (titre, agent, statut, date relative, actions).
+- **Vue projet** : nom + chemin, formulaire « Nouvelle session » (agent : liste des agents disponibles, mode : default / acceptEdits / plan / bypass avec un avertissement rouge pour bypass, prompt multi-ligne, Ctrl+Entrée (ou Cmd+Entrée sur Mac) pour lancer ; agent, modèle, effort, mode et prompt sont mémorisés automatiquement par projet côté serveur via `PATCH /api/projects/:id` `{sessionDefaults: {...}}`, même avant lancement, puis repris par tous les formulaires et les nouvelles sessions Slack ; les champs omis héritent des choix enregistrés, un prompt explicite reste prioritaire ; les brouillons non lancés et leurs images restent conservés dans le navigateur et sont effacés au lancement, le prompt lancé reste prérempli comme défaut), puis la liste des sessions du projet (titre, agent, statut, date relative, actions).
 - **Vue session** : en-tête (titre, agent, mode, statut, raison d'attention) + boutons Arrêter / Reprendre (si exited et agentSessionId) / Supprimer ;
   terminal xterm.js plein espace (FitAddon + ResizeObserver, WebLinksAddon, police monospace 13 px), connecté à `/ws/term/:id`,
   qui reçoit le focus à l'ouverture. Ouvrir la session appelle `POST /api/sessions/:id/seen`.

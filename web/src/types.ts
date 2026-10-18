@@ -17,6 +17,10 @@ export interface LaunchSpec {
   prompt: string;
 }
 
+export const DEFAULT_SESSION_DEFAULTS: Readonly<LaunchSpec> = {
+  agent: 'claude', mode: 'auto', model: null, effort: null, prompt: '',
+};
+
 export const STATUSES: readonly Status[] = ['starting', 'running', 'waiting', 'idle', 'exited'];
 
 export interface Project {
@@ -24,6 +28,7 @@ export interface Project {
   name: string;
   path: string;
   color: string | null;
+  sessionDefaults: LaunchSpec;
   createdAt: number;
 }
 
@@ -163,7 +168,16 @@ export function parseProject(v: unknown): Project | null {
   const createdAt = asNumber(v.createdAt);
   if (id === null || name === null || path === null || createdAt === null) return null;
   const color = typeof v.color === 'string' && /^#[0-9a-f]{6}$/i.test(v.color) ? v.color : null;
-  return { id, name, path, color, createdAt };
+  // Compatibilité avec les machines qui ne mémorisent pas encore les réglages de lancement.
+  const saved = isRecord(v.sessionDefaults) ? v.sessionDefaults : {};
+  const sessionDefaults: LaunchSpec = {
+    agent: isAgent(saved.agent) ? saved.agent : DEFAULT_SESSION_DEFAULTS.agent,
+    mode: isMode(saved.mode) ? saved.mode : DEFAULT_SESSION_DEFAULTS.mode,
+    model: typeof saved.model === 'string' ? saved.model : null,
+    effort: isEffort(saved.effort) ? saved.effort : null,
+    prompt: typeof saved.prompt === 'string' ? saved.prompt : '',
+  };
+  return { id, name, path, color, sessionDefaults, createdAt };
 }
 
 export function parseSession(v: unknown): Session | null {

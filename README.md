@@ -70,7 +70,7 @@ utilisez ⋮ → « Copier l'ID de membre » pour renseigner
 l'intégration.
 
 Dans le message privé, écrivez `projet: instruction` pour reprendre la session
-active du projet, ou en créer une en mode auto s'il n'y en a pas. Ajoutez `+`
+active du projet, ou en créer une avec les réglages mémorisés du projet s'il n'y en a pas. Ajoutez `+`
 (`projet+: instruction`) pour forcer une nouvelle session, et `/claude`,
 `/codex` ou `/grok` pour choisir l'agent (`projet/codex+: instruction`). La
 lecture de ces commandes nécessite le scope Bot Token `im:history`. Envoyez `help` (ou
@@ -153,6 +153,21 @@ Cerebro combine plusieurs signaux, car les trois agents ne publient pas les mêm
 
 Les alertes fiables sont dédoublonnées. Une saisie validée par Entrée remet une
 session en cours, sans effacer une alerte tant que la session n'a pas été ouverte.
+
+## Réglages des nouvelles sessions
+
+Chaque projet mémorise côté serveur les derniers agent, modèle, effort, mode et
+prompt choisis dans le formulaire. Les choix sont enregistrés automatiquement,
+même avant de lancer une session, et restent disponibles après un rechargement
+ou un redémarrage. Le choix « défaut » remet le modèle ou l'effort à celui de la
+configuration de la CLI.
+
+Les nouvelles sessions lancées depuis le web, le backlog ou Slack reprennent ces
+réglages. Un prompt fourni explicitement (instruction Slack, tâche du backlog,
+sélection du terminal) remplace le prompt mémorisé. Changer d'agent remet le
+modèle et l'effort au défaut de cet agent ; un agent choisi explicitement depuis
+Slack devient aussi le choix par défaut du projet. Reprendre une ancienne session
+conserve ses propres réglages.
 
 ## Captures d'écran
 

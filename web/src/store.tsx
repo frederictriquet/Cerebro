@@ -62,7 +62,7 @@ export interface Store {
   purgeProjectSessions: (projectId: string) => Promise<void>;
   markSeen: (id: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<Session>;
-  updateProject: (id: string, patch: { name?: string; path?: string; color?: string | null }) => Promise<Project>;
+  updateProject: (id: string, patch: ProjectPatch) => Promise<Project>;
   sendSessionInput: (id: string, data: string) => Promise<void>;
   createTask: (projectId: string, text: string, sourceSessionId?: string, epicId?: string | null) => Promise<Task>;
   updateTask: (id: string, patch: TaskPatch) => Promise<Task>;
@@ -79,6 +79,13 @@ export interface TaskPatch {
   status?: TaskStatus;
   dependsOn?: string[];
   epicId?: string | null;
+}
+
+export interface ProjectPatch {
+  name?: string;
+  path?: string;
+  color?: string | null;
+  sessionDefaults?: Partial<LaunchSpec>;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -325,7 +332,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const updateProject = useCallback(
-    async (id: string, patch: { name?: string; path?: string; color?: string | null }): Promise<Project> => {
+    async (id: string, patch: ProjectPatch): Promise<Project> => {
       const raw = await api<unknown>(`/api/projects/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),

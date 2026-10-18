@@ -9,11 +9,37 @@ export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
 export type TaskStatus = 'todo' | 'started' | 'done';
 export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
+export interface SessionDefaults {
+  agent: Agent;
+  mode: Mode;
+  model: string | null;
+  effort: Effort | null;
+  prompt: string;
+}
+
+export const DEFAULT_SESSION_DEFAULTS: Readonly<SessionDefaults> = {
+  agent: 'claude', mode: 'auto', model: null, effort: null, prompt: '',
+};
+
+// Un autre agent ne doit pas recevoir le modèle ou l'effort mémorisé pour le précédent.
+// undefined hérite du choix enregistré ; null rétablit explicitement le défaut de la CLI.
+export function resolveSessionDefaults(defaults: SessionDefaults, overrides: Partial<SessionDefaults>): SessionDefaults {
+  const agent = overrides.agent ?? defaults.agent;
+  return {
+    agent,
+    mode: overrides.mode ?? defaults.mode,
+    model: overrides.model !== undefined ? overrides.model : agent === defaults.agent ? defaults.model : null,
+    effort: overrides.effort !== undefined ? overrides.effort : agent === defaults.agent ? defaults.effort : null,
+    prompt: overrides.prompt ?? defaults.prompt,
+  };
+}
+
 export interface Project {
   id: string;
   name: string;
   path: string;
   color: string | null;
+  sessionDefaults: SessionDefaults;
   createdAt: number;
 }
 
@@ -68,6 +94,7 @@ interface ProjectRow {
   name: string;
   path: string;
   color: string | null;
+  session_defaults: string | null;
   created_at: number;
 }
 
@@ -140,7 +167,10 @@ function taskFromRow(row: TaskRow, dependsOn: string[]): Task {
 }
 
 function projectFromRow(row: ProjectRow): Project {
-  return { id: row.id, name: row.name, path: row.path, color: row.color ?? null, createdAt: row.created_at };
+  return {
+    id: row.id, name: row.name, path: row.path, color: row.color ?? null, createdAt: row.created_at,
+    sessionDefaults: row.session_defaults === null ? { ...DEFAULT_SESSION_DEFAULTS } : JSON.parse(row.session_defaults),
+  };
 }
 
 function sessionFromRow(row: SessionRow): Session {
@@ -240,6 +270,16 @@ export class CerebroDatabase {
     if (!projectColumns.some((column) => column.name === 'color')) {
       this.connection.exec('ALTER TABLE projects ADD COLUMN color TEXT');
     }
+    if (!projectColumns.some((column) => column.name === 'session_defaults')) {
+      this.connection.exec('ALTER TABLE projects ADD COLUMN session_defaults TEXT');
+      // Reprendre les derniers choix à l'installation, sans confondre activité récente et création.
+      this.connection.exec(`
+        UPDATE projects SET session_defaults = (
+          SELECT json_object('agent', agent, 'mode', mode, 'model', model, 'effort', effort, 'prompt', prompt)
+          FROM sessions WHERE project_id = projects.id ORDER BY created_at DESC, rowid DESC LIMIT 1
+        )
+      `);
+    }
     this.allowAutoMode();
   }
 
@@ -281,19 +321,26 @@ export class CerebroDatabase {
   }
 
   createProject(name: string, path: string): Project {
-    const project: Project = { id: randomUUID(), name, path, color: null, createdAt: Date.now() };
+    const project: Project = {
+      id: randomUUID(), name, path, color: null, sessionDefaults: { ...DEFAULT_SESSION_DEFAULTS }, createdAt: Date.now(),
+    };
     this.connection.prepare('INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)')
       .run(project.id, project.name, project.path, project.createdAt);
     return project;
   }
 
-  updateProject(id: string, changes: Partial<Pick<Project, 'name' | 'path' | 'color'>>): Project | null {
+  updateProject(id: string, changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults'>>): Project | null {
     const current = this.getProject(id);
     if (current === null) return null;
     const next = { ...current, ...changes };
-    this.connection.prepare('UPDATE projects SET name = ?, path = ?, color = ? WHERE id = ?')
-      .run(next.name, next.path, next.color, id);
+    this.connection.prepare('UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ? WHERE id = ?')
+      .run(next.name, next.path, next.color, JSON.stringify(next.sessionDefaults), id);
     return next;
+  }
+
+  setSessionDefaults(projectId: string, defaults: SessionDefaults): void {
+    this.connection.prepare('UPDATE projects SET session_defaults = ? WHERE id = ?')
+      .run(JSON.stringify(defaults), projectId);
   }
 
   deleteProject(id: string): boolean {

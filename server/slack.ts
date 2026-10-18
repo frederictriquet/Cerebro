@@ -687,7 +687,10 @@ export class SlackNotifier {
     const queued = session?.status === 'running';
     if (session === undefined) {
       try {
-        session = await this.sessions.create(project, command.agent ?? 'claude', 'auto', command.text);
+        session = await this.sessions.create(project, {
+          ...(command.agent === null ? {} : { agent: command.agent }),
+          prompt: command.text,
+        });
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         await this.postThreadReply(channel, message.ts, `:x: Impossible de créer la session : ${escapeMrkdwn(reason)}`);
@@ -696,6 +699,8 @@ export class SlackNotifier {
     } else if (!await this.injectDmMessage(session, command.text)) {
       await this.postThreadReply(channel, message.ts, 'Session inactive : message non transmis.');
       return;
+    } else if (command.agent !== null) {
+      this.sessions.rememberDefaults(project.id, { agent: command.agent });
     }
     const response = await this.slackApi('chat.postMessage', {
       channel,
@@ -799,7 +804,7 @@ export class SlackNotifier {
       'Le texte libre est injecté dans la session. `entrée`/`enter` envoie Entrée ; `échap`/`esc` envoie Échap.',
       'Pendant une confirmation, réponds avec un chiffre, `y` ou `n`. Pour les questions à options : `1`, `1 3` ou `1,3`.',
       '',
-      '_Les sessions créées depuis Slack utilisent le mode auto._',
+      '_Les nouvelles sessions reprennent les réglages du projet (agent, modèle, effort et mode). L’instruction du message sert de prompt._',
     ].join('\n');
   }
 

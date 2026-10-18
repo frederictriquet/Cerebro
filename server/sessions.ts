@@ -19,8 +19,8 @@ import { SerializeAddon } from '@xterm/addon-serialize';
 import * as headlessPackage from '@xterm/headless';
 import { buildAgentCommand, type Tuning } from './agents.ts';
 import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
-import type { Agent, Mode, Project, Session } from './db.ts';
-import { CerebroDatabase } from './db.ts';
+import type { Agent, Mode, Project, Session, SessionDefaults } from './db.ts';
+import { CerebroDatabase, resolveSessionDefaults } from './db.ts';
 import type { AgentQuestion } from './questions.ts';
 import { findProcessesByArgument, isAlive, processTree, signalProcesses } from './proc.ts';
 
@@ -29,6 +29,7 @@ const Terminal = (headlessPackage as unknown as { default: typeof headlessPackag
 
 export type SessionEvent =
   | { type: 'session'; session: Session }
+  | { type: 'projects'; projects: Project[] }
   | { type: 'session-deleted'; id: string }
   | { type: 'alert'; session: Session }
   // End of an agent turn, with its final message when the agent's hook provides it.
@@ -232,8 +233,20 @@ export class SessionManager {
     for (const listener of this.eventListeners) listener(event);
   }
 
-  async create(project: Project, agent: Agent, mode: Mode, prompt: string, tuning: Tuning = { model: null, effort: null }): Promise<Session> {
-    return this.launch(project, agent, mode, tuning, prompt, null);
+  async create(project: Project, overrides: Partial<SessionDefaults> = {}): Promise<Session> {
+    const current = this.db.getProject(project.id);
+    if (current === null) throw new Error('Projet introuvable');
+    const defaults = this.rememberDefaults(project.id, overrides);
+    return this.launch(current, defaults.agent, defaults.mode, defaults, defaults.prompt, null);
+  }
+
+  rememberDefaults(projectId: string, overrides: Partial<SessionDefaults>): SessionDefaults {
+    const project = this.db.getProject(projectId);
+    if (project === null) throw new Error('Projet introuvable');
+    const defaults = resolveSessionDefaults(project.sessionDefaults, overrides);
+    this.db.setSessionDefaults(projectId, defaults);
+    this.emit({ type: 'projects', projects: this.db.listProjects() });
+    return defaults;
   }
 
   async resume(id: string): Promise<Session> {

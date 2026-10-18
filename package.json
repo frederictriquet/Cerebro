@@ -10,6 +10,7 @@
     "start": "node --disable-warning=ExperimentalWarning server/index.ts",
     "start:prod": "npm run build && npm start",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true"
   },
   "dependencies": {

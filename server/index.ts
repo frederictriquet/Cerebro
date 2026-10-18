@@ -13,8 +13,8 @@ import type WebSocket from 'ws';
 import { AGENTS, getAgentAvailability } from './agents.ts';
 import { getCatalog, parseTuning, startCatalogRefresh } from './catalog.ts';
 import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
-import { CerebroDatabase } from './db.ts';
-import type { Agent, Epic, Mode, Project, Session, Task, TaskStatus } from './db.ts';
+import { CerebroDatabase, resolveSessionDefaults } from './db.ts';
+import type { Agent, Epic, Mode, Project, Session, SessionDefaults, Task, TaskStatus } from './db.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
 import { incompatibleMessage, PeerSync, syncPayloadFrom } from './peers.ts';
 import { assertLoopbackPortFree } from './ports.ts';
@@ -123,6 +123,17 @@ function bodyRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function parseSessionDefaults(defaults: SessionDefaults, value: unknown): SessionDefaults | null {
+  const body = bodyRecord(value);
+  if (body === null
+    || ('agent' in body && !isAgent(body.agent))
+    || ('mode' in body && !isMode(body.mode))
+    || ('prompt' in body && typeof body.prompt !== 'string')) return null;
+  const resolved = resolveSessionDefaults(defaults, body as Partial<SessionDefaults>);
+  const tuning = parseTuning(resolved.agent, { ...resolved });
+  return tuning === null ? null : { ...resolved, ...tuning };
 }
 
 function expandProjectPath(value: string): string {
@@ -318,7 +329,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     const body = bodyRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps de requête invalide');
 
-    const changes: { name?: string; path?: string; color?: string | null } = {};
+    const changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults'>> = {};
     if ('name' in body) {
       if (typeof body.name !== 'string' || body.name.trim() === '') return error(reply, 400, 'Le nom ne peut pas être vide');
       changes.name = body.name.trim();
@@ -334,6 +345,11 @@ export async function buildServer(): Promise<FastifyInstance> {
         return error(reply, 400, 'Couleur invalide (format #rrggbb attendu)');
       }
       changes.color = body.color === null ? null : body.color.toLowerCase();
+    }
+    if ('sessionDefaults' in body) {
+      const defaults = parseSessionDefaults(project.sessionDefaults, body.sessionDefaults);
+      if (defaults === null) return error(reply, 400, 'Paramètres de session invalides pour cet agent');
+      changes.sessionDefaults = defaults;
     }
     const updated = db.updateProject(project.id, changes);
     if (updated === null) return error(reply, 404, 'Projet introuvable');
@@ -438,21 +454,17 @@ export async function buildServer(): Promise<FastifyInstance> {
     return session === null ? error(reply, 404, 'Session introuvable') : reply.send(session);
   });
 
-  // Valide le corps {agent, mode, model?, effort?, prompt}, lance la session puis répond 201 avec ce que renvoie `respond`.
+  // Les champs omis héritent des derniers choix du projet ; null rétablit le défaut de la CLI.
   const launchSession = async (
     reply: FastifyReply,
     project: Project,
     rawBody: unknown,
     respond: (session: Session) => unknown,
   ): Promise<FastifyReply> => {
-    const body = bodyRecord(rawBody);
-    if (body === null || !isAgent(body.agent) || !isMode(body.mode) || typeof body.prompt !== 'string') {
-      return error(reply, 400, 'agent, mode ou prompt invalide');
-    }
-    const tuning = parseTuning(body.agent, body);
-    if (tuning === null) return error(reply, 400, 'modèle ou effort invalide pour cet agent');
+    const defaults = parseSessionDefaults(project.sessionDefaults, rawBody);
+    if (defaults === null) return error(reply, 400, 'Paramètres de session invalides pour cet agent');
     try {
-      const session = await sessions.create(project, body.agent, body.mode, body.prompt, tuning);
+      const session = await sessions.create(project, defaults);
       return reply.code(201).send(respond(session));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'Impossible de lancer la session';
