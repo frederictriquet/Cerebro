@@ -1,6 +1,7 @@
 import type { OutgoingHttpHeaders } from 'node:http';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { loadRemotes, MACHINE_NAME, type RemoteMachine } from './config.ts';
+import type { PeerSync } from './peers.ts';
 import {
   filteredHeaders,
   isWebSocketUpgrade,
@@ -9,8 +10,11 @@ import {
   websocketHeaders,
   withoutCookie,
 } from './proxy.ts';
+import { VERSION_INFO } from './version.ts';
 
 const RESPONSE_TIMEOUT_MS = 10_000;
+// Au démarrage, le premier échange avec les machines distantes donne leur version.
+const FIRST_SYNC_WAIT_MS = 3_000;
 
 function upstreamUrl(remote: RemoteMachine, path: string, search: string, websocket = false): URL {
   const target = new URL(remote.url);
@@ -43,7 +47,7 @@ function vscodeHeaders(request: FastifyRequest, remote: RemoteMachine, base: Out
   return headers;
 }
 
-export function registerRemoteGateway(app: FastifyInstance): void {
+export function registerRemoteGateway(app: FastifyInstance, peers: PeerSync): void {
   app.addHook('onRequest', async (request, reply) => {
     const incomingUrl = new URL(request.raw.url ?? request.url, 'http://localhost');
 
@@ -85,10 +89,14 @@ export function registerRemoteGateway(app: FastifyInstance): void {
     });
   });
 
-  app.get('/api/machines', async () => ({
-    local: { name: MACHINE_NAME },
-    remotes: loadRemotes().map(({ id, name }) => ({ id, name })),
-  }));
+  app.get('/api/machines', async () => {
+    await Promise.race([peers.synced, new Promise((resolve) => setTimeout(resolve, FIRST_SYNC_WAIT_MS).unref())]);
+    return {
+      local: { name: MACHINE_NAME, version: VERSION_INFO },
+      // status null : pas encore d'échange avec cette machine.
+      remotes: loadRemotes().map(({ id, name }) => ({ id, name, status: peers.remoteVersion(id) })),
+    };
+  });
 
   app.get<{ Params: { id: string; '*': string } }>('/m/:id/ws/*', { websocket: true }, (socket, request) => {
     const remote = loadRemotes().find((candidate) => candidate.id === request.params.id);

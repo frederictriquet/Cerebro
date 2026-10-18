@@ -16,9 +16,10 @@ import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED 
 import { CerebroDatabase } from './db.ts';
 import type { Agent, Epic, Mode, Project, Session, Task, TaskStatus } from './db.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
-import { PeerSync, syncPayloadFrom } from './peers.ts';
+import { incompatibleMessage, PeerSync, syncPayloadFrom } from './peers.ts';
 import { assertLoopbackPortFree } from './ports.ts';
 import { registerRemoteGateway } from './remotes.ts';
+import { compatibility, VERSION_INFO } from './version.ts';
 import { SessionManager } from './sessions.ts';
 import { SlackNotifier } from './slack.ts';
 import { UpdateManager } from './updates.ts';
@@ -258,7 +259,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     return reply.header('set-cookie', tokenCookie(request)).code(204).send();
   });
 
-  registerRemoteGateway(app);
+  registerRemoteGateway(app, peers);
   registerVscodeRelay(app, vscode);
 
   app.addHook('onClose', async () => {
@@ -365,9 +366,15 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post('/api/peer/sync', async (request, reply) => {
     const payload = syncPayloadFrom(request.body);
     if (payload === null) return error(reply, 400, 'Échange invalide');
+    // Une instance sans version (antérieure) est acceptée ; un autre protocole est refusé, avec notre version.
+    if (payload.version !== null && compatibility(payload.version) === 'incompatible') {
+      return reply.code(409).send({ error: incompatibleMessage(payload.machine, payload.version), version: VERSION_INFO });
+    }
     await peers.ready;
     return reply.send(peers.receive(payload));
   });
+
+  app.get('/api/version', async () => VERSION_INFO);
 
   app.get('/api/peer/notices', async () => peers.notices());
 

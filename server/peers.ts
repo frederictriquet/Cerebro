@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { DATA_DIR, loadRemotes, MACHINE_NAME } from './config.ts';
 import type { CerebroDatabase, Project } from './db.ts';
+import { compatibility, VERSION_INFO, versionInfoFrom, versionLabel, type Compatibility, type VersionInfo } from './version.ts';
 
 /*
  * Coordination entre instances Cerebro qui partagent le même bot Slack. Un projet présent sur
@@ -66,6 +67,17 @@ export interface SyncPayload {
   machine: string;
   projects: PeerProject[];
   claims: Record<string, Claim>;
+  // Absent (null) chez une instance antérieure à l'exposition des versions.
+  version: VersionInfo | null;
+}
+
+/** Version d'une machine de remotes.json, vue lors du dernier échange. */
+export interface RemoteVersionStatus {
+  version: VersionInfo | null;
+  compatibility: Compatibility;
+  reachable: boolean;
+  error: string | null;
+  checkedAt: number;
 }
 
 /** Machine qui traite les commandes Slack générales, quand plusieurs machines lisent le même DM. */
@@ -144,7 +156,12 @@ export function syncPayloadFrom(value: unknown): SyncPayload | null {
     machine: value.machine,
     projects: peerProjectsFrom(value.projects),
     claims: claimsFrom(value.claims),
+    version: versionInfoFrom(value.version),
   };
+}
+
+export function incompatibleMessage(machine: string, remote: VersionInfo): string {
+  return `${machine} utilise le protocole ${remote.protocol} (Cerebro ${versionLabel(remote)}), cette machine le protocole ${VERSION_INFO.protocol} (Cerebro ${versionLabel(VERSION_INFO)}) : mettez à jour l'une des deux.`;
 }
 
 function stateFrom(value: unknown): PeerState {
@@ -211,11 +228,17 @@ export class PeerSync {
   private readonly onChange: () => void;
   private readonly origins = new Map<string, string | null>();
   private readonly remoteErrors = new Map<string, string>();
+  private readonly remoteVersions = new Map<string, RemoteVersionStatus>();
   private readonly timer: NodeJS.Timeout;
   private state: PeerState;
   private syncing: Promise<void> | null = null;
   private slackPoster: ((text: string) => Promise<void>) | null = null;
   private markReady: () => void = () => {};
+  private markSynced: () => void = () => {};
+  /** Résolue à la fin du premier tour de synchronisation : versions des machines distantes connues. */
+  readonly synced = new Promise<void>((resolve) => {
+    this.markSynced = resolve;
+  });
   /** Résolue une fois les origins locaux lus : avant, impossible de comparer les dépôts. */
   readonly ready = new Promise<void>((resolve) => {
     this.markReady = resolve;
@@ -244,12 +267,18 @@ export class PeerSync {
     if (this.syncing === null) {
       this.syncing = this.runSync().finally(() => {
         this.syncing = null;
+        this.markSynced();
       });
     }
     return this.syncing;
   }
 
-  /** Échange reçu d'une machine qui nous a déclarée dans son remotes.json. */
+  /** Version des machines de remotes.json ; absente tant qu'aucun échange n'a eu lieu. */
+  remoteVersion(remoteId: string): RemoteVersionStatus | null {
+    return this.remoteVersions.get(remoteId) ?? null;
+  }
+
+  /** Échange reçu d'une machine qui nous a déclarée dans son remotes.json (protocole déjà vérifié). */
   receive(payload: SyncPayload): SyncPayload {
     if (payload.instanceId !== this.instanceId) {
       this.mutate(() => this.absorb(payload));
@@ -377,7 +406,11 @@ export class PeerSync {
 
   private async runSync(): Promise<void> {
     await this.refreshOrigins();
-    for (const remote of loadRemotes()) {
+    const remotes = loadRemotes();
+    for (const id of this.remoteVersions.keys()) {
+      if (!remotes.some((remote) => remote.id === id)) this.remoteVersions.delete(id);
+    }
+    for (const remote of remotes) {
       try {
         const response = await fetch(`${remote.url}/api/peer/sync`, {
           method: 'POST',
@@ -388,9 +421,19 @@ export class PeerSync {
           body: JSON.stringify(this.payload()),
           signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
         });
+        const body: unknown = await response.json().catch(() => null);
+        // 409 : la machine distante a refusé l'échange, protocole différent du nôtre.
+        const refused = response.status === 409 ? versionInfoFrom(isRecord(body) ? body.version : null) : null;
+        if (refused !== null) {
+          this.recordVersion(remote, refused, true, null);
+          continue;
+        }
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const payload = syncPayloadFrom(await response.json());
+        const payload = syncPayloadFrom(body);
         if (payload === null) throw new Error('réponse invalide');
+        this.recordVersion(remote, payload.version, true, null);
+        // Formats différents : rien n'est fusionné plutôt que de risquer un état corrompu.
+        if (compatibility(payload.version) === 'incompatible') continue;
         if (payload.instanceId !== this.instanceId) this.mutate(() => this.absorb(payload));
         if (this.remoteErrors.delete(remote.id)) console.log(`[peers] ${remote.name} de nouveau joignable`);
       } catch (error) {
@@ -398,10 +441,22 @@ export class PeerSync {
         // Une machine éteinte échoue à chaque tour : ne journaliser que les changements.
         if (this.remoteErrors.get(remote.id) !== message) console.warn(`[peers] ${remote.name} : ${message}`);
         this.remoteErrors.set(remote.id, message);
+        this.recordVersion(remote, this.remoteVersions.get(remote.id)?.version ?? null, false, message);
       }
     }
     // Projets créés, renommés ou supprimés localement depuis le dernier tour.
     this.mutate(() => {});
+  }
+
+  private recordVersion(remote: { id: string; name: string }, version: VersionInfo | null, reachable: boolean, error: string | null): void {
+    const previous = this.remoteVersions.get(remote.id);
+    const status: RemoteVersionStatus = { version, compatibility: compatibility(version), reachable, error, checkedAt: Date.now() };
+    this.remoteVersions.set(remote.id, status);
+    if (status.compatibility === 'incompatible' && version !== null && previous?.compatibility !== 'incompatible') {
+      console.warn(`[peers] ${incompatibleMessage(remote.name, version)} Échange suspendu.`);
+    }
+    if (previous === undefined || previous.compatibility !== status.compatibility || previous.reachable !== reachable
+      || JSON.stringify(previous.version) !== JSON.stringify(version)) this.onChange();
   }
 
   private async refreshOrigins(): Promise<void> {
@@ -422,6 +477,7 @@ export class PeerSync {
         appearedAt: this.appearedAt(project),
       })),
       claims: this.state.claims,
+      version: VERSION_INFO,
     };
   }
 
