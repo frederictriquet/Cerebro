@@ -8,7 +8,14 @@ import {
   type ReactNode,
   type SetStateAction,
 } from 'react';
-import { getMachines, wsUrl, type MachinesInfo } from './api.ts';
+import {
+  getMachines,
+  wsUrl,
+  type Compatibility,
+  type MachinesInfo,
+  type RemoteVersionStatus,
+  type VersionInfo,
+} from './api.ts';
 import { playAlert, readMuted, showAlertNotification } from './notify.ts';
 import { goMachine, useMachine } from './route.ts';
 import { useStore } from './store.tsx';
@@ -32,6 +39,8 @@ interface MachineWatch {
 }
 
 const MACHINE_ID = /^[a-z0-9-]{1,32}$/;
+const MACHINES_REFRESH_MS = 30_000;
+const COMPATIBILITIES: readonly Compatibility[] = ['same', 'compatible', 'incompatible', 'unknown'];
 const MachineWatchContext = createContext<MachineWatch>({ info: null, hidden: {} });
 
 interface AttentionCounts {
@@ -60,26 +69,78 @@ function upsertSession(list: Session[], session: Session): Session[] {
   return next;
 }
 
+function usableVersion(value: unknown): VersionInfo | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const { version, commit, protocol } = value as Partial<Record<keyof VersionInfo, unknown>>;
+  if (typeof version !== 'string' || typeof protocol !== 'number') return null;
+  return { version, commit: typeof commit === 'string' ? commit : null, protocol };
+}
+
+function usableStatus(value: unknown): RemoteVersionStatus | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Partial<Record<keyof RemoteVersionStatus, unknown>>;
+  const compatibility = COMPATIBILITIES.find((candidate) => candidate === raw.compatibility);
+  if (compatibility === undefined || typeof raw.checkedAt !== 'number') return null;
+  return {
+    version: usableVersion(raw.version),
+    compatibility,
+    reachable: raw.reachable === true,
+    error: typeof raw.error === 'string' ? raw.error : null,
+    checkedAt: raw.checkedAt,
+  };
+}
+
 function usableMachines(data: MachinesInfo): MachinesInfo | null {
   if (typeof data !== 'object' || data === null) return null;
   const name = data.local?.name;
   if (typeof name !== 'string' || !Array.isArray(data.remotes)) return null;
-  const remotes: { id: string; name: string }[] = [];
+  const remotes: MachinesInfo['remotes'] = [];
   for (const remote of data.remotes) {
     if (typeof remote?.id !== 'string' || typeof remote.name !== 'string') continue;
     if (remote.id === 'local' || !MACHINE_ID.test(remote.id)) continue;
-    remotes.push({ id: remote.id, name: remote.name });
+    remotes.push({ id: remote.id, name: remote.name, status: usableStatus(remote.status) });
   }
-  return { local: { name }, remotes };
+  return { local: { name, version: usableVersion(data.local.version) }, remotes };
 }
 
-function hiddenTargets(info: MachinesInfo | null, current: string | null): WatchTarget[] {
-  if (!info || info.remotes.length === 0) return [];
+export function versionLabel(info: VersionInfo): string {
+  return info.commit === null ? info.version : `${info.version}+${info.commit}`;
+}
+
+function compatibilityText(status: RemoteVersionStatus | null): string {
+  if (status === null) return 'version pas encore vérifiée';
+  const version = status.version === null ? null : `Cerebro ${versionLabel(status.version)}, protocole ${status.version.protocol}`;
+  switch (status.compatibility) {
+    case 'same':
+      return `même version (${version})`;
+    case 'compatible':
+      return `version différente, protocole compatible (${version})`;
+    case 'incompatible':
+      return `INCOMPATIBLE (${version}) : mettre à jour l'une des machines`;
+    case 'unknown':
+      return status.reachable ? 'version inconnue (instance antérieure)' : 'version inconnue (machine injoignable)';
+  }
+}
+
+const COMPAT_MARK: Record<Compatibility, string | null> = {
+  same: null,
+  compatible: '≈',
+  incompatible: '⚠',
+  unknown: 'v?',
+};
+
+/** Version de cette instance et, si la machine affichée est une machine distante, son statut. */
+export function useMachineInfo(): MachinesInfo | null {
+  return useContext(MachineWatchContext).info;
+}
+
+function hiddenTargets(remoteIds: string[], current: string | null): WatchTarget[] {
+  if (remoteIds.length === 0) return [];
   const targets: WatchTarget[] = [];
   if (current !== null) targets.push({ key: 'local', base: '', machineId: null });
-  for (const remote of info.remotes) {
-    if (remote.id !== current) {
-      targets.push({ key: remote.id, base: `/m/${remote.id}`, machineId: remote.id });
+  for (const id of remoteIds) {
+    if (id !== current) {
+      targets.push({ key: id, base: `/m/${id}`, machineId: id });
     }
   }
   return targets;
@@ -179,24 +240,33 @@ export function MachineWatchProvider({ children }: { children: ReactNode }) {
   const [info, setInfo] = useState<MachinesInfo | null>(null);
   const [hidden, setHidden] = useState<Record<string, WatchState>>({});
 
+  // Rechargée périodiquement : la version d'une machine distante change quand elle est mise à jour.
   useEffect(() => {
     let cancelled = false;
-    void getMachines()
-      .then((data) => {
-        if (cancelled) return;
-        const parsed = usableMachines(data);
-        if (parsed) setInfo(parsed);
-      })
-      .catch(() => {
-        /* pas de sélecteur si la liste est indisponible */
-      });
+    const load = (): void => {
+      void getMachines()
+        .then((data) => {
+          if (cancelled) return;
+          const parsed = usableMachines(data);
+          if (parsed) setInfo((prev) => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
+        })
+        .catch(() => {
+          /* pas de sélecteur si la liste est indisponible */
+        });
+    };
+    load();
+    const timer = window.setInterval(load, MACHINES_REFRESH_MS);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
   }, []);
 
+  // Clé stable : un changement de version ne doit pas rouvrir les WebSocket de surveillance.
+  const remoteIds = info?.remotes.map((remote) => remote.id).join(',') ?? '';
+
   useEffect(() => {
-    const wanted = hiddenTargets(info, current);
+    const wanted = hiddenTargets(remoteIds === '' ? [] : remoteIds.split(','), current);
     const wantedKeys = new Set(wanted.map((target) => target.key));
     setHidden((prev) => {
       let changed = false;
@@ -212,7 +282,7 @@ export function MachineWatchProvider({ children }: { children: ReactNode }) {
     return () => {
       for (const stop of stops) stop();
     };
-  }, [info, current]);
+  }, [remoteIds, current]);
 
   const value = useMemo(() => ({ info, hidden }), [info, hidden]);
   return <MachineWatchContext.Provider value={value}>{children}</MachineWatchContext.Provider>;
@@ -225,9 +295,19 @@ export function MachineSwitcher() {
 
   if (!info || info.remotes.length === 0) return null;
 
-  const pills: { id: string | null; name: string }[] = [
-    { id: null, name: info.local.name },
-    ...info.remotes.map((remote) => ({ id: remote.id, name: remote.name })),
+  const pills: { id: string | null; name: string; status: RemoteVersionStatus | null; version: string }[] = [
+    {
+      id: null,
+      name: info.local.name,
+      status: null,
+      version: info.local.version === null ? 'version inconnue' : `cette machine, Cerebro ${versionLabel(info.local.version)}`,
+    },
+    ...info.remotes.map((remote) => ({
+      id: remote.id,
+      name: remote.name,
+      status: remote.status,
+      version: compatibilityText(remote.status),
+    })),
   ];
 
   return (
@@ -250,11 +330,13 @@ export function MachineSwitcher() {
               ? `${counts.waiting} question(s), ${attention} à traiter`
               : `${attention} terminée(s)`
             : null;
-        const title = detail ? `${pill.name} — ${status} — ${detail}` : `${pill.name} — ${status}`;
+        const title = [pill.name, status, pill.version, detail].filter(Boolean).join(' — ');
+        const compat = pill.status?.compatibility ?? null;
+        const mark = compat === null ? null : COMPAT_MARK[compat];
         return (
           <a
             key={pill.id ?? 'local'}
-            className={`machine-pill${active ? ' active' : ''}`}
+            className={`machine-pill${active ? ' active' : ''}${compat === 'incompatible' ? ' incompatible' : ''}`}
             href={hash}
             aria-current={active ? 'page' : undefined}
             title={title}
@@ -265,6 +347,11 @@ export function MachineSwitcher() {
           >
             <span className={`machine-dot${online ? ' on' : ''}`} aria-hidden="true" />
             <span className="machine-name">{pill.name}</span>
+            {mark !== null && compat !== null ? (
+              <span className={`machine-compat ${compat}`} aria-label={pill.version}>
+                {mark}
+              </span>
+            ) : null}
             {attention > 0 ? (
               <span className={`machine-badge ${tone}`} aria-label={detail ?? undefined}>
                 {tone === 'waiting' ? '? ' : null}
@@ -275,5 +362,40 @@ export function MachineSwitcher() {
         );
       })}
     </nav>
+  );
+}
+
+/** Version de l'instance locale, affichée même sans machine distante. */
+export function AppVersion() {
+  const info = useMachineInfo();
+  const version = info?.local.version;
+  if (!version) return null;
+  return (
+    <p className="app-version" title={`Protocole entre instances : ${version.protocol}`}>
+      Cerebro {versionLabel(version)} · protocole {version.protocol}
+    </p>
+  );
+}
+
+/** Machine distante affichée dont le protocole diffère : l'interface risque d'échouer, on le dit. */
+export function MachineCompatNotice() {
+  const current = useMachine();
+  const info = useMachineInfo();
+  const remote = current === null ? undefined : info?.remotes.find((candidate) => candidate.id === current);
+  if (remote?.status?.compatibility !== 'incompatible') return null;
+  const local = info?.local.version;
+  const distant = remote.status.version;
+  return (
+    <div className="peer-notices">
+      <div className="peer-notice compat-notice" role="alert">
+        <span>
+          {remote.name} n'est pas compatible avec cette machine
+          {distant && local
+            ? ` (protocole ${distant.protocol}, Cerebro ${versionLabel(distant)} ; ici protocole ${local.protocol}, Cerebro ${versionLabel(local)})`
+            : ''}
+          . Certaines actions risquent d'échouer et la coordination Slack est suspendue : mettez à jour l'une des deux machines.
+        </span>
+      </div>
+    </div>
   );
 }

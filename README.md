@@ -290,6 +290,16 @@ L'état est conservé dans `$CEREBRO_DATA_DIR/peers.json`, et l'identifiant de l
 dans `instance-id`. Le nom affiché pour chaque machine vient de `CEREBRO_MACHINE_NAME`
 (par défaut le nom d'hôte). `help` et `list` restent traités par toutes les machines.
 
+**Versions.** `GET /api/version` renvoie la version de l'application (`package.json`,
+complétée du commit git court ; `CEREBRO_COMMIT` la remplace hors dépôt git) et la version
+du protocole entre instances (`PROTOCOL_VERSION` dans `server/version.ts`, à incrémenter à
+chaque changement incompatible de l'échange ou des routes relayées). Les deux sont transmises
+dans `/api/peer/sync`. Même protocole = compatible. Le bas de la barre latérale affiche la
+version locale, et chaque pastille de machine distante un indicateur : rien (même version),
+`≈` (autre version, protocole compatible), `⚠` (incompatible) ou `v?` (version inconnue :
+instance antérieure ou injoignable). Une machine incompatible refuse l'échange (409) : la
+coordination Slack avec elle est suspendue, et un bandeau rouge s'affiche quand on la consulte.
+
 **macOS.** [`scripts/cerebro.plist`](scripts/cerebro.plist) est un agent launchd. Adaptez
 `WorkingDirectory`, copiez-le dans `~/Library/LaunchAgents/`, puis lancez
 `launchctl load ~/Library/LaunchAgents/cerebro.plist`. Il démarre Cerebro sous

@@ -71,9 +71,27 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return request<T>(`${base}${path}`, local, init);
 }
 
+export interface VersionInfo {
+  version: string;
+  commit: string | null;
+  protocol: number;
+}
+
+/** same : même version ; compatible : autre version, même protocole ; unknown : instance ancienne ou jamais jointe. */
+export type Compatibility = 'same' | 'compatible' | 'incompatible' | 'unknown';
+
+export interface RemoteVersionStatus {
+  version: VersionInfo | null;
+  compatibility: Compatibility;
+  reachable: boolean;
+  error: string | null;
+  checkedAt: number;
+}
+
 export interface MachinesInfo {
-  local: { name: string };
-  remotes: { id: string; name: string }[];
+  local: { name: string; version: VersionInfo | null };
+  // status null : pas encore d'échange avec cette machine.
+  remotes: { id: string; name: string; status: RemoteVersionStatus | null }[];
 }
 
 export function getMachines(): Promise<MachinesInfo> {

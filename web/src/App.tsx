@@ -4,7 +4,7 @@ import { HomeView } from './HomeView.tsx';
 import { ProjectTabs } from './ProjectTabs.tsx';
 import { ProjectView } from './ProjectView.tsx';
 import { SessionView } from './SessionView.tsx';
-import { MachineWatchProvider } from './MachineSwitcher.tsx';
+import { MachineCompatNotice, MachineWatchProvider } from './MachineSwitcher.tsx';
 import { Sidebar } from './Sidebar.tsx';
 import { StoreProvider, useStore } from './store.tsx';
 import { useMachine, useRoute } from './route.ts';
@@ -137,6 +137,7 @@ function Shell() {
       ) : null}
       <Sidebar route={route} onNavigate={() => setNavOpen(false)} />
       <main className="main">
+        <MachineCompatNotice />
         <PeerNotices />
         <ProjectTabs route={route} />
         {route.kind === 'project' ? (

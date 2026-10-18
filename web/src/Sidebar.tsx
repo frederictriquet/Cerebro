@@ -9,7 +9,7 @@ import {
   type SlackStatus,
 } from './api.ts';
 import { AGENT_LABEL, relativeTime, sessionTitle } from './format.ts';
-import { MachineSwitcher } from './MachineSwitcher.tsx';
+import { AppVersion, MachineSwitcher } from './MachineSwitcher.tsx';
 import { href, useNow, type Route } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
@@ -105,6 +105,7 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
       </section>
 
       <UsageGauges />
+      <AppVersion />
     </aside>
   );
 }

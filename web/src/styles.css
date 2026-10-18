@@ -158,6 +158,33 @@ textarea {
   border-color: var(--idle);
 }
 
+/* Compatibilité de version avec la machine distante (rien quand elle est identique). */
+.machine-compat {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--faint);
+}
+
+.machine-compat.compatible {
+  color: var(--idle);
+}
+
+.machine-compat.incompatible {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.machine-pill.incompatible {
+  border-color: var(--danger);
+}
+
+.app-version {
+  margin: 12px 0 0;
+  color: var(--faint);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
 .sidebar-head {
   display: flex;
   align-items: center;
@@ -2295,6 +2322,10 @@ a.btn:hover {
   gap: 12px;
   color: var(--waiting);
   font-size: 13px;
+}
+
+.peer-notice.compat-notice {
+  color: var(--danger);
 }
 
 .peer-notice .btn {
