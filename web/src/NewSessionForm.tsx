@@ -39,7 +39,8 @@ export function NewSessionForm({
   onCancel?: () => void;
 }) {
   const { agents, projects, updateProject } = useStore();
-  const defaults = projects.find((p) => p.id === projectId)?.sessionDefaults ?? DEFAULT_SESSION_DEFAULTS;
+  const project=projects.find((p) => p.id === projectId);
+  const defaults = project?.sessionDefaults ?? DEFAULT_SESSION_DEFAULTS;
   const available = agents.filter((a) => a.available);
   const [agent, setAgent] = useState<Agent>(defaults.agent);
   const [mode, setMode] = useState<Mode>(defaults.mode);
@@ -198,6 +199,7 @@ export function NewSessionForm({
   return (
     <form className={`card new-session ${className}`.trim()} onSubmit={onSubmit}>
       {heading ? <h2>{heading}</h2> : null}
+      {project?.workspaceMode==='shared'?<p className="hint">Travail dans le dossier du projet, sur sa branche courante.</p>:null}
       <LlmSelector
         agents={agents}
         value={{ agent, model, effort }}

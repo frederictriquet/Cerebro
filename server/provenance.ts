@@ -19,7 +19,7 @@ export interface Workspace {
   projectRoot?: string;
   targetBranch?: string | null;
   removedAt?: number;
-  mode: 'isolated' | 'unknown';
+  mode: 'isolated' | 'shared' | 'unknown';
   path: string;
   root: string;
   source: string;
@@ -65,11 +65,17 @@ const signature = (m: Record<string,string>): string => JSON.stringify(m);
 
 /** Isolation is persisted before launching the holder. Historical sessions keep their cwd. */
 export async function createWorkspace(db: CerebroDatabase, sessionId: string, project: Project): Promise<Workspace> {
+  const registeredProject=db.getProject(project.id)??project;
+  if(registeredProject.workspaceMode==='shared') {
+    const root=await git(registeredProject.path,['rev-parse','--show-toplevel']).catch(()=>registeredProject.path);
+    return save(db,{sessionId,projectId:registeredProject.id,projectName:registeredProject.name,projectRoot:root,
+      mode:'shared',path:registeredProject.path,root,source:root,base:null,branch:null,initialDirty:[],baseline:{},
+      reason:'Dossier du projet choisi dans les réglages Git : les conversations utilisent la branche courante, sans création de copie ni attribution individuelle des changements.',createdAt:Date.now()});
+  }
   const common: Workspace = {sessionId,projectId:project.id,projectName:project.name,mode:'unknown',path:project.path,root:project.path,source:project.path,base:null,branch:null,initialDirty:[],baseline:{},reason:'Projet sans historique Git : sélection explicite nécessaire.',createdAt:Date.now()};
   let root: string;
   try { root=await git(project.path,['rev-parse','--show-toplevel']); common.base=await git(root,['rev-parse','--verify','HEAD']); }
   catch { return save(db,common); }
-  const registeredProject=db.getProject(project.id)??project;
   common.projectRoot=await git(registeredProject.path,['rev-parse','--show-toplevel']).catch(()=>root);
   common.targetBranch=await git(common.projectRoot,['symbolic-ref','--quiet','HEAD']).catch(()=>null);
   if (resolve(DATA_DIR).startsWith(`${resolve(root)}/`) || resolve(DATA_DIR)===resolve(root)) throw new Error('Le dossier Cerebro doit être situé hors du dépôt pour isoler les sessions.');
@@ -116,7 +122,7 @@ export async function sessionProvenance(db: CerebroDatabase, sessionId: string):
   const project=db.getProject(session.projectId)!;
   const workspace=workspaceFor(db,sessionId)??historicalWorkspace(sessionId,project.path);
   const warning='Le périmètre décrit un espace de travail, pas l’auteur des modifications. Toute édition humaine ou externe dans cet espace doit être vérifiée explicitement. Les changements initiaux ne sont pas attribués à la session.';
-  if(workspace.mode==='unknown') return {workspace,changes:[],commits:[],warning};
+  if(workspace.mode!=='isolated') return {workspace,changes:[],commits:[],warning};
   const snapshot=await prepareCommit(workspace.root);
   const current=await manifest(workspace.root);
   const changed=snapshot.files.filter(f=>workspace.baseline[f.path]!==current[f.path]);

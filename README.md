@@ -473,9 +473,29 @@ manuelle lorsqu'ils changent la sélection prévue. `push:true` utilise le push
 serveur et affiche ses résultats par remote, y compris avec des exclusions laissées
 dans le worktree. Le push seul, sur un dépôt propre, ne lance aucune session.
 
+## Choisir le dossier de travail par projet
+
+Dans **Réglages Git → Travail des conversations**, chaque projet choisit entre :
+
+- **Copie isolée par conversation** (défaut) : un worktree et une branche par nouvelle conversation, puis intégration du travail au projet.
+- **Dossier du projet** : les nouvelles conversations utilisent le chemin du projet et la branche qui y est déjà sélectionnée, sans créer de worktree, de branche ou de copie des fichiers. Ce mode convient aux tests liés à un chemin précis et au développement séquentiel sur une branche de longue durée.
+
+En mode **Dossier du projet**, Cerebro ne change pas la branche et ne la supprime
+pas quand une conversation est supprimée. Plusieurs conversations peuvent
+reprendre le même travail dans ce dossier. Commit / push et code review portent
+explicitement sur le projet entier ; les changements ne sont pas attribués
+individuellement aux conversations.
+
+Le choix est persistant et indépendant des réglages LLM. Il s'applique aux
+nouvelles conversations, y compris celles lancées par le backlog, Slack et les
+étapes d'epic. Une conversation existante conserve toujours son dossier lors
+d'une reprise, même si le réglage du projet a changé depuis. Les copies isolées
+déjà présentes restent accessibles dans l'inventaire. Les anciens projets
+conservent l'isolation à la migration tant que ce choix n'est pas modifié.
+
 ## Provenance des sessions
 
-Une nouvelle session sur un dépôt Git avec un commit démarre dans un worktree
+En mode isolé, une nouvelle session sur un dépôt Git avec un commit démarre dans un worktree
 et une branche `cerebro/session-<id>` dédiés, sous le dossier de données Cerebro.
 Le répertoire initial du projet est conservé comme contexte source. Son contenu,
 y compris les fichiers non suivis, ignorés, la configuration locale et les

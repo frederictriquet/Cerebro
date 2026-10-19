@@ -57,7 +57,7 @@ function ProvenancePanel({ sessionId }: { sessionId: string }) {
     {error ? <p className="form-error">{error}</p> : null}
     {data ? <>
       <p>{data.workspace.path} — branche {data.workspace.branch ?? 'partagée'}</p>
-      {data.workspace.mode==='unknown'?<p>Cette conversation utilise le même dossier que le projet et les autres conversations historiques. Son bouton « Commit / push du projet » traite tous les changements de ce dossier.</p>:<><p>{data.workspace.reason}</p><p className="hint">{data.warning}</p></>}
+      {data.workspace.mode!=='isolated'?<p>Cette conversation utilise le dossier du projet et sa branche courante, partagés avec les autres conversations qui y travaillent directement. Ses actions Git portent sur le projet entier.</p>:<><p>{data.workspace.reason}</p><p className="hint">{data.warning}</p></>}
       <p>Changements initiaux exclus de l’attribution : {data.workspace.initialDirty.join(', ') || 'aucun'}</p>
       {data.changes.map(c => <p key={c.path}>{c.path} — {c.certainty} : {c.reason}</p>)}
       {data.commits.map(c => <p key={c.hash}>{c.hash} — {c.title} ({c.certainty})</p>)}

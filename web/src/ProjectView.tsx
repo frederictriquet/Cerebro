@@ -312,7 +312,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
 
       {error ? <p className="form-error">{error}</p> : null}
 
-      <Worktrees key={`worktrees-${project.id}`} projectId={project.id} />
+      <Worktrees key={`worktrees-${project.id}`} projectId={project.id} workspaceMode={project.workspaceMode} />
       <div className="project-columns">
         <section className="card project-panel session-table-wrap">
           <div className="project-panel-head">

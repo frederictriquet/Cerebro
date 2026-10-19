@@ -240,8 +240,9 @@ export class SessionManager {
     const current = this.db.getProject(project.id);
     if (current === null) throw new Error('Projet introuvable');
     const defaults = this.rememberDefaults(project.id, overrides);
-    assertWorktreeAvailable(contextPath??current.path);
-    return this.launch(contextPath ? {...current,path:contextPath} : current, defaults.agent, defaults.mode, defaults, defaults.prompt, null, null, validate);
+    const path=current.workspaceMode==='shared'?current.path:contextPath??current.path;
+    assertWorktreeAvailable(path);
+    return this.launch({...current,path}, defaults.agent, defaults.mode, defaults, defaults.prompt, null, null, validate);
   }
 
   rememberDefaults(projectId: string, overrides: Partial<SessionDefaults>): SessionDefaults {

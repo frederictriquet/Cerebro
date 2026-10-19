@@ -5,6 +5,7 @@ import { api, apiBase } from './api.ts';
 import { Modal } from './Dialog.tsx';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
 import { href } from './route.ts';
+import type { WorkspaceMode } from './types.ts';
 import './worktrees.css';
 
 const branchName = (branch: string | null): string => branch?.replace(/^refs\/heads\//,'') ?? 'branche inconnue';
@@ -44,7 +45,7 @@ function WorktreeDiffs({view}:{view:WorktreeView}) {
 }
 
 /** Keep preserved work visible, without presenting the main repository as another pending session. */
-export function Worktrees({projectId}:{projectId?:string}) {
+export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspaceMode?:WorkspaceMode}) {
   const [inventory,setInventory]=useState<WorktreeInventory|null>(null);
   const [loadedBase,setLoadedBase]=useState<string|null>(null);
   const [loadError,setLoadError]=useState<string|null>(null);
@@ -94,11 +95,12 @@ export function Worktrees({projectId}:{projectId?:string}) {
   const visibleInventory=loadedBase===machineBase?inventory:null;
   const copies=visibleInventory?.worktrees.filter(view=>view.managed&&!view.primary)??[];
   const other=visibleInventory?.worktrees.filter(view=>!view.managed||view.primary)??[];
+  if(projectId&&workspaceMode==='shared'&&visibleInventory&&copies.length===0&&other.every(view=>view.primary)&&!loadError&&!error&&!visibleInventory.errors.length)return null;
   return <section className="card worktrees-panel" aria-label="Copies de travail des conversations">
     <div className="worktrees-heading"><h2>Copies de travail <span className="pill">{visibleInventory?copies.length:'…'}</span></h2>
       <button type="button" className="btn" onClick={()=>void refresh()}>Actualiser</button>
     </div>
-    <p className="worktrees-explanation">Les nouvelles conversations travaillent dans une copie isolée. Pour récupérer leur travail : créer le commit, puis l’intégrer au projet. Supprimer une conversation conserve sa copie ici.</p>
+    <p className="worktrees-explanation">{workspaceMode==='shared'?'Ce projet utilise directement son dossier. Ses anciennes copies isolées restent accessibles ici.':'Les copies isolent le travail des conversations. Pour récupérer leur travail : créer le commit, puis l’intégrer au projet. Supprimer une conversation conserve sa copie ici.'}</p>
     {loadError?<p className="form-error" role="alert">{loadError}</p>:null}
     {error?<p className="form-error" role="alert">{error}</p>:null}
     {visibleInventory?.errors.map(message=><p className="form-error" key={message}>{message}</p>)}

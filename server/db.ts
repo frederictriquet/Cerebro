@@ -8,6 +8,7 @@ export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
 export type TaskStatus = 'todo' | 'started' | 'done';
 export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+export type WorkspaceMode = 'isolated' | 'shared';
 
 export interface SessionDefaults {
   agent: Agent;
@@ -49,6 +50,7 @@ export interface Project {
   color: string | null;
   sessionDefaults: SessionDefaults;
   commitSettings: CommitSettings;
+  workspaceMode: WorkspaceMode;
   createdAt: number;
 }
 
@@ -107,6 +109,7 @@ interface ProjectRow {
   color: string | null;
   session_defaults: string | null;
   commit_settings: string | null;
+  workspace_mode: WorkspaceMode;
   created_at: number;
 }
 
@@ -185,6 +188,7 @@ function projectFromRow(row: ProjectRow): Project {
     id: row.id, name: row.name, path: row.path, color: row.color ?? null, createdAt: row.created_at,
     sessionDefaults: row.session_defaults === null ? { ...DEFAULT_SESSION_DEFAULTS } : JSON.parse(row.session_defaults),
     commitSettings: row.commit_settings ? JSON.parse(row.commit_settings) : { ...DEFAULT_COMMIT_SETTINGS },
+    workspaceMode: row.workspace_mode ?? 'isolated',
   };
 }
 
@@ -300,6 +304,9 @@ export class CerebroDatabase {
       if (!columns.some((c) => c.name === column)) this.connection.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
     }
     const projectColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as unknown as { name: string }[];
+    if (!projectColumns.some(column => column.name === 'workspace_mode')) {
+      this.connection.exec("ALTER TABLE projects ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'isolated' CHECK (workspace_mode IN ('isolated','shared'))");
+    }
     if (!projectColumns.some((column) => column.name === 'color')) {
       this.connection.exec('ALTER TABLE projects ADD COLUMN color TEXT');
     }
@@ -363,21 +370,21 @@ export class CerebroDatabase {
     return row === undefined ? null : projectFromRow(row);
   }
 
-  createProject(name: string, path: string): Project {
+  createProject(name: string, path: string, workspaceMode: WorkspaceMode = 'isolated'): Project {
     const project: Project = {
-      id: randomUUID(), name, path, color: null, sessionDefaults: { ...DEFAULT_SESSION_DEFAULTS }, commitSettings: { ...DEFAULT_COMMIT_SETTINGS }, createdAt: Date.now(),
+      id: randomUUID(), name, path, color: null, sessionDefaults: { ...DEFAULT_SESSION_DEFAULTS }, commitSettings: { ...DEFAULT_COMMIT_SETTINGS }, workspaceMode, createdAt: Date.now(),
     };
-    this.connection.prepare('INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)')
-      .run(project.id, project.name, project.path, project.createdAt);
+    this.connection.prepare('INSERT INTO projects (id, name, path, created_at, workspace_mode) VALUES (?, ?, ?, ?, ?)')
+      .run(project.id, project.name, project.path, project.createdAt, project.workspaceMode);
     return project;
   }
 
-  updateProject(id: string, changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings'>>): Project | null {
+  updateProject(id: string, changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'workspaceMode'>>): Project | null {
     const current = this.getProject(id);
     if (current === null) return null;
     const next = { ...current, ...changes };
-    this.connection.prepare('UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ? WHERE id = ?')
-      .run(next.name, next.path, next.color, JSON.stringify(next.sessionDefaults), JSON.stringify(next.commitSettings), id);
+    this.connection.prepare('UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, workspace_mode = ? WHERE id = ?')
+      .run(next.name, next.path, next.color, JSON.stringify(next.sessionDefaults), JSON.stringify(next.commitSettings), next.workspaceMode, id);
     return next;
   }
 

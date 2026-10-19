@@ -88,6 +88,7 @@ export interface ProjectPatch {
   color?: string | null;
   sessionDefaults?: Partial<LaunchSpec>;
   commitSettings?: Partial<import('./types.ts').CommitSettings>;
+  workspaceMode?: import('./types.ts').WorkspaceMode;
 }
 
 const StoreContext = createContext<Store | null>(null);

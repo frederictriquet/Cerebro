@@ -360,7 +360,8 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
     const projectPath = expandProjectPath(body.path.trim());
     if (!validDirectory(projectPath)) return error(reply, 400, "Le répertoire n'existe pas ou n'est pas un répertoire");
-    const project = db.createProject(body.name.trim(), projectPath);
+    if ('workspaceMode' in body && body.workspaceMode !== 'isolated' && body.workspaceMode !== 'shared') return error(reply,400,'Mode de travail invalide');
+    const project = db.createProject(body.name.trim(), projectPath, body.workspaceMode==='shared'?'shared':'isolated');
     const projects = db.listProjects();
     for (const socket of eventSockets) sendSocket(socket, { type: 'projects', projects });
     void peers.sync();
@@ -373,7 +374,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     const body = bodyRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps de requête invalide');
 
-    const changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings'>> = {};
+    const changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'workspaceMode'>> = {};
+    if ('workspaceMode' in body) {
+      if (body.workspaceMode !== 'isolated' && body.workspaceMode !== 'shared') return error(reply,400,'Mode de travail invalide');
+      changes.workspaceMode=body.workspaceMode;
+    }
     if ('name' in body) {
       if (typeof body.name !== 'string' || body.name.trim() === '') return error(reply, 400, 'Le nom ne peut pas être vide');
       changes.name = body.name.trim();

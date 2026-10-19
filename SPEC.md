@@ -330,3 +330,10 @@ du workspace peuvent fonctionner : tester si possible avec `CEREBRO_DATA_DIR=./.
 - `GET /api/sessions/:id/git/context` consulte uniquement les métadonnées persistées : dossier partagé, copie isolée ou copie retirée. Une ancienne conversation affiche explicitement « Commit / push du projet » avant de lancer l'action sur le dossier partagé ; aucune attribution implicite au contenu de cette session.
 - `WorktreeView.changesSinceCreation` compare les fichiers locaux modifiés à leur empreinte initiale : nombre et liste des changements postérieurs, nombre des changements hérités et des fichiers qui requièrent un examen. `null` si la comparaison n'est pas prouvable. Ce compteur n'attribue pas un auteur. Les contrôles Git continuent d'utiliser l'état complet du worktree.
 - L'interface présente les copies des conversations séparément du dossier principal et des copies non associées ; les fichiers ignorés et le retrait figurent dans les détails. Les diffs se consultent sans agent via la collecte existante.
+
+## Choix du dossier de travail
+
+- `Project.workspaceMode` vaut `isolated` (défaut et migration) ou `shared`, configurable à la création et par `PATCH /api/projects/:id`, ainsi que dans Réglages Git.
+- En mode `shared`, une nouvelle session travaille dans le chemin du projet enregistré et sur sa branche courante. Pas de création, checkout ou suppression de branche, de worktree ni de copie des fichiers. Un ancien `contextPath` d'epic ne redirige pas une nouvelle session de ce mode vers un worktree.
+- `Workspace.mode=shared` persiste ce choix par session. Reprise et suppression de conversation conservent le dossier et la branche de travail. Une modification de la préférence du projet ne déplace aucune session existante.
+- Provenance partagée sans attribution individuelle ; les boutons Commit / push et Code review visent explicitement le périmètre du projet. Les anciens worktrees restent visibles même si le projet passe en mode partagé.

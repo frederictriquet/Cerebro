@@ -95,11 +95,11 @@ export function SessionGitActions({ sessionId, live: _live }: { sessionId: strin
   const close=():void=>setOpen(null);
   const shared=context?.mode==='shared';
   return <>
-    <button className="btn" onClick={()=>setOpen('review')}>Code review</button>
+    <button className="btn" disabled={!context||context.mode==='removed'} onClick={()=>setOpen('review')}>{shared?'Code review du projet':'Code review'}</button>
     <button className="btn" disabled={!context||context.mode==='removed'} title={contextError??(shared?'Traite tous les changements du dossier partagé du projet, y compris ceux des autres conversations.':context?.mode==='removed'?'La copie de travail de cette conversation a été retirée.':'Traite les changements vérifiables de la copie de cette conversation.')} onClick={()=>setOpen('commit')}>{shared?'Commit / push du projet':'Commit / push'}</button>
     {shared?<span className="meta">Dossier partagé avec les autres conversations</span>:null}
     {contextError?<span className="form-error">{contextError}</span>:null}
     {open==='commit'?<AutomaticCommitDialog projectId={session.projectId} endpoint={shared?undefined:`/api/sessions/${sessionId}/git`} scopeLabel={shared?'Tous les changements du dossier partagé du projet':'Changements de la copie de cette conversation'} onClose={close}/>:null}
-    {open==='review'?<SessionReviewDialog sessionId={sessionId} projectId={session.projectId} onClose={close}/>:null}
+    {open==='review'?(shared?<RepoReviewDialog projectId={session.projectId} onClose={close}/>:<SessionReviewDialog sessionId={sessionId} projectId={session.projectId} onClose={close}/>):null}
   </>;
 }

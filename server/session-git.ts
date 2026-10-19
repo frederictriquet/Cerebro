@@ -20,7 +20,7 @@ export async function prepareSessionGit(db:CerebroDatabase,id:string):Promise<Se
   const uncertain=new Set(snapshot.files.filter(f=>!provenance.changes.some(c=>c.path===f.path&&c.certainty==='workspace')).map(f=>f.path));
   for(const [key] of scopes)if(scopes.size>100)scopes.delete(key);
   scopes.set(snapshot.id,{sessionId:id,provenance,uncertain});
-  return {...snapshot,provenance,scopeNotice:provenance.workspace.mode==='unknown'?'Provenance inconnue : choisissez explicitement chaque fichier ou hunk. Aucun propriétaire n’est déduit du dépôt.':provenance.warning,
+  return {...snapshot,provenance,scopeNotice:provenance.workspace.mode==='shared'?'Dossier partagé du projet : les changements appartiennent au périmètre du projet, sans attribution individuelle par conversation.':provenance.workspace.mode==='unknown'?'Provenance inconnue : choisissez explicitement chaque fichier ou hunk. Aucun propriétaire n’est déduit du dépôt.':provenance.warning,
     files:snapshot.files.map(f=>({...f,warnings:uncertain.has(f.path)?[...f.warnings,'Attribution incertaine ou changement initial : sélection manuelle requise.']:f.warnings}))};
 }
 function scope(id:string,snapshotId:string){

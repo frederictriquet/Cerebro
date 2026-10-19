@@ -88,7 +88,8 @@ export class AutomaticCommits {
       operation.exclusions=snapshot.files.filter(file=>file.blocked||file.warnings.length).map(file=>({path:file.path,reason:file.warnings.join(' ; ')||'Fichier exclu par le scanner.'}));
       operation.files=eligible.map(file=>file.path);this.save(operation);
       if(snapshot.files.length&&!eligible.length){
-        operation.needsProjectScope=(snapshot as GitSnapshot&{provenance?:{workspace:{mode:string}}}).provenance?.workspace.mode==='unknown';
+        const mode=(snapshot as GitSnapshot&{provenance?:{workspace:{mode:string}}}).provenance?.workspace.mode;
+        operation.needsProjectScope=mode==='unknown'||mode==='shared';
         throw new CommitBlocked(operation.needsProjectScope
           ? 'Cette ancienne conversation ne permet pas d’attribuer les changements. Pour traiter le dépôt entier, utilisez « Commit / push » dans l’en-tête du projet.'
           : 'Tous les fichiers demandent une vérification : aucun commit automatique ne peut être créé.');

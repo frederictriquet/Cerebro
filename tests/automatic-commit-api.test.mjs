@@ -22,6 +22,9 @@ test('project API stores independent commit settings and one-click execution use
  let app=await buildServer();const send=(method,url,payload)=>app.inject({method,url,...(payload===undefined?{}:{payload})});
  try{
   const created=await send('POST','/api/projects',{name:'Automatic',path:repo});assert.equal(created.statusCode,201);const project=created.json();const url=`/api/projects/${project.id}`;
+  assert.equal(parseProject(project).workspaceMode,'isolated');
+  assert.equal((await send('PATCH',url,{workspaceMode:'shared'})).json().workspaceMode,'shared');
+  for(const value of [null,'unknown',true])assert.equal((await send('PATCH',url,{workspaceMode:value})).statusCode,400);
   const settings={agent:'claude',model:'sonnet',effort:'low',strategy:'single'};
   let response=await send('PATCH',url,{commitSettings:settings});assert.equal(response.statusCode,200);assert.deepEqual(parseProject(response.json()).commitSettings,settings);
   response=await send('PATCH',url,{sessionDefaults:{agent:'codex',model:null,effort:'high'}});assert.equal(response.statusCode,200);assert.deepEqual(response.json().commitSettings,settings);
@@ -33,7 +36,7 @@ test('project API stores independent commit settings and one-click execution use
   let result;for(let i=0;i<300;i++){result=(await send('GET',`/api/git/auto-commits/${operationId}`)).json();if(result.status!=='running')break;await new Promise(resolve=>setTimeout(resolve,10));}
   assert.equal(result.status,'succeeded',result.error);assert.deepEqual(inputs.at(-1).settings,settings);assert.equal(result.commits[0].title,'feat: requested behavior');assert.equal(sessions,0);
   assert.equal((await send('POST',`${url}/git/auto-commit`,{requestId,push:false})).json().id,operationId);assert.equal(inputs.length,1);
-  await app.close();app=await buildServer();const projects=(await send('GET','/api/projects')).json();assert.deepEqual(projects.find(item=>item.id===project.id).commitSettings,settings);
+  await app.close();app=await buildServer();const projects=(await send('GET','/api/projects')).json();assert.deepEqual(projects.find(item=>item.id===project.id).commitSettings,settings);assert.equal(parseProject(projects.find(item=>item.id===project.id)).workspaceMode,'shared');
   assert.equal((await send('GET',`/api/git/auto-commits/${operationId}`)).json().status,'succeeded');
   response=await send('PATCH',url,{commitSettings:{agent:'grok'}});assert.equal(response.statusCode,200);assert.deepEqual(response.json().commitSettings,{agent:'grok',model:null,effort:null,strategy:'single'});
  }finally{await app.close();}

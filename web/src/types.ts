@@ -4,6 +4,7 @@ export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
 export type TaskExecution = {type:'llm'} | {type:'command';commandId:string;completion:'manual'|'exit-zero'};
 export type TaskStatus = 'todo' | 'started' | 'done';
 export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+export type WorkspaceMode = 'isolated' | 'shared';
 
 export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
 export const MODES: readonly Mode[] = ['auto', 'default', 'acceptEdits', 'plan', 'bypass'];
@@ -37,6 +38,7 @@ export interface Project {
   color: string | null;
   sessionDefaults: LaunchSpec;
   commitSettings: CommitSettings;
+  workspaceMode: WorkspaceMode;
   createdAt: number;
 }
 
@@ -193,7 +195,8 @@ export function parseProject(v: unknown): Project | null {
     effort: isEffort(commit.effort) ? commit.effort : null,
     strategy: commit.strategy === 'atomic' ? 'atomic' : 'single',
   };
-  return { id, name, path, color, sessionDefaults, commitSettings, createdAt };
+  const workspaceMode:WorkspaceMode=v.workspaceMode==='shared'?'shared':'isolated';
+  return { id, name, path, color, sessionDefaults, commitSettings, workspaceMode, createdAt };
 }
 
 export function parseSession(v: unknown): Session | null {
