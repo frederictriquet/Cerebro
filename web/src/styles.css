@@ -1286,6 +1286,49 @@ label.block {
   color: var(--starting);
 }
 
+.pill-toggle {
+  cursor: pointer;
+}
+
+.pill-toggle:hover,
+.pill-toggle.active {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.session-drawer {
+  position: relative;
+  flex-shrink: 0;
+  max-height: 40vh;
+  overflow: auto;
+  padding: 8px 40px 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.session-drawer p {
+  margin: 4px 0;
+}
+
+.session-drawer label {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--text);
+}
+
+.session-drawer label input {
+  width: auto;
+  margin-top: 2px;
+}
+
+.session-drawer-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+}
+
 .session-pane {
   min-height: 0;
 }
