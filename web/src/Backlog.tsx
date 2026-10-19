@@ -323,19 +323,100 @@ export function Backlog({ projectId }: { projectId: string }) {
   );
 }
 
-function EpicRunView({epicId}:{epicId:string}) {
-  const [run,setRun]=useState<EpicRun|null>(null);const [error,setError]=useState<string|null>(null);
-  const refresh=async():Promise<void>=>{const runs=await api<EpicRun[]>(`/api/epics/${epicId}/runs`);setRun(runs[0]??null);};
-  useEffect(()=>{void refresh().catch(()=>{});const timer=window.setInterval(()=>void refresh().catch(()=>{}),1000);return()=>window.clearInterval(timer);},[epicId]);
-  if(!run)return null;
-  const action=(name:string):void=>{void api(`/api/epic-runs/${run.id}/${name}`,{method:'POST',body:JSON.stringify({replan:name==='resume'})}).then(()=>{setError(null);return refresh();}).catch(cause=>setError(String(cause)));};
-  return <details onToggle={e=>{if(e.currentTarget.open&&run)void api(`/api/operations/${encodeURIComponent(`epic:${run.id}:${run.status}`)}/seen`,{method:'POST'}).catch(()=>{});}}><summary>Ordonnanceur : {run.status} — {Object.keys(run.results).length}/{run.order.length} résultats</summary>
-    <p>Étape courante : {run.currentTaskId??'aucune'} — espace : {run.contextRoot}</p>
-    {run.error?<p>{run.error}</p>:null}{Object.entries(run.results).map(([id,result])=><p key={id}>{id} : {result}</p>)}
-    {['running','waiting-validation','blocked'].includes(run.status)?<button className="btn" onClick={()=>action('stop')}>Arrêter l’epic</button>:null}
-    {['waiting-validation','blocked','failed','stopped'].includes(run.status)?<button className="btn" onClick={()=>action('resume')}>Reprendre et recalculer</button>:null}
-    {error?<p className="form-error">{error}</p>:null}
-  </details>;
+const RUN_STATUS_LABEL: Record<EpicRun['status'], string> = {
+  running: 'en cours',
+  'waiting-validation': 'en attente de validation',
+  blocked: 'bloqué',
+  failed: 'en échec',
+  stopped: 'arrêté',
+  succeeded: 'terminé',
+};
+const RUN_RESULT_LABEL: Record<string, string> = {
+  'declared-done': 'déclarée terminée',
+  validated: 'validée',
+  'criterion-exit-zero': 'commande réussie',
+  'execution-succeeded': 'exécution réussie',
+  'waiting-validation': 'en attente de validation',
+  blocked: 'bloquée',
+  failed: 'en échec',
+};
+// States in which the run waits for the user: its reason and actions stay visible without unfolding anything.
+const RUN_NEEDS_ACTION: EpicRun['status'][] = ['blocked', 'failed', 'waiting-validation'];
+const RUN_ACTIVE: EpicRun['status'][] = ['running', 'waiting-validation', 'blocked'];
+const RUN_RESUMABLE: EpicRun['status'][] = ['waiting-validation', 'blocked', 'failed', 'stopped'];
+
+function useEpicRun(epicId: string): { run: EpicRun | null; refresh: () => Promise<void> } {
+  const [run, setRun] = useState<EpicRun | null>(null);
+  const refresh = useCallback(async (): Promise<void> => {
+    const runs = await api<EpicRun[]>(`/api/epics/${epicId}/runs`);
+    setRun(runs[0] ?? null);
+  }, [epicId]);
+  useEffect(() => {
+    void refresh().catch(() => {});
+    const timer = window.setInterval(() => void refresh().catch(() => {}), 1000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+  return { run, refresh };
+}
+
+function runAction(run: EpicRun, name: 'stop' | 'resume'): Promise<unknown> {
+  void api(`/api/operations/${encodeURIComponent(`epic:${run.id}:${run.status}`)}/seen`, { method: 'POST' }).catch(() => {});
+  return api(`/api/epic-runs/${run.id}/${name}`, { method: 'POST', body: JSON.stringify({ replan: name === 'resume' }) });
+}
+
+function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (id: string) => string; onChanged: () => Promise<void> }) {
+  const [error, setError] = useState<string | null>(null);
+  const action = (name: 'stop' | 'resume'): void => {
+    void runAction(run, name)
+      .then(() => {
+        setError(null);
+        return onChanged();
+      })
+      .catch((cause: unknown) => setError(String(cause)));
+  };
+  const needsAction = RUN_NEEDS_ACTION.includes(run.status);
+  const results = Object.entries(run.results);
+  return (
+    <div className="epic-run">
+      <details
+        onToggle={(e) => {
+          if (e.currentTarget.open) void api(`/api/operations/${encodeURIComponent(`epic:${run.id}:${run.status}`)}/seen`, { method: 'POST' }).catch(() => {});
+        }}
+      >
+        <summary>
+          Ordonnanceur : <span className={`epic-run-status ${run.status}`}>{RUN_STATUS_LABEL[run.status]}</span> — {results.length}/{run.order.length} résultat{results.length > 1 ? 's' : ''}
+        </summary>
+        <p>Étape courante : {run.currentTaskId ? taskLabel(run.currentTaskId) : 'aucune'}</p>
+        <p>Espace : {run.contextRoot}</p>
+        {!needsAction && run.error ? <p>{run.error}</p> : null}
+        {results.length > 0 ? (
+          <ul>
+            {results.map(([id, result]) => (
+              <li key={id}>
+                {taskLabel(id)} : {RUN_RESULT_LABEL[result] ?? result}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </details>
+      {needsAction && run.error ? <p className="epic-run-reason">{run.error}</p> : null}
+      {RUN_ACTIVE.includes(run.status) || RUN_RESUMABLE.includes(run.status) ? (
+        <div className="row-actions">
+          {RUN_RESUMABLE.includes(run.status) ? (
+            <button type="button" className={`btn ${needsAction ? 'primary' : ''}`} onClick={() => action('resume')}>
+              Reprendre et recalculer
+            </button>
+          ) : null}
+          {RUN_ACTIVE.includes(run.status) ? (
+            <button type="button" className="btn" onClick={() => action('stop')}>
+              Arrêter l’epic
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {error ? <p className="form-error">{error}</p> : null}
+    </div>
+  );
 }
 
 const EMPTY_COMMAND = JSON.stringify({ name: '', executable: '', args: [], cwd: '.', timeoutSeconds: 300 }, null, 2);
@@ -597,6 +678,7 @@ function EpicBlock({
   const { updateEpic, deleteEpic } = useStore();
   const [collapsed, setCollapsed] = useState(false);
   const [editing, setEditing] = useState(false);
+  const { run, refresh: refreshRun } = useEpicRun(epic.id);
   const members = projectTasks.filter((t) => t.epicId === epic.id);
   const ordered = dependencyOrder(members);
   const open = ordered.filter((t) => t.status !== 'done');
@@ -608,6 +690,12 @@ function EpicBlock({
     .map((t) => (t.status === 'started' ? sessions.find((s) => s.id === t.sessionId) : undefined))
     .find((s) => s !== undefined && s.status !== 'exited');
   const position = new Map(open.map((t, i) => [t.id, i + 1]));
+  // The server refuses a new run while one is active; a failed one is taken over by « Reprendre » in the run view.
+  const runHoldsEpic = run !== null && (RUN_ACTIVE.includes(run.status) || run.status === 'failed');
+  const taskLabel = (id: string): string => {
+    const task = byId.get(id);
+    return task ? taskTitle(task.text).slice(0, 80) : id;
+  };
   // Displayed in creation order; the number gives the processing rank (dependency order).
   const shown = showDone ? members : members.filter((t) => t.status !== 'done');
   const startHint = open.length === 0
@@ -620,7 +708,6 @@ function EpicBlock({
 
   return (
     <div className="epic">
-      <EpicRunView epicId={epic.id} />
       <div className="epic-head">
         <button type="button" className="epic-title" aria-expanded={!collapsed} onClick={() => setCollapsed((v) => !v)}>
           <span className="task-caret">{collapsed ? '▸' : '▾'}</span>
@@ -642,15 +729,17 @@ function EpicBlock({
           ) : null}
         </div>
         <div className="row-actions">
-          <button
-            type="button"
-            className="btn primary"
-            disabled={launching || open.length === 0 || outsideBlockers.length > 0 || activeSession !== undefined}
-            title={startHint}
-            onClick={() => onStart(epicPrompt(epic, open))}
-          >
-            {launching ? 'Lancement…' : "Traiter l'epic"}
-          </button>
+          {runHoldsEpic ? null : (
+            <button
+              type="button"
+              className="btn primary"
+              disabled={launching || open.length === 0 || outsideBlockers.length > 0 || activeSession !== undefined}
+              title={startHint}
+              onClick={() => onStart(epicPrompt(epic, open))}
+            >
+              {launching ? 'Lancement…' : "Traiter l'epic"}
+            </button>
+          )}
           <button type="button" className="btn" onClick={() => setEditing((v) => !v)}>
             Éditer
           </button>
@@ -661,6 +750,7 @@ function EpicBlock({
           </DelayedActionButton>
         </div>
       </div>
+      {run ? <EpicRunView run={run} taskLabel={taskLabel} onChanged={refreshRun} /> : null}
       {editing ? (
         <EpicForm
           initialTitle={epic.title}
