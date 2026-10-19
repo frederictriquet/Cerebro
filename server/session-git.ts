@@ -13,6 +13,8 @@ export function sessionGitContext(db:CerebroDatabase,id:string):SessionGitContex
   const workspace=workspaceFor(db,id);
   return {mode:workspace?.removedAt?'removed':workspace?.mode==='isolated'?'isolated':'shared',projectId:project.id,projectName:project.name,path:workspace?.root??project.path};
 }
+/** Content still identical to the copy taken from the project: it is not work from this session. */
+export const INHERITED_WARNING='Contenu copié du projet à la création de la copie, inchangé depuis : ce n’est pas un travail de cette conversation.';
 const scopes=new Map<string,{sessionId:string;provenance:Provenance;uncertain:Set<string>}>();
 export async function prepareSessionGit(db:CerebroDatabase,id:string):Promise<SessionGitSnapshot>{
   const provenance=await sessionProvenance(db,id);
@@ -21,7 +23,7 @@ export async function prepareSessionGit(db:CerebroDatabase,id:string):Promise<Se
   for(const [key] of scopes)if(scopes.size>100)scopes.delete(key);
   scopes.set(snapshot.id,{sessionId:id,provenance,uncertain});
   return {...snapshot,provenance,scopeNotice:provenance.workspace.mode==='shared'?'Dossier partagé du projet : les changements appartiennent au périmètre du projet, sans attribution individuelle par conversation.':provenance.workspace.mode==='unknown'?'Provenance inconnue : choisissez explicitement chaque fichier ou hunk. Aucun propriétaire n’est déduit du dépôt.':provenance.warning,
-    files:snapshot.files.map(f=>({...f,warnings:uncertain.has(f.path)?[...f.warnings,'Attribution incertaine ou changement initial : sélection manuelle requise.']:f.warnings}))};
+    files:snapshot.files.map(f=>({...f,warnings:!uncertain.has(f.path)?f.warnings:[...f.warnings,provenance.workspace.mode==='isolated'&&!provenance.changes.some(c=>c.path===f.path)?INHERITED_WARNING:'Attribution incertaine ou changement initial : sélection manuelle requise.']}))};
 }
 function scope(id:string,snapshotId:string){
   const scope=scopes.get(snapshotId);

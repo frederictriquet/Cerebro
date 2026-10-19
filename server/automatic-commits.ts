@@ -8,6 +8,7 @@ import { currentPush, startPush, type PushOperation } from './git-push.ts';
 import { parseCommitProposal, proposeCommits, type ProposalContext, type CommitProposal } from './commit-proposal.ts';
 import { assertWorktreeAvailable, canonicalWorktreePath } from './worktree-gate.ts';
 import { workspaceFor } from './provenance.ts';
+import { INHERITED_WARNING } from './session-git.ts';
 
 export interface AutomaticCommit {
   id:string;scope:string;path:string;projectId:string|null;sessionId:string|null;settings:CommitSettings;
@@ -100,7 +101,9 @@ export class AutomaticCommits {
         operation.needsProjectScope=mode==='unknown'||mode==='shared';
         throw new CommitBlocked(operation.needsProjectScope
           ? 'Cette ancienne conversation ne permet pas d’attribuer les changements. Pour traiter le dépôt entier, utilisez « Commit / push » dans l’en-tête du projet.'
-          : 'Tous les fichiers demandent une vérification : aucun commit automatique ne peut être créé.');
+          : snapshot.files.every(file=>file.warnings.includes(INHERITED_WARNING))
+            ? 'Rien de nouveau à commiter : ces fichiers ont encore le contenu copié du projet à la création de la copie. Ils ne sont pas le travail de cette conversation.'
+            : 'Tous les fichiers demandent une vérification : aucun commit automatique ne peut être créé.');
       }
       if(eligible.length){
         phase('drafting');

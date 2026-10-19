@@ -12,6 +12,7 @@ const {AutomaticCommits}=await import('../server/automatic-commits.ts');
 const {prepareSessionGit,executeSessionCommit}=await import('../server/session-git.ts');
 const {proposeCommits}=await import('../server/commit-proposal.ts');
 const {prepareCommit}=await import('../server/git-plan.ts');
+const {createWorkspace}=await import('../server/provenance.ts');
 const git=(path,...args)=>execFileSync('git',['-C',path,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 after(()=>rmSync(root,{recursive:true,force:true}));
 async function fixture(run){
@@ -150,3 +151,11 @@ test('Grok structured output and text fallback still require a complete valid pr
   }
  }finally{process.env.PATH=previous;}
 });
+test('a copy holding only content inherited from the project says there is nothing new to commit',async()=>fixture(async f=>{
+ writeFileSync(join(f.repo,'file'),'uncommitted in the project\n');
+ const id=randomUUID();f.db.createSession({id,projectId:f.project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Step',status:'exited',agentSessionId:'fake'},'token');
+ const workspace=await createWorkspace(f.db,id,f.project);
+ const context={...f.context,scope:`sessions/${id}`,path:workspace.root,sessionId:id,prepare:()=>prepareSessionGit(f.db,id),execute:plan=>executeSessionCommit(id,plan)};
+ const result=await f.finish(await f.manager.start(context,randomUUID(),false));assert.equal(result.status,'blocked');
+ assert.match(result.error,/Rien de nouveau à commiter/);assert.match(result.exclusions[0].reason,/inchangé depuis/);assert.equal(f.calls,0);
+}));
