@@ -94,8 +94,27 @@ export function Backlog({ projectId }: { projectId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState<Task | null>(null);
   const [startingEpic, setStartingEpic] = useState<{ epic: Epic; prompt: string } | null>(null);
+  const [launching, setLaunching] = useState<Set<string>>(() => new Set());
   const [creatingEpic, setCreatingEpic] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // La modale se ferme à la validation ; le backlog garde le suivi du lancement.
+  const launch = async (id: string, action: () => Promise<unknown>): Promise<void> => {
+    setError(null);
+    setLaunching((current) => new Set(current).add(id));
+    try {
+      await action();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lancement impossible');
+      throw err;
+    } finally {
+      setLaunching((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
 
   const add = async (): Promise<void> => {
     if (busy || draft.trim() === '') return;
@@ -132,6 +151,7 @@ export function Backlog({ projectId }: { projectId: string }) {
       index={index}
       projectTasks={own}
       epics={ownEpics}
+      launching={launching.has(task.id)}
       session={sessions.find((s) => s.id === task.sessionId)}
       source={sessions.find((s) => s.id === task.sourceSessionId)}
       onStart={() => { if(task.execution?.type==='command') void api(`/api/tasks/${task.id}/start`,{method:'POST'}).catch(cause=>setError(String(cause))); else setStarting(task); }}
@@ -213,6 +233,7 @@ export function Backlog({ projectId }: { projectId: string }) {
           projectTasks={own}
           sessions={sessions}
           showDone={showDone}
+          launching={launching.has(epic.id)}
           renderTask={renderTask}
           onStart={(prompt) => { const members=own.filter(t=>t.epicId===epic.id&&t.status!=='done');if(members.every(t=>t.execution?.type==='command'))void api(`/api/epics/${epic.id}/start`,{method:'POST',body:'{}'}).catch(cause=>setError(String(cause)));else setStartingEpic({ epic, prompt }); }}
           onError={setError}
@@ -234,8 +255,8 @@ export function Backlog({ projectId }: { projectId: string }) {
           initialPrompt={starting.text}
           onClose={() => setStarting(null)}
           onLaunch={async (spec) => {
-            await startTask(starting.id, spec);
             setStarting(null);
+            await launch(starting.id, () => startTask(starting.id, spec));
           }}
         />
       ) : null}
@@ -246,8 +267,8 @@ export function Backlog({ projectId }: { projectId: string }) {
           initialPrompt={startingEpic.prompt}
           onClose={() => setStartingEpic(null)}
           onLaunch={async (spec) => {
-            await startEpic(startingEpic.epic.id, spec);
             setStartingEpic(null);
+            await launch(startingEpic.epic.id, () => startEpic(startingEpic.epic.id, spec));
           }}
         />
       ) : null}
@@ -368,6 +389,7 @@ function EpicBlock({
   projectTasks,
   sessions,
   showDone,
+  launching,
   renderTask,
   onStart,
   onError,
@@ -376,6 +398,7 @@ function EpicBlock({
   projectTasks: Task[];
   sessions: Session[];
   showDone: boolean;
+  launching: boolean;
   renderTask: (task: Task, index?: number) => ReactNode;
   onStart: (prompt: string) => void;
   onError: (message: string) => void;
@@ -431,11 +454,11 @@ function EpicBlock({
           <button
             type="button"
             className="btn primary"
-            disabled={open.length === 0 || outsideBlockers.length > 0 || activeSession !== undefined}
+            disabled={launching || open.length === 0 || outsideBlockers.length > 0 || activeSession !== undefined}
             title={startHint}
             onClick={() => onStart(epicPrompt(epic, open))}
           >
-            Traiter l'epic
+            {launching ? 'Lancement…' : "Traiter l'epic"}
           </button>
           <button type="button" className="btn" onClick={() => setEditing((v) => !v)}>
             Éditer
@@ -479,6 +502,7 @@ function TaskRow({
   index,
   projectTasks,
   epics,
+  launching,
   session,
   source,
   onStart,
@@ -489,6 +513,7 @@ function TaskRow({
   index?: number;
   projectTasks: Task[];
   epics: Epic[];
+  launching: boolean;
   session: Session | undefined;
   source: Session | undefined;
   onStart: () => void;
@@ -557,10 +582,10 @@ function TaskRow({
             type="button"
             className="btn primary"
             onClick={onStart}
-            disabled={blockers.length > 0}
+            disabled={launching || blockers.length > 0}
             title={blockers.length > 0 ? 'Terminez d\'abord les tâches dont celle-ci dépend' : undefined}
           >
-            {task.status === 'started' ? 'Relancer' : 'Traiter'}
+            {launching ? 'Lancement…' : task.status === 'started' ? 'Relancer' : 'Traiter'}
           </button>
         ) : null}
         <button
