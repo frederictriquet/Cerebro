@@ -5,14 +5,15 @@ import type { AutomaticCommit } from '../../server/automatic-commits.ts';
 import './automatic-commits.css';
 
 const PHASE_LABEL:Record<AutomaticCommit['phase'],string>={collecting:'Vérification des changements…',drafting:'Rédaction du message par l’IA…',committing:'Création du commit…',pushing:'Push vers les remotes…',finished:'Terminé'};
-interface CommitDialogProps {projectId:string;endpoint?:string;push?:boolean;onClose:()=>void;scopeLabel?:string}
+interface CommitDialogProps {projectId:string;endpoint?:string;push?:boolean;onClose:()=>void;scopeLabel?:string;reviewed?:{snapshotId:string;paths:string[]}}
 export function AutomaticCommitDialog(props:CommitDialogProps) {
   const [useProject,setUseProject]=useState(false);
   return <AutomaticCommitRun key={useProject?'project':'initial'} {...props} endpoint={useProject?undefined:props.endpoint}
-    scopeLabel={useProject?'Tous les changements du dossier partagé du projet':props.scopeLabel} onUseProject={()=>setUseProject(true)}/>;
+    reviewed={useProject?undefined:props.reviewed} scopeLabel={useProject?'Tous les changements du dossier partagé du projet':props.scopeLabel} onUseProject={()=>setUseProject(true)}/>;
 }
-function AutomaticCommitRun({projectId,endpoint,push=true,onClose,scopeLabel,onUseProject}:CommitDialogProps&{onUseProject:()=>void}) {
+function AutomaticCommitRun({projectId,endpoint,push=true,onClose,scopeLabel,reviewed,onUseProject}:CommitDialogProps&{onUseProject:()=>void}) {
   const [requestId]=useState(()=>crypto.randomUUID());
+  const [review]=useState(reviewed);
   const [machineBase]=useState(apiBase);
   const [operation,setOperation]=useState<AutomaticCommit|null>(null);
   const [error,setError]=useState<string|null>(null);
@@ -30,7 +31,7 @@ function AutomaticCommitRun({projectId,endpoint,push=true,onClose,scopeLabel,onU
     };
     if(apiBase()!==machineBase)return;
     // Reuse the same request in React StrictMode. Reopening also attaches to an active server operation.
-    start.current??=api<AutomaticCommit>(`${path}/auto-commit`,{method:'POST',body:JSON.stringify({requestId,push})});
+    start.current??=api<AutomaticCommit>(`${path}/auto-commit`,{method:'POST',body:JSON.stringify({requestId,push,...(review?{reviewed:review}:{})})});
     let id:string|null=null;
     void start.current.then(value=>{id=value.id;show(value);}).catch(cause=>{if(!disposed&&apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));});
     let timer:number|undefined;
@@ -45,7 +46,7 @@ function AutomaticCommitRun({projectId,endpoint,push=true,onClose,scopeLabel,onU
     };
     void poll();
     return()=>{disposed=true;window.clearTimeout(timer);};
-  },[path,requestId,push,machineBase]);
+  },[path,requestId,push,review,machineBase]);
   const cancel=async():Promise<void>=>{
     if(!operation||apiBase()!==machineBase)return;
     setCancelling(true);

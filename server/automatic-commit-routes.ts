@@ -41,8 +41,8 @@ export function registerAutomaticCommitRoutes(app:FastifyInstance,db:CerebroData
   };
   for(const [scope,context] of Object.entries(contexts)){
     app.post<{Params:{id:string}}>(`/api/${scope}/:id/git/auto-commit`,async(request,reply)=>attempt(reply,async()=>{
-      const body=request.body as {requestId?:unknown;push?:unknown};
-      return manager.start(await context(request.params.id),body?.requestId,body?.push??true);
+      const body=request.body as {requestId?:unknown;push?:unknown;reviewed?:unknown};
+      return manager.start(await context(request.params.id),body?.requestId,body?.push??true,body?.reviewed);
     },202));
   }
   app.get<{Params:{id:string}}>('/api/git/auto-commits/:id',async(request,reply)=>{

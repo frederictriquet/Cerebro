@@ -1,4 +1,4 @@
-import { assertWorktreeAvailable } from './worktree-gate.ts';
+import { assertWorktreeAvailable, canonicalWorktreePath } from './worktree-gate.ts';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdtemp, open, readFile, readlink, rename, rm, utimes, writeFile } from 'node:fs/promises';
@@ -287,6 +287,12 @@ export async function verifySnapshot(path: string, id: string): Promise<GitSnaps
   if (!saved || saved.path !== top) throw new Error('Sélection absente ou expirée.');
   if (saved.branch !== await branch(top) || saved.snapshot.head !== await head(top) || saved.work !== await workHash(top) || saved.index !== await indexHash(top)) throw new Error('Sélection obsolète : HEAD, index ou worktree a changé.');
   return saved.snapshot;
+}
+/** Diffs shown to the user by a still-retained snapshot of `root`, so a later plan can prove a file was reviewed as is. */
+export function reviewedDiffs(id: string, root: string): Map<string, string> | null {
+  const saved = snapshots.get(id);
+  if (!saved || canonicalWorktreePath(saved.path) !== canonicalWorktreePath(root)) return null;
+  return new Map(saved.snapshot.files.map(file => [file.path, file.diff]));
 }
 export function selectionDiff(snapshot: GitSnapshot, selections: CommitSelection[]): string {
   const validated = parseCommitPlan({snapshotId:snapshot.id,commits:[{message:'review',selection:selections}],acknowledged:[],push:false});

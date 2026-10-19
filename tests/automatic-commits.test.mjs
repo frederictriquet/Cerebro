@@ -62,6 +62,16 @@ test('scanners exclude suspicious files and the model only sees eligible diffs',
  f.manager.propose=async input=>{assert.deepEqual(input.files.map(file=>file.path),['file']);assert.ok(!JSON.stringify(input).includes('do-not-send'));return {commits:[{message:'safe change',paths:['file']}]};};
  const result=await f.finish(await f.manager.start(f.context,randomUUID(),false));assert.equal(result.status,'succeeded');assert.equal(result.exclusions[0].path,'.env');assert.equal(existsSync(join(f.repo,'.env')),true);assert.equal(git(f.repo,'status','--porcelain'),'?? .env');
 }));
+test('a reviewed diff lifts its warning only while unchanged, and never for a detected secret',async()=>fixture(async f=>{
+ writeFileSync(join(f.repo,'notes.log'),'reviewed\n');writeFileSync(join(f.repo,'stale.log'),'shown\n');writeFileSync(join(f.repo,'key.txt'),`sk-${'a'.repeat(40)}\n`);
+ const shown=await prepareCommit(f.repo);writeFileSync(join(f.repo,'stale.log'),'edited after review\n');
+ const reviewed={snapshotId:shown.id,paths:['notes.log','stale.log','key.txt']};
+ const result=await f.finish(await f.manager.start(f.context,randomUUID(),false,reviewed));assert.equal(result.status,'succeeded');
+ assert.deepEqual(result.files,['notes.log']);assert.equal(git(f.repo,'show','--format=','--name-only','HEAD'),'notes.log');
+ assert.match(result.exclusions.find(file=>file.path==='stale.log').reason,/Modifié depuis votre examen/);
+ assert.match(result.exclusions.find(file=>file.path==='key.txt').reason,/Secret détecté/);
+ await assert.rejects(f.manager.start(f.context,randomUUID(),false,{snapshotId:shown.id,paths:'notes.log'}),/examinés invalide/);
+}));
 test('unknown session attribution requires intervention and never calls the model',async()=>fixture(async f=>{
  const id=randomUUID();f.db.createSession({id,projectId:f.project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Legacy',status:'exited',agentSessionId:'fake'},'token');
  writeFileSync(join(f.repo,'file'),'legacy work\n');

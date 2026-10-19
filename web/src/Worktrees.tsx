@@ -24,13 +24,15 @@ function copyStatus(view: WorktreeView): string {
 }
 interface Confirmation { kind:'merge'|'remove';token:string;view:WorktreeView;machineBase:string }
 
-function WorktreeDiffs({view}:{view:WorktreeView}) {
+interface Reviewed { snapshotId:string;paths:string[] }
+function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReviewed?:(reviewed:Reviewed)=>void}) {
   const [snapshot,setSnapshot]=useState<GitSnapshot|null>(null);
+  const [checked,setChecked]=useState<Set<string>>(()=>new Set());
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState<string|null>(null);
   const load=async():Promise<void>=>{
     const machine=apiBase();setBusy(true);setError(null);
-    try{const value=await api<GitSnapshot>(`/api/worktrees/${view.id}/git/prepare-commit`,{method:'POST'});if(machine===apiBase())setSnapshot(value);}
+    try{const value=await api<GitSnapshot>(`/api/worktrees/${view.id}/git/prepare-commit`,{method:'POST'});if(machine===apiBase()){setSnapshot(value);setChecked(new Set());}}
     catch(cause){if(machine===apiBase())setError(cause instanceof Error?cause.message:String(cause));}
     finally{if(machine===apiBase())setBusy(false);}
   };
@@ -39,9 +41,14 @@ function WorktreeDiffs({view}:{view:WorktreeView}) {
     <button type="button" className="btn" disabled={busy} onClick={()=>void load()}>{busy?'Lecture des changements…':snapshot?'Actualiser les diffs':'Voir les diffs'}</button>
     {error?<p className="form-error">{error}</p>:null}
     {snapshot?<p className="meta">Diffs par rapport au dernier commit : ils peuvent aussi contenir des changements présents avant la création de la copie.</p>:null}
+    {snapshot&&onCommitReviewed?<p className="meta">Cochez les fichiers dont vous avez lu le diff : le commit les inclura tant que leur contenu reste celui affiché.</p>:null}
     {files?.map(file=><details key={file.path}><summary>{file.path}{file.blocked?' — secret détecté':file.warnings.length?' — à examiner':''}</summary>
-      {file.blocked?<p>Contenu masqué : le scanner a détecté un secret.</p>:<pre>{file.diff}</pre>}
+      {file.blocked?<p>Contenu masqué : le scanner a détecté un secret.</p>:<>
+        {onCommitReviewed?<label className="worktree-reviewed"><input type="checkbox" checked={checked.has(file.path)} onChange={event=>setChecked(current=>{const next=new Set(current);if(event.target.checked)next.add(file.path);else next.delete(file.path);return next;})}/> Examiné : inclure dans le commit</label>:null}
+        <pre>{file.diff}</pre>
+      </>}
     </details>)}
+    {snapshot&&onCommitReviewed?<button type="button" className="btn" disabled={!checked.size} onClick={()=>onCommitReviewed({snapshotId:snapshot.id,paths:[...checked]})}>Commiter avec {checked.size} fichier{checked.size===1?'':'s'} examiné{checked.size===1?'':'s'}</button>:null}
   </div>;
 }
 
@@ -54,6 +61,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   const [busy,setBusy]=useState<string|null>(null);
   const [confirmation,setConfirmation]=useState<Confirmation|null>(null);
   const [committing,setCommitting]=useState<WorktreeView|null>(null);
+  const [reviewed,setReviewed]=useState<Reviewed|null>(null);
   const [expanded,setExpanded]=useState<Set<string>>(()=>new Set());
   const path=projectId?`/api/projects/${projectId}/worktrees`:'/api/worktrees';
   const machineBase=apiBase();
@@ -62,7 +70,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
     catch(cause){if(apiBase()===machineBase)setLoadError(cause instanceof Error?cause.message:String(cause));}
   },[path,machineBase]);
   useEffect(()=>{
-    setInventory(null);setLoadedBase(null);setConfirmation(null);setCommitting(null);setError(null);setLoadError(null);setBusy(null);setExpanded(new Set());
+    setInventory(null);setLoadedBase(null);setConfirmation(null);setCommitting(null);setReviewed(null);setError(null);setLoadError(null);setBusy(null);setExpanded(new Set());
     let disposed=false;let loading=false;let timer:number|undefined;
     const load=async():Promise<void>=>{
       if(disposed||loading)return;
@@ -119,6 +127,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
         const initialOnly=changes?.count===0&&view.ahead===0&&!!view.dirty;
         const needsReview=!!changes?.needsReviewCount||!changes;
         const changedCount=changes?.count??view.dirty;
+        const commitBlocked=disabled||!!view.error||view.activeSessions.some(session=>session.status!=='idle');
         return <li className="worktree-row" key={view.id}>
           <div className="worktree-overview">
             <div className="worktree-identity">
@@ -132,7 +141,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
                 <span className="worktree-destination">Cible : {branchName(view.targetBranch)}</span>
               </div>
               {initialOnly?<p className="worktree-guidance">Aucun nouveau changement depuis sa création. Les fichiers modifiés proviennent de la copie de départ.</p>
-                :needsReview&&view.dirty?<p className="worktree-guidance">Examinez les changements avant de les enregistrer : certains existaient déjà dans le projet à la création de cette copie.</p>
+                :needsReview&&view.dirty?<p className="worktree-guidance">Examinez les changements avant de les enregistrer : certains existaient déjà dans le projet à la création de cette copie. Dans les diffs, cochez les fichiers examinés pour les commiter.</p>
                 :view.dirty?<p className="worktree-guidance">Créez le commit pour pouvoir ensuite l’intégrer au projet.</p>
                 :view.ahead&&view.mergeBlockers.length?<p className="worktree-guidance">L’intégration est bloquée. Les détails indiquent ce qu’il faut résoudre.</p>:null}
             </div>
@@ -141,7 +150,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
               {view.ahead?<span>{view.ahead} commit{view.ahead===1?'':'s'} à intégrer</span>:null}
             </div>
             <div className="worktree-actions">
-              {!initialOnly&&!!view.dirty?(needsReview?<button type="button" className="btn" onClick={()=>toggle(view.id)}>Examiner</button>:<button type="button" className="btn" disabled={disabled||!!view.error||view.activeSessions.some(session=>session.status!=='idle')} onClick={()=>setCommitting(view)}>Créer le commit</button>):null}
+              {!initialOnly&&!!view.dirty?(needsReview?<button type="button" className="btn" onClick={()=>toggle(view.id)}>Examiner</button>:<button type="button" className="btn" disabled={commitBlocked} onClick={()=>setCommitting(view)}>Créer le commit</button>):null}
               {!view.dirty&&!!view.ahead?<button type="button" className="btn" disabled={disabled||view.mergeBlockers.length>0} title={view.mergeBlockers.join('\n')} onClick={()=>void prepare(view,'merge')}>Intégrer au projet</button>:null}
               <button type="button" className="btn worktree-toggle" aria-expanded={showDetails} aria-controls={`worktree-details-${view.id}`} onClick={()=>toggle(view.id)}>{showDetails?'Réduire':'Détails'}</button>
             </div>
@@ -156,8 +165,8 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
             {changes?.inheritedCount?<p>{changes.inheritedCount} fichier(s) ont encore le contenu copié du projet au départ. Ils ne représentent pas du nouveau travail dans cette copie.</p>:null}
             {changes?.count?<><p>Fichiers modifiés depuis la création{changes.count>changes.files.length?' (100 premiers)':''} :</p><pre>{changes.files.join('\n')}</pre></>:null}
             {changes?.needsReviewCount?<p>{changes.needsReviewCount} de ces fichiers étaient déjà modifiés au départ. Leurs changements doivent être examinés ; ils ne sont pas attribués automatiquement à la conversation.</p>:null}
-            {showDetails&&!initialOnly&&!!view.dirty?<WorktreeDiffs view={view}/>:null}
-            {!initialOnly&&!!view.dirty&&needsReview?<button type="button" className="btn" disabled={disabled||!!view.error||view.activeSessions.some(session=>session.status!=='idle')} title="Crée les commits uniquement pour les fichiers dont la sélection automatique est vérifiable. Les autres restent dans la copie." onClick={()=>setCommitting(view)}>Commiter les fichiers vérifiables</button>:null}
+            {showDetails&&!initialOnly&&!!view.dirty?<WorktreeDiffs view={view} onCommitReviewed={commitBlocked?undefined:value=>{setReviewed(value);setCommitting(view);}}/>:null}
+            {!initialOnly&&!!view.dirty&&needsReview?<button type="button" className="btn" disabled={commitBlocked} title="Crée les commits uniquement pour les fichiers dont la sélection automatique est vérifiable. Les autres restent dans la copie." onClick={()=>setCommitting(view)}>Commiter les fichiers vérifiables</button>:null}
             <div className="worktree-target"><label>Intégrer dans <select aria-label={`Cible de ${copyTitle(view)}`} value={view.targetBranch??''} disabled={disabled} onChange={event=>void chooseTarget(view,event.target.value)}>
               {!view.targets.some(target=>target.branch===view.targetBranch)?<option value={view.targetBranch??''}>{view.targetBranch?`${branchName(view.targetBranch)} (dossier non ouvert)`:'Choisir une branche'}</option>:null}
               {view.targets.map(target=><option key={target.branch} value={target.branch}>{branchName(target.branch)} — {target.path}</option>)}
@@ -190,6 +199,6 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
       {error?<p className="form-error" role="alert">{error}</p>:null}
       <div className="row-actions"><button type="button" className={`btn ${confirmation.kind==='remove'?'danger-ghost':'primary'}`} disabled={busy!==null} onClick={()=>void run()}>{confirmation.kind==='merge'?'Intégrer au projet':'Retirer la copie'}</button><button type="button" className="btn" disabled={busy!==null} onClick={()=>setConfirmation(null)}>Annuler</button></div>
     </Modal>:null}
-    {committing&&loadedBase===machineBase?<AutomaticCommitDialog projectId={committing.projectId??''} endpoint={committing.primary?undefined:`/api/worktrees/${committing.id}/git`} push={committing.primary} scopeLabel={committing.primary?'Tous les changements du dossier partagé du projet':`Fichiers vérifiables de la copie · ${copyTitle(committing)}`} onClose={()=>{setCommitting(null);void refresh();}}/>:null}
+    {committing&&loadedBase===machineBase?<AutomaticCommitDialog projectId={committing.projectId??''} reviewed={reviewed??undefined} endpoint={committing.primary?undefined:`/api/worktrees/${committing.id}/git`} push={committing.primary} scopeLabel={committing.primary?'Tous les changements du dossier partagé du projet':`Fichiers vérifiables de la copie · ${copyTitle(committing)}`} onClose={()=>{setCommitting(null);setReviewed(null);void refresh();}}/>:null}
   </section>;
 }

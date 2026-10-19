@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { sep } from 'node:path';
 import type { CerebroDatabase, CommitSettings } from './db.ts';
-import { executeCommitPlan, prepareCommit, verifySnapshot, type CommitPlan, type CommitResult, type GitSnapshot } from './git-plan.ts';
+import { executeCommitPlan, prepareCommit, reviewedDiffs, verifySnapshot, type CommitPlan, type CommitResult, type GitSnapshot } from './git-plan.ts';
 import { currentPush, startPush, type PushOperation } from './git-push.ts';
 import { parseCommitProposal, proposeCommits, type ProposalContext, type CommitProposal } from './commit-proposal.ts';
 import { assertWorktreeAvailable, canonicalWorktreePath } from './worktree-gate.ts';
@@ -16,6 +16,8 @@ export interface AutomaticCommit {
   files:string[];exclusions:{path:string;reason:string}[];commits:CommitResult['commits'];
   pushOperation:PushOperation|null;error:string|null;startedAt:number;finishedAt:number|null;
   needsProjectScope:boolean;
+  /** Files the user reviewed in a diff snapshot; included despite warnings only while that diff is unchanged. */
+  reviewed?:{snapshotId:string;paths:string[]};
 }
 export interface AutomaticCommitContext {
   scope:string;path:string;projectId:string|null;sessionId:string|null;settings:CommitSettings;
@@ -51,9 +53,11 @@ export class AutomaticCommits {
       const run=JSON.parse(row.data);if(run.status==='running'&&inside(path,run.cwd))throw new CommitBlocked('Une commande utilise encore ce dépôt. Attendez sa fin avant de commiter.');
     }
   }
-  async start(context:AutomaticCommitContext,id:unknown,push:unknown):Promise<AutomaticCommit> {
+  async start(context:AutomaticCommitContext,id:unknown,push:unknown,reviewed?:unknown):Promise<AutomaticCommit> {
     if(this.closed)throw new Error('Serveur en cours d’arrêt.');
     if(typeof id!=='string'||!/^[\da-f-]{36}$/i.test(id)||typeof push!=='boolean')throw new Error('Identifiant de lancement ou option push invalide.');
+    const review=reviewed as AutomaticCommit['reviewed']|undefined;
+    if(review!==undefined&&(typeof review?.snapshotId!=='string'||!Array.isArray(review.paths)||!review.paths.every(path=>typeof path==='string')))throw new Error('Sélection des fichiers examinés invalide.');
     const path=canonicalWorktreePath((await exec('git',['-C',context.path,'rev-parse','--show-toplevel'])).stdout.trim());
     if(this.closed)throw new Error('Serveur en cours d’arrêt.');
     const request=this.db.connection.prepare('SELECT operation_id,scope,push FROM automatic_commit_requests WHERE id=?').get(id) as {operation_id:string;scope:string;push:number}|undefined;
@@ -64,7 +68,7 @@ export class AutomaticCommits {
     const remember=(operationId:string):void=>{this.db.connection.prepare('INSERT INTO automatic_commit_requests VALUES (?,?,?,?)').run(id,operationId,context.scope,push?1:0);};
     const active=this.active.get(path);
     if(active){if(active.operation.scope!==context.scope||active.operation.push!==push)throw new Error('Un commit est déjà en préparation dans ce dépôt.');remember(active.operation.id);return active.operation;}
-    const operation:AutomaticCommit={id,scope:context.scope,path,projectId:context.projectId,sessionId:context.sessionId,settings:{...context.settings},push,status:'running',phase:'collecting',files:[],exclusions:[],commits:[],pushOperation:null,error:null,startedAt:Date.now(),finishedAt:null,needsProjectScope:false};
+    const operation:AutomaticCommit={id,scope:context.scope,path,projectId:context.projectId,sessionId:context.sessionId,settings:{...context.settings},push,status:'running',phase:'collecting',files:[],exclusions:[],commits:[],pushOperation:null,error:null,startedAt:Date.now(),finishedAt:null,needsProjectScope:false,...(review?{reviewed:{snapshotId:review.snapshotId,paths:[...new Set(review.paths)]}}:{})};
     this.db.connection.exec('BEGIN IMMEDIATE');
     try{this.save(operation);remember(operation.id);this.db.connection.exec('COMMIT');}
     catch(cause){this.db.connection.exec('ROLLBACK');throw cause;}
@@ -84,8 +88,12 @@ export class AutomaticCommits {
       this.idle(operation.path);signal.throwIfAborted();
       if((await currentPush(operation.path))?.status==='running')throw new CommitBlocked('Un push est déjà en cours dans ce dépôt.');
       const snapshot=await (context.prepare?.()??prepareCommit(operation.path));signal.throwIfAborted();
-      const eligible=snapshot.files.filter(file=>!file.blocked&&!file.warnings.length);
-      operation.exclusions=snapshot.files.filter(file=>file.blocked||file.warnings.length).map(file=>({path:file.path,reason:file.warnings.join(' ; ')||'Fichier exclu par le scanner.'}));
+      const shown=operation.reviewed?reviewedDiffs(operation.reviewed.snapshotId,operation.path):null;
+      // A secret is never acknowledged; other warnings yield to a review of this exact diff.
+      const acknowledged=snapshot.files.filter(file=>!file.blocked&&file.warnings.length&&operation.reviewed?.paths.includes(file.path)&&shown?.get(file.path)===file.diff).map(file=>file.path);
+      const eligible=snapshot.files.filter(file=>!file.blocked&&(!file.warnings.length||acknowledged.includes(file.path)));
+      const staleReview=(path:string):string|null=>!operation.reviewed?.paths.includes(path)?null:!shown?'Examen expiré : réaffichez les diffs puis recommencez.':'Modifié depuis votre examen : réexaminez son diff.';
+      operation.exclusions=snapshot.files.filter(file=>!eligible.includes(file)).map(file=>({path:file.path,reason:[...file.warnings,...(file.blocked?[]:[staleReview(file.path)??''])].filter(Boolean).join(' ; ')||'Fichier exclu par le scanner.'}));
       operation.files=eligible.map(file=>file.path);this.save(operation);
       if(snapshot.files.length&&!eligible.length){
         const mode=(snapshot as GitSnapshot&{provenance?:{workspace:{mode:string}}}).provenance?.workspace.mode;
@@ -99,7 +107,7 @@ export class AutomaticCommits {
         const input={settings:operation.settings,files:eligible,log:snapshot.log};
         const proposal=parseCommitProposal(await this.propose(input,signal),input);
         signal.throwIfAborted();this.idle(operation.path);await verifySnapshot(operation.path,snapshot.id);signal.throwIfAborted();
-        const plan:CommitPlan={snapshotId:snapshot.id,push:false,acknowledged:[],commits:proposal.commits.map(step=>({message:step.message,selection:step.paths.map(path=>({path,all:true}))}))};
+        const plan:CommitPlan={snapshotId:snapshot.id,push:false,acknowledged,commits:proposal.commits.map(step=>({message:step.message,selection:step.paths.map(path=>({path,all:true}))}))};
         phase('committing');
         const result=await (context.execute?.(plan)??executeCommitPlan(operation.path,plan));
         operation.commits=result.commits;this.save(operation);
