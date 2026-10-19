@@ -1,5 +1,5 @@
 import type { EpicRun } from '../../server/epic-runner.ts';
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { api } from './api.ts';
 import type { CommandRun, ProjectCommand } from '../../server/commands.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
@@ -97,6 +97,9 @@ export function Backlog({ projectId }: { projectId: string }) {
   const [launching, setLaunching] = useState<Set<string>>(() => new Set());
   const [creatingEpic, setCreatingEpic] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [composer, setComposer] = useState<'llm' | 'command'>('llm');
+  const llmTab = useRef<HTMLButtonElement>(null);
+  const commandTab = useRef<HTMLButtonElement>(null);
 
   // La modale se ferme à la validation ; le backlog garde le suivi du lancement.
   const launch = async (id: string, action: () => Promise<unknown>): Promise<void> => {
@@ -137,6 +140,16 @@ export function Backlog({ projectId }: { projectId: string }) {
     );
   };
 
+  const selectedEpic = epicIds.has(draftEpic) ? draftEpic : '';
+  const onComposerKey = (event: KeyboardEvent<HTMLButtonElement>): void => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return;
+    event.preventDefault();
+    const order = ['llm', 'command'] as const;
+    const index = order.indexOf(composer);
+    const next = event.key === 'Home' ? 'llm' : event.key === 'End' ? 'command' : order[(index + (event.key === 'ArrowRight' ? 1 : -1) + order.length) % order.length];
+    setComposer(next);
+    (next === 'llm' ? llmTab : commandTab).current?.focus();
+  };
   const visible = (t: Task): boolean => showDone || t.status !== 'done';
   const loose = own.filter((t) => (t.epicId === null || !epicIds.has(t.epicId)) && visible(t));
   // Un epic entièrement terminé se range avec les tâches terminées.
@@ -174,47 +187,81 @@ export function Backlog({ projectId }: { projectId: string }) {
           ) : null}
         </div>
       </div>
-      <CommandTasks projectId={projectId} />
-      <form
-        className="project-create task-add"
-        onSubmit={(e: FormEvent) => {
-          e.preventDefault();
-          void add();
-        }}
-      >
-        <label htmlFor={`task-draft-${projectId}`} className="project-create-title">Nouvelle tâche</label>
-        <textarea
-          id={`task-draft-${projectId}`}
-          rows={2}
-          value={draft}
-          placeholder={`Nouvelle tâche (${SUBMIT_HINT} pour ajouter)`}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
-            if (isSubmitShortcut(e)) {
-              e.preventDefault();
-              void add();
-            }
-          }}
-        />
-        <div className="task-add-actions">
-          {ownEpics.length > 0 ? (
-            <select value={epicIds.has(draftEpic) ? draftEpic : ''} onChange={(e) => setDraftEpic(e.target.value)} aria-label="Epic de la tâche">
-              <option value="">Sans epic</option>
-              {ownEpics.map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.title.slice(0, 60)}
-                </option>
-              ))}
-            </select>
-          ) : null}
-          <button type="submit" className="btn primary" disabled={busy || draft.trim() === ''}>
-            Ajouter
+      <div className="task-composer">
+        <div className="task-composer-tabs" role="tablist" aria-label="Création de tâche">
+          <button
+            ref={llmTab}
+            type="button"
+            role="tab"
+            id={`task-tab-llm-${projectId}`}
+            aria-selected={composer === 'llm'}
+            aria-controls={`task-panel-llm-${projectId}`}
+            tabIndex={composer === 'llm' ? 0 : -1}
+            onClick={() => setComposer('llm')}
+            onKeyDown={onComposerKey}
+          >
+            Avec agent
           </button>
-          <button type="button" className="btn" onClick={() => setCreatingEpic((v) => !v)} aria-expanded={creatingEpic}>
-            Nouvel epic
+          <button
+            ref={commandTab}
+            type="button"
+            role="tab"
+            id={`task-tab-command-${projectId}`}
+            aria-selected={composer === 'command'}
+            aria-controls={`task-panel-command-${projectId}`}
+            tabIndex={composer === 'command' ? 0 : -1}
+            onClick={() => setComposer('command')}
+            onKeyDown={onComposerKey}
+          >
+            Commande
           </button>
         </div>
-      </form>
+        <form
+          id={`task-panel-llm-${projectId}`}
+          role="tabpanel"
+          aria-labelledby={`task-tab-llm-${projectId}`}
+          hidden={composer !== 'llm'}
+          className="task-add"
+          onSubmit={(e: FormEvent) => {
+            e.preventDefault();
+            void add();
+          }}
+        >
+          <textarea
+            id={`task-draft-${projectId}`}
+            rows={2}
+            value={draft}
+            placeholder={`Nouvelle tâche (${SUBMIT_HINT} pour ajouter)`}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
+              if (isSubmitShortcut(e)) {
+                e.preventDefault();
+                void add();
+              }
+            }}
+          />
+          <div className="task-add-actions">
+            <EpicSelect epics={ownEpics} value={selectedEpic} onChange={setDraftEpic} />
+            <button type="submit" className="btn primary" disabled={busy || draft.trim() === ''}>
+              Ajouter
+            </button>
+            <button type="button" className="btn" onClick={() => setCreatingEpic((v) => !v)} aria-expanded={creatingEpic}>
+              Nouvel epic
+            </button>
+          </div>
+        </form>
+        <CommandTasks
+          projectId={projectId}
+          hidden={composer !== 'command'}
+          panelId={`task-panel-command-${projectId}`}
+          labelledBy={`task-tab-command-${projectId}`}
+          epicId={selectedEpic}
+          epics={ownEpics}
+          onEpicChange={setDraftEpic}
+          creatingEpic={creatingEpic}
+          onCreateEpic={() => setCreatingEpic((v) => !v)}
+        />
+      </div>
       {creatingEpic ? (
         <EpicForm
           submitLabel="Créer l'epic"
@@ -291,22 +338,166 @@ function EpicRunView({epicId}:{epicId:string}) {
   </details>;
 }
 
-function CommandTasks({projectId}:{projectId:string}) {
-  const [commands,setCommands]=useState<ProjectCommand[]>([]);
-  const [raw,setRaw]=useState(JSON.stringify({name:'',executable:'',args:[],cwd:'.',timeoutSeconds:300},null,2));
-  const [autoComplete,setAutoComplete]=useState(false);
-  const [selected,setSelected]=useState('');const [text,setText]=useState('');const [error,setError]=useState<string|null>(null);
-  const refresh=async():Promise<void>=>setCommands(await api<ProjectCommand[]>(`/api/projects/${projectId}/commands`));
-  useEffect(()=>{void refresh().catch(()=>{});},[projectId]);
-  return <details><summary>Tâches avec commande de projet (sans LLM)</summary>
-    <p>La commande et ses arguments sont configurés explicitement. Le texte de tâche n’est jamais interprété comme une commande.</p>
-    <select value={selected} onChange={e=>setSelected(e.target.value)}><option value="">Choisir une commande</option>{commands.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>
-    <input value={text} onChange={e=>setText(e.target.value)} placeholder="Description de la tâche"/>
-    <label><input type="checkbox" checked={autoComplete} onChange={e=>setAutoComplete(e.target.checked)}/>Dans un epic, clore automatiquement si le code de sortie vaut zéro (critère d’exécution)</label>
-    <button className="btn" disabled={!selected||!text.trim()} onClick={()=>void api(`/api/projects/${projectId}/tasks`,{method:'POST',body:JSON.stringify({text,execution:{type:'command',commandId:selected,completion:autoComplete?'exit-zero':'manual'}})}).then(()=>{setText('');setError(null);}).catch(cause=>setError(String(cause)))}>Ajouter la tâche de commande</button>
-    <details><summary>Configurer une commande (JSON)</summary><textarea rows={9} value={raw} onChange={e=>setRaw(e.target.value)}/><button className="btn" onClick={()=>{try{void api(`/api/projects/${projectId}/commands`,{method:'POST',body:JSON.stringify(JSON.parse(raw))}).then(()=>{setError(null);return refresh();}).catch(cause=>setError(String(cause)));}catch(cause){setError(String(cause));}}}>Enregistrer cette commande</button></details>
-    {error?<p className="form-error">{error}</p>:null}
-  </details>;
+const EMPTY_COMMAND = JSON.stringify({ name: '', executable: '', args: [], cwd: '.', timeoutSeconds: 300 }, null, 2);
+
+function EpicSelect({ epics, value, onChange }: { epics: Epic[]; value: string; onChange: (id: string) => void }) {
+  if (epics.length === 0) return null;
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} aria-label="Epic de la tâche">
+      <option value="">Sans epic</option>
+      {epics.map((epic) => (
+        <option key={epic.id} value={epic.id}>
+          {epic.title.slice(0, 60)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function CommandTasks({
+  projectId,
+  hidden,
+  panelId,
+  labelledBy,
+  epicId,
+  epics,
+  onEpicChange,
+  creatingEpic,
+  onCreateEpic,
+}: {
+  projectId: string;
+  hidden: boolean;
+  panelId: string;
+  labelledBy: string;
+  epicId: string;
+  epics: Epic[];
+  onEpicChange: (id: string) => void;
+  creatingEpic: boolean;
+  onCreateEpic: () => void;
+}) {
+  const [commands, setCommands] = useState<ProjectCommand[]>([]);
+  const [raw, setRaw] = useState(EMPTY_COMMAND);
+  const [autoComplete, setAutoComplete] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [selected, setSelected] = useState('');
+  const [text, setText] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const loadGeneration = useRef(0);
+
+  const refresh = useCallback(async (): Promise<void> => {
+    const generation = ++loadGeneration.current;
+    try {
+      const list = await api<ProjectCommand[]>(`/api/projects/${projectId}/commands`);
+      if (loadGeneration.current !== generation) return;
+      setCommands(list);
+      setSelected((current) => (list.some((command) => command.id === current) ? current : ''));
+      setLoaded(true);
+    } catch (cause) {
+      if (loadGeneration.current !== generation) return;
+      setError(cause instanceof Error ? cause.message : 'Chargement des commandes impossible');
+      setLoaded(true);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    setLoaded(false);
+    setCommands([]);
+    setSelected('');
+    setText('');
+    setError(null);
+    setRaw(EMPTY_COMMAND);
+    void refresh();
+  }, [refresh]);
+
+  const add = (): void => {
+    void api(`/api/projects/${projectId}/tasks`, {
+      method: 'POST',
+      body: JSON.stringify({
+        text,
+        epicId: epicId || null,
+        execution: { type: 'command', commandId: selected, completion: autoComplete ? 'exit-zero' : 'manual' },
+      }),
+    })
+      .then(() => {
+        setText('');
+        setError(null);
+      })
+      .catch((cause: unknown) => setError(String(cause)));
+  };
+
+  const saveCommand = (): void => {
+    let body: unknown;
+    try {
+      body = JSON.parse(raw);
+    } catch (cause) {
+      setError(String(cause));
+      return;
+    }
+    void api<ProjectCommand>(`/api/projects/${projectId}/commands`, { method: 'POST', body: JSON.stringify(body) })
+      .then(async (command) => {
+        setError(null);
+        await refresh();
+        setSelected(command.id);
+      })
+      .catch((cause: unknown) => setError(String(cause)));
+  };
+
+  const commandConfig = (
+    <>
+      <textarea rows={9} value={raw} onChange={(e) => setRaw(e.target.value)} aria-label="Configuration de la commande" spellCheck={false} />
+      <button type="button" className="btn" onClick={saveCommand}>
+        Enregistrer cette commande
+      </button>
+    </>
+  );
+
+  return (
+    <form
+      id={panelId}
+      role="tabpanel"
+      aria-labelledby={labelledBy}
+      hidden={hidden}
+      className="task-add"
+      onSubmit={(e: FormEvent) => {
+        e.preventDefault();
+        add();
+      }}
+    >
+      {!loaded ? <p className="hint">Chargement des commandes…</p> : null}
+      {commands.length > 0 ? (
+        <select value={selected} onChange={(e) => setSelected(e.target.value)} aria-label="Commande du projet">
+          <option value="">Choisir une commande</option>
+          {commands.map((command) => (
+            <option key={command.id} value={command.id}>
+              {command.name}
+            </option>
+          ))}
+        </select>
+      ) : null}
+      <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Description de la tâche" aria-label="Description de la tâche" />
+      <label className="task-command-check">
+        <input type="checkbox" checked={autoComplete} onChange={(e) => setAutoComplete(e.target.checked)} />
+        Dans un epic, clore automatiquement si le code de sortie vaut zéro
+      </label>
+      <div className="task-add-actions">
+        <EpicSelect epics={epics} value={epicId} onChange={onEpicChange} />
+        <button type="submit" className="btn primary" disabled={!selected || text.trim() === ''}>
+          Ajouter
+        </button>
+        <button type="button" className="btn" onClick={onCreateEpic} aria-expanded={creatingEpic}>
+          Nouvel epic
+        </button>
+      </div>
+      {loaded && commands.length === 0 ? <div className="task-command-config">{commandConfig}</div> : null}
+      {loaded && commands.length > 0 ? (
+        <details className="task-command-config" key={commands.length}>
+          <summary>Configurer une commande (JSON)</summary>
+          {commandConfig}
+        </details>
+      ) : null}
+      {error ? <p className="form-error">{error}</p> : null}
+    </form>
+  );
 }
 function CommandRunView({task,onActive}:{task:Task;onActive:(active:boolean)=>void}) {
   const detail=useRef<HTMLDetailsElement>(null);
