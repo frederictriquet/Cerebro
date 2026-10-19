@@ -161,7 +161,7 @@ export function syncPayloadFrom(value: unknown): SyncPayload | null {
 }
 
 export function incompatibleMessage(machine: string, remote: VersionInfo): string {
-  return `${machine} utilise le protocole ${remote.protocol} (Cerebro ${versionLabel(remote)}), cette machine le protocole ${VERSION_INFO.protocol} (Cerebro ${versionLabel(VERSION_INFO)}) : mettez à jour l'une des deux.`;
+  return `${machine} utilise Cerebro ${versionLabel(remote)}, cette machine Cerebro ${versionLabel(VERSION_INFO)} : versions majeures incompatibles, mettez à jour l'une des deux.`;
 }
 
 function stateFrom(value: unknown): PeerState {
@@ -278,7 +278,7 @@ export class PeerSync {
     return this.remoteVersions.get(remoteId) ?? null;
   }
 
-  /** Échange reçu d'une machine qui nous a déclarée dans son remotes.json (protocole déjà vérifié). */
+  /** Échange reçu d'une machine qui nous a déclarée dans son remotes.json (version déjà vérifiée). */
   receive(payload: SyncPayload): SyncPayload {
     if (payload.instanceId !== this.instanceId) {
       this.mutate(() => this.absorb(payload));
@@ -422,7 +422,7 @@ export class PeerSync {
           signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
         });
         const body: unknown = await response.json().catch(() => null);
-        // 409 : la machine distante a refusé l'échange, protocole différent du nôtre.
+        // 409 : la machine distante a refusé l'échange, version majeure différente de la nôtre.
         const refused = response.status === 409 ? versionInfoFrom(isRecord(body) ? body.version : null) : null;
         if (refused !== null) {
           this.recordVersion(remote, refused, true, null);

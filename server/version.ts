@@ -4,26 +4,40 @@ import { join } from 'node:path';
 import { ROOT } from './config.ts';
 
 /*
- * Version de l'application (package.json + commit git court) et version du protocole entre instances.
- * PROTOCOL_VERSION est à incrémenter à chaque changement incompatible du contrat entre machines :
- * échange /api/peer/sync, routes relayées par /m/<id>/… et formats lus par l'UI d'une autre machine.
- * Règle : même protocole = compatible, quelle que soit la version de l'application.
+ * Version de l'application, en SemVer (package.json), complétée du commit git court en métadonnée de build.
+ * MAJEURE : changement incompatible du contrat entre machines (échange /api/peer/sync, routes relayées
+ * par /m/<id>/…, formats lus par l'UI d'une autre machine) ; MINEURE : fonctionnalité ; CORRECTIVE : correctif.
+ * Règle : même version majeure = compatible (en 0.y.z, même 0.y, chaque mineure pouvant tout casser).
  */
-export const PROTOCOL_VERSION = 2;
 
 export interface VersionInfo {
   version: string;
   commit: string | null;
-  protocol: number;
 }
 
-/** same : même version ; compatible : version différente, même protocole ; unknown : instance trop ancienne ou injoignable. */
+/** same : même version ; compatible : version différente, même majeure ; unknown : instance trop ancienne ou injoignable. */
 export type Compatibility = 'same' | 'compatible' | 'incompatible' | 'unknown';
+
+// Grammaire officielle (semver.org), sans métadonnée de build : le commit en tient lieu.
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$/;
+
+export function isSemver(version: string): boolean {
+  return SEMVER.test(version);
+}
+
+/** Partie de la version qui doit coïncider entre deux machines compatibles. */
+function compatibilityKey(version: string): string | null {
+  const match = SEMVER.exec(version);
+  if (match === null) return null;
+  const [, major, minor] = match;
+  return major === '0' ? `0.${minor}` : major!;
+}
 
 function packageVersion(): string {
   try {
     const parsed = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { version?: unknown };
-    if (typeof parsed.version === 'string' && parsed.version !== '') return parsed.version;
+    if (typeof parsed.version === 'string' && isSemver(parsed.version)) return parsed.version;
+    console.error(`[version] version de package.json non SemVer : ${String(parsed.version)}`);
   } catch {
     // Repli ci-dessous.
   }
@@ -45,24 +59,27 @@ function gitCommit(): string | null {
   }
 }
 
-export const VERSION_INFO: VersionInfo = { version: packageVersion(), commit: gitCommit(), protocol: PROTOCOL_VERSION };
+export const VERSION_INFO: VersionInfo = { version: packageVersion(), commit: gitCommit() };
 
 export function versionLabel(info: VersionInfo): string {
   return info.commit === null ? info.version : `${info.version}+${info.commit}`;
 }
 
-/** null : champ absent (instance antérieure à l'exposition des versions) ou malformé. */
+/**
+ * null : champ absent ou malformé, ou instance antérieure au SemVer (elle envoie encore un `protocol`
+ * entier) : traitée comme inconnue, donc acceptée, comme elle-même accepte une instance sans protocole.
+ */
 export function versionInfoFrom(value: unknown): VersionInfo | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  if (typeof record.version !== 'string' || !Number.isSafeInteger(record.protocol)) return null;
+  if (typeof record.version !== 'string' || !isSemver(record.version) || 'protocol' in record) return null;
   if (record.commit !== undefined && record.commit !== null && typeof record.commit !== 'string') return null;
-  return { version: record.version, commit: record.commit ?? null, protocol: record.protocol as number };
+  return { version: record.version, commit: record.commit ?? null };
 }
 
 export function compatibility(remote: VersionInfo | null, local: VersionInfo = VERSION_INFO): Compatibility {
   if (remote === null) return 'unknown';
-  if (remote.protocol !== local.protocol) return 'incompatible';
+  if (compatibilityKey(remote.version) !== compatibilityKey(local.version)) return 'incompatible';
   const sameCommit = remote.commit === null || local.commit === null || remote.commit === local.commit;
   return remote.version === local.version && sameCommit ? 'same' : 'compatible';
 }

@@ -74,10 +74,9 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 export interface VersionInfo {
   version: string;
   commit: string | null;
-  protocol: number;
 }
 
-/** same : même version ; compatible : autre version, même protocole ; unknown : instance ancienne ou jamais jointe. */
+/** same : même version ; compatible : autre version, même majeure ; unknown : instance ancienne ou jamais jointe. */
 export type Compatibility = 'same' | 'compatible' | 'incompatible' | 'unknown';
 
 export interface RemoteVersionStatus {

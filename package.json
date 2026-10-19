@@ -1,6 +1,6 @@
 {
   "name": "cerebro",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Pilote des sessions Claude / Codex / Grok par projet, depuis une UI web locale.",
