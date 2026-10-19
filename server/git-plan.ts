@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdtemp, open, readFile, readlink, rename, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { startPush } from './git-push.ts';
 
 const LIMIT = 4 * 1024 * 1024;
@@ -75,8 +75,24 @@ function scan(file: string, diff: string): { warnings: string[]; blocked: boolea
   return { warnings, blocked };
 }
 
-export async function prepareCommit(path: string): Promise<GitSnapshot> {
+export interface SharedDependencies { sharedIgnored?: string[]; source: string }
+/** Dependency directories linked from the source project into an isolated workspace, still pointing at it. */
+export async function sharedDependencyLinks(workspace: SharedDependencies | null | undefined, root: string): Promise<string[]> {
+  if (!workspace?.sharedIgnored?.length) return [];
+  const active: string[] = [];
+  for (const name of workspace.sharedIgnored) {
+    const path = join(root, name); const stat = await lstat(path).catch(cause => { if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return null; throw cause; });
+    if (!stat?.isSymbolicLink()) continue;
+    const target = resolve(dirname(path), await readlink(path));
+    if (target === resolve(workspace.source, name)) active.push(name);
+  }
+  return active;
+}
+
+/** `shared` describes the workspace whose dependency links (seen by Git as untracked files) stay out of the plan. */
+export async function prepareCommit(path: string, shared?: SharedDependencies | null): Promise<GitSnapshot> {
   path = (await git(path, ['rev-parse', '--show-toplevel'])).trim();
+  const links = await sharedDependencyLinks(shared, path);
   await git(path, ['mktree'], undefined, '');
   const before = { branch: await branch(path), head: await head(path), work: await workHash(path), index: await indexHash(path) };
   if ((await git(path, ['ls-files', '-u'])).trim()) throw new Error('Conflits Git non résolus.');
@@ -93,7 +109,7 @@ export async function prepareCommit(path: string): Promise<GitSnapshot> {
   try {
     const untracked = new Set((await git(path, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean));
     const changed = (await git(path, ['diff', '--name-only', '--no-renames', '-z', before.head ?? EMPTY], temporaryIndex)).split('\0').filter(Boolean);
-    const paths = [...new Set([...changed, ...untracked])].sort();
+    const paths = [...new Set([...changed, ...untracked])].filter(file => !links.some(link => file === link || file.startsWith(`${link}/`))).sort();
     if (paths.length > 500) throw new Error('Plus de 500 fichiers : réduisez le périmètre.');
     const files: GitCandidate[] = [];
     let bytes = 0;

@@ -34,7 +34,7 @@ export function registerAutomaticCommitRoutes(app:FastifyInstance,db:CerebroData
       if(view.session){context.prepare=()=>prepareSessionGit(db,view.session!.id);context.execute=plan=>executeSessionCommit(view.session!.id,plan);}
       else if(view.sessionId){
         const workspace=workspaceFor(db,view.sessionId);
-        context.prepare=async()=>{const snapshot=await prepareCommit(view.path);return {...snapshot,files:snapshot.files.map(file=>workspace?.initialDirty.includes(file.path)?{...file,warnings:[...file.warnings,'Modification présente avant la création du worktree : vérification manuelle requise.']}:file)};};
+        context.prepare=async()=>{const snapshot=await prepareCommit(view.path,workspace??view);return {...snapshot,files:snapshot.files.map(file=>workspace?.initialDirty.includes(file.path)?{...file,warnings:[...file.warnings,'Modification présente avant la création du worktree : vérification manuelle requise.']}:file)};};
       }
       return context;
     },

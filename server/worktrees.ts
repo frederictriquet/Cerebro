@@ -1,13 +1,14 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { lstat, readFile, readlink, realpath, rm } from 'node:fs/promises';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { readFile, realpath, rm } from 'node:fs/promises';
+import { basename, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { CerebroDatabase } from './db.ts';
 import type { CommitSettings } from './db.ts';
 import type { Workspace } from './provenance.ts';
 import { currentPush } from './git-push.ts';
+import { sharedDependencyLinks } from './git-plan.ts';
 import { assertWorktreeAvailable, canonicalWorktreePath, lockWorktrees } from './worktree-gate.ts';
 import { workspaceFileSignature } from './workspace-files.ts';
 
@@ -165,17 +166,6 @@ function changedFiles(status: string): string[] {
     files.push(entry.slice(3)); if (/[RC]/.test(entry.slice(0, 2))) i++;
   }
   return files;
-}
-async function sharedDependencyLinks(workspace:Pick<Workspace,'sharedIgnored'|'source'>|null,root:string):Promise<string[]>{
-  if(!workspace?.sharedIgnored?.length)return [];
-  const active:string[]=[];
-  for(const name of workspace.sharedIgnored){
-    const path=join(root,name);const stat=await lstat(path).catch(cause=>{if((cause as NodeJS.ErrnoException).code==='ENOENT')return null;throw cause;});
-    if(!stat?.isSymbolicLink())continue;
-    const target=resolve(dirname(path),await readlink(path));
-    if(target===resolve(workspace.source,name))active.push(name);
-  }
-  return active;
 }
 
 export class WorktreeManager {

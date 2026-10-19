@@ -16,7 +16,7 @@ export function sessionGitContext(db:CerebroDatabase,id:string):SessionGitContex
 const scopes=new Map<string,{sessionId:string;provenance:Provenance;uncertain:Set<string>}>();
 export async function prepareSessionGit(db:CerebroDatabase,id:string):Promise<SessionGitSnapshot>{
   const provenance=await sessionProvenance(db,id);
-  const snapshot=await prepareCommit(provenance.workspace.root);
+  const snapshot=await prepareCommit(provenance.workspace.root,provenance.workspace);
   const uncertain=new Set(snapshot.files.filter(f=>!provenance.changes.some(c=>c.path===f.path&&c.certainty==='workspace')).map(f=>f.path));
   for(const [key] of scopes)if(scopes.size>100)scopes.delete(key);
   scopes.set(snapshot.id,{sessionId:id,provenance,uncertain});

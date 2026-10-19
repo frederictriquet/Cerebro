@@ -157,7 +157,7 @@ export async function sessionProvenance(db: CerebroDatabase, sessionId: string):
   const workspace=workspaceFor(db,sessionId)??historicalWorkspace(sessionId,project.path);
   const warning='Le périmètre décrit un espace de travail, pas l’auteur des modifications. Toute édition humaine ou externe dans cet espace doit être vérifiée explicitement. Les changements initiaux ne sont pas attribués à la session.';
   if(workspace.mode!=='isolated') return {workspace,changes:[],commits:[],warning};
-  const snapshot=await prepareCommit(workspace.root);
+  const snapshot=await prepareCommit(workspace.root,workspace);
   const current=await manifest(workspace.root,workspace.sharedIgnored);
   const changed=snapshot.files.filter(f=>workspace.baseline[f.path]!==current[f.path]);
   const branchMatches = await git(workspace.root,['symbolic-ref','--short','HEAD']).then(branch => branch === workspace.branch, () => false);
@@ -179,6 +179,6 @@ export async function sessionProvenance(db: CerebroDatabase, sessionId: string):
 
 export async function prepareSessionCommit(db: CerebroDatabase, id: string): Promise<GitSnapshot & { provenance: Provenance }> {
   const provenance=await sessionProvenance(db,id);
-  const snapshot=await prepareCommit(provenance.workspace.root);
+  const snapshot=await prepareCommit(provenance.workspace.root,provenance.workspace);
   return {...snapshot,provenance};
 }

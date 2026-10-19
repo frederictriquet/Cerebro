@@ -8,7 +8,7 @@ const root=mkdtempSync(join(tmpdir(),'cerebro-provenance-'));
 process.env.CEREBRO_DATA_DIR=join(root,'data');process.env.HOME=root;
 mkdirSync(process.env.CEREBRO_DATA_DIR);
 const {CerebroDatabase}=await import('../server/db.ts');
-const {createWorkspace,sessionProvenance,workspaceFor}=await import('../server/provenance.ts');
+const {createWorkspace,prepareSessionCommit,sessionProvenance,workspaceFor}=await import('../server/provenance.ts');
 const repo=join(root,'repo');mkdirSync(repo);
 const git=(path,...args)=>execFileSync('git',['-C',path,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 git(repo,'init','-b','main');git(repo,'config','user.name','Test');git(repo,'config','user.email','test@example.com');
@@ -39,6 +39,7 @@ test('new workspaces preserve initial context and index without changing the pro
   }
   assert.deepEqual(readFileSync(join(repo,'.git/index')),index);
   assert.deepEqual((await sessionProvenance(db,'a')).changes,[]);
+  assert.ok(!(await prepareSessionCommit(db,'a')).files.some(file=>file.path==='node_modules'),'shared dependency link stays out of the commit plan');
 });
 test('two sessions edit distinct then shared files, original human edits never enter their scope',async()=>{
   writeFileSync(join(a.path,'first'),'session a\n');writeFileSync(join(b.path,'second'),'session b\n');
