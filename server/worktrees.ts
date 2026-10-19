@@ -171,10 +171,12 @@ async function registered(path: string): Promise<RegisteredWorktree[]> {
       locked: lines.some(line => /^locked(?: |$)/.test(line)), prunable: lines.some(line => /^prunable(?: |$)/.test(line)) };
   });
 }
+/** Ignored directories that a reinstall or a build recreates: dependencies and build outputs or caches. */
+const REGENERABLE_DIRS = new Set(['node_modules','.venv','venv','vendor','dist','build','.vite','.next','coverage','__pycache__','.cache']);
 /**
- * An ignored entry has nothing to lose when it is a link to the same path of the source project, or a
- * file identical to that path there (e.g. `.claude/settings.local.json` written by the agent). A
- * directory qualifies only if every entry below it does, within a small bound.
+ * An ignored entry has nothing to lose when it is a link to the same path of the source project, a
+ * file identical to that path there (e.g. `.claude/settings.local.json` written by the agent), or a
+ * regenerable directory. Another directory qualifies only if every entry below it does, within a small bound.
  */
 async function disposableIgnored(root: string, source: string, name: string, budget = {entries: 200}): Promise<boolean> {
   if (--budget.entries < 0) return false;
@@ -183,6 +185,7 @@ async function disposableIgnored(root: string, source: string, name: string, bud
   if (!stat) return false;
   if (stat.isSymbolicLink()) return resolve(dirname(path), await readlink(path)) === resolve(source, name);
   if (stat.isDirectory()) {
+    if (REGENERABLE_DIRS.has(basename(name))) return true;
     for (const entry of await readdir(path)) if (!await disposableIgnored(root, source, join(name, entry), budget)) return false;
     return true;
   }
