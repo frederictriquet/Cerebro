@@ -100,7 +100,7 @@ export class AutomaticCommits {
         const mode=(snapshot as GitSnapshot&{provenance?:{workspace:{mode:string}}}).provenance?.workspace.mode;
         operation.needsProjectScope=mode==='unknown'||mode==='shared';
         throw new CommitBlocked(operation.needsProjectScope
-          ? 'Cette ancienne conversation ne permet pas d’attribuer les changements. Pour traiter le dépôt entier, utilisez « Commit / push » dans l’en-tête du projet.'
+          ? 'Cette ancienne conversation ne permet pas d’attribuer les changements. Pour traiter le dépôt entier, utilisez « Commit » dans l’en-tête du projet.'
           : snapshot.files.every(file=>file.warnings.includes(INHERITED_WARNING))
             ? 'Rien de nouveau à commiter : ces fichiers ont encore le contenu copié du projet à la création de la copie. Ils ne sont pas le travail de cette conversation.'
             : 'Tous les fichiers demandent une vérification : aucun commit automatique ne peut être créé.');

@@ -10,6 +10,9 @@ import './worktrees.css';
 
 const branchName = (branch: string | null): string => branch?.replace(/^refs\/heads\//,'') ?? 'branche inconnue';
 const INVENTORY_REFRESH_MS = 30_000;
+/** Last inventory per machine and scope, shown on remount so the panel keeps its height while it refreshes. */
+const inventoryCache = new Map<string, WorktreeInventory>();
+const cacheKey = (machineBase: string, path: string): string => `${machineBase}|${path}`;
 const createdLabel = (view: WorktreeView): string => new Date(view.createdAt).toLocaleString('fr-FR', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' });
 const copyTitle = (view: WorktreeView): string => view.session?.title ?? view.sessionTitle ?? `Conversation supprimée · ${createdLabel(view)}`;
 function copyStatus(view: WorktreeView): string {
@@ -55,8 +58,10 @@ function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReview
 
 /** Keep preserved work visible, without presenting the main repository as another pending session. */
 export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspaceMode?:WorkspaceMode}) {
-  const [inventory,setInventory]=useState<WorktreeInventory|null>(null);
-  const [loadedBase,setLoadedBase]=useState<string|null>(null);
+  const path=projectId?`/api/projects/${projectId}/worktrees`:'/api/worktrees';
+  const machineBase=apiBase();
+  const [inventory,setInventory]=useState<WorktreeInventory|null>(()=>inventoryCache.get(cacheKey(machineBase,path))??null);
+  const [loadedBase,setLoadedBase]=useState<string|null>(()=>inventoryCache.has(cacheKey(machineBase,path))?machineBase:null);
   const [loadError,setLoadError]=useState<string|null>(null);
   const [error,setError]=useState<string|null>(null);
   const [busy,setBusy]=useState<string|null>(null);
@@ -64,14 +69,13 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   const [committing,setCommitting]=useState<WorktreeView|null>(null);
   const [reviewed,setReviewed]=useState<Reviewed|null>(null);
   const [expanded,setExpanded]=useState<Set<string>>(()=>new Set());
-  const path=projectId?`/api/projects/${projectId}/worktrees`:'/api/worktrees';
-  const machineBase=apiBase();
   const refresh=useCallback(async():Promise<void>=>{
-    try{const result=await api<WorktreeInventory>(path);if(apiBase()===machineBase){setInventory(result);setLoadedBase(machineBase);setLoadError(null);}}
+    try{const result=await api<WorktreeInventory>(path);if(apiBase()===machineBase){inventoryCache.set(cacheKey(machineBase,path),result);setInventory(result);setLoadedBase(machineBase);setLoadError(null);}}
     catch(cause){if(apiBase()===machineBase)setLoadError(cause instanceof Error?cause.message:String(cause));}
   },[path,machineBase]);
   useEffect(()=>{
-    setInventory(null);setLoadedBase(null);setConfirmation(null);setCommitting(null);setReviewed(null);setError(null);setLoadError(null);setBusy(null);setExpanded(new Set());
+    const cached=inventoryCache.get(cacheKey(machineBase,path))??null;
+    setInventory(cached);setLoadedBase(cached?machineBase:null);setConfirmation(null);setCommitting(null);setReviewed(null);setError(null);setLoadError(null);setBusy(null);setExpanded(new Set());
     let disposed=false;let loading=false;let timer:number|undefined;
     const load=async():Promise<void>=>{
       if(disposed||loading)return;

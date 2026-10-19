@@ -444,7 +444,8 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/push', async (request, reply) => {
     const project = db.getProject(request.params.id);
     if (project === null) return error(reply, 404, 'Projet introuvable');
-    const result = await orError(reply, () => startPush(project.path));
+    // Pushing only sends existing commits: uncommitted files may stay when the caller says so.
+    const result = await orError(reply, () => startPush(project.path, { allowDirty: bodyRecord(request.body)?.allowDirty === true }));
     return result.ok ? reply.code(202).send(result.value) : result.reply;
   });
 

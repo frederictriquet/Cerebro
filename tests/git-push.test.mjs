@@ -75,4 +75,8 @@ test('concurrent starts share operation; real dirty state is rejected without in
   const op = await wait(await startPush(repo));
   assert.match(op.error, /changements/);
   assert.deepEqual(integrity(repo), before);
+  // The header « Push » button only sends existing commits and leaves uncommitted files alone.
+  const allowed = await wait(await startPush(repo, { allowDirty: true }));
+  assert.equal(allowed.status, 'succeeded', JSON.stringify(allowed));
+  assert.deepEqual(integrity(repo), before);
 }));

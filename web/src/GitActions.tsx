@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, apiBase } from './api.ts';
 import type { PreparedReview } from '../../server/review.ts';
 import { Modal } from './Dialog.tsx';
@@ -6,15 +6,17 @@ import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
 import type { SessionGitContext, SessionGitSnapshot } from '../../server/session-git.ts';
 import type { GitInfo } from './types.ts';
+import type { PushOperation, PushRemoteResult } from '../../server/git-push.ts';
+import './automatic-commits.css';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
 
-const hasGitWork = (git: GitInfo): boolean =>
-  git.dirty > 0 || (git.ahead ?? 0) > 0 || (git.hasCommits && !git.hasUpstream);
+const canPush = (git: GitInfo): boolean => (git.ahead ?? 0) > 0 || (git.hasCommits && !git.hasUpstream);
 
 export function GitActions({ projectId, git }: { projectId: string; git: GitInfo }) {
-  const [open, setOpen] = useState<'review' | 'commit' | null>(null);
+  const [open, setOpen] = useState<'review' | 'commit' | 'push' | null>(null);
   const close = (): void => setOpen(null);
-  const hasWork = hasGitWork(git);
+  const hasChanges = git.dirty > 0;
+  const pushable = canPush(git);
 
   return (
     <>
@@ -26,16 +28,78 @@ export function GitActions({ projectId, git }: { projectId: string; git: GitInfo
           type="button"
           className="btn"
           onClick={() => setOpen('commit')}
-          disabled={!hasWork}
-          title={hasWork ? 'Préparer automatiquement les messages, commiter et pousser' : 'Rien à commiter ni à pousser'}
+          disabled={!hasChanges}
+          title={hasChanges ? 'Préparer automatiquement les messages et commiter, sans pousser' : 'Rien à commiter'}
         >
-          Commit / push
+          Commit
+        </button>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setOpen('push')}
+          disabled={!pushable}
+          title={pushable ? 'Pousser les commits locaux vers les remotes' : 'Rien à pousser'}
+        >
+          Push
         </button>
       </span>
       {open === 'review' ? <RepoReviewDialog projectId={projectId} onClose={close} /> : null}
-      {open === 'commit' ? <AutomaticCommitDialog projectId={projectId} onClose={close} /> : null}
+      {open === 'commit' ? <AutomaticCommitDialog projectId={projectId} push={false} onClose={close} /> : null}
+      {open === 'push' ? <PushDialog projectId={projectId} onClose={close} /> : null}
     </>
   );
+}
+
+const REMOTE_STATUS: Record<PushRemoteResult['status'], string> = { pending: 'en attente', running: 'push en cours…', succeeded: 'envoyé', failed: 'échec' };
+
+function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+  const [machineBase] = useState(apiBase);
+  const [operation, setOperation] = useState<PushOperation | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const start = useRef<Promise<PushOperation> | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    let timer: number | undefined;
+    const current = (): boolean => !disposed && apiBase() === machineBase;
+    const fail = (cause: unknown): void => { if (current()) setError(cause instanceof Error ? cause.message : String(cause)); };
+    const poll = async (): Promise<void> => {
+      if (!current()) return;
+      try {
+        const value = await api<PushOperation | null>(`/api/projects/${projectId}/git/push`);
+        if (!current()) return;
+        setOperation(value);
+        if (value?.status !== 'running') return;
+      } catch (cause) { fail(cause); return; }
+      timer = window.setTimeout(() => void poll(), 500);
+    };
+    if (apiBase() !== machineBase) return;
+    // Reuse the same request in React StrictMode; a double submission returns the running operation.
+    start.current ??= api<PushOperation>(`/api/projects/${projectId}/git/push`, { method: 'POST', body: JSON.stringify({ allowDirty: true }) });
+    void start.current.then(value => {
+      if (!current()) return;
+      setOperation(value);
+      if (value.status === 'running') timer = window.setTimeout(() => void poll(), 500);
+    }).catch(fail);
+    return () => { disposed = true; window.clearTimeout(timer); };
+  }, [projectId, machineBase]);
+  const running = operation ? operation.status === 'running' : !error;
+  return <Modal title="Push" onClose={onClose}>
+    <div className="automatic-commit">
+      <p className="automatic-commit-status" role="status">
+        {operation?.status === 'succeeded' ? 'Push terminé.' : operation?.status === 'failed' ? 'Le push a échoué.' : error ? 'Le push n’a pas pu démarrer.' : 'Push vers les remotes…'}
+      </p>
+      {operation?.branch ? <p className="meta">Branche {operation.branch}{operation.head ? ` · ${operation.head.slice(0, 8)}` : ''}</p> : null}
+      {operation?.error ? <p className="form-error" role="alert">{operation.error}</p> : null}
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {operation?.remotes.map(remote => <p className={remote.status === 'failed' ? 'form-error' : 'meta'} key={remote.remote}>{remote.remote} : {REMOTE_STATUS[remote.status]}</p>)}
+      {operation?.remotes.some(remote => remote.output) ? <details><summary>Détails de l’opération</summary>
+        {operation.remotes.map(remote => <div key={remote.remote}><strong>{remote.remote}</strong><pre>{remote.output}</pre></div>)}
+      </details> : null}
+      <div className="row-actions">
+        <button type="button" className="btn" onClick={onClose}>{running ? 'Continuer en arrière-plan' : 'Fermer'}</button>
+      </div>
+    </div>
+  </Modal>;
 }
 
 function RepoReviewDialog({projectId,onClose}:{projectId:string;onClose:()=>void}) {
