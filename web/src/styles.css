@@ -2263,6 +2263,78 @@ a.btn:hover {
   font-size: 12px;
 }
 
+.task-add[hidden] {
+  display: none;
+}
+
+.task-composer {
+  margin: 0 0 16px;
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.task-composer-tabs {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.task-composer-tabs button {
+  padding: 4px 12px;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.task-composer-tabs button + button {
+  border-left: 1px solid var(--line);
+}
+
+.task-composer-tabs button[aria-selected='true'] {
+  background: rgba(122, 162, 247, 0.16);
+  color: var(--accent);
+}
+
+.task-composer-tabs button:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px rgba(122, 162, 247, 0.45);
+}
+
+.task-command-check {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.task-command-check input {
+  width: auto;
+  margin-top: 2px;
+}
+
+.task-command-config {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-command-config summary {
+  width: fit-content;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.task-command-config > .btn {
+  align-self: flex-start;
+}
+
 /* Epics : regroupement de tâches du backlog */
 .epic {
   margin-bottom: 12px;

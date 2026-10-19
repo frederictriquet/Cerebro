@@ -241,7 +241,9 @@ mettre ses findings dans le backlog, puis les traiter séparément.
   La commande affiche les identifiants créés ; `--list`, `--depends` et
   `--delete` (tâches créées par la session) agissent avec le seul jeton de
   session. `cerebro-backlog --help` détaille l'usage.
-- **À la main** : champ « Nouvelle tâche » en haut du backlog.
+- **À la main** : en haut du backlog, l'onglet « Avec agent » crée une tâche
+  confiée à un agent. L'onglet « Commande » crée une tâche qui lance une
+  commande enregistrée pour le projet.
 
 « Traiter » ouvre le formulaire de nouvelle session pré-rempli avec le texte de
 la tâche. La tâche passe alors « En cours » et affiche un lien vers sa session.
@@ -569,9 +571,10 @@ ne lance ni agent ni nouveau tour de raisonnement.
 
 ## Tâches de commande sans agent
 
-Le backlog propose un formulaire **Tâches avec commande de projet**. Configurez
+L'onglet **Commande** du backlog crée une tâche sans agent. Configurez
 explicitement un JSON `{name, executable, args:[], cwd:".", timeoutSeconds:300}`,
-puis sélectionnez cette commande pour créer une tâche. `cwd` est relatif et doit
+puis sélectionnez cette commande pour créer une tâche. Sans commande
+enregistrée, le formulaire JSON est ouvert. `cwd` est relatif et doit
 rester dans le projet, y compris après résolution des liens symboliques. Les
 arguments sont transmis tels quels ; aucun texte de tâche n'est converti en shell.
 L'API accepte `execution:{type:"command",commandId,completion:"manual"}` ; les
