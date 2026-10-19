@@ -1,9 +1,10 @@
+import { AgentLabel } from './AgentLabel.tsx';
 import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { clipboardImage, uploadProjectImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, restoredAttachment, useImageAttachments } from './attachments.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { readDraft, writeDraft } from './drafts.ts';
-import { AGENT_LABEL, MODE_CHIP } from './format.ts';
+import { MODE_CHIP } from './format.ts';
 import { useStore } from './store.tsx';
 import { DEFAULT_SESSION_DEFAULTS, MODES, type Agent, type Effort, type LaunchSpec, type Mode } from './types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
@@ -217,7 +218,7 @@ export function NewSessionForm({
               compact
               label="Agent"
               value={agent}
-              options={available.map((a) => ({ value: a.agent, label: AGENT_LABEL[a.agent] }))}
+              options={available.map((a) => ({ value: a.agent, label: <AgentLabel agent={a.agent} /> }))}
               onChange={chooseAgent}
             />
           )}

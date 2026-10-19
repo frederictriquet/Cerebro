@@ -1,3 +1,4 @@
+import { AgentLabel } from './AgentLabel.tsx';
 import {
   useCallback,
   useEffect,
@@ -11,7 +12,7 @@ import { clipboardImage, uploadImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { AddTaskDialog, LaunchSessionDialog } from './Dialog.tsx';
-import { AGENT_LABEL, displayStatus, MODE_LABEL, STATUS_LABEL, sessionTitle } from './format.ts';
+import { displayStatus, MODE_LABEL, STATUS_LABEL, sessionTitle } from './format.ts';
 import { SessionGitActions } from './GitActions.tsx';
 import { go, href, useNow } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
@@ -356,7 +357,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             <TitleEditor key={session.id} sessionId={session.id} title={session.title} />
           </div>
           <p className="session-meta">
-            <span className="pill">{AGENT_LABEL[session.agent]}</span>
+            <span className="pill"><AgentLabel agent={session.agent} /></span>
             <span className="pill">{MODE_LABEL[session.mode]}</span>
             {session.model !== null ? <span className="pill">{agents.find((a) => a.agent === session.agent)?.models.find((m) => m.value === session.model)?.label ?? session.model}</span> : null}
             {session.effort !== null ? <span className="pill">effort {session.effort}</span> : null}

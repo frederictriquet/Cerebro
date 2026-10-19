@@ -1,3 +1,4 @@
+import { AgentLabel } from './AgentLabel.tsx';
 import { useEffect, useState } from 'react';
 import {
   getUpdates,
@@ -9,7 +10,7 @@ import {
   type AgentUsage,
   type UsageWindow,
 } from './api.ts';
-import { AGENT_LABEL, relativeTime } from './format.ts';
+import { relativeTime } from './format.ts';
 import { useNow } from './route.ts';
 
 const REFRESH_MS = 60_000;
@@ -171,7 +172,7 @@ function AgentGauges({
   return (
     <div className="usage-agent">
       <div className="usage-agent-head">
-        <span className="usage-agent-name">{AGENT_LABEL[usage.agent]}</span>
+        <span className="usage-agent-name"><AgentLabel agent={usage.agent} /></span>
         {usage.auth === null ? null : <AuthLine auth={usage.auth} now={now} />}
       </div>
       {update === undefined ? null : <UpdateLine update={update} onChange={onUpdate} />}

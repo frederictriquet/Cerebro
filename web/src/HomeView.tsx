@@ -1,5 +1,6 @@
+import { AgentLabel } from './AgentLabel.tsx';
 import { useState, type FormEvent } from 'react';
-import { AGENT_LABEL, displayStatus, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
+import { displayStatus, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { go, href, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { StatusDot } from './StatusDot.tsx';
@@ -98,7 +99,7 @@ export function HomeView() {
                     <a href={href(`#/s/${session.id}`)} className="session-main">
                       <StatusDot status={shown} title={STATUS_LABEL[shown]} />
                       <span className="session-row-title">{sessionTitle(session.title)}</span>
-                      <span className="pill">{AGENT_LABEL[session.agent]}</span>
+                      <span className="pill"><AgentLabel agent={session.agent} /></span>
                       <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
                       <span className="meta">{relativeTime(session.updatedAt, now)}</span>
                     </a>

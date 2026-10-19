@@ -1,6 +1,8 @@
+import type { ReactNode } from 'react';
+
 export interface Choice<T extends string> {
   value: T;
-  label: string;
+  label: ReactNode;
   danger?: boolean;
   title?: string;
 }

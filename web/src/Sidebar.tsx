@@ -1,3 +1,4 @@
+import { AgentLabel } from './AgentLabel.tsx';
 import { useEffect, useRef, useState } from 'react';
 import {
   acquireGeneralSlack,
@@ -8,7 +9,7 @@ import {
   type SlackSettings,
   type SlackStatus,
 } from './api.ts';
-import { AGENT_LABEL, relativeTime, sessionTitle } from './format.ts';
+import { relativeTime, sessionTitle } from './format.ts';
 import { AppVersion, MachineSwitcher } from './MachineSwitcher.tsx';
 import { href, useNow, type Route } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
@@ -262,7 +263,7 @@ function AttentionItem({
         <StatusDot status={session.status === 'waiting' ? 'waiting' : 'idle'} />
         <span className="session-link-title">{sessionTitle(session.title)}</span>
         <span className="meta">
-          {AGENT_LABEL[session.agent]} · {relativeTime(session.updatedAt, now)}
+          <AgentLabel agent={session.agent} /> · {relativeTime(session.updatedAt, now)}
         </span>
       </a>
       <div className="attention-extra">

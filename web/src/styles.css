@@ -281,6 +281,27 @@ textarea {
   margin-top: 10px;
 }
 
+.agent-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.agent-logo {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  background-color: currentColor;
+  mask: no-repeat center / contain;
+  -webkit-mask: no-repeat center / contain;
+}
+
+.agent-logo-claude {
+  background-color: #d97757;
+}
+
 .usage-agent-name {
   font-size: 12px;
   font-weight: 650;

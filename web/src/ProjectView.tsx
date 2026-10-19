@@ -1,10 +1,11 @@
+import { AgentLabel } from './AgentLabel.tsx';
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { acquireProjectSlack, api, getProjectSlack, type ProjectSlackStatus } from './api.ts';
 import { Backlog } from './Backlog.tsx';
 import { CodeEditor } from './CodeEditor.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { GitActions } from './GitActions.tsx';
-import { AGENT_LABEL, displayStatus, isAwaiting, isDormant, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
+import { displayStatus, isAwaiting, isDormant, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
@@ -403,7 +404,7 @@ function SessionRow({
             <span className="session-row-title">{sessionTitle(session.title)}</span>
           </span>
           <span className="session-row-meta">
-            <span className="pill">{AGENT_LABEL[session.agent]}</span>
+            <span className="pill"><AgentLabel agent={session.agent} /></span>
             <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
             <span className="meta">{relativeTime(session.updatedAt, now)}</span>
           </span>
