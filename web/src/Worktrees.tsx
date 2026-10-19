@@ -155,7 +155,8 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
               <button type="button" className="btn worktree-toggle" aria-expanded={showDetails} aria-controls={`worktree-details-${view.id}`} onClick={()=>toggle(view.id)}>{showDetails?'Réduire':'Détails'}</button>
             </div>
           </div>
-          {view.operation?<div className={`worktree-operation-status ${view.operation.status==='failed'||view.operation.status==='interrupted'?'worktree-operation-error':''}`} role="status">
+          {/* A failed merge finished by hand (conflict resolved in the project) no longer needs attention. */}
+          {view.operation&&!(view.operation.kind==='merge'&&view.operation.status!=='running'&&view.integration==='integrated'&&view.operation.sourceHead===view.head)?<div className={`worktree-operation-status ${view.operation.status==='failed'||view.operation.status==='interrupted'?'worktree-operation-error':''}`} role="status">
             {view.operation.kind==='merge'?'Intégration':'Retrait de la copie'} {({running:'en cours…',succeeded:'terminé',failed:'échoué',interrupted:'interrompu'})[view.operation.status]}
             {view.operation.error?<span> · {view.operation.error}</span>:null}
           </div>:null}
