@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile, realpath, rm } from 'node:fs/promises';
-import { basename, join, relative, resolve, sep } from 'node:path';
+import { lstat, readdir, readFile, readlink, realpath, rm } from 'node:fs/promises';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { CerebroDatabase } from './db.ts';
 import type { CommitSettings } from './db.ts';
@@ -70,6 +70,8 @@ export interface WorktreeView extends WorktreeRecord {
   files: string[];
   ignored: number | null;
   ignoredFiles: string[];
+  /** Ignored entries with nothing to lose, deleted on removal instead of blocking it. */
+  disposableIgnored: string[];
   ahead: number | null;
   behind: number | null;
   targetPath: string | null;
@@ -168,6 +170,25 @@ async function registered(path: string): Promise<RegisteredWorktree[]> {
       branch: lines.find(line => line.startsWith('branch '))?.slice(7) ?? null,
       locked: lines.some(line => /^locked(?: |$)/.test(line)), prunable: lines.some(line => /^prunable(?: |$)/.test(line)) };
   });
+}
+/**
+ * An ignored entry has nothing to lose when it is a link to the same path of the source project, or a
+ * file identical to that path there (e.g. `.claude/settings.local.json` written by the agent). A
+ * directory qualifies only if every entry below it does, within a small bound.
+ */
+async function disposableIgnored(root: string, source: string, name: string, budget = {entries: 200}): Promise<boolean> {
+  if (--budget.entries < 0) return false;
+  const path = join(root, name);
+  const stat = await lstat(path).catch(() => null);
+  if (!stat) return false;
+  if (stat.isSymbolicLink()) return resolve(dirname(path), await readlink(path)) === resolve(source, name);
+  if (stat.isDirectory()) {
+    for (const entry of await readdir(path)) if (!await disposableIgnored(root, source, join(name, entry), budget)) return false;
+    return true;
+  }
+  if (!stat.isFile()) return false;
+  const original = await workspaceFileSignature(join(source, name)).catch(() => undefined);
+  return original !== undefined && original === await workspaceFileSignature(path);
 }
 function changedFiles(status: string): string[] {
   const entries = status.split('\0'); const files: string[] = [];
@@ -300,7 +321,7 @@ export class WorktreeManager {
     const session = record.sessionId ? this.db.getSession(record.sessionId) : null;
     const view: WorktreeView = {...record, projectName:(record.projectId?this.db.getProject(record.projectId)?.name:null)??record.projectName, projectExists: record.projectId !== null && this.db.getProject(record.projectId) !== null,
       session: session ? {id:session.id,title:session.title,status:session.status} : null,
-      primary:false,branch:null,head:null,dirty:null,files:[],ignored:null,ignoredFiles:[],ahead:null,behind:null,targetPath:null,targetHead:null,targets:[],integration:'unknown',mergeInProgress:false,
+      primary:false,branch:null,head:null,dirty:null,files:[],ignored:null,ignoredFiles:[],disposableIgnored:[],ahead:null,behind:null,targetPath:null,targetHead:null,targets:[],integration:'unknown',mergeInProgress:false,
       activeSessions:[],mergeBlockers:[],removeBlockers:[],fingerprint:null,error:null,operation:this.operations().find(op => op.worktreeId === record.id) ?? null,changesSinceCreation:null};
     try {
       const common = await commonDirectory(record.path);
@@ -323,7 +344,10 @@ export class WorktreeManager {
       // Expanding node_modules here made each UI refresh walk thousands of files.
       const ignored = (await git(record.path,['ls-files','--others','--ignored','--exclude-standard','--directory','-z'])).split('\0').filter(Boolean)
         .filter(path=>![...sharedIgnored].some(shared=>path===shared||path.startsWith(`${shared}/`)));
-      view.files = files.slice(0,100); view.dirty = files.length; view.ignoredFiles = ignored.slice(0,100); view.ignored = ignored.length;
+      const disposable:string[]=[];
+      if(record.managed)for(const name of ignored)if(await disposableIgnored(record.path,record.source,name.replace(/\/$/,'')))disposable.push(name);
+      const kept=ignored.filter(name=>!disposable.includes(name));
+      view.files = files.slice(0,100); view.dirty = files.length; view.ignoredFiles = kept.slice(0,100); view.ignored = kept.length; view.disposableIgnored = disposable;
       if(record.sessionId){
         if(workspace?.mode==='isolated'&&canonicalWorktreePath(workspace.root)===record.path){
           const changed:string[]=[];
@@ -469,7 +493,13 @@ export class WorktreeManager {
       } else {
         const row=view.sessionId?this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(view.sessionId) as {data:string}|undefined:undefined;
         const workspace=row?JSON.parse(row.data) as Workspace:null;
+        // Checked again right before deletion: an entry edited since the inspection blocks the removal.
+        for(const raw of fresh.disposableIgnored){
+          const name=raw.replace(/\/$/,'');
+          if(!await disposableIgnored(view.path,view.source,name))throw new WorktreeError(`${name} a changé : retrait annulé, rien n’a été supprimé de la copie.`);
+        }
         for(const name of await sharedDependencyLinks(workspace??view,view.path))await rm(join(view.path,name));
+        for(const raw of fresh.disposableIgnored)await rm(join(view.path,raw.replace(/\/$/,'')),{recursive:true,force:true});
         await git(view.targetPath??view.source,['worktree','remove','--',view.path]);
         const record=this.record(view.id);record.removedAt=Date.now();store(this.db,record);
         // Every epic step sharing this copy loses it, not only the session that created it.

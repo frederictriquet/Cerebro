@@ -321,3 +321,14 @@ test('a manual removal confirmed before an automatic cleanup cannot run twice',a
  await assert.rejects(f.manager.start(own.id,'remove',plan.token),/introuvable/);
  assert.equal(git(f.repo,'rev-parse','--verify',f.workspace.branch).length>0,true);
 }));
+test('ignored copies identical to the project and links into it do not block removal, other ignored files do',async()=>fixture(async f=>{
+ f.commit();assert.equal((await f.merge()).status,'succeeded');f.db.updateSession(f.id,{status:'exited'});
+ writeFileSync(join(f.repo,'.git','info','exclude'),'.claude/\nlinked\n');
+ for(const root of [f.repo,f.workspace.root]){mkdirSync(join(root,'.claude'),{recursive:true});writeFileSync(join(root,'.claude','settings.local.json'),'{"permissions":{}}\n');}
+ mkdirSync(join(f.repo,'linked'));writeFileSync(join(f.repo,'linked','data'),'kept\n');symlinkSync(join(f.repo,'linked'),join(f.workspace.root,'linked'),'dir');
+ writeFileSync(join(f.repo,'ignored'),'project value\n');writeFileSync(join(f.workspace.root,'ignored'),'local value\n');
+ let own=await f.view();assert.equal(own.ignored,1);assert.deepEqual(own.ignoredFiles,['ignored']);await assert.rejects(f.manager.prepare(own.id,'remove'),/ignoré/);
+ writeFileSync(join(f.workspace.root,'ignored'),'project value\n');own=await f.view();assert.equal(own.ignored,0);assert.deepEqual(own.disposableIgnored.sort(),['.claude/','ignored','linked']);
+ const plan=await f.manager.prepare(own.id,'remove');await f.manager.start(own.id,'remove',plan.token);await f.manager.shutdown();
+ assert.equal(existsSync(f.workspace.root),false);assert.equal(readFileSync(join(f.repo,'linked','data'),'utf8'),'kept\n');assert.equal(readFileSync(join(f.repo,'.claude','settings.local.json'),'utf8'),'{"permissions":{}}\n');
+}));
