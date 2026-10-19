@@ -93,9 +93,11 @@ Au démarrage du serveur, toute session non `exited` passe à `exited` (les PTY 
 
 Le PTY : `node-pty.spawn(cmd, args, {name:'xterm-256color', cols:120, rows:32, cwd: sessionWorkspace.path ?? project.path, env})`.
 Pour les nouvelles sessions Git avec historique, `sessionWorkspace` est un worktree
-isolé persistant avec copie du contexte et de l'index initiaux. Les sessions historiques
-ou sans historique gardent leur chemin initial et une provenance inconnue. Les actions
-Git présentent une sélection vérifiable ; voir les contrats détaillés du README.
+isolé persistant. Git peuple les fichiers suivis ; Cerebro restaure l'index capturé,
+reporte les fichiers modifiés ou non suivis et rend les dépendances ignorées disponibles
+par des liens partagés. Les sessions historiques ou sans historique gardent leur chemin
+initial et une provenance inconnue. Les actions Git présentent une sélection vérifiable ;
+voir les contrats détaillés du README.
 `env` = `process.env` **sans** les variables `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SSE_PORT`
 (éviter la détection de session imbriquée), plus `TERM=xterm-256color`, `COLORTERM=truecolor`,
 `CEREBRO_SESSION_ID`, `CEREBRO_TOKEN` (aléatoire, par session, gardé en mémoire), `CEREBRO_URL=INTERNAL_URL`.

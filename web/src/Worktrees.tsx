@@ -9,6 +9,7 @@ import type { WorkspaceMode } from './types.ts';
 import './worktrees.css';
 
 const branchName = (branch: string | null): string => branch?.replace(/^refs\/heads\//,'') ?? 'branche inconnue';
+const INVENTORY_REFRESH_MS = 30_000;
 const createdLabel = (view: WorktreeView): string => new Date(view.createdAt).toLocaleString('fr-FR', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' });
 const copyTitle = (view: WorktreeView): string => view.session?.title ?? view.sessionTitle ?? `Conversation supprimée · ${createdLabel(view)}`;
 function copyStatus(view: WorktreeView): string {
@@ -62,10 +63,16 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   },[path,machineBase]);
   useEffect(()=>{
     setInventory(null);setLoadedBase(null);setConfirmation(null);setCommitting(null);setError(null);setLoadError(null);setBusy(null);setExpanded(new Set());
-    let disposed=false;
-    const load=async():Promise<void>=>{if(!disposed)await refresh();};
-    void load();const timer=window.setInterval(()=>void load(),5000);
-    return()=>{disposed=true;window.clearInterval(timer);};
+    let disposed=false;let loading=false;let timer:number|undefined;
+    const load=async():Promise<void>=>{
+      if(disposed||loading)return;
+      loading=true;timer=undefined;
+      try{if(!document.hidden)await refresh();}
+      finally{loading=false;if(!disposed)timer=window.setTimeout(()=>void load(),INVENTORY_REFRESH_MS);}
+    };
+    const visible=():void=>{if(!document.hidden&&!loading){if(timer!==undefined)window.clearTimeout(timer);timer=undefined;void load();}};
+    document.addEventListener('visibilitychange',visible);void load();
+    return()=>{disposed=true;if(timer!==undefined)window.clearTimeout(timer);document.removeEventListener('visibilitychange',visible);};
   },[refresh]);
   const prepare=async(view:WorktreeView,kind:'merge'|'remove'):Promise<void>=>{
     if(apiBase()!==machineBase)return;

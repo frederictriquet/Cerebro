@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join, relative, resolve } from 'node:path';
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { DATA_DIR } from './config.ts';
@@ -27,6 +27,7 @@ export interface Workspace {
   branch: string | null;
   initialDirty: string[];
   baseline: Record<string, string>;
+  sharedIgnored?: string[];
   reason: string;
   createdAt: number;
 }
@@ -44,24 +45,53 @@ function save(db: CerebroDatabase, workspace: Workspace): Workspace {
   db.connection.prepare('INSERT INTO session_workspaces (session_id, data) VALUES (?,?)').run(workspace.sessionId,JSON.stringify(workspace));
   return workspace;
 }
-async function manifest(path: string): Promise<Record<string,string>> {
+async function manifest(path: string,excluded:string[]=[]): Promise<Record<string,string>> {
   const entries: [string,string][] = [];
-  async function walk(dir: string): Promise<void> {
-    for (const entry of await readdir(dir, {withFileTypes:true})) {
-      if (dir === path && entry.name === '.git') continue;
-      const file=join(dir,entry.name); const name=relative(path,file);
-      if (entry.isDirectory()) await walk(file);
-      else {
-        const signature=await workspaceFileSignature(file);
-        if(signature===undefined)throw new Error(`Le fichier a disparu pendant la collecte : ${name}`);
-        entries.push([name,signature]);
-      }
-    }
+  const names=(await git(path,['ls-files','--cached','--others','--exclude-standard','-z'])).split('\0').filter(Boolean)
+    .filter(name=>!excluded.some(prefix=>name===prefix||name.startsWith(`${prefix}/`))).sort();
+  for(const name of names){
+    const signature=await workspaceFileSignature(join(path,name));
+    entries.push([name,signature??'missing']);
   }
-  await walk(path);
-  return Object.fromEntries(entries.sort(([a],[b])=>a.localeCompare(b)));
+  return Object.fromEntries(entries);
 }
 const signature = (m: Record<string,string>): string => JSON.stringify(m);
+function firstDifference(a:Record<string,string>,b:Record<string,string>):string{
+  for(const name of new Set([...Object.keys(a),...Object.keys(b)]))if(a[name]!==b[name])return name;
+  return 'inconnue';
+}
+const SHARED_DEPENDENCY_DIRS = new Set(['node_modules','.venv','venv','vendor']);
+
+async function copyEntry(sourceRoot:string,targetRoot:string,name:string):Promise<void>{
+  const source=join(sourceRoot,name);const target=join(targetRoot,name);
+  await rm(target,{recursive:true,force:true});
+  try{
+    await mkdir(dirname(target),{recursive:true});
+    await cp(source,target,{recursive:true,dereference:false,verbatimSymlinks:true});
+  }catch(cause){if((cause as NodeJS.ErrnoException).code!=='ENOENT')throw cause;}
+}
+
+async function copyIgnoredContext(sourceRoot:string,targetRoot:string):Promise<string[]>{
+  const ignored=(await git(sourceRoot,['ls-files','--others','--ignored','--exclude-standard','--directory','-z'])).split('\0').filter(Boolean);
+  const shared:string[]=[];
+  for(const raw of ignored){
+    const name=raw.replace(/\/$/,'');
+    if(!name)continue;
+    const source=join(sourceRoot,name);const target=join(targetRoot,name);
+    const stat=await lstat(source).catch(cause=>{if((cause as NodeJS.ErrnoException).code==='ENOENT')return null;throw cause;});
+    if(!stat)continue;
+    if(stat.isDirectory()){
+      if(SHARED_DEPENDENCY_DIRS.has(basename(name))){
+        await mkdir(dirname(target),{recursive:true});await rm(target,{recursive:true,force:true});await symlink(source,target,'dir');shared.push(name);
+      }
+      // Other ignored directories are normally generated output or caches. Copying an
+      // unbounded tree here would recreate the startup problem this path is avoiding.
+      continue;
+    }
+    await copyEntry(sourceRoot,targetRoot,name);
+  }
+  return shared;
+}
 
 /** Isolation is persisted before launching the holder. Historical sessions keep their cwd. */
 export async function createWorkspace(db: CerebroDatabase, sessionId: string, project: Project): Promise<Workspace> {
@@ -96,14 +126,18 @@ export async function createWorkspace(db: CerebroDatabase, sessionId: string, pr
     const sourceIndex=join(temporary,'source-index'); await writeFile(sourceIndex,indexBytes);
     const tree=await git(root,['write-tree'],sourceIndex);
     await git(root,['worktree','add','-b',branch,'--',workspace,common.base!]); added=true;
-    // Include ignored configuration/dependencies; no symlink back to the original directory.
+    // Recreate the indexed tree, then overlay only Git-visible local changes. Large dependency
+    // directories are shared as links below instead of physically copying and hashing them.
     for (const name of await readdir(workspace)) if(name!=='.git') await rm(join(workspace,name),{recursive:true,force:true});
-    for (const name of await readdir(root)) if(name!=='.git') await cp(join(root,name),join(workspace,name),{recursive:true,dereference:false,verbatimSymlinks:true});
     await git(workspace,['read-tree',tree]);
+    await git(workspace,['checkout-index','--all','--force']);
+    for(const name of new Set([...dirty,...untracked]))await copyEntry(root,workspace,name);
+    const sharedIgnored=await copyIgnoredContext(root,workspace);
     if (common.base!==await git(root,['rev-parse','HEAD']) || !indexBytes.equals(await readFile(indexPath)) || signature(before)!==signature(await manifest(root))) throw new Error('Le projet a changé pendant son isolation : relancez la session.');
-    const baseline=await manifest(workspace);
-    if(signature(before)!==signature(baseline)) throw new Error('Copie initiale non identique : aucun agent lancé.');
-    const saved=save(db,{...common,mode:'isolated',root:workspace,path:join(workspace,relative(root,project.path)),source:root,branch,baseline,initialDirty:[...new Set([...dirty,...staged,...untracked])],reason:'Périmètre de l’espace isolé ; les auteurs des éditions dans cet espace ne sont pas identifiables.'});
+    const baseline=await manifest(workspace,sharedIgnored);
+    if(signature(before)!==signature(baseline)) throw new Error(`Copie initiale non identique (${firstDifference(before,baseline)}) : aucun agent lancé.`);
+    const dependencyNotice=sharedIgnored.length?` Dépendances partagées avec le projet source : ${sharedIgnored.join(', ')}.`:'';
+    const saved=save(db,{...common,mode:'isolated',root:workspace,path:join(workspace,relative(root,project.path)),source:root,branch,baseline,sharedIgnored,initialDirty:[...new Set([...dirty,...staged,...untracked])],reason:`Périmètre de l’espace isolé ; les auteurs des éditions dans cet espace ne sont pas identifiables.${dependencyNotice}`});
     await rememberWorktree(db,saved);
     return saved;
   } catch(cause) {
@@ -124,7 +158,7 @@ export async function sessionProvenance(db: CerebroDatabase, sessionId: string):
   const warning='Le périmètre décrit un espace de travail, pas l’auteur des modifications. Toute édition humaine ou externe dans cet espace doit être vérifiée explicitement. Les changements initiaux ne sont pas attribués à la session.';
   if(workspace.mode!=='isolated') return {workspace,changes:[],commits:[],warning};
   const snapshot=await prepareCommit(workspace.root);
-  const current=await manifest(workspace.root);
+  const current=await manifest(workspace.root,workspace.sharedIgnored);
   const changed=snapshot.files.filter(f=>workspace.baseline[f.path]!==current[f.path]);
   const branchMatches = await git(workspace.root,['symbolic-ref','--short','HEAD']).then(branch => branch === workspace.branch, () => false);
   const reflog=await git(workspace.root,['reflog','show','--format=%gs',workspace.branch!]).catch(()=> '');

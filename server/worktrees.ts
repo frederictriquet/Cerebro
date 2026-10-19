@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile, realpath } from 'node:fs/promises';
-import { basename, join, relative, resolve, sep } from 'node:path';
+import { lstat, readFile, readlink, realpath, rm } from 'node:fs/promises';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { CerebroDatabase } from './db.ts';
 import type { CommitSettings } from './db.ts';
@@ -35,6 +35,7 @@ export interface WorktreeRecord {
   managed: boolean;
   expectedBranch: string | null;
   targetBranch: string | null;
+  sharedIgnored?: string[];
   createdAt: number;
   removedAt: number | null;
   commitSettings?: CommitSettings;
@@ -106,7 +107,7 @@ export async function rememberWorktree(db: CerebroDatabase, workspace: Workspace
     id, commonDir, path, source, projectId: workspace.projectId ?? project?.id ?? null,
     projectName: workspace.projectName ?? project?.name ?? basename(source), sessionId: workspace.sessionId,
     sessionTitle: session?.title ?? null, managed: true, expectedBranch: workspace.branch ? `refs/heads/${workspace.branch}` : null,
-    targetBranch: target, createdAt: workspace.createdAt, removedAt: null, ...(project ? {commitSettings:project.commitSettings} : {}),
+    targetBranch: target, sharedIgnored:workspace.sharedIgnored, createdAt: workspace.createdAt, removedAt: null, ...(project ? {commitSettings:project.commitSettings} : {}),
   });
 }
 
@@ -161,10 +162,22 @@ function changedFiles(status: string): string[] {
   }
   return files;
 }
+async function sharedDependencyLinks(workspace:Pick<Workspace,'sharedIgnored'|'source'>|null,root:string):Promise<string[]>{
+  if(!workspace?.sharedIgnored?.length)return [];
+  const active:string[]=[];
+  for(const name of workspace.sharedIgnored){
+    const path=join(root,name);const stat=await lstat(path).catch(cause=>{if((cause as NodeJS.ErrnoException).code==='ENOENT')return null;throw cause;});
+    if(!stat?.isSymbolicLink())continue;
+    const target=resolve(dirname(path),await readlink(path));
+    if(target===resolve(workspace.source,name))active.push(name);
+  }
+  return active;
+}
 
 export class WorktreeManager {
   private db: CerebroDatabase;
   private syncing: Promise<string[]> | null = null;
+  private listings = new Map<string,Promise<WorktreeInventory>>();
   private plans = new Map<string, { id: string; kind: 'merge' | 'remove'; fingerprint: string; expires: number }>();
   private pending = new Set<Promise<unknown>>();
   private closed = false;
@@ -211,6 +224,9 @@ export class WorktreeManager {
         for (const worktree of listing) {
           const path = resolve(worktree.path); const id = worktreeId(commonDir, path); const previous = records(this.db).find(r => r.id === id);
           if (previous && !previous.removedAt) continue;
+          const preparing=/^refs\/heads\/cerebro\/session-(.+)$/.exec(worktree.branch??'')?.[1];
+          if(preparing&&this.db.getSession(preparing)?.status==='starting'
+            &&!this.db.connection.prepare('SELECT 1 FROM session_workspaces WHERE session_id=?').get(preparing))continue;
           store(this.db, {
             id, commonDir, path, source, projectId: project?.id ?? previous?.projectId ?? null,
             projectName: project?.name ?? previous?.projectName ?? basename(source), sessionId: null, sessionTitle: null,
@@ -249,6 +265,11 @@ export class WorktreeManager {
     return reasons;
   }
   async list(projectId?: string): Promise<WorktreeInventory> {
+    const key=projectId??'';const current=this.listings.get(key);if(current)return current;
+    const pending=this.collectList(projectId).finally(()=>{if(this.listings.get(key)===pending)this.listings.delete(key);});
+    this.listings.set(key,pending);return pending;
+  }
+  private async collectList(projectId?: string): Promise<WorktreeInventory> {
     const errors = await this.sync();
     const project = projectId ? this.db.getProject(projectId) : null;
     if (projectId && !project) throw new WorktreeError('Projet introuvable.', 404);
@@ -277,12 +298,17 @@ export class WorktreeManager {
       const target = listing.find(w => w.branch === record.targetBranch && resolve(w.path) !== record.path && !w.prunable);
       view.targetPath = target ? resolve(target.path) : null;
       view.targetHead = record.targetBranch ? await git(record.path,['rev-parse','--verify',record.targetBranch]).then(text => text.trim(), () => null) : null;
-      const files = changedFiles(await git(record.path,['status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none']));
-      const ignored = (await git(record.path,['ls-files','--others','--ignored','--exclude-standard','-z'])).split('\0').filter(Boolean);
+      const workspaceRow=record.sessionId?this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(record.sessionId) as {data:string}|undefined:undefined;
+      const workspace=workspaceRow?JSON.parse(workspaceRow.data) as Workspace:null;
+      const sharedIgnored=new Set(await sharedDependencyLinks(workspace??record,record.path));
+      const files = changedFiles(await git(record.path,['status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none']))
+        .filter(path=>![...sharedIgnored].some(shared=>path===shared||path.startsWith(`${shared}/`)));
+      // The inventory only needs removable ignored entries, not every file below them.
+      // Expanding node_modules here made each UI refresh walk thousands of files.
+      const ignored = (await git(record.path,['ls-files','--others','--ignored','--exclude-standard','--directory','-z'])).split('\0').filter(Boolean)
+        .filter(path=>![...sharedIgnored].some(shared=>path===shared||path.startsWith(`${shared}/`)));
       view.files = files.slice(0,100); view.dirty = files.length; view.ignoredFiles = ignored.slice(0,100); view.ignored = ignored.length;
       if(record.sessionId){
-        const row=this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(record.sessionId) as {data:string}|undefined;
-        const workspace=row?JSON.parse(row.data) as Workspace:null;
         if(workspace?.mode==='isolated'&&canonicalWorktreePath(workspace.root)===record.path){
           const changed:string[]=[];
           for(const file of files)if(workspace.baseline[file]!==await workspaceFileSignature(join(record.path,file)))changed.push(file);
@@ -392,6 +418,9 @@ export class WorktreeManager {
         await git(view.targetPath!,['merge-base','--is-ancestor',view.head!,'HEAD']);
         operation.output=operation.output.slice(-64*1024);
       } else {
+        const row=view.sessionId?this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(view.sessionId) as {data:string}|undefined:undefined;
+        const workspace=row?JSON.parse(row.data) as Workspace:null;
+        for(const name of await sharedDependencyLinks(workspace??view,view.path))await rm(join(view.path,name));
         await git(view.targetPath??view.source,['worktree','remove','--',view.path]);
         const record=this.record(view.id);record.removedAt=Date.now();store(this.db,record);
         if(record.sessionId){

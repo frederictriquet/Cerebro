@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -18,11 +18,13 @@ after(()=>rmSync(root,{recursive:true,force:true}));
 async function fixture(run,initialDirty=false){
  const directory=mkdtempSync(join(root,'case-'));const repo=join(directory,'source');mkdirSync(repo);
  git(repo,'init','-b','main');git(repo,'config','user.email','test@example.com');git(repo,'config','user.name','Test');
- writeFileSync(join(repo,'file'),'base\n');writeFileSync(join(repo,'.gitignore'),'ignored\n');git(repo,'add','.');git(repo,'commit','-m','base');
+ writeFileSync(join(repo,'file'),'base\n');writeFileSync(join(repo,'.gitignore'),'ignored\nnode_modules/\n');git(repo,'add','.');git(repo,'commit','-m','base');
+ mkdirSync(join(repo,'node_modules','dependency'),{recursive:true});writeFileSync(join(repo,'node_modules','dependency','index.js'),'module.exports = true;\n');
  if(initialDirty)writeFileSync(join(repo,'file'),'changes already in project\n');
  let db=new CerebroDatabase(join(directory,'db.sqlite'));const project=db.createProject('Project',repo);const id=randomUUID();
  db.createSession({id,projectId:project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Conversation',status:'exited',agentSessionId:'fake'},'token');
  const workspace=await createWorkspace(db,id,project);let manager=new WorktreeManager(db);
+ assert.equal(lstatSync(join(workspace.path,'node_modules')).isSymbolicLink(),true);
  const view=async()=>{const listing=await manager.list(project.id);return listing.worktrees.find(w=>w.sessionId===id);};
  const untilFinished=async operation=>{for(let i=0;i<500;i++){const current=await manager.get(operation.worktreeId);if(current.operation?.id===operation.id&&current.operation.status!=='running')return current.operation;await new Promise(r=>setTimeout(r,10));}throw new Error('Operation timeout');};
  const merge=async()=>{const v=await view();const p=await manager.prepare(v.id,'merge');const op=await manager.start(v.id,'merge',p.token);return untilFinished(op);};
@@ -81,6 +83,14 @@ test('removal requires integration, no local/ignored files and no live session; 
  await f.manager.shutdown();assert.equal(existsSync(own.path),false);assert.equal(git(f.repo,'rev-parse',f.workspace.branch),git(f.repo,'rev-parse','HEAD'));assert.ok(workspaceFor(f.db,f.id).removedAt);
  const result=(await f.manager.list()).worktrees;assert.ok(!result.some(w=>w.id===own.id));assert.equal(f.db.getSession(f.id).title,'Conversation');
  const sessions=new SessionManager(f.db);await assert.rejects(sessions.resume(f.id),/supprimé/);
+}));
+
+test('an integrated orphan can remove its shared dependency link without touching source dependencies',async()=>fixture(async f=>{
+ const own=await f.view();f.db.updateSession(f.id,{status:'exited'});await new SessionManager(f.db).delete(f.id);
+ assert.equal(f.db.getSession(f.id),null);assert.equal(lstatSync(join(own.path,'node_modules')).isSymbolicLink(),true);
+ const plan=await f.manager.prepare(own.id,'remove');await f.manager.start(own.id,'remove',plan.token);
+ await f.manager.shutdown();assert.equal(existsSync(own.path),false);
+ assert.equal(readFileSync(join(f.repo,'node_modules','dependency','index.js'),'utf8'),'module.exports = true;\n');
 }));
 
 test('merges serialize actions, defer interactive input, and obey hooks',async()=>fixture(async f=>{

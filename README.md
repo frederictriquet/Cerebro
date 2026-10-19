@@ -497,14 +497,19 @@ conservent l'isolation à la migration tant que ce choix n'est pas modifié.
 
 En mode isolé, une nouvelle session sur un dépôt Git avec un commit démarre dans un worktree
 et une branche `cerebro/session-<id>` dédiés, sous le dossier de données Cerebro.
-Le répertoire initial du projet est conservé comme contexte source. Son contenu,
-y compris les fichiers non suivis, ignorés, la configuration locale et les
-dépendances, est copié ; le contenu déjà indexé est reproduit dans l'index isolé.
+Git crée et peuple ce worktree. Cerebro y restaure ensuite l'index capturé et ne
+reporte que les fichiers modifiés ou non suivis du projet source ; il ne recopie
+plus l'ensemble des fichiers déjà restaurés par Git. Les fichiers ignorés
+ordinaires utiles à la configuration locale restent disponibles ; les autres
+répertoires ignorés (sorties générées, caches) sont omis. Les gros répertoires de dépendances
+`node_modules`, `.venv`, `venv` et `vendor` sont liés au répertoire source au lieu
+d'être copiés et ne participent ni aux empreintes ni à l'inventaire des changements.
+Ils sont donc partagés et non isolés en écriture : une installation ou une mise à
+jour de dépendances depuis la session modifie aussi ceux du projet source.
 Aucun changement du worktree ou de l'index source n'est appliqué. Une modification
-du projet pendant la copie annule le lancement. Cette copie peut être coûteuse
-pour un gros projet. Les sous-modules, conflits d'index et fichiers spéciaux ne
-sont pas isolés : le lancement est refusé explicitement, sans démarrer l'agent.
-Le dossier de données doit être hors du dépôt.
+du projet pendant la préparation annule le lancement. Les sous-modules, conflits
+d'index et fichiers spéciaux ne sont pas isolés : le lancement est refusé
+explicitement, sans démarrer l'agent. Le dossier de données doit être hors du dépôt.
 
 La provenance est enregistrée en base avant le lancement du terminal : chemin,
 branche, HEAD de base, empreintes initiales et fichiers initialement modifiés.
