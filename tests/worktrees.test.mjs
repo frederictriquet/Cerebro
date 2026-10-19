@@ -9,7 +9,7 @@ import { after, test } from 'node:test';
 const root=mkdtempSync(join(tmpdir(),'cerebro-worktree-tests-'));
 process.env.CEREBRO_DATA_DIR=join(root,'data');process.env.HOME=root;
 const {CerebroDatabase}=await import('../server/db.ts');
-const {createWorkspace,workspaceFor}=await import('../server/provenance.ts');
+const {createWorkspace,joinWorkspace,workspaceFor}=await import('../server/provenance.ts');
 const {WorktreeManager,rememberWorktree}=await import('../server/worktrees.ts');
 const {SessionManager}=await import('../server/sessions.ts');
 const {assertWorktreeAvailable,deferWorktreeInput,lockWorktrees}=await import('../server/worktree-gate.ts');
@@ -223,4 +223,13 @@ test('the principal repository has no integration target or invented conversatio
  const main=(await f.manager.list()).worktrees.find(view=>view.primary);assert.equal(main.changesSinceCreation,null);assert.equal(main.integration,'unknown');assert.equal(main.ahead,null);
  const external=join(root,randomUUID());git(f.repo,'worktree','add','-b','without-metadata',external);
  const view=(await f.manager.list()).worktrees.find(view=>view.path===external);assert.equal(view.managed,false);assert.equal(view.changesSinceCreation,null);assert.equal(view.session,null);
+}));
+test('an epic copy shared by several steps stays one entry and its removal reaches every step',async()=>fixture(async f=>{
+ const step=randomUUID();f.db.createSession({id:step,projectId:f.project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Next step',status:'exited',agentSessionId:'fake'},'token');
+ await joinWorkspace(f.db,step,f.workspace);f.commit();
+ const copies=(await f.manager.list(f.project.id)).worktrees.filter(w=>w.managed&&!w.primary);assert.equal(copies.length,1);assert.equal(copies[0].sessionId,f.id);
+ assert.equal((await f.merge()).status,'succeeded');const own=await f.view();
+ const plan=await f.manager.prepare(own.id,'remove');await f.manager.start(own.id,'remove',plan.token);await f.manager.shutdown();assert.equal(existsSync(own.path),false);
+ assert.ok(workspaceFor(f.db,f.id).removedAt);assert.ok(workspaceFor(f.db,step).removedAt);
+ await assert.rejects(new SessionManager(f.db).resume(step),/supprimé/);
 }));

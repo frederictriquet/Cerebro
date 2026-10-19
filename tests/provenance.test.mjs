@@ -8,7 +8,7 @@ const root=mkdtempSync(join(tmpdir(),'cerebro-provenance-'));
 process.env.CEREBRO_DATA_DIR=join(root,'data');process.env.HOME=root;
 mkdirSync(process.env.CEREBRO_DATA_DIR);
 const {CerebroDatabase}=await import('../server/db.ts');
-const {createWorkspace,prepareSessionCommit,sessionProvenance,workspaceFor}=await import('../server/provenance.ts');
+const {createWorkspace,joinWorkspace,prepareSessionCommit,sessionProvenance,workspaceAt,workspaceFor}=await import('../server/provenance.ts');
 const repo=join(root,'repo');mkdirSync(repo);
 const git=(path,...args)=>execFileSync('git',['-C',path,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 git(repo,'init','-b','main');git(repo,'config','user.name','Test');git(repo,'config','user.email','test@example.com');
@@ -65,4 +65,16 @@ test('commits in the source and switching an isolated branch do not invent sessi
   const pa=await sessionProvenance(db,'a');assert.ok(pa.commits.every(c=>c.title!=='human source'));
   git(b.path,'checkout','--detach');const pb=await sessionProvenance(db,'b');
   assert.deepEqual(pb.commits,[]);assert.ok(pb.changes.every(c=>c.certainty==='uncertain'));
+});
+test('a later epic step joins the first copy and inherits its uncommitted work as initial changes',async()=>{
+  session('step1');session('step2');const first=await createWorkspace(db,'step1',project);
+  writeFileSync(join(first.path,'second'),'step one\n');
+  assert.equal(workspaceAt(db,first.path).sessionId,'step1');
+  const second=await joinWorkspace(db,'step2',workspaceAt(db,first.path));
+  assert.equal(second.path,first.path);assert.equal(second.branch,first.branch);assert.deepEqual(second.sharedIgnored,['node_modules']);
+  assert.ok(second.initialDirty.includes('second'));assert.ok(!second.initialDirty.includes('node_modules'));
+  assert.equal(workspaceAt(db,first.path).sessionId,'step1','the copy stays owned by the first step');
+  writeFileSync(join(first.path,'shared'),'step two\n');
+  assert.deepEqual((await sessionProvenance(db,'step2')).changes.map(change=>change.path),['shared']);
+  assert.deepEqual((await sessionProvenance(db,'step1')).changes.map(change=>change.path),['second','shared']);
 });

@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { DATA_DIR } from './config.ts';
 import type { CerebroDatabase, Project } from './db.ts';
 import { rememberWorktree } from './worktrees.ts';
+import { canonicalWorktreePath } from './worktree-gate.ts';
 import { prepareCommit, type GitSnapshot } from './git-plan.ts';
 import { workspaceFileSignature } from './workspace-files.ts';
 const exec = promisify(execFile);
@@ -144,6 +145,27 @@ export async function createWorkspace(db: CerebroDatabase, sessionId: string, pr
     if(added) { await git(root,['worktree','remove','--force',workspace]).catch(()=>{}); await git(root,['branch','-D',branch]).catch(()=>{}); }
     throw cause;
   } finally {await rm(temporary,{recursive:true,force:true});}
+}
+
+/** The live isolated copy whose session directory is `path`, if Cerebro created one there. */
+export function workspaceAt(db: CerebroDatabase, path: string): Workspace | null {
+  const target=canonicalWorktreePath(path);
+  const rows=db.connection.prepare('SELECT data FROM session_workspaces').all() as {data:string}[];
+  return rows.map(row=>JSON.parse(row.data) as Workspace)
+    .filter(workspace=>workspace.mode==='isolated'&&!workspace.removedAt&&canonicalWorktreePath(workspace.path)===target)
+    .sort((left,right)=>left.createdAt-right.createdAt)[0]??null;
+}
+
+/** Later epic steps work in the copy of the first one: one branch, one integration for the whole epic. */
+export async function joinWorkspace(db: CerebroDatabase, sessionId: string, owner: Workspace): Promise<Workspace> {
+  const excluded=owner.sharedIgnored??[];
+  const inScope=(name:string):boolean=>!excluded.some(prefix=>name===prefix||name.startsWith(`${prefix}/`));
+  const dirty=(await git(owner.root,['diff','--name-only','-z','HEAD'])).split('\0').filter(Boolean);
+  const staged=(await git(owner.root,['diff','--cached','--name-only','-z'])).split('\0').filter(Boolean);
+  const untracked=(await git(owner.root,['ls-files','--others','--exclude-standard','-z'])).split('\0').filter(Boolean);
+  // Work left by previous steps is inherited, exactly like changes present in a project at copy creation.
+  return save(db,{...owner,sessionId,baseline:await manifest(owner.root,excluded),initialDirty:[...new Set([...dirty,...staged,...untracked])].filter(inScope),
+    reason:`${owner.reason} Copie partagée avec les étapes précédentes de l’epic.`,createdAt:Date.now()});
 }
 
 export function historicalWorkspace(sessionId: string, path: string): Workspace {

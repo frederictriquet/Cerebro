@@ -417,9 +417,11 @@ export class WorktreeManager {
         for(const name of await sharedDependencyLinks(workspace??view,view.path))await rm(join(view.path,name));
         await git(view.targetPath??view.source,['worktree','remove','--',view.path]);
         const record=this.record(view.id);record.removedAt=Date.now();store(this.db,record);
-        if(record.sessionId){
-          const row=this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(record.sessionId) as {data:string}|undefined;
-          if(row){const workspace=JSON.parse(row.data) as Workspace;workspace.removedAt=record.removedAt;this.db.connection.prepare('UPDATE session_workspaces SET data=? WHERE session_id=?').run(JSON.stringify(workspace),record.sessionId);}
+        // Every epic step sharing this copy loses it, not only the session that created it.
+        for(const row of this.db.connection.prepare('SELECT session_id, data FROM session_workspaces').all() as {session_id:string;data:string}[]){
+          const workspace=JSON.parse(row.data) as Workspace;
+          if(row.session_id!==record.sessionId&&(workspace.mode!=='isolated'||canonicalWorktreePath(workspace.root)!==record.path))continue;
+          workspace.removedAt=record.removedAt;this.db.connection.prepare('UPDATE session_workspaces SET data=? WHERE session_id=?').run(JSON.stringify(workspace),row.session_id);
         }
         operation.output='Worktree supprimé ; branche, commits et conversation conservés.';
       }

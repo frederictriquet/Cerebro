@@ -24,7 +24,7 @@ import { CerebroDatabase, resolveSessionDefaults } from './db.ts';
 import type { AgentQuestion } from './questions.ts';
 import { archiveSessionWorktree } from './worktrees.ts';
 import { assertWorktreeAvailable, deferWorktreeInput } from './worktree-gate.ts';
-import { createWorkspace, workspaceFor } from './provenance.ts';
+import { createWorkspace, joinWorkspace, workspaceAt, workspaceFor, type Workspace } from './provenance.ts';
 import { findProcessesByArgument, isAlive, processTree, signalProcesses } from './proc.ts';
 
 // @xterm/headless is CommonJS at runtime despite exposing ESM-shaped typings.
@@ -242,7 +242,9 @@ export class SessionManager {
     const defaults = this.rememberDefaults(project.id, overrides);
     const path=current.workspaceMode==='shared'?current.path:contextPath??current.path;
     assertWorktreeAvailable(path);
-    return this.launch({...current,path}, defaults.agent, defaults.mode, defaults, defaults.prompt, null, null, validate);
+    // A context inside an existing copy (next epic step) reuses it instead of copying the copy.
+    const joined=current.workspaceMode==='shared'||!contextPath?null:workspaceAt(this.db,contextPath);
+    return this.launch({...current,path}, defaults.agent, defaults.mode, defaults, defaults.prompt, null, null, validate, joined);
   }
 
   rememberDefaults(projectId: string, overrides: Partial<SessionDefaults>): SessionDefaults {
@@ -277,6 +279,7 @@ export class SessionManager {
     resumeSessionId: string | null,
     existingId: string | null = null,
     validate?: () => Promise<void>,
+    joined: Workspace | null = null,
   ): Promise<Session> {
     const id = existingId ?? randomUUID();
     const command = buildAgentCommand(agent, mode, prompt, id, resumeSessionId, tuning);
@@ -309,7 +312,7 @@ export class SessionManager {
 
     let cwd = project.path;
     try {
-      const workspace = existingId === null ? await createWorkspace(this.db, id, project) : workspaceFor(this.db, id);
+      const workspace = existingId !== null ? workspaceFor(this.db, id) : joined ? await joinWorkspace(this.db, id, joined) : await createWorkspace(this.db, id, project);
       cwd = workspace?.path ?? project.path;
       if(workspace?.removedAt)throw new Error('Le worktree de cette conversation a été supprimé.');
       assertWorktreeAvailable(cwd);
