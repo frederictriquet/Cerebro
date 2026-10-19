@@ -23,10 +23,10 @@ export function CommitSettingsDialog({project,onClose}:{project:Project;onClose:
       <div className="tuning-row"><div className="tuning">
         <span className="field-label">Travail des conversations</span>
         <ChoiceGroup<WorkspaceMode> compact label="Travail des conversations" value={workspaceMode} disabled={busy}
-          options={[{value:'isolated',label:'Copie isolée par conversation'},{value:'shared',label:'Dossier du projet'}]}
+          options={[{value:'isolated',label:'Worktree Git par conversation'},{value:'shared',label:'Dossier du projet'}]}
           onChange={setWorkspaceMode}/>
       </div></div>
-      <p className="hint">{workspaceMode==='shared'?`Les nouvelles conversations utilisent directement ${project.path}, sur sa branche courante. Cerebro ne crée ni ne supprime de branche pour ces conversations.`:'Chaque nouvelle conversation dispose de sa copie et de sa branche. Son travail peut ensuite être intégré au projet.'} Les conversations existantes conservent leur dossier.</p>
+      <p className="hint">{workspaceMode==='shared'?`Les nouvelles conversations utilisent directement ${project.path}, sur sa branche courante. Cerebro ne crée ni ne supprime de branche pour ces conversations.`:'Chaque nouvelle conversation utilise un worktree Git : un dossier de travail isolé avec sa propre branche. Son travail peut ensuite être intégré au projet.'} Les conversations existantes conservent leur dossier.</p>
       <p>« Commit / push » utilise ces réglages pour préparer les messages, puis crée et pousse les commits automatiquement.</p>
       <LlmSelector agents={agents} value={settings} defaults={project.commitSettings} disabled={busy} onChange={selection=>setSettings(current=>({...current,...selection}))}>
         <div className="tuning">
