@@ -98,7 +98,7 @@ test('project commit settings survive restart and session changes independently,
 }));
 test('headless adapters pass model/effort and parse Claude, Codex and Grok output without real inference',async()=>{
  const bin=join(root,'bin');mkdirSync(bin);const capture=join(root,'capture.json');
- const script=`#!/usr/bin/env node\nimport fs from 'node:fs';\nconst args=process.argv.slice(2);const input=fs.readFileSync(0,'utf8');fs.writeFileSync(${JSON.stringify(capture)},JSON.stringify({args,input,cwd:process.cwd()}));const result={commits:[{message:'feat: meaningful message',paths:['file']}]};if(args[0]==='exec')fs.writeFileSync(args[args.indexOf('--output-last-message')+1],JSON.stringify(result));else console.log(JSON.stringify({structured_output:result}));\n`;
+ const script=`#!/usr/bin/env node\nimport fs from 'node:fs';\nconst args=process.argv.slice(2);const input=fs.readFileSync(0,'utf8');fs.writeFileSync(${JSON.stringify(capture)},JSON.stringify({args,input,cwd:process.cwd()}));const result={commits:[{message:'feat: meaningful message',paths:['file']}]};if(args[0]==='exec')fs.writeFileSync(args[args.indexOf('--output-last-message')+1],JSON.stringify(result));else if(args.includes('--prompt-file'))console.log(JSON.stringify({text:JSON.stringify(result),structuredOutput:result,stopReason:'end_turn',sessionId:'grok-session',requestId:'request'}));else console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,structured_output:result}));\n`;
  for(const agent of ['claude','codex','grok'])writeFileSync(join(bin,agent),script,{mode:0o755});
  const previous=process.env.PATH;process.env.PATH=`${bin}:${previous}`;
  try{
@@ -107,6 +107,28 @@ test('headless adapters pass model/effort and parse Claude, Codex and Grok outpu
    assert.equal(result.commits[0].message,'feat: meaningful message');const sent=JSON.parse(readFileSync(capture,'utf8'));assert.ok(sent.args.includes('selected-model'));assert.ok(sent.args.some(arg=>arg==='low'||arg.includes('model_reasoning_effort="low"')));assert.match(sent.cwd,/cerebro-message-/);assert.equal(existsSync(sent.cwd),false);
    if(agent==='codex'){assert.ok(sent.args.includes('read-only'));assert.ok(sent.args.includes('shell_tool'));assert.ok(sent.args.includes('--ephemeral'));assert.match(sent.input,/feat: example/);}
    else assert.ok(sent.args.includes('--tools'));
+  }
+ }finally{process.env.PATH=previous;}
+});
+
+test('Grok structured output and text fallback still require a complete valid proposal',async()=>{
+ const bin=mkdtempSync(join(root,'grok-output-'));const previous=process.env.PATH;
+ const proposal={commits:[{message:'fix: retain conversation associations',paths:['file']}]};
+ const context={files:[{path:'file',diff:'+change',blocked:false,warnings:[],hunks:[]}],log:'',settings:{agent:'grok',model:null,effort:null,strategy:'single'}};
+ process.env.PATH=`${bin}:${previous}`;
+ try{
+  const cases=[
+   {output:{structuredOutput:proposal,text:'',stopReason:'end_turn'}},
+   {output:{text:JSON.stringify(proposal),stopReason:'end_turn'}},
+   {output:{text:'```json\n'+JSON.stringify(proposal)+'\n```',stopReason:'end_turn'}},
+   {output:{structuredOutput:proposal,text:JSON.stringify(proposal),stopReason:'max_tokens'},error:/n’a pas terminé.*max_tokens/},
+   {output:{text:JSON.stringify({commits:[{message:'wrong file',paths:['unknown']}]}),stopReason:'end_turn'},error:/inconnu ou répété/},
+   {output:{type:'result',subtype:'error_max_turns',is_error:true,structured_output:proposal},error:/pas produit de proposition utilisable/},
+  ];
+  for(const {output,error} of cases){
+   writeFileSync(join(bin,'grok'),`#!/usr/bin/env node\nconsole.log(${JSON.stringify(JSON.stringify(output))});\n`,{mode:0o755});
+   const result=proposeCommits(context,new AbortController().signal);
+   if(error)await assert.rejects(result,error);else assert.deepEqual(await result,proposal);
   }
  }finally{process.env.PATH=previous;}
 });

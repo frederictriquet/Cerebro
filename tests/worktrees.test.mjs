@@ -10,7 +10,7 @@ const root=mkdtempSync(join(tmpdir(),'cerebro-worktree-tests-'));
 process.env.CEREBRO_DATA_DIR=join(root,'data');process.env.HOME=root;
 const {CerebroDatabase}=await import('../server/db.ts');
 const {createWorkspace,workspaceFor}=await import('../server/provenance.ts');
-const {WorktreeManager}=await import('../server/worktrees.ts');
+const {WorktreeManager,rememberWorktree}=await import('../server/worktrees.ts');
 const {SessionManager}=await import('../server/sessions.ts');
 const {assertWorktreeAvailable,deferWorktreeInput,lockWorktrees}=await import('../server/worktree-gate.ts');
 const git=(path,...args)=>execFileSync('git',['-C',path,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
@@ -39,6 +39,52 @@ test('global/project inventory includes primary, managed and external worktrees 
  const own=await f.view();assert.equal(own.targetBranch,'refs/heads/main');assert.equal(own.dirty,0);assert.equal(own.ahead,0);assert.equal(own.integration,'integrated');assert.equal(own.managed,true);
  const primary=list.worktrees.find(w=>w.path===f.repo);assert.equal(primary.primary,true);assert.ok(primary.removeBlockers.length);
  const ext=list.worktrees.find(w=>w.path===external);assert.equal(ext.managed,false);assert.ok(ext.removeBlockers.length);
+}));
+
+async function discoverBeforeProvenance(f){
+ f.db.connection.prepare('DELETE FROM worktree_inventory').run();
+ f.db.connection.prepare('DELETE FROM session_workspaces WHERE session_id=?').run(f.id);
+ const inventory=await f.manager.list(f.project.id);
+ const discovered=inventory.worktrees.find(view=>view.path===f.workspace.root);
+ assert.equal(discovered.managed,false);assert.equal(discovered.session,null);
+ f.db.connection.prepare('INSERT INTO session_workspaces VALUES (?,?)').run(f.id,JSON.stringify(f.workspace));
+ return discovered;
+}
+
+test('workspace registration associates a copy already discovered without its provenance',async()=>fixture(async f=>{
+ const discovered=await discoverBeforeProvenance(f);
+ writeFileSync(join(f.workspace.root,'new'),'conversation work\n');
+ const refs=git(f.repo,'show-ref');const indexPath=git(f.workspace.root,'rev-parse','--git-path','index');
+ const index=readFileSync(indexPath);const sourceIndex=readFileSync(join(f.repo,'.git/index'));
+ await rememberWorktree(f.db,f.workspace);
+ const own=await f.manager.get(discovered.id);
+ assert.equal(own.managed,true);assert.equal(own.sessionId,f.id);assert.equal(own.session.title,'Conversation');
+ assert.equal(own.sessionTitle,'Conversation');assert.equal(own.createdAt,f.workspace.createdAt);
+ assert.equal(own.expectedBranch,`refs/heads/${f.workspace.branch}`);assert.equal(own.targetBranch,'refs/heads/main');
+ assert.deepEqual(own.changesSinceCreation,{count:1,files:['new'],inheritedCount:0,needsReviewCount:0});
+ assert.equal(readFileSync(join(f.workspace.root,'new'),'utf8'),'conversation work\n');
+ assert.equal(git(f.repo,'show-ref'),refs);assert.deepEqual(readFileSync(indexPath),index);
+ assert.deepEqual(readFileSync(join(f.repo,'.git/index')),sourceIndex);
+ assert.equal((await f.manager.list()).worktrees.filter(view=>view.path===f.workspace.root).length,1);
+}));
+
+test('inventory repairs persisted unassociated copies from workspace records after restart',async()=>fixture(async f=>{
+ const discovered=await discoverBeforeProvenance(f);
+ const external=join(root,randomUUID());git(f.repo,'worktree','add','-b','external',external);
+ f.db.updateSession(f.id,{title:'Still here',status:'idle'});
+ await f.restart();
+ const inventory=await f.manager.list(f.project.id);
+ assert.deepEqual(inventory.errors,[]);
+ const own=inventory.worktrees.find(view=>view.id===discovered.id);
+ assert.equal(own.managed,true);assert.equal(own.session.id,f.id);assert.equal(own.session.title,'Still here');
+ assert.equal(inventory.worktrees.filter(view=>view.managed&&!view.primary).length,1);
+ assert.equal(inventory.worktrees.find(view=>view.path===external).managed,false);
+ assert.equal(inventory.worktrees.find(view=>view.primary).managed,false);
+ await f.manager.target(own.id,'refs/heads/external');
+ await rememberWorktree(f.db,f.workspace);await f.restart();
+ const restored=await f.manager.get(own.id);
+ assert.equal(restored.id,own.id);assert.equal(restored.targetBranch,'refs/heads/external');
+ assert.equal(restored.createdAt,f.workspace.createdAt);assert.equal(restored.session.id,f.id);
 }));
 
 test('deleting a conversation and then its project retains files and globally discoverable identity across restart',async()=>fixture(async f=>{

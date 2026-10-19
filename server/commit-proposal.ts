@@ -25,9 +25,12 @@ export function parseCommitProposal(raw: unknown, context: ProposalContext): Com
 function decode(text: string): unknown {
   const parsed=JSON.parse(text.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/,'$1'));
   if(parsed?.is_error||parsed?.type==='result'&&parsed.subtype&&parsed.subtype!=='success')throw new Error('L’agent n’a pas produit de proposition utilisable.');
+  if(parsed?.stopReason&&parsed.stopReason!=='end_turn')throw new Error(`L’agent n’a pas terminé sa proposition (${parsed.stopReason}).`);
   if(parsed?.structured_output)return parsed.structured_output;
+  if(parsed?.structuredOutput)return parsed.structuredOutput;
   if(typeof parsed?.result==='string')return decode(parsed.result);
   if(parsed?.result&&typeof parsed.result==='object')return parsed.result;
+  if(typeof parsed?.text==='string')return decode(parsed.text);
   return parsed;
 }
 

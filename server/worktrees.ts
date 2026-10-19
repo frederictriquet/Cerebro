@@ -94,15 +94,19 @@ async function commonDirectory(path: string): Promise<string> {
 }
 /** Persist identity while the session/project still exist. No foreign key cascades this record. */
 export async function rememberWorktree(db: CerebroDatabase, workspace: Workspace): Promise<void> {
-  if (workspace.mode !== 'isolated') return;
+  if (workspace.mode !== 'isolated' || workspace.removedAt) return;
   const commonDir = await commonDirectory(workspace.root).catch(()=>commonDirectory(workspace.projectRoot??workspace.source));
   const path = await realpath(workspace.root);
   const id = worktreeId(commonDir, path);
-  if (records(db).some(record => record.id === id)) return;
   const session = db.getSession(workspace.sessionId);
   const project = session ? db.getProject(session.projectId) : null;
   const source = workspace.projectRoot ?? (project ? await git(project.path, ['rev-parse', '--show-toplevel']).then(text => text.trim(), () => workspace.source) : workspace.source);
   const target = workspace.targetBranch ?? await git(source, ['symbolic-ref', '--quiet', 'HEAD']).then(text => text.trim(), () => null);
+  // Discovery may see Git's worktree before its workspace provenance is saved.
+  // Upgrade that provisional record, but preserve registered identities and targets.
+  // Read after the awaits so concurrent registration cannot be overwritten.
+  const previous = records(db).find(record => record.id === id);
+  if (previous?.managed || previous?.removedAt) return;
   store(db, {
     id, commonDir, path, source, projectId: workspace.projectId ?? project?.id ?? null,
     projectName: workspace.projectName ?? project?.name ?? basename(source), sessionId: workspace.sessionId,
@@ -201,7 +205,7 @@ export class WorktreeManager {
   }
   private async discover(): Promise<string[]> {
     const errors: string[] = [];
-    const registeredSessions=new Set(records(this.db).map(r=>r.sessionId));
+    const registeredSessions=new Set(records(this.db).filter(r=>r.managed).map(r=>r.sessionId));
     for (const row of this.db.connection.prepare('SELECT data FROM session_workspaces').all() as {data:string}[]) {
       const workspace = JSON.parse(row.data) as Workspace;
       if (workspace.mode !== 'isolated' || workspace.removedAt || registeredSessions.has(workspace.sessionId)) continue;
