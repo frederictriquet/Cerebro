@@ -183,8 +183,12 @@ export function NewSessionForm({
       await saveQueue.current;
       const spec = { agent, mode, model, effort, prompt: images.expand(prompt) };
       await onLaunch(spec);
-      setPrompt(spec.prompt);
-      setPromptEdited(false);
+      setPrompt('');
+      // Garder la main sur le champ : les défauts reçus au lancement contiennent encore
+      // le prompt envoyé. Les effacer aussi évite de le restaurer au prochain montage.
+      setPromptEdited(true);
+      saveDefaults({ prompt: '' });
+      if (draftKey !== undefined) setDraftError(writeDraft(draftKey, { prompt: '', images: [] }));
       images.reset();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Lancement impossible');
