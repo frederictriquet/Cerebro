@@ -304,6 +304,9 @@ export class CerebroDatabase {
       if (!columns.some((c) => c.name === column)) this.connection.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
     }
     const projectColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as unknown as { name: string }[];
+    if (!projectColumns.some((column) => column.name === 'sort_order')) {
+      this.connection.exec('ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+    }
     if (!projectColumns.some(column => column.name === 'workspace_mode')) {
       this.connection.exec("ALTER TABLE projects ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'isolated' CHECK (workspace_mode IN ('isolated','shared'))");
     }
@@ -361,8 +364,25 @@ export class CerebroDatabase {
   }
 
   listProjects(): Project[] {
-    return (this.connection.prepare('SELECT * FROM projects ORDER BY created_at ASC').all() as unknown as ProjectRow[])
+    return (this.connection.prepare('SELECT * FROM projects ORDER BY sort_order ASC, created_at ASC, rowid ASC').all() as unknown as ProjectRow[])
       .map(projectFromRow);
+  }
+
+  reorderProjects(ids: string[]): Project[] | null {
+    const projects = this.listProjects();
+    const knownIds = new Set(projects.map((project) => project.id));
+    if (ids.length !== projects.length || new Set(ids).size !== ids.length || ids.some((id) => !knownIds.has(id))) return null;
+
+    this.connection.exec('BEGIN');
+    try {
+      const update = this.connection.prepare('UPDATE projects SET sort_order = ? WHERE id = ?');
+      ids.forEach((id, index) => update.run(index, id));
+      this.connection.exec('COMMIT');
+    } catch (error) {
+      this.connection.exec('ROLLBACK');
+      throw error;
+    }
+    return this.listProjects();
   }
 
   getProject(id: string): Project | null {
@@ -374,7 +394,8 @@ export class CerebroDatabase {
     const project: Project = {
       id: randomUUID(), name, path, color: null, sessionDefaults: { ...DEFAULT_SESSION_DEFAULTS }, commitSettings: { ...DEFAULT_COMMIT_SETTINGS }, workspaceMode, createdAt: Date.now(),
     };
-    this.connection.prepare('INSERT INTO projects (id, name, path, created_at, workspace_mode) VALUES (?, ?, ?, ?, ?)')
+    this.connection.prepare(`INSERT INTO projects (id, name, path, created_at, workspace_mode, sort_order)
+      VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM projects))`)
       .run(project.id, project.name, project.path, project.createdAt, project.workspaceMode);
     return project;
   }

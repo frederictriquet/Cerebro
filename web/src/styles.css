@@ -937,6 +937,29 @@ textarea {
   text-decoration: none;
 }
 
+.project-tab[draggable='true'] {
+  cursor: grab;
+  user-select: none;
+}
+
+.project-tab.dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+.project-tab.drop-before {
+  box-shadow: -3px 0 0 var(--accent), var(--shadow);
+}
+
+.project-tab.drop-after {
+  box-shadow: 3px 0 0 var(--accent), var(--shadow);
+}
+
+.project-tabs-error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
 .project-tab-add {
   justify-content: center;
   min-width: 32px;

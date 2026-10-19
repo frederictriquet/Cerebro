@@ -56,6 +56,7 @@ export interface Store {
   setDesktopNotif: (value: boolean) => void;
   createProject: (name: string, path: string) => Promise<Project>;
   deleteProject: (id: string) => Promise<void>;
+  reorderProjects: (ids: string[]) => Promise<void>;
   createSession: (projectId: string, spec: LaunchSpec) => Promise<Session>;
   killSession: (id: string) => Promise<void>;
   resumeSession: (id: string) => Promise<Session>;
@@ -287,6 +288,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setEpics((list) => list.filter((e) => e.projectId !== id));
   }, []);
 
+  const reorderProjects = useCallback(async (ids: string[]): Promise<void> => {
+    const raw = await api<unknown>('/api/projects/order', {
+      method: 'PUT',
+      body: JSON.stringify({ ids }),
+    });
+    setProjects(parseProjectList(raw));
+  }, []);
+
   const createSession = useCallback(
     async (projectId: string, spec: LaunchSpec): Promise<Session> => {
       const raw = await api<unknown>(`/api/projects/${projectId}/sessions`, {
@@ -457,6 +466,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setDesktopNotif,
       createProject,
       deleteProject,
+      reorderProjects,
       createSession,
       killSession,
       resumeSession,
@@ -489,6 +499,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setDesktopNotif,
       createProject,
       deleteProject,
+      reorderProjects,
       createSession,
       killSession,
       resumeSession,
