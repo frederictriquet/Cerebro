@@ -82,6 +82,85 @@ textarea {
   overflow: auto;
 }
 
+.sidebar-rail {
+  position: relative;
+  flex: 0 0 auto;
+  width: 0;
+  z-index: 5;
+}
+
+/* Zone de saisie plus large que la bordure visible, centrée sur elle. */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:focus-visible,
+.sidebar-rail.dragging .sidebar-resizer {
+  outline: none;
+  background: linear-gradient(to right, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px);
+}
+
+.sidebar-toggle {
+  position: absolute;
+  z-index: 1;
+  bottom: 12px;
+  left: -32px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--bg-2);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+}
+
+.sidebar-toggle:hover,
+.sidebar-toggle:focus-visible,
+.sidebar-rail.collapsed .sidebar-toggle {
+  opacity: 1;
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+/* Masquée, la barre laisse une fine colonne pour la rouvrir sans recouvrir le contenu. */
+.sidebar-rail.collapsed {
+  width: 24px;
+  background: var(--bg-1);
+  border-right: 1px solid var(--line);
+}
+
+.sidebar-rail.collapsed .sidebar-toggle {
+  top: 11px;
+  bottom: auto;
+  left: 1px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.app.sidebar-hidden .sidebar {
+  display: none;
+}
+
+body.sidebar-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.sidebar-resizing .main {
+  pointer-events: none;
+}
+
 .machine-switcher {
   display: flex;
   flex-wrap: wrap;
@@ -1775,6 +1854,15 @@ a.btn:hover {
     border: 0;
     background: rgba(0, 0, 0, 0.5);
     cursor: pointer;
+  }
+
+  .sidebar-rail {
+    display: none;
+  }
+
+  /* Sur mobile, la barre est un tiroir : le masquage du bureau ne s'applique pas. */
+  .app.sidebar-hidden .sidebar {
+    display: flex;
   }
 
   .sidebar {
