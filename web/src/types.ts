@@ -106,6 +106,12 @@ export interface GitInfo {
   ahead: number | null;
   hasCommits: boolean;
   hasUpstream: boolean;
+  pendingCommits?: {
+    upstream: string;
+    commits: { hash: string; subject: string; author: string }[];
+    truncated: boolean;
+  };
+  pendingCommitsError?: string;
 }
 
 export type EventsMessage =
@@ -343,7 +349,18 @@ export function parseGitInfo(v: unknown): GitInfo | null {
   if (v.hasUpstream !== undefined && typeof v.hasUpstream !== 'boolean') return null;
   const hasCommits = v.hasCommits ?? ahead !== null;
   const hasUpstream = v.hasUpstream ?? ahead !== null;
-  return { branch, dirty: v.dirty, ahead, hasCommits, hasUpstream };
+  let pendingCommits: GitInfo['pendingCommits'];
+  const preview = v.pendingCommits;
+  if (isRecord(preview) && typeof preview.upstream === 'string' && typeof preview.truncated === 'boolean' && Array.isArray(preview.commits)) {
+    const commits: NonNullable<GitInfo['pendingCommits']>['commits'] = [];
+    for (const commit of preview.commits) {
+      if (!isRecord(commit) || typeof commit.hash !== 'string' || typeof commit.subject !== 'string' || typeof commit.author !== 'string') return null;
+      commits.push({ hash: commit.hash, subject: commit.subject, author: commit.author });
+    }
+    pendingCommits = { upstream: preview.upstream, truncated: preview.truncated, commits };
+  }
+  const pendingCommitsError = typeof v.pendingCommitsError === 'string' ? v.pendingCommitsError : undefined;
+  return { branch, dirty: v.dirty, ahead, hasCommits, hasUpstream, ...(pendingCommits ? { pendingCommits } : {}), ...(pendingCommitsError ? { pendingCommitsError } : {}) };
 }
 
 export function parseScreenLines(v: unknown): string[] | null {

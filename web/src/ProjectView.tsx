@@ -5,7 +5,7 @@ import { Backlog } from './Backlog.tsx';
 import { CodeEditor } from './CodeEditor.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { Worktrees } from './Worktrees.tsx';
-import { GitActions } from './GitActions.tsx';
+import { GitStatus } from './GitStatus.tsx';
 import { CommitSettingsDialog } from './CommitSettingsDialog.tsx';
 import { displayStatus, isAwaiting, isDormant, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { NewSessionForm } from './NewSessionForm.tsx';
@@ -13,57 +13,10 @@ import { go, href, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
-import { parseGitInfo, type GitInfo, type Session } from './types.ts';
+import type { Session } from './types.ts';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 
 const PROJECT_COLORS = ['#e5484d', '#f76b15', '#ffc53d', '#46a758', '#12a594', '#0090ff', '#6e56cf', '#d6409f'];
-
-function formatDirty(count: number): string {
-  const n = Math.max(0, Math.trunc(count));
-  return n === 1 ? '1 fichier modifié' : `${n} fichiers modifiés`;
-}
-
-function formatAhead(count: number): string {
-  return count === 1 ? '1 commit à pousser' : `${count} commits à pousser`;
-}
-
-function GitStatus({ projectId }: { projectId: string }) {
-  const [git, setGit] = useState<GitInfo | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setGit(null);
-    const load = (): void => {
-      void (async () => {
-        try {
-          const raw = await api<unknown>(`/api/projects/${projectId}/git`);
-          const parsed = parseGitInfo(raw);
-          if (!cancelled && parsed) setGit(parsed);
-        } catch {
-          /* garder la dernière valeur connue */
-        }
-      })();
-    };
-    load();
-    const timer = window.setInterval(load, 10_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [projectId]);
-
-  if (!git) return null;
-  if (git.branch === null) return <p className="git-line meta">Pas un dépôt git</p>;
-  return (
-    <p className="git-line">
-      <span className="pill">{git.branch}</span>
-      <span className={git.dirty > 0 ? 'git-dirty' : 'meta'}>{formatDirty(git.dirty)}</span>
-      {git.ahead ? <span className="meta">{formatAhead(git.ahead)}</span> : null}
-      {!git.hasUpstream ? <span className="meta">pas d'upstream</span> : null}
-      <GitActions projectId={projectId} git={git} />
-    </p>
-  );
-}
 
 // Projet présent sur plusieurs machines : une seule traite ses commandes Slack. On prend la main, on ne la rend pas.
 function SlackLead({ projectId }: { projectId: string }) {

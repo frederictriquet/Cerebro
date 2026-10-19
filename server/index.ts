@@ -21,6 +21,7 @@ import { CerebroDatabase, resolveSessionDefaults } from './db.ts';
 import type { Agent, CommitSettings, Epic, Mode, Project, Session, SessionDefaults, Task, TaskExecution, TaskStatus } from './db.ts';
 import { prepareCommit, executeCommitPlan } from './git-plan.ts';
 import { currentPush, startPush, onPushComplete } from './git-push.ts';
+import { gitSummary } from './git-summary.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
 import { incompatibleMessage, PeerSync, syncPayloadFrom } from './peers.ts';
 import { importFindings, listReports, saveReport } from './findings.ts';
@@ -198,40 +199,6 @@ function requestQueryToken(query: unknown): string | undefined {
   return typeof record?.token === 'string' ? record.token : undefined;
 }
 
-async function gitSummary(path: string): Promise<{
-  branch: string | null;
-  dirty: number;
-  ahead: number | null;
-  hasCommits: boolean;
-  hasUpstream: boolean;
-}> {
-  const empty = { branch: null, dirty: 0, ahead: 0, hasCommits: false, hasUpstream: false };
-  try {
-    const repository = await execFileAsync('git', ['-C', path, 'rev-parse', '--is-inside-work-tree']);
-    if (repository.stdout.trim() !== 'true') return empty;
-    const [branchResult, statusResult, hasCommits, hasUpstream] = await Promise.all([
-      execFileAsync('git', ['-C', path, 'branch', '--show-current']),
-      execFileAsync('git', ['-C', path, 'status', '--porcelain']),
-      execFileAsync('git', ['-C', path, 'rev-parse', '--verify', 'HEAD']).then(() => true, () => false),
-      execFileAsync('git', ['-C', path, 'rev-parse', '--verify', '@{upstream}']).then(() => true, () => false),
-    ]);
-    const branch = branchResult.stdout.trim() || null;
-    const status = statusResult.stdout.replace(/\r?\n$/, '');
-    let ahead: number | null = hasCommits ? null : 0;
-    if (hasCommits && hasUpstream) {
-      try {
-        const aheadResult = await execFileAsync('git', ['-C', path, 'rev-list', '--count', '@{upstream}..HEAD']);
-        const parsed = Number(aheadResult.stdout.trim());
-        if (Number.isInteger(parsed) && parsed >= 0) ahead = parsed;
-      } catch {
-        // Le compteur est indisponible ; les informations HEAD/upstream restent explicites.
-      }
-    }
-    return { branch, dirty: status === '' ? 0 : status.split(/\r?\n/).length, ahead, hasCommits, hasUpstream };
-  } catch {
-    return empty;
-  }
-}
 
 function sendSocket(socket: WebSocket, message: unknown): void {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
@@ -473,7 +440,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.get<{ Params: { id: string } }>('/api/projects/:id/git', async (request, reply) => {
     const project = db.getProject(request.params.id);
     if (project === null) return error(reply, 404, 'Projet introuvable');
-    return reply.send(await gitSummary(project.path));
+    return reply.send(await gitSummary(project.path, bodyRecord(request.query)?.commits === 'true'));
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/vscode', async (request, reply) => {
