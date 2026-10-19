@@ -66,6 +66,7 @@ Au démarrage du serveur, toute session non `exited` passe à `exited` (les PTY 
 |---|---|---|
 | GET | /api/projects | `Project[]` |
 | POST | /api/projects | `{name, path}` → `Project`. `path` : `~` expansé, doit être un répertoire existant (sinon 400 `{error}`) |
+| PUT | /api/projects/order | `{ids: string[]}` → `Project[]` dans l’ordre demandé ; tous les projets doivent figurer une fois. Ordre persistant, diffusé par `{type:'projects'}` ; 409 si la liste a changé |
 | DELETE | /api/projects/:id | tue les sessions vivantes du projet, supprime projet + sessions |
 | GET | /api/sessions | `Session[]` (toutes, triées createdAt desc : la plus récente en premier) |
 | POST | /api/projects/:id/sessions | `{agent?, mode?, model?, effort?, prompt?}` → `Session` (lance le PTY) ; les champs omis héritent de `Project.sessionDefaults`, `null` remet modèle/effort au défaut de la CLI |
@@ -174,6 +175,7 @@ Chaque octet de sortie PTY est ajouté à `LOG_DIR/<sessionId>.log` (stream en a
 ## UI web
 
 Thème sombre, sobre, dense. Routage par hash : `#/` accueil, `#/p/<projectId>`, `#/s/<sessionId>`.
+- **Onglets de projets** : réordonnables à la souris par glisser-déposer, avec un repère avant/après l’onglet survolé. L’ordre est conservé côté serveur et partagé par les vues et les navigateurs connectés à cette machine ; les nouveaux projets sont ajoutés à la fin. Accueil et « + » restent fixes.
 - **Barre latérale** : en haut, la section « À traiter » qui liste les sessions `attention=true` (pastille orange pour waiting, bleue pour idle) ;
   puis les projets, chacun dépliable avec ses sessions (pastille de statut : running = vert animé, waiting = orange, idle = bleu, exited = gris) ;
   bouton « + Projet » (formulaire : nom, chemin absolu).

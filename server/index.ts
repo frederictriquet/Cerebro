@@ -303,6 +303,17 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.get('/api/projects', async () => db.listProjects());
 
+  app.put('/api/projects/order', async (request, reply) => {
+    const ids = bodyRecord(request.body)?.ids;
+    if (!Array.isArray(ids) || !ids.every((id): id is string => typeof id === 'string') || new Set(ids).size !== ids.length) {
+      return error(reply, 400, 'Une liste d’identifiants de projets sans doublons est requise');
+    }
+    const projects = db.reorderProjects(ids);
+    if (projects === null) return error(reply, 409, 'La liste des projets a changé. Rechargez la page puis réessayez.');
+    broadcast({ type: 'projects', projects });
+    return projects;
+  });
+
   app.get<{ Querystring: { path?: string } }>('/api/fs/dirs', async (request, reply) => {
     const raw = request.query.path?.trim();
     const dirPath = raw === undefined || raw === '' ? homedir() : expandProjectPath(raw);
