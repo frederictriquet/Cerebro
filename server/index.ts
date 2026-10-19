@@ -469,7 +469,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post('/api/peer/sync', async (request, reply) => {
     const payload = syncPayloadFrom(request.body);
     if (payload === null) return error(reply, 400, 'Échange invalide');
-    // Une instance sans version (antérieure) est acceptée ; un autre protocole est refusé, avec notre version.
+    // Une instance sans version (antérieure) est acceptée ; une autre version majeure est refusée, avec notre version.
     if (payload.version !== null && compatibility(payload.version) === 'incompatible') {
       return reply.code(409).send({ error: incompatibleMessage(payload.machine, payload.version), version: VERSION_INFO });
     }

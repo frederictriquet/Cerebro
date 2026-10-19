@@ -71,9 +71,9 @@ function upsertSession(list: Session[], session: Session): Session[] {
 
 function usableVersion(value: unknown): VersionInfo | null {
   if (typeof value !== 'object' || value === null) return null;
-  const { version, commit, protocol } = value as Partial<Record<keyof VersionInfo, unknown>>;
-  if (typeof version !== 'string' || typeof protocol !== 'number') return null;
-  return { version, commit: typeof commit === 'string' ? commit : null, protocol };
+  const { version, commit } = value as Partial<Record<keyof VersionInfo, unknown>>;
+  if (typeof version !== 'string') return null;
+  return { version, commit: typeof commit === 'string' ? commit : null };
 }
 
 function usableStatus(value: unknown): RemoteVersionStatus | null {
@@ -109,12 +109,12 @@ export function versionLabel(info: VersionInfo): string {
 
 function compatibilityText(status: RemoteVersionStatus | null): string {
   if (status === null) return 'version pas encore vérifiée';
-  const version = status.version === null ? null : `Cerebro ${versionLabel(status.version)}, protocole ${status.version.protocol}`;
+  const version = status.version === null ? null : `Cerebro ${versionLabel(status.version)}`;
   switch (status.compatibility) {
     case 'same':
       return `même version (${version})`;
     case 'compatible':
-      return `version différente, protocole compatible (${version})`;
+      return `version différente, même majeure (${version})`;
     case 'incompatible':
       return `INCOMPATIBLE (${version}) : mettre à jour l'une des machines`;
     case 'unknown':
@@ -371,13 +371,13 @@ export function AppVersion() {
   const version = info?.local.version;
   if (!version) return null;
   return (
-    <p className="app-version" title={`Protocole entre instances : ${version.protocol}`}>
-      Cerebro {versionLabel(version)} · protocole {version.protocol}
+    <p className="app-version" title="Version SemVer : les machines de même version majeure sont compatibles">
+      Cerebro {versionLabel(version)}
     </p>
   );
 }
 
-/** Machine distante affichée dont le protocole diffère : l'interface risque d'échouer, on le dit. */
+/** Machine distante affichée d'une autre version majeure : l'interface risque d'échouer, on le dit. */
 export function MachineCompatNotice() {
   const current = useMachine();
   const info = useMachineInfo();
@@ -391,7 +391,7 @@ export function MachineCompatNotice() {
         <span>
           {remote.name} n'est pas compatible avec cette machine
           {distant && local
-            ? ` (protocole ${distant.protocol}, Cerebro ${versionLabel(distant)} ; ici protocole ${local.protocol}, Cerebro ${versionLabel(local)})`
+            ? ` (Cerebro ${versionLabel(distant)} ; ici Cerebro ${versionLabel(local)})`
             : ''}
           . Certaines actions risquent d'échouer et la coordination Slack est suspendue : mettez à jour l'une des deux machines.
         </span>

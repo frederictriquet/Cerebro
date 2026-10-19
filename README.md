@@ -347,13 +347,15 @@ L'état est conservé dans `$CEREBRO_DATA_DIR/peers.json`, et l'identifiant de l
 dans `instance-id`. Le nom affiché pour chaque machine vient de `CEREBRO_MACHINE_NAME`
 (par défaut le nom d'hôte). `help` et `list` restent traités par toutes les machines.
 
-**Versions.** `GET /api/version` renvoie la version de l'application (`package.json`,
-complétée du commit git court ; `CEREBRO_COMMIT` la remplace hors dépôt git) et la version
-du protocole entre instances (`PROTOCOL_VERSION` dans `server/version.ts`, à incrémenter à
-chaque changement incompatible de l'échange ou des routes relayées). Les deux sont transmises
-dans `/api/peer/sync`. Même protocole = compatible. Le bas de la barre latérale affiche la
+**Versions.** Cerebro suit [SemVer](https://semver.org) : la version de `package.json`
+(validée au démarrage) s'incrémente en MAJEURE pour tout changement incompatible du contrat
+entre instances (échange `/api/peer/sync`, routes relayées par `/m/<id>/…`, formats lus par
+l'UI d'une autre machine), en MINEURE pour une fonctionnalité et en CORRECTIVE pour un correctif.
+`GET /api/version` la renvoie avec le commit git court (`CEREBRO_COMMIT` le remplace hors dépôt
+git), affiché en métadonnée de build (`1.0.0+54dea61`). Elle est transmise dans `/api/peer/sync`.
+Même version majeure = compatible (en `0.y.z`, même `0.y`). Le bas de la barre latérale affiche la
 version locale, et chaque pastille de machine distante un indicateur : rien (même version),
-`≈` (autre version, protocole compatible), `⚠` (incompatible) ou `v?` (version inconnue :
+`≈` (autre version, même majeure), `⚠` (incompatible) ou `v?` (version inconnue :
 instance antérieure ou injoignable). Une machine incompatible refuse l'échange (409) : la
 coordination Slack avec elle est suspendue, et un bandeau rouge s'affiche quand on la consulte.
 
