@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';i
 const root=mkdtempSync(join(tmpdir(),'cerebro-epic-'));process.env.CEREBRO_DATA_DIR=root;
 const {CerebroDatabase,DEFAULT_SESSION_DEFAULTS}=await import('../server/db.ts');const {CommandExecutor}=await import('../server/commands.ts');const {EpicRunner,taskOrder}=await import('../server/epic-runner.ts');
 async function fixture(run){const db=new CerebroDatabase(':memory:');const project=db.createProject('Demo',root);const epic=db.createEpic(project.id,'Epic','Context',null);const commands=new CommandExecutor(db);
- const launches=[];const sessions={async create(p,options){const session=db.createSession({id:randomUUID(),projectId:p.id,...options,title:'step',status:'idle',agentSessionId:'fake'},'token');launches.push(session);return session;},kill(id){db.updateSession(id,{status:'exited',exitCode:130});return true;}};
+ const launches=[];const sessions={async create(p,options,validate,contextPath,title='step'){const session=db.createSession({id:randomUUID(),projectId:p.id,...options,title,status:'idle',agentSessionId:'fake'},'token');launches.push(session);return session;},kill(id){db.updateSession(id,{status:'exited',exitCode:130});return true;}};
  let runner=new EpicRunner(db,sessions,commands,()=>{});
  const task=(name,execution={type:'llm'})=>db.createTask(project.id,name,null,epic.id,execution);
  const command=(script,completion='manual')=>{const c=commands.configure(project.id,{name:'check',executable:process.execPath,args:['-e',script],cwd:'.',timeoutSeconds:5});return {type:'command',commandId:c.id,completion};};
@@ -39,6 +39,13 @@ test('external prerequisites and backlog mutations block explicitly; stop/resume
 test('server topological order detects cycles',()=>{
  const a={id:'a',dependsOn:['b'],status:'todo'},b={id:'b',dependsOn:['a'],status:'todo'};assert.throws(()=>taskOrder([a,b],[a,b]),/Cycle/);
 });
+test('LLM steps get a readable title and a declared-done step frees its terminal',async()=>fixture(async f=>{
+ const a=f.task('first step\nmore details');const b=f.task('second step');f.db.setTaskDependencies(b.id,[a.id]);
+ f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.latest().status==='waiting-validation');
+ const first=f.launches[0];assert.equal(first.title,'Epic « Epic » · étape 1/2 : first step');assert.match(first.prompt,/^\[CEREBRO_EPIC_STEP /);
+ f.db.updateTask(a.id,{status:'done'});await f.until(()=>f.latest().status==='waiting-validation'&&f.latest().currentTaskId===b.id);
+ assert.equal(f.db.getSession(first.id).status,'exited');assert.equal(f.launches[1].title,'Epic « Epic » · étape 2/2 : second step');assert.notEqual(f.db.getSession(f.launches[1].id).status,'exited');
+}));
 process.on('exit',()=>rmSync(root,{recursive:true,force:true}));
 test('stop during asynchronous LLM preparation cannot be overwritten by its launch callback',async()=>fixture(async f=>{
  const a=f.task('slow');let release;let beforeLaunch;const gate=new Promise(resolve=>{release=resolve;});
