@@ -235,6 +235,7 @@ fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jso
   `plan` = « Plan / lecture seule », `bypass` = « Bypass (aucune confirmation) ».
 - Page d'accueil `#/` : tableau de bord — compteurs (en cours / en attente / inactives), liste des sessions vivantes de
   tous les projets dans l'ordre de création (la plus récente en premier), et bouton créer un projet si aucun.
+- Barre latérale redimensionnable (glisser sa bordure droite, double-clic pour revenir à 272 px, flèches au clavier ; 200 à 560 px) et masquable (bouton `«` / `»` ; une fine colonne reste pour la rouvrir). Largeur et masquage mémorisés en localStorage.
 - Responsive : en dessous de 800 px, la barre latérale devient un tiroir (bouton menu) et le terminal prend toute la largeur.
 - Si une requête reçoit 401, afficher un écran « Token requis » avec un champ qui recharge `/?token=…`.
 
