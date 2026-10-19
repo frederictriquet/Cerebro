@@ -8,6 +8,8 @@ export interface EpicRun {
   order:string[];members:string[];versions:Record<string,string>;results:Record<string,string>;
   currentTaskId:string|null;sessionId:string|null;commandRunId:string|null;stepStartedAt:number;
   contextRoot:string;options:SessionDefaults;error:string|null;startedAt:number;updatedAt:number;
+  // When the step's session was first seen waiting; null once it is no longer waiting.
+  waitingSince?:number|null;
 }
 const version=(t:Task):string=>createHash('sha256').update(JSON.stringify([t.text,t.dependsOn.slice().sort(),t.execution,t.epicId])).digest('hex');
 export function taskOrder(tasks:Task[],all:Task[]):Task[]{
@@ -18,6 +20,8 @@ export function taskOrder(tasks:Task[],all:Task[]):Task[]{
 }
 export class EpicRunner {
   onResult:(run:EpicRun)=>void=()=>{};
+  // A session often waits briefly at launch (accepted startup prompt, false positive of the screen heuristic): only a lasting wait blocks the run.
+  waitingGraceMs=12_000;
   private db:CerebroDatabase;private sessions:SessionManager;private commands:CommandExecutor;private broadcast:(event:unknown)=>void;
   private busy=new Set<string>();private timer:NodeJS.Timeout|null=null;private closed=false;private inFlight=new Set<Promise<void>>();
   constructor(db:CerebroDatabase,sessions:SessionManager,commands:CommandExecutor,broadcast:(event:unknown)=>void){this.db=db;this.sessions=sessions;this.commands=commands;this.broadcast=broadcast;}
@@ -61,7 +65,7 @@ export class EpicRunner {
       if(task?.status!=='done'&&(!session||session.status==='exited')&&command?.status!=='running'&&command?.status!=='succeeded'){
         if(session)run.contextRoot=workspaceFor(this.db,session.id)?.path??run.contextRoot;
         if(task)this.changeTask(task.id,{status:'todo',sessionId:null});
-        run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;
+        run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;run.waitingSince=null;
       }
     }
     if(replan){
@@ -102,7 +106,12 @@ export class EpicRunner {
         if(!session){stop('blocked','Lancement de session interrompu : vérifiez puis reprenez explicitement.');return;}
         run.sessionId=session.id;
         if(task.sessionId!==session.id)this.changeTask(task.id,{sessionId:session.id,status:'started'});
-        if(session.status==='running'||session.status==='starting'){this.save(run);return;}
+        if(session.status==='running'||session.status==='starting'){run.waitingSince=null;this.save(run);return;}
+        // An explicit question (cerebro-notify --ask) blocks at once; any other wait must last beyond the grace delay.
+        if(session.status==='waiting'&&!session.attentionReason?.startsWith('Question : ')){
+          run.waitingSince??=session.updatedAt;
+          if(Date.now()-run.waitingSince<this.waitingGraceMs){this.save(run);return;}
+        }else run.waitingSince=null;
         if(task.status!=='done'){
           if(session.status==='exited'&&session.exitCode!==null&&session.exitCode!==0){run.results[task.id]='failed';stop('failed',`Session sortie avec code ${session.exitCode}.`);return;}
           run.results[task.id]=session.status==='waiting'?'blocked':'waiting-validation';stop(session.status==='waiting'?'blocked':'waiting-validation',session.attentionReason??'Tour terminé sans clôture explicite de la tâche.');return;
@@ -112,7 +121,7 @@ export class EpicRunner {
         // The step is closed and its turn is over: free the terminal so finished steps do not pile up. The workspace stays for the next step.
         if(session.status!=='exited')this.sessions.kill(session.id);
       }
-      run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;run.status='running';run.error=null;this.save(run);
+      run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;run.waitingSince=null;run.status='running';run.error=null;this.save(run);
     }
     const pending=run.order.map(id=>this.db.getTask(id)!).filter(t=>t.status!=='done');
     if(!pending.length){run.status='succeeded';run.error=null;this.save(run);return;}
