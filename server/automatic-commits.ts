@@ -107,7 +107,9 @@ export class AutomaticCommits {
       }
       if(operation.push){
         phase('pushing');this.idle(operation.path);
-        operation.pushOperation=structuredClone(await startPush(operation.path,{allowDirty:eligible.length>0,expectedHead:operation.commits.at(-1)?.hash??snapshot.head,expectedBranch:snapshot.branch}));this.save(operation);
+        // The snapshot already checked the tree (a snapshot with only excluded files is blocked above), and
+        // shared dependency links stay untracked on purpose, so a raw `git status` check would refuse them.
+        operation.pushOperation=structuredClone(await startPush(operation.path,{allowDirty:true,expectedHead:operation.commits.at(-1)?.hash??snapshot.head,expectedBranch:snapshot.branch}));this.save(operation);
         while(operation.pushOperation.status==='running'){
           await new Promise(resolve=>setTimeout(resolve,200));
           const latest=await currentPush(operation.path);

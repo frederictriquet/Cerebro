@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {existsSync,mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,mkdtempSync,readFileSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {after,test} from 'node:test';
@@ -11,6 +11,7 @@ const {CerebroDatabase}=await import('../server/db.ts');
 const {AutomaticCommits}=await import('../server/automatic-commits.ts');
 const {prepareSessionGit,executeSessionCommit}=await import('../server/session-git.ts');
 const {proposeCommits}=await import('../server/commit-proposal.ts');
+const {prepareCommit}=await import('../server/git-plan.ts');
 const git=(path,...args)=>execFileSync('git',['-C',path,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 after(()=>rmSync(root,{recursive:true,force:true}));
 async function fixture(run){
@@ -36,6 +37,13 @@ test('one action drafts a message with project tuning, commits and pushes to a l
 test('a clean repository pushes directly without any inference',async()=>fixture(async f=>{
  const remote=join(f.directory,'remote.git');git(f.directory,'init','--bare',remote);git(f.repo,'remote','add','origin',remote);
  const result=await f.finish(await f.manager.start(f.context,randomUUID(),true));assert.equal(result.status,'succeeded');assert.equal(result.commits.length,0);assert.equal(f.calls,0);
+}));
+test('a shared dependency link alone neither blocks the commit nor the push',async()=>fixture(async f=>{
+ const remote=join(f.directory,'remote.git');git(f.directory,'init','--bare',remote);git(f.repo,'remote','add','origin',remote);
+ const source=join(f.directory,'source');mkdirSync(join(source,'node_modules'),{recursive:true});symlinkSync(join(source,'node_modules'),join(f.repo,'node_modules'),'dir');
+ const context={...f.context,prepare:()=>prepareCommit(f.repo,{sharedIgnored:['node_modules'],source})};
+ const result=await f.finish(await f.manager.start(context,randomUUID(),true));assert.equal(result.status,'succeeded',result.error);
+ assert.deepEqual(result.exclusions,[]);assert.equal(result.commits.length,0);assert.equal(f.calls,0);assert.equal(result.pushOperation.status,'succeeded');
 }));
 test('duplicate clicks, request replay and subdirectory aliases do not draft or commit twice',async()=>fixture(async f=>{
  writeFileSync(join(f.repo,'file'),'work\n');mkdirSync(join(f.repo,'subdir'));
