@@ -15,7 +15,7 @@ import { CommandExecutor } from './commands.ts';
 import { registerWorktreeRoutes } from './worktree-routes.ts';
 import { registerAutomaticCommitRoutes } from './automatic-commit-routes.ts';
 import { AGENTS, getAgentAvailability } from './agents.ts';
-import { getCatalog, parseTuning, startCatalogRefresh } from './catalog.ts';
+import { getCatalog, parseTuning, refreshCatalog, startCatalogRefresh } from './catalog.ts';
 import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
 import { CerebroDatabase, resolveSessionDefaults } from './db.ts';
 import type { Agent, CommitSettings, Epic, Mode, Project, Session, SessionDefaults, Task, TaskExecution, TaskStatus } from './db.ts';
@@ -895,7 +895,9 @@ export async function buildServer(): Promise<FastifyInstance> {
     return reply.code(204).send();
   });
 
-  app.get('/api/agents', async () => {
+  app.get<{ Querystring: { refresh?: string } }>('/api/agents', async (request) => {
+    // Rafraîchissement demandé : redécouvre le catalogue d'un agent installé depuis le démarrage.
+    if (request.query.refresh === '1') await refreshCatalog();
     const [availability, catalog] = await Promise.all([getAgentAvailability(), getCatalog()]);
     return availability.map((info) => ({ ...info, ...catalog[info.agent] }));
   });

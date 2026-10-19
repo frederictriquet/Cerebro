@@ -47,6 +47,7 @@ export interface Store {
   tasks: Task[];
   epics: Epic[];
   agents: AgentInfo[];
+  refreshAgents: () => Promise<void>;
   connected: boolean;
   // Incrémenté à chaque changement de prise de main Slack entre machines : déclenche un rechargement.
   peersVersion: number;
@@ -296,6 +297,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setProjects(parseProjectList(raw));
   }, []);
 
+  const refreshAgents = useCallback(async (): Promise<void> => {
+    setAgents(parseAgentInfoList(await api<unknown>('/api/agents?refresh=1')));
+  }, []);
+
   const createSession = useCallback(
     async (projectId: string, spec: LaunchSpec): Promise<Session> => {
       const raw = await api<unknown>(`/api/projects/${projectId}/sessions`, {
@@ -458,6 +463,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       tasks,
       epics,
       agents,
+      refreshAgents,
       connected,
       peersVersion,
       muted,
@@ -491,6 +497,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       tasks,
       epics,
       agents,
+      refreshAgents,
       connected,
       peersVersion,
       muted,
