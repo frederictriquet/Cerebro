@@ -5,6 +5,7 @@ import { Backlog } from './Backlog.tsx';
 import { CodeEditor } from './CodeEditor.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { Worktrees } from './Worktrees.tsx';
+import { WorktreeLabel } from './WorktreeLabel.tsx';
 import { GitStatus } from './GitStatus.tsx';
 import { CommitSettingsDialog } from './CommitSettingsDialog.tsx';
 import { displayStatus, isAwaiting, isDormant, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
@@ -367,6 +368,7 @@ function SessionRow({
           <span className="session-row-meta">
             <span className="pill"><AgentLabel agent={session.agent} /></span>
             <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
+            <WorktreeLabel worktree={session.worktree} />
             <span className="meta">{relativeTime(session.updatedAt, now)}</span>
           </span>
         </a>

@@ -182,7 +182,9 @@ Thème sombre, sobre, dense. Routage par hash : `#/` accueil, `#/p/<projectId>`,
 - **Vue projet** : nom + chemin, formulaire « Nouvelle session » (agent : liste des agents disponibles, mode : default / acceptEdits / plan / bypass avec un avertissement rouge pour bypass, prompt multi-ligne, Ctrl+Entrée (ou Cmd+Entrée sur Mac) pour lancer ; agent, modèle, effort, mode et prompt sont mémorisés automatiquement par projet côté serveur via `PATCH /api/projects/:id` `{sessionDefaults: {...}}`, même avant lancement, puis repris par tous les formulaires et les nouvelles sessions Slack ; les champs omis héritent des choix enregistrés, un prompt explicite reste prioritaire ; les brouillons non lancés et leurs images restent conservés dans le navigateur et sont effacés au lancement, le prompt lancé reste prérempli comme défaut), puis la liste des sessions du projet (titre, agent, statut, date relative, actions).
 - **Vue session** : en-tête (titre, agent, mode, statut, raison d'attention) + boutons Arrêter / Reprendre (si exited et agentSessionId) / Supprimer ;
   terminal xterm.js plein espace (FitAddon + ResizeObserver, WebLinksAddon, police monospace 13 px), connecté à `/ws/term/:id`,
-  qui reçoit le focus à l'ouverture. Ouvrir la session appelle `POST /api/sessions/:id/seen`.
+  qui reçoit le focus à l'ouverture. Ouvrir la session appelle `POST /api/sessions/:id/seen`. Échap seul dans le terminal
+  est intercepté par Cerebro et ramène à la vue du projet de la session (accueil si projet inconnu) ; Maj+Échap et le
+  bouton rapide `Échap` envoient la touche à la session.
 - **Alertes** : connexion permanente à `/ws/events` (reconnexion automatique). Demander la permission
   Notification au premier clic utilisateur. Sur `alert` : `new Notification('Cerebro — <agent> attend', {body: raison + titre, tag: session.id})`,
   dont le clic fait `window.focus()` et navigue vers `#/s/<id>` ; ne pas notifier si cette session est déjà ouverte et la fenêtre visible.
@@ -235,6 +237,7 @@ fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jso
   `plan` = « Plan / lecture seule », `bypass` = « Bypass (aucune confirmation) ».
 - Page d'accueil `#/` : tableau de bord — compteurs (en cours / en attente / inactives), liste des sessions vivantes de
   tous les projets dans l'ordre de création (la plus récente en premier), et bouton créer un projet si aucun.
+- Barre latérale redimensionnable (glisser sa bordure droite, double-clic pour revenir à 272 px, flèches au clavier ; 200 à 560 px) et masquable (bouton `«` / `»` ; une fine colonne reste pour la rouvrir). Largeur et masquage mémorisés en localStorage.
 - Responsive : en dessous de 800 px, la barre latérale devient un tiroir (bouton menu) et le terminal prend toute la largeur.
 - Si une requête reçoit 401, afficher un écran « Token requis » avec un champ qui recharge `/?token=…`.
 

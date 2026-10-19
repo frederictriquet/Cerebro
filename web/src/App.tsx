@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
 import { dismissPeerNotice, getPeerNotices, setApiBase, subscribeUnauthorized, type PeerNotice } from './api.ts';
 import { HomeView } from './HomeView.tsx';
 import { ProjectTabs } from './ProjectTabs.tsx';
@@ -6,6 +6,7 @@ import { ProjectView } from './ProjectView.tsx';
 import { SessionView } from './SessionView.tsx';
 import { MachineCompatNotice, MachineWatchProvider } from './MachineSwitcher.tsx';
 import { Sidebar } from './Sidebar.tsx';
+import { SidebarRail, useSidebarLayout } from './SidebarRail.tsx';
 import { StoreProvider, useStore } from './store.tsx';
 import { useMachine, useRoute } from './route.ts';
 
@@ -111,6 +112,7 @@ function PeerNotices() {
 function Shell() {
   const route = useRoute();
   const [navOpen, setNavOpen] = useState(false);
+  const sidebar = useSidebarLayout();
   const routeKey =
     route.kind === 'home' ? 'home' : route.kind === 'project' ? `p:${route.projectId}` : `s:${route.sessionId}`;
 
@@ -119,7 +121,10 @@ function Shell() {
   }, [routeKey]);
 
   return (
-    <div className={`app${navOpen ? ' nav-open' : ''}`}>
+    <div
+      className={`app${navOpen ? ' nav-open' : ''}${sidebar.hidden ? ' sidebar-hidden' : ''}`}
+      style={{ '--sidebar': `${sidebar.width}px` } as CSSProperties}
+    >
       <div className="mobile-bar">
         <button
           type="button"
@@ -136,6 +141,12 @@ function Shell() {
         <button type="button" className="nav-backdrop" aria-label="Fermer le menu" onClick={() => setNavOpen(false)} />
       ) : null}
       <Sidebar route={route} onNavigate={() => setNavOpen(false)} />
+      <SidebarRail
+        width={sidebar.width}
+        hidden={sidebar.hidden}
+        onResize={sidebar.setWidth}
+        onToggle={() => sidebar.setHidden(!sidebar.hidden)}
+      />
       <main className="main">
         <MachineCompatNotice />
         <PeerNotices />

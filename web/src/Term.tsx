@@ -39,16 +39,20 @@ export function Term({
   sessionId,
   onApi,
   onSelectionChange,
+  onEscape,
 }: {
   sessionId: string;
   onApi?: (api: TermApi | null) => void;
   onSelectionChange?: (hasSelection: boolean) => void;
+  onEscape?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onApiRef = useRef(onApi);
   onApiRef.current = onApi;
   const onSelectionRef = useRef(onSelectionChange);
   onSelectionRef.current = onSelectionChange;
+  const onEscapeRef = useRef(onEscape);
+  onEscapeRef.current = onEscape;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -86,10 +90,22 @@ export function Term({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
-    // xterm traduit Ctrl+V en ^V et annule l'événement : le navigateur ne colle alors jamais.
-    // On le lui laisse, pour que l'événement paste (texte ou image) ait lieu.
-    term.attachCustomKeyEventHandler((event) =>
-      !(event.ctrlKey && !event.altKey && !event.metaKey && event.code === 'KeyV'));
+    term.attachCustomKeyEventHandler((event) => {
+      // xterm traduit Ctrl+V en ^V et annule l'événement : le navigateur ne colle alors jamais.
+      // On le lui laisse, pour que l'événement paste (texte ou image) ait lieu.
+      if (event.ctrlKey && !event.altKey && !event.metaKey && event.code === 'KeyV') return false;
+      // Échap seul est réservé à Cerebro (retour au projet) ; Maj+Échap et le bouton rapide l'envoient à la session.
+      const escape = onEscapeRef.current;
+      if (escape && event.key === 'Escape' && !event.shiftKey && !event.ctrlKey && !event.altKey
+        && !event.metaKey && !event.isComposing) {
+        if (event.type === 'keydown') {
+          event.preventDefault();
+          escape();
+        }
+        return false;
+      }
+      return true;
+    });
     term.open(host);
     term.focus();
 

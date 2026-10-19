@@ -58,6 +58,14 @@ export interface Session {
   exitCode: number | null;
   createdAt: number;
   updatedAt: number;
+  worktree: SessionWorktree | null;
+}
+
+export interface SessionWorktree {
+  name: string;
+  path: string;
+  branch: string | null;
+  removed: boolean;
 }
 
 export interface Task {
@@ -236,6 +244,7 @@ export function parseSession(v: unknown): Session | null {
   // Absents des serveurs antérieurs (machines distantes) : défaut de l'agent.
   const model = typeof v.model === 'string' ? v.model : null;
   const effort = isEffort(v.effort) ? v.effort : null;
+  const worktree = parseSessionWorktree(v.worktree);
   return {
     id,
     projectId,
@@ -252,7 +261,17 @@ export function parseSession(v: unknown): Session | null {
     exitCode,
     createdAt,
     updatedAt,
+    worktree,
   };
+}
+
+// Absent des serveurs antérieurs : la session s'affiche sans worktree.
+function parseSessionWorktree(v: unknown): SessionWorktree | null {
+  if (!isRecord(v)) return null;
+  const name = asString(v.name);
+  const path = asString(v.path);
+  if (name === null || path === null) return null;
+  return { name, path, branch: typeof v.branch === 'string' ? v.branch : null, removed: v.removed === true };
 }
 
 export function parseTask(v: unknown): Task | null {

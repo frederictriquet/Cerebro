@@ -15,6 +15,7 @@ import { href, useNow, type Route } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { UsageGauges } from './UsageGauges.tsx';
+import { WorktreeLabel } from './WorktreeLabel.tsx';
 import type { Session } from './types.ts';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 
@@ -265,6 +266,11 @@ function AttentionItem({
         <span className="meta">
           <AgentLabel agent={session.agent} /> · {relativeTime(session.updatedAt, now)}
         </span>
+        {session.worktree ? (
+          <span className="attention-worktree">
+            <WorktreeLabel worktree={session.worktree} />
+          </span>
+        ) : null}
       </a>
       <div className="attention-extra">
         {session.attentionReason ? <p className={`reason-line ${tone}`}>{session.attentionReason}</p> : null}

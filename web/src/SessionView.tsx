@@ -20,6 +20,7 @@ import { go, href, useNow } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { Term, type TermApi } from './Term.tsx';
+import { WorktreeLabel } from './WorktreeLabel.tsx';
 
 type SessionDrawer = 'provenance' | 'findings' | null;
 
@@ -455,6 +456,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               </button>
             ) : null}
             <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
+            <WorktreeLabel worktree={session.worktree} />
             {project ? (
               <a className="project-crumb" href={href(`#/p/${project.id}`)}>
                 {project.name}
@@ -504,6 +506,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           sessionId={session.id}
           onApi={onApi}
           onSelectionChange={setHasSelection}
+          onEscape={() => go(project ? `#/p/${project.id}` : '#/')}
         />
         {hasSelection ? (
           // preventDefault au mousedown : le clic ne doit pas effacer la sélection du terminal.
