@@ -450,6 +450,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           sessionId={session.id}
           onApi={onApi}
           onSelectionChange={setHasSelection}
+          onEscape={() => go(project ? `#/p/${project.id}` : '#/')}
         />
         {hasSelection ? (
           // preventDefault au mousedown : le clic ne doit pas effacer la sélection du terminal.
