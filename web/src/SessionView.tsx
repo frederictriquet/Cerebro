@@ -20,6 +20,7 @@ import { go, href, useNow } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { Term, type TermApi } from './Term.tsx';
+import { WorktreeLabel } from './WorktreeLabel.tsx';
 
 function FindingsPanel({sessionId}:{sessionId:string}) {
   const [reports,setReports]=useState<SavedReport[]>([]);
@@ -409,6 +410,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             {session.model !== null ? <span className="pill">{agents.find((a) => a.agent === session.agent)?.models.find((m) => m.value === session.model)?.label ?? session.model}</span> : null}
             {session.effort !== null ? <span className="pill">effort {session.effort}</span> : null}
             <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
+            <WorktreeLabel worktree={session.worktree} />
             {project ? (
               <a className="project-crumb" href={href(`#/p/${project.id}`)}>
                 {project.name}

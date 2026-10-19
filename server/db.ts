@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { DATA_DIR } from './config.ts';
 
@@ -71,6 +71,15 @@ export interface Session {
   exitCode: number | null;
   createdAt: number;
   updatedAt: number;
+  // Copie de travail isolée de la conversation ; null quand elle travaille dans le dossier du projet.
+  worktree: SessionWorktree | null;
+}
+
+export interface SessionWorktree {
+  name: string;
+  path: string;
+  branch: string | null;
+  removed: boolean;
 }
 
 export type TaskExecution = {type:'llm'} | {type:'command';commandId:string;completion:'manual'|'exit-zero'};
@@ -130,6 +139,7 @@ interface SessionRow {
   hook_token: string | null;
   created_at: number;
   updated_at: number;
+  workspace: string | null;
 }
 
 interface TaskRow {
@@ -192,6 +202,15 @@ function projectFromRow(row: ProjectRow): Project {
   };
 }
 
+function worktreeFromWorkspace(data: string | null): SessionWorktree | null {
+  if (data === null) return null;
+  const workspace = JSON.parse(data) as { mode: string; path: string; branch: string | null; removedAt?: number };
+  if (workspace.mode !== 'isolated') return null;
+  return { name: basename(workspace.path), path: workspace.path, branch: workspace.branch, removed: workspace.removedAt !== undefined };
+}
+
+const SESSION_SELECT = 'SELECT s.*, w.data AS workspace FROM sessions s LEFT JOIN session_workspaces w ON w.session_id = s.id';
+
 function sessionFromRow(row: SessionRow): Session {
   return {
     id: row.id,
@@ -209,6 +228,7 @@ function sessionFromRow(row: SessionRow): Session {
     exitCode: row.exit_code,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    worktree: worktreeFromWorkspace(row.workspace),
   };
 }
 
@@ -419,17 +439,17 @@ export class CerebroDatabase {
   }
 
   listSessions(): Session[] {
-    return (this.connection.prepare('SELECT * FROM sessions ORDER BY created_at DESC, rowid DESC').all() as unknown as SessionRow[])
+    return (this.connection.prepare(`${SESSION_SELECT} ORDER BY s.created_at DESC, s.rowid DESC`).all() as unknown as SessionRow[])
       .map(sessionFromRow);
   }
 
   listProjectSessions(projectId: string): Session[] {
-    return (this.connection.prepare('SELECT * FROM sessions WHERE project_id = ? ORDER BY created_at DESC, rowid DESC')
+    return (this.connection.prepare(`${SESSION_SELECT} WHERE s.project_id = ? ORDER BY s.created_at DESC, s.rowid DESC`)
       .all(projectId) as unknown as SessionRow[]).map(sessionFromRow);
   }
 
   getSession(id: string): Session | null {
-    const row = this.connection.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as unknown as SessionRow | undefined;
+    const row = this.connection.prepare(`${SESSION_SELECT} WHERE s.id = ?`).get(id) as unknown as SessionRow | undefined;
     return row === undefined ? null : sessionFromRow(row);
   }
 
@@ -445,6 +465,7 @@ export class CerebroDatabase {
       exitCode: null,
       createdAt: now,
       updatedAt: now,
+      worktree: null,
     };
     this.connection.prepare(`
       INSERT INTO sessions (

@@ -2550,3 +2550,23 @@ a.btn:hover {
 .code-editor-msg {
   padding: 22px 28px;
 }
+
+.pill.worktree-name {
+  display: inline-block;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.pill.worktree-name.removed {
+  text-decoration: line-through;
+}
+
+.attention-worktree {
+  grid-column: 2;
+  display: flex;
+  min-width: 0;
+}
