@@ -5,6 +5,7 @@ export interface Choice<T extends string> {
   label: ReactNode;
   danger?: boolean;
   title?: string;
+  disabled?: boolean;
 }
 
 /** Groupe de boutons à choix unique (remplace un <select>) ; `compact` : contrôle segmenté réduit. */
@@ -14,12 +15,14 @@ export function ChoiceGroup<T extends string>({
   options,
   onChange,
   compact = false,
+  disabled = false,
 }: {
   label: string;
   value: T;
   options: Choice<T>[];
   onChange: (v: T) => void;
   compact?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <div className={`choice-group${compact ? ' compact' : ''}`} role="radiogroup" aria-label={label}>
@@ -33,6 +36,7 @@ export function ChoiceGroup<T extends string>({
             aria-checked={checked}
             className={`choice${checked ? ' checked' : ''}${o.danger ? ' danger' : ''}`}
             title={o.title}
+            disabled={disabled || o.disabled}
             onClick={() => onChange(o.value)}
           >
             {o.label}

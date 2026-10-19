@@ -29,6 +29,19 @@ Pour le développement, lancez le serveur et Vite avec rechargement automatique 
 npm run dev
 ```
 
+## Statistiques d’utilisation des LLM
+
+L’accueil affiche une barre de répartition des sessions entre Claude, Codex et
+Grok, avec des filtres sur 7 jours, 30 jours ou tout l’historique conservé. La
+période sélectionne les sessions par leur date de création ; les tokens affichés
+sont les cumuls de ces sessions principales, hors sous-agents.
+
+Les compteurs d’entrée et de sortie proviennent des journaux locaux des agents,
+rafraîchis toutes les 30 secondes. Les tokens de cache sont inclus dans l’entrée
+et détaillés sans être ajoutés une seconde fois au total. Un journal absent donne
+« Tokens indisponibles ». Un relevé incomplet est signalé, notamment pour Grok
+dont le journal global peut être purgé indépendamment des sessions.
+
 ## Configuration
 
 | Variable | Valeur par défaut | Rôle |
@@ -85,6 +98,33 @@ machine et des machines déclarées dans `remotes.json` ; il peut aussi lire (sa
 rien modifier) les fichiers des projets locaux. Un sablier marque la question
 pendant la recherche.
 
+Les consultations factuelles suivantes sont traitées directement, sans agent :
+
+```text
+? etat sessions statut=waiting
+? etat taches projet="ACME" statut=restantes compter
+? etat epics machine="portable"
+? etat avancement projet="ACME" epic="Livraison"
+? etat blocages projet="ACME" epic="identifiant"
+? etat activites projet="ACME"
+? etat machines
+```
+
+Les noms de projets, de machines et d'epics doivent être exacts ; les projets et
+les epics acceptent aussi leur identifiant. Les filtres `projet=`, `machine=`,
+`statut=` et `epic=` se combinent, avec des guillemets pour les espaces. `compter`
+se place à la fin. Statuts de session : `starting`, `running`, `waiting`, `idle`,
+`exited` ; statuts de tâche : `todo`, `started`, `done`, `restantes`. Les dépendances
+bloquantes incluent celles hors de l'epic choisi. Les activités sont les dernières
+modifications enregistrées des objets, pas un journal complet des actions.
+`done` décrit une déclaration de clôture, sans attester la validation effective.
+Les machines inaccessibles sont signalées et les totaux sont alors incomplets.
+Les formulations « combien de tâches restent ? », « combien de tâches restantes ? »,
+« combien de tâches reste-t-il ? », « liste des sessions en attente »,
+« quelles sessions sont en attente ? » et « sessions en attente » sont aussi
+reconnues exactement. Les autres questions conservent le traitement Claude décrit
+ci-dessus ; une commande `etat` invalide affiche l'aide sans appeler de modèle.
+
 Si plusieurs machines lisent le même message privé, une seule traite les
 commandes sans projet : `help`, `list`, `? question`, messages non reconnus et
 projets introuvables. Par défaut, Cerebro la choisit automatiquement parmi les
@@ -96,10 +136,10 @@ avec les autres machines ; pour le changer, cochez la case sur une autre machine
 Cerebro envoie alors un message privé après le délai configuré lorsqu'une
 session demande une confirmation ou termine son tour. L'alerte est annulée si
 la session est vue, repart ou se termine entre-temps. Un agent peut aussi
-prévenir explicitement l'utilisateur :
+ajouter du contexte ou poser une question bloquante :
 
 ```sh
-cerebro-notify "Traitement terminé, le rapport est prêt."
+cerebro-notify "Le rapport nécessite une décision sur les données manquantes."
 cerebro-notify --ask "Quel environnement dois-je déployer ?"
 ```
 
@@ -201,7 +241,7 @@ mettre ses findings dans le backlog, puis les traiter séparément.
   La commande affiche les identifiants créés ; `--list`, `--depends` et
   `--delete` (tâches créées par la session) agissent avec le seul jeton de
   session. `cerebro-backlog --help` détaille l'usage.
-- **À la main** : champ d'ajout en bas du backlog.
+- **À la main** : champ « Nouvelle tâche » en haut du backlog.
 
 « Traiter » ouvre le formulaire de nouvelle session pré-rempli avec le texte de
 la tâche. La tâche passe alors « En cours » et affiche un lien vers sa session.
@@ -212,12 +252,12 @@ masquées par défaut.
 
 Un epic regroupe des tâches liées à un même sujet : elles s'affichent dans un
 bloc commun, numérotées dans l'ordre de leurs dépendances, avec l'avancement.
-« Traiter l'epic » confie toutes ses tâches ouvertes à une seule session : le
-prompt les liste dans cet ordre, avec la description de l'epic, et demande à
-l'agent d'exécuter `cerebro-backlog --done <id>` après chacune, ce qui la
-marque terminée dans le backlog. Le lancement est refusé si une tâche de l'epic
-attend une tâche hors de l'epic non terminée, ou si une session active traite
-déjà l'une de ses tâches.
+« Traiter l'epic » démarre l'ordonnanceur serveur : il lance une seule étape à la
+fois, via son exécuteur LLM ou sa commande configurée. Chaque tâche attend son
+critère de clôture explicite avant la suivante. Le lancement est refusé si un
+prérequis hors epic n'est pas terminé ou si une exécution traite déjà ses tâches.
+Le panneau de suivi permet d'arrêter ou de reprendre l'enchaînement ; une fin de
+tour LLM ne marque jamais une tâche terminée.
 
 Un epic se crée avant ou après ses tâches, depuis l'interface (« Nouvel epic »,
 puis le sélecteur « Epic » d'une tâche ou du champ d'ajout) ou par l'agent :
@@ -375,3 +415,270 @@ Après avoir vérifié les identifiants affichés, envoyez `SIGTERM` uniquement 
 PID concernés avec `kill <pid>`. Pour revenir globalement au comportement où
 l'arrêt de Cerebro termine toutes les sessions, définissez
 `CEREBRO_KILL_ON_EXIT=1` dans l'environnement du serveur.
+
+## Commits automatiques
+
+Un clic sur **Commit / push** collecte les changements, prépare les messages,
+crée les commits et les pousse. La fenêtre affiche l'avancement puis les titres,
+hashes, exclusions et résultats par remote ; aucun formulaire ou JSON à remplir.
+Le bouton **Créer le commit** d'une copie de travail crée les commits sans push.
+
+Les conversations historiques utilisent le dossier partagé du projet. Leur bouton
+porte donc le nom **Commit / push du projet**, accompagné de la mention « Dossier
+partagé avec les autres conversations » : le clic vise explicitement tous les
+changements du projet. Pour une conversation isolée, l'action reste limitée à sa
+copie. Le périmètre est annoncé avant lancement et rappelé dans le suivi.
+
+Dans la page du projet, **Réglages Git** mémorise l'agent, le modèle, l'effort et
+le découpage (un commit ou plusieurs commits par intention). Ces réglages sont
+indépendants de ceux des sessions. La migration initialise les réglages de commits
+avec l'agent, le modèle et l'effort déjà enregistrés pour le projet, puis les
+conserve séparément. Un changement d'agent remet le modèle et l'effort au défaut
+pour ne pas transmettre ceux de l'ancien agent.
+
+Le serveur collecte HEAD, les diffs, l'index préexistant et les derniers messages.
+Les fichiers suspects, générés, binaires, contenant un secret reconnu ou dont
+l'attribution à une session est incertaine sont écartés de l'automatisme et
+signalés. Ils ne sont pas envoyés au modèle. Le scanner ne prétend pas détecter
+tous les secrets. L'API de commit propre à une session historique refuse de deviner
+son périmètre ; la fenêtre permet alors de choisir explicitement l'action sur le
+projet entier, sans quitter la conversation.
+
+Seule la rédaction et le regroupement des messages demandent une inférence.
+L'agent reçoit les diffs éligibles et les conventions du log, sans accès en écriture
+au projet. La réponse structurée est vérifiée : chaque fichier doit apparaître
+exactement une fois, et aucun fichier inconnu n'est accepté. Cerebro construit et
+exécute le plan en code. Sur un dépôt propre, le push est direct, sans inférence.
+La préparation est annulable et limitée à deux minutes. Fermer la fenêtre ne
+relance ni n'arrête l'opération ; les doubles clics rejoignent l'exécution existante.
+Les résultats et identifiants de lancement sont persistés. Après redémarrage,
+une opération inachevée est indiquée comme interrompue, sans rejeu automatique.
+
+L'API de plans explicites reste disponible (`prepare-commit`, `commit`) pour
+un plan fourni sans inférence : `snapshotId`, `commits:[{message,selection}]`,
+`acknowledged` et `push`. Une sélection vaut `{path,all:true}` ou
+`{path,hunks:[identifiants]}`. Un plan expire après une heure ou un redémarrage ;
+tout changement de HEAD, de l'index ou du worktree impose une nouvelle collecte.
+Une seconde exécution est refusée.
+
+L'exécuteur prépare les arbres dans des index temporaires, vérifie avant mutation
+que les changements préexistants dans l'index peuvent être préservés et prend un
+verrou sur l'index réel. Un conflit avec un hunk déjà indexé arrête le plan avant le
+premier commit. Les hooks et la configuration Git (dont la signature) s'appliquent.
+Chaque commit est vérifié (arbre, parent, hash et titre) ; un hook en échec ou une
+modification concurrente interrompt l'exécution. Les commits déjà réussis restent
+présents et sont affichés ; il n'y a aucun rollback automatique des hooks ou commits.
+Les hooks qui modifient eux-mêmes le contenu du commit nécessitent une vérification
+manuelle lorsqu'ils changent la sélection prévue. `push:true` utilise le push
+serveur et affiche ses résultats par remote, y compris avec des exclusions laissées
+dans le worktree. Le push seul, sur un dépôt propre, ne lance aucune session.
+
+## Provenance des sessions
+
+Une nouvelle session sur un dépôt Git avec un commit démarre dans un worktree
+et une branche `cerebro/session-<id>` dédiés, sous le dossier de données Cerebro.
+Le répertoire initial du projet est conservé comme contexte source. Son contenu,
+y compris les fichiers non suivis, ignorés, la configuration locale et les
+dépendances, est copié ; le contenu déjà indexé est reproduit dans l'index isolé.
+Aucun changement du worktree ou de l'index source n'est appliqué. Une modification
+du projet pendant la copie annule le lancement. Cette copie peut être coûteuse
+pour un gros projet. Les sous-modules, conflits d'index et fichiers spéciaux ne
+sont pas isolés : le lancement est refusé explicitement, sans démarrer l'agent.
+Le dossier de données doit être hors du dépôt.
+
+La provenance est enregistrée en base avant le lancement du terminal : chemin,
+branche, HEAD de base, empreintes initiales et fichiers initialement modifiés.
+La reprise retrouve cet espace après redémarrage. Le panneau de provenance de la
+session expose le chemin, les changements et les commits du premier parent de sa
+branche. Les fichiers déjà modifiés au départ nécessitent une sélection manuelle ;
+ils ne sont jamais attribués automatiquement. Un changement de branche ou une base
+réécrite rend le périmètre incertain ; les merges sont également signalés incertains.
+
+L'isolation sépare les éditions de deux sessions, même sur le même fichier, et
+les éditions humaines faites dans le projet source. Elle établit un **périmètre
+d'espace de travail**, pas l'identité de l'auteur. Un humain ou un outil qui édite
+directement cet espace fait partie de ce périmètre et ses changements doivent être
+vérifiés explicitement. Les liens symboliques restent des liens ; leurs cibles
+externes et les chemins absolus utilisés par un agent ne sont pas isolés. Ce
+mécanisme n'est pas un sandbox. Les changements de la session n'apparaissent pas
+automatiquement dans le projet source : leur intégration par merge/cherry-pick
+reste une décision explicite. Les worktrees et branches sont conservés même après
+suppression de la session pour ne jamais supprimer du travail non intégré.
+
+Les sessions historiques continuent dans leur répertoire d'origine, ainsi que les
+projets sans Git ou sans commit initial. Leur provenance reste **inconnue** :
+Cerebro ne reconstruit pas un propriétaire à partir du diff global. Les opérations
+sur ces sessions exigent une sélection explicite.
+
+Les actions Git d'une session utilisent cette provenance. Le commit automatique
+écarte les fichiers initiaux ou incertains ; l'API de plans explicites exige une
+sélection manuelle avec confirmation dans `acknowledged` pour les inclure.
+Les sessions historiques suivent la même règle pour tous leurs changements.
+Les commits passent par l'exécuteur serveur, même
+si la session est arrêtée. La review démarre une session de raisonnement avec les
+diffs sélectionnés et les hashes des commits attribués retenus ; elle ne demande
+plus à l'agent de reconstruire le périmètre. Une sélection obsolète est refusée.
+
+Le périmètre des reviews de dépôt est également préparé par le serveur :
+changements non commités (index, worktree et fichiers non suivis), sinon commits
+en avance sur l'upstream capturé, sinon dernier commit sans upstream. Un dépôt
+vide ou aligné sans changement affiche un périmètre vide et ne lance pas d'agent.
+Les références, chemins, commits et diffs sont affichés avant lancement. HEAD,
+branche, index, worktree et upstream sont revérifiés avant le démarrage du terminal.
+Les trois agents reçoivent le même contexte ; une commande personnalisée comme
+`/code-review` peut être saisie dans les instructions, avec ce périmètre ajouté
+par le serveur. La collecte ne lance aucun modèle. Le raisonnement sur les bugs et
+la lecture du code environnant restent confiés à l'agent.
+
+## Findings structurés
+
+Pendant une review, l'agent peut envoyer sur l'entrée standard de
+`cerebro-findings` un JSON `{title, findings:[{id,title,severity,file,line,problem,
+scenario,expectedFix,dependsOn:[],taskDependencies:[]}]}`. `severity` vaut
+`critical`, `high`, `medium` ou `low` ; `dependsOn` référence des findings du même
+rapport et `taskDependencies` des tâches existantes du projet. Le rapport peut
+également être collé dans le panneau **Findings structurés** d'une session.
+
+Sélectionnez les findings et cliquez **Enregistrer la sélection dans un epic**.
+Les tâches créées incluent le contexte autonome et la session source ; les
+prérequis doivent aussi être sélectionnés ou déjà importés. Le rapport est limité
+à 100 findings et 1 Mio. Les contenus incomplets/invalides restent dans le flux
+habituel de discussion, sans import automatique. Un même rapport et les mêmes
+findings ne créent aucune tâche en double, y compris après redémarrage. Cet import
+ne lance ni agent ni nouveau tour de raisonnement.
+
+## Tâches de commande sans agent
+
+Le backlog propose un formulaire **Tâches avec commande de projet**. Configurez
+explicitement un JSON `{name, executable, args:[], cwd:".", timeoutSeconds:300}`,
+puis sélectionnez cette commande pour créer une tâche. `cwd` est relatif et doit
+rester dans le projet, y compris après résolution des liens symboliques. Les
+arguments sont transmis tels quels ; aucun texte de tâche n'est converti en shell.
+L'API accepte `execution:{type:"command",commandId,completion:"manual"}` ; les
+anciennes tâches et les machines anciennes gardent `execution:{type:"llm"}`.
+
+Le lancement crée une opération avec logs (dernier Mio), répertoire effectif,
+durée et code de sortie. Le bouton d'arrêt et la limite de durée arrêtent le
+groupe de processus. Un double lancement ou une dépendance inachevée est refusé.
+Une commande réussie laisse la tâche **à valider** ; la clôture reste explicite.
+Les opérations en cours lors d'un redémarrage sont marquées interrompues (résultat
+inconnu), jamais relancées automatiquement. Sur Linux, le groupe encore identifié
+par son identifiant d'opération est arrêté. Aucune session d'agent n'est créée.
+
+## Ordonnancement des epics
+
+Le serveur persiste chaque exécution d'epic et calcule l'ordre des dépendances.
+Seule l'étape courante passe **en cours** ; les suivantes restent **à faire**.
+Un agent reçoit une seule tâche et conserve `cerebro-backlog --done <id>` pour sa
+clôture déclarée. Il peut signaler explicitement `--fail`, `--block` ou
+`--await-validation <id> "raison"`. Une fin de tour, une session idle ou une sortie
+ne clôt jamais une tâche. Un `--done` reçu pendant un tour attend aussi la fin du
+tour avant l'enchaînement, pour éviter de lancer une vérification sur des éditions
+encore en cours.
+
+Une commande utilise par défaut `completion:"manual"` : son succès attend la
+validation de la tâche. Dans un epic, `completion:"exit-zero"` est un critère
+explicite d'avancement dès un code nul ; le résultat indique ce critère plutôt
+qu'une validation métier. L'interface permet ce choix à la création. Après une
+étape LLM réussie, les étapes suivantes héritent de son espace isolé (copié pour
+une autre session LLM, utilisé directement pour une commande), afin de retrouver
+les changements précédents sans les intégrer silencieusement au dépôt source.
+
+Un échec arrête l'enchaînement, y compris vers les branches indépendantes. Les
+questions et validations restent visibles. Le panneau d'ordonnancement propose
+arrêt et reprise avec recalcul explicite. Une mutation du contenu, des dépendances
+ou de la composition de l'epic bloque la progression jusqu'à ce recalcul. Les
+prérequis hors epic doivent être terminés. Les lancements concurrents et les
+lancements individuels de tâches réservées sont refusés. Après redémarrage, le
+serveur retrouve l'étape enregistrée ; un résultat de commande inconnu devient un
+échec interrompu et un tour LLM inachevé attend son résultat explicite. Aucun
+lancement dont l'issue est incertaine n'est rejoué automatiquement.
+
+## Notifications factuelles
+
+Les résultats structurés des pushes, commits, commandes et exécutions d'epic
+produisent leurs notifications en code, avec durée et statut effectif. Le succès
+d'une commande ou la fin d'un tour n'attestent pas la validation du travail.
+Les préférences existantes s'appliquent : résultats réussis via **idle**, échecs ou
+blocages via **waiting**, délai configurable et choix de la machine répondante.
+Les résultats vus dans leur panneau avant l'envoi annulent l'alerte ; leur
+identifiant et leur notification sont persistés pour éviter les doubles envois.
+Un résultat provenant d'une session rejoint son fil existant, sans remplacer une
+question restée sans réponse.
+
+Les alertes de fin de tour incluent la durée enregistrée. Un résultat déjà relayé
+sur Slack ou un message personnalisé de l'agent supprime l'alerte factuelle
+redondante. Une nouvelle question reste notifiable. Les consignes des agents
+réservent désormais `cerebro-notify` au contexte supplémentaire et aux questions
+bloquantes, dont la formulation reste du ressort de l'agent. Aucun modèle n'est
+appelé pour produire ces notifications.
+
+Le protocole entre machines passe à **2**, car le lancement d'epic renvoie une
+exécution serveur au lieu d'une session unique. Mettez à jour les instances
+ensemble avant de reprendre les opérations entre machines ; les anciennes données
+et sessions sont migrées/conservées, mais une instance au protocole 1 n'est pas
+relayée comme si elle supportait l'ordonnanceur.
+
+## Inventaire et cycle de vie des worktrees
+
+Le panneau **Copies de travail** figure dans chaque projet et sur l'accueil de la machine
+sélectionnée. Il recense les worktrees Git, y compris les worktrees externes
+(affichés en lecture seule), les conversations supprimées et les projets retirés.
+Le registre conserve le chemin, le dépôt, le nom du projet, la conversation et la
+branche cible indépendamment des enregistrements de session et de projet. Les
+anciennes données de provenance sont reprises dans cet inventaire.
+
+Les copies des conversations sont présentées par leur titre ou, si ce titre a
+disparu, leur date de création. Les fichiers sont comparés aux empreintes du
+contenu copié au départ : une copie de départ inchangée n'est pas présentée comme
+du nouveau travail à intégrer. Ce compteur décrit des changements depuis la
+création, sans en déduire l'auteur. Un fichier déjà modifié au départ qui a encore
+changé est signalé comme nécessitant un examen.
+
+Le dossier principal et les copies sans métadonnées figurent dans une section
+repliée distincte. Le dossier principal n'a pas à être intégré dans lui-même. Les
+fichiers ignorés (dépendances, configuration, etc.) apparaissent dans les détails
+du retrait, sans gonfler les compteurs du travail à intégrer. « Examiner » permet
+de lire les diffs sans lancer d'agent.
+
+Le nombre de commits à intégrer est calculé par rapport à la **branche cible
+explicite**. Cette cible est mémorisée ; un changement de branche dans le projet
+ne la remplace pas silencieusement. Les références sont relues à chaque
+actualisation et avant une action. Un état indisponible est indiqué comme inconnu
+et bloque les mutations.
+
+**Intégrer au projet** prépare une confirmation avec les références source/cible et le chemin
+exact du worktree cible. La cible doit être une branche ouverte dans un autre
+worktree, son index et ses fichiers doivent être propres et les agents qui
+l'utilisent doivent avoir fini leur tour. Aucun commit implicite, push, squash,
+reset ou contournement de hook n'est effectué. Les hooks et la configuration Git
+s'appliquent. Les entrées d'une conversation inactive sont mises en attente
+pendant le merge puis transmises après son résultat. En cas de conflit ou d'échec
+de hook, les deux branches restent conservées et les fichiers éventuels du merge
+restent à résoudre dans le chemin cible indiqué ; Cerebro ne les réinitialise pas.
+Le résultat et les références demandées sont persistés, sans rejeu automatique
+après une interruption du serveur.
+
+Le merge conserve le worktree et la conversation. Celle-ci reprend au même
+endroit sur sa branche. Après de nouvelles éditions, le compteur de fichiers
+modifiés remonte ; après un nouveau commit, le compteur de commits à intégrer
+remonte. Plusieurs merges successifs sont possibles. Il n'existe aucun indicateur
+permanent « déjà mergé » qui autoriserait ensuite un nettoyage aveugle. Un squash
+ou cherry-pick manuel ne vaut pas une preuve d'intégration par ascendance : le
+compteur de commits peut rester non nul et la suppression reste bloquée.
+
+**Supprimer une conversation** ou **retirer un projet** ne retire aucun worktree.
+Le travail reste consultable sur l'accueil, sous son dernier nom de projet et de
+conversation. Les worktrees sans conversation permettent encore de préparer et
+d'exécuter des plans de commits Git explicites, puis de merger dans la cible.
+
+**Supprimer le worktree** est une action distincte. Elle exige un espace propre,
+une intégration vérifiée des commits, aucune session encore ouverte, aucune
+commande/aucun epic actif qui utilise ce répertoire et aucun fichier ignoré.
+Les fichiers ignorés, même s'ils sont habituellement générés, doivent être déplacés
+ou retirés explicitement avant cette action : ils ne sont jamais effacés de force
+par Cerebro. Les worktrees principal, externes, verrouillés ou dont l'identité a
+changé restent protégés. Une confirmation devient invalide si Git a changé entre
+sa préparation et son exécution. La suppression passe par Git sans `--force` et
+conserve la branche, les commits et la conversation. La conversation reste lisible,
+mais sa reprise est refusée lorsque son worktree a été supprimé.

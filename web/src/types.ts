@@ -1,6 +1,7 @@
 export type Agent = 'claude' | 'codex' | 'grok';
 export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
+export type TaskExecution = {type:'llm'} | {type:'command';commandId:string;completion:'manual'|'exit-zero'};
 export type TaskStatus = 'todo' | 'started' | 'done';
 export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
@@ -20,6 +21,12 @@ export interface LaunchSpec {
 export const DEFAULT_SESSION_DEFAULTS: Readonly<LaunchSpec> = {
   agent: 'claude', mode: 'auto', model: null, effort: null, prompt: '',
 };
+export interface CommitSettings {
+  agent: Agent;
+  model: string | null;
+  effort: Effort | null;
+  strategy: 'single' | 'atomic';
+}
 
 export const STATUSES: readonly Status[] = ['starting', 'running', 'waiting', 'idle', 'exited'];
 
@@ -29,6 +36,7 @@ export interface Project {
   path: string;
   color: string | null;
   sessionDefaults: LaunchSpec;
+  commitSettings: CommitSettings;
   createdAt: number;
 }
 
@@ -58,6 +66,7 @@ export interface Task {
   sessionId: string | null;
   sourceSessionId: string | null;
   dependsOn: string[];
+  execution: TaskExecution;
   epicId: string | null;
   createdAt: number;
   updatedAt: number;
@@ -177,7 +186,14 @@ export function parseProject(v: unknown): Project | null {
     effort: isEffort(saved.effort) ? saved.effort : null,
     prompt: typeof saved.prompt === 'string' ? saved.prompt : '',
   };
-  return { id, name, path, color, sessionDefaults, createdAt };
+  const commit = isRecord(v.commitSettings) ? v.commitSettings : {};
+  const commitSettings: CommitSettings = {
+    agent: isAgent(commit.agent) ? commit.agent : sessionDefaults.agent,
+    model: typeof commit.model === 'string' ? commit.model : null,
+    effort: isEffort(commit.effort) ? commit.effort : null,
+    strategy: commit.strategy === 'atomic' ? 'atomic' : 'single',
+  };
+  return { id, name, path, color, sessionDefaults, commitSettings, createdAt };
 }
 
 export function parseSession(v: unknown): Session | null {
@@ -254,7 +270,8 @@ export function parseTask(v: unknown): Task | null {
   ) {
     return null;
   }
-  return { id, projectId, text, status: v.status, sessionId, sourceSessionId, dependsOn, epicId, createdAt, updatedAt };
+  const execution:TaskExecution = isRecord(v.execution) && v.execution.type==='command' && typeof v.execution.commandId==='string' ? {type:'command',commandId:v.execution.commandId,completion:v.execution.completion==='exit-zero'?'exit-zero':'manual'} : {type:'llm'};
+  return { id, projectId, text, execution, status: v.status, sessionId, sourceSessionId, dependsOn, epicId, createdAt, updatedAt };
 }
 
 export function parseEpic(v: unknown): Epic | null {

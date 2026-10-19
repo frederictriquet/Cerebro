@@ -1053,8 +1053,7 @@ textarea {
   margin-bottom: 22px;
 }
 
-.card h2,
-.session-table-wrap h2 {
+.card h2 {
   margin: 0 0 12px;
   font-size: 12px;
   letter-spacing: 0.06em;
@@ -1078,8 +1077,27 @@ textarea {
   margin-bottom: 0;
 }
 
-.project-columns .card.new-session {
-  margin-bottom: 16px;
+.project-panel .project-create {
+  margin: 0 0 16px;
+  padding: 0 0 16px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: none;
+}
+
+.project-create > h2,
+.project-create-title {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.project-create > h2 {
+  margin-bottom: 12px;
 }
 
 @media (max-width: 1100px) {
@@ -1088,16 +1106,33 @@ textarea {
   }
 }
 
-.session-table-head {
+.project-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 30px;
+  margin-bottom: 16px;
 }
 
-.session-table-head h2 {
+.project-panel-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0;
+}
+
+.project-panel-count {
+  letter-spacing: normal;
+}
+
+.project-panel-head > .row-actions {
+  min-width: 0;
+}
+
+.project-panel-head .btn {
+  font-size: 12px;
 }
 
 label {
@@ -1123,7 +1158,8 @@ label.block {
   font-size: 12px;
 }
 
-.session-table {
+.session-table,
+.task-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1132,17 +1168,19 @@ label.block {
   overflow: hidden;
 }
 
-.session-row {
+.session-row,
+.task-row {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 8px 16px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
   background: var(--bg-1);
 }
 
-.session-row:last-child {
+.session-row:last-child,
+.task-row:last-child {
   border-bottom: 0;
 }
 
@@ -1194,17 +1232,20 @@ label.block {
   flex-shrink: 0;
 }
 
-.pill.status.running {
+.pill.status.running,
+.pill.task-status.started {
   color: var(--running);
   border-color: #1f4a38;
 }
 
-.pill.status.waiting {
+.pill.status.waiting,
+.pill.task-status.waiting {
   color: var(--waiting);
   border-color: #4a3a1f;
 }
 
-.pill.status.idle {
+.pill.status.idle,
+.pill.task-status.review {
   color: var(--idle);
   border-color: #1f3a4a;
 }
@@ -1384,13 +1425,6 @@ label.block {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
-  flex: 1 1 240px;
-}
-
-.session-row > .row-actions {
-  flex: 0 1 auto;
-  justify-content: flex-end;
-  margin-left: auto;
 }
 
 .reason-line {
@@ -1868,9 +1902,14 @@ a.btn:hover {
   transition: border-color 0.12s, background 0.12s, color 0.12s;
 }
 
-.choice:hover {
+.choice:hover:not(:disabled) {
   border-color: #33405a;
   color: var(--text);
+}
+
+.choice:disabled {
+  opacity: .5;
+  cursor: not-allowed;
 }
 
 .choice:focus-visible {
@@ -1889,7 +1928,7 @@ a.btn:hover {
   background: rgba(226, 92, 106, 0.12);
 }
 
-/* Agent / mode / modèle / effort du formulaire de session : contrôles segmentés compacts. */
+/* Sélecteur LLM partagé : contrôles segmentés compacts des sessions et réglages Git. */
 /* Une ligne par choix : colonne des libellés, puis colonne des contrôles alignés à gauche. */
 .tuning-row {
   display: grid;
@@ -2005,29 +2044,6 @@ a.btn:hover {
 }
 
 /* Backlog */
-.task-list {
-  list-style: none;
-  margin: 0 0 12px;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.task-row {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg-1);
-}
-
-.task-row:last-child {
-  border-bottom: 0;
-}
-
 .task-row.done .task-title {
   color: var(--faint);
   text-decoration: line-through;
@@ -2068,19 +2084,6 @@ a.btn:hover {
 .task-caret {
   color: var(--faint);
   flex-shrink: 0;
-}
-
-.pill.task-status.started {
-  color: var(--running);
-  border-color: #1f4a38;
-}
-
-.pill.task-status.waiting {
-  color: var(--waiting);
-}
-
-.pill.task-status.review {
-  color: var(--idle);
 }
 
 .pill.task-status.blocked {
@@ -2193,11 +2196,12 @@ a.btn:hover {
 .task-add-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
 .task-add-actions select {
-  flex: 1;
+  flex: 1 1 140px;
   min-width: 0;
   font-size: 12px;
 }
@@ -2208,7 +2212,7 @@ a.btn:hover {
   border: 1px solid var(--line);
   border-left: 3px solid var(--accent);
   border-radius: var(--radius);
-  background: var(--bg-2);
+  background: var(--bg-1);
   overflow: hidden;
 }
 

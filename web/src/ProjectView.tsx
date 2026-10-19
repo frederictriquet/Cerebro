@@ -4,7 +4,9 @@ import { acquireProjectSlack, api, getProjectSlack, type ProjectSlackStatus } fr
 import { Backlog } from './Backlog.tsx';
 import { CodeEditor } from './CodeEditor.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
+import { Worktrees } from './Worktrees.tsx';
 import { GitActions } from './GitActions.tsx';
+import { CommitSettingsDialog } from './CommitSettingsDialog.tsx';
 import { displayStatus, isAwaiting, isDormant, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href, useNow } from './route.ts';
@@ -158,10 +160,12 @@ export function ProjectView({ projectId }: { projectId: string }) {
   const [editColor, setEditColor] = useState<string | null>(null);
   const [editBusy, setEditBusy] = useState(false);
   const [codeOpen, setCodeOpen] = useState(false);
+  const [commitSettingsOpen,setCommitSettingsOpen]=useState(false);
 
   useEffect(() => {
     setEditing(false);
     setCodeOpen(false);
+    setCommitSettingsOpen(false);
     setError(null);
   }, [projectId]);
 
@@ -290,6 +294,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
           <SlackLead key={`slack-${project.id}`} projectId={project.id} />
         </div>
         <div className="row-actions">
+          <button type="button" className="btn" onClick={()=>setCommitSettingsOpen(true)}>Réglages Git</button>
           <button type="button" className="btn" onClick={() => setCodeOpen(true)} title="Ouvrir le projet dans VS Code">
             VS Code
           </button>
@@ -298,18 +303,20 @@ export function ProjectView({ projectId }: { projectId: string }) {
               Éditer
             </button>
           )}
-          <DelayedActionButton onAction={onDeleteProject} title="Supprime le projet et toutes ses sessions">
+          <DelayedActionButton onAction={onDeleteProject} title="Supprime le projet et ses conversations ; les worktrees restent dans l’inventaire global">
             Supprimer
           </DelayedActionButton>
         </div>
       </header>
+      {commitSettingsOpen?<CommitSettingsDialog project={project} onClose={()=>setCommitSettingsOpen(false)}/>:null}
 
       {error ? <p className="form-error">{error}</p> : null}
 
+      <Worktrees key={`worktrees-${project.id}`} projectId={project.id} />
       <div className="project-columns">
-        <section className="session-table-wrap">
-          <div className="session-table-head">
-            <h2>Sessions</h2>
+        <section className="card project-panel session-table-wrap">
+          <div className="project-panel-head">
+            <h2>Sessions <span className="pill project-panel-count">{kids.length}</span></h2>
             {dormantCount > 0 ? (
               <DelayedActionButton
                 onAction={onPurge}
@@ -321,6 +328,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
           </div>
           <NewSessionForm
             key={project.id}
+            className="project-create"
             heading="Nouvelle session"
             projectId={project.id}
             draftKey={`project.${project.id}`}

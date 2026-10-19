@@ -1,3 +1,4 @@
+import type { EpicRun } from '../../server/epic-runner.ts';
 import {
   createContext,
   useCallback,
@@ -71,7 +72,7 @@ export interface Store {
   createEpic: (projectId: string, title: string, description?: string) => Promise<Epic>;
   updateEpic: (id: string, patch: { title?: string; description?: string }) => Promise<Epic>;
   deleteEpic: (id: string) => Promise<void>;
-  startEpic: (id: string, spec: LaunchSpec) => Promise<Session>;
+  startEpic: (id: string, spec: LaunchSpec) => Promise<EpicRun>;
 }
 
 export interface TaskPatch {
@@ -86,12 +87,14 @@ export interface ProjectPatch {
   path?: string;
   color?: string | null;
   sessionDefaults?: Partial<LaunchSpec>;
+  commitSettings?: Partial<import('./types.ts').CommitSettings>;
 }
 
 const StoreContext = createContext<Store | null>(null);
 
+// L'activité (statut, titre, attention) ne déplace pas une session.
 function sortSessions(list: Session[]): Session[] {
-  return [...list].sort((a, b) => b.updatedAt - a.updatedAt);
+  return [...list].sort((a, b) => b.createdAt - a.createdAt);
 }
 
 function upsertTask(list: Task[], task: Task): Task[] {
@@ -423,17 +426,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setTasks((list) => list.map((t) => (t.epicId === id ? { ...t, epicId: null } : t)));
   }, []);
 
-  const startEpic = useCallback(async (id: string, spec: LaunchSpec): Promise<Session> => {
-    const raw = await api<{ tasks: unknown; session: unknown }>(`/api/epics/${id}/start`, {
-      method: 'POST',
-      body: JSON.stringify(spec),
-    });
-    const session = parseSession(raw.session);
-    if (!session) throw new Error('Réponse session invalide');
-    const started = parseTaskList(raw.tasks);
-    setSessions((list) => upsertSession(list, session));
-    setTasks((list) => started.reduce(upsertTask, list));
-    return session;
+  const startEpic = useCallback(async (id: string, spec: LaunchSpec): Promise<EpicRun> => {
+    return api<EpicRun>(`/api/epics/${id}/start`, { method: 'POST', body: JSON.stringify(spec) });
   }, []);
 
   const markSeen = useCallback(async (id: string): Promise<void> => {

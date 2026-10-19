@@ -36,6 +36,9 @@ Autres commandes :
   --list                       tâches du projet : identifiant, statut, epic, dépendances
   --depends <id> [<id>...]     remplace les dépendances de la tâche <id>
                                (sans autre identifiant : les retire toutes)
+  --fail <id> "raison"         signale un échec de l’étape d’epic courante
+  --block <id> "raison"        signale un blocage de cette étape
+  --await-validation <id> "raison"  attend une validation explicite
   --done <id>                  clôt une tâche confiée à cette session (traitement
                                d'un epic : à exécuter après chaque tâche terminée)
   --delete <id>                supprime une tâche créée par cette session, non démarrée
@@ -231,6 +234,14 @@ async function main(argv) {
       await call('DELETE', `/epics/${encodeURIComponent(rest[0])}`);
       process.stdout.write(`Epic ${rest[0]} supprimé (ses tâches restent dans le backlog).\n`);
       return;
+    }
+    case '--fail':
+    case '--block':
+    case '--await-validation': {
+      if(rest.length!==2)throw new Error(`${command} <id> "raison"`);
+      const status=command==='--fail'?'failed':command==='--block'?'blocked':'waiting-validation';
+      await call('POST',`/tasks/${encodeURIComponent(rest[0])}/result`,{status,message:rest[1]});
+      process.stdout.write(`${rest[0]} : ${status}.\n`);return;
     }
     case '--done': {
       if (rest.length !== 1) throw new Error('--done <id>');

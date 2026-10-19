@@ -1,0 +1,47 @@
+import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {test} from 'node:test';
+const root=mkdtempSync(join(tmpdir(),'cerebro-epic-'));process.env.CEREBRO_DATA_DIR=root;
+const {CerebroDatabase,DEFAULT_SESSION_DEFAULTS}=await import('../server/db.ts');const {CommandExecutor}=await import('../server/commands.ts');const {EpicRunner,taskOrder}=await import('../server/epic-runner.ts');
+async function fixture(run){const db=new CerebroDatabase(':memory:');const project=db.createProject('Demo',root);const epic=db.createEpic(project.id,'Epic','Context',null);const commands=new CommandExecutor(db);
+ const launches=[];const sessions={async create(p,options){const session=db.createSession({id:randomUUID(),projectId:p.id,...options,title:'step',status:'idle',agentSessionId:'fake'},'token');launches.push(session);return session;},kill(id){db.updateSession(id,{status:'exited',exitCode:130});return true;}};
+ let runner=new EpicRunner(db,sessions,commands,()=>{});
+ const task=(name,execution={type:'llm'})=>db.createTask(project.id,name,null,epic.id,execution);
+ const command=(script,completion='manual')=>{const c=commands.configure(project.id,{name:'check',executable:process.execPath,args:['-e',script],cwd:'.',timeoutSeconds:5});return {type:'command',commandId:c.id,completion};};
+ const latest=()=>runner.list(epic.id)[0];
+ const until=async predicate=>{for(let i=0;i<1000;i++){runner.poke();if(predicate())return;await new Promise(r=>setTimeout(r,5));}throw new Error(`Timed out: ${JSON.stringify(latest())}`);};
+ try{await run({db,project,epic,commands,sessions,launches,task,command,latest,until,get runner(){return runner;},restart:async()=>{await runner.shutdown();runner=new EpicRunner(db,sessions,commands,()=>{});}});}finally{await runner.shutdown();await commands.shutdown();db.close();}}
+test('mixed epic advances only on applicable explicit criteria; future tasks remain todo',async()=>fixture(async f=>{
+ const a=f.task('command auto',f.command('console.log("a")','exit-zero'));const b=f.task('reasoning');const c=f.task('command manual',f.command('console.log("c")'));const d=f.task('last',f.command('console.log("d")','exit-zero'));
+ f.db.setTaskDependencies(b.id,[a.id]);f.db.setTaskDependencies(c.id,[b.id]);f.db.setTaskDependencies(d.id,[c.id]);
+ f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);assert.throws(()=>f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS),/déjà/);
+ await f.until(()=>f.latest().status==='waiting-validation'&&f.latest().currentTaskId===b.id);
+ assert.equal(f.db.getTask(a.id).status,'done');assert.equal(f.db.getTask(b.id).status,'started');assert.equal(f.db.getTask(c.id).status,'todo');assert.equal(f.launches.length,1);
+ f.db.updateTask(b.id,{status:'done'});await f.until(()=>f.latest().status==='waiting-validation'&&f.latest().currentTaskId===c.id);
+ assert.equal(f.db.getTask(d.id).status,'todo');assert.equal(f.db.getTask(c.id).status,'started');
+ f.db.updateTask(c.id,{status:'done'});await f.until(()=>f.latest().status==='succeeded');assert.equal(f.launches.length,1);
+}));
+test('failed prerequisite stops independent and dependent future tasks',async()=>fixture(async f=>{
+ const a=f.task('fail',f.command('process.exit(4)','exit-zero'));const b=f.task('dependent');f.db.setTaskDependencies(b.id,[a.id]);const c=f.task('independent');
+ f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.latest().status==='failed');assert.equal(f.db.getTask(b.id).status,'todo');assert.equal(f.db.getTask(c.id).status,'todo');assert.equal(f.launches.length,0);
+}));
+test('restart and interrupted/idle LLM turns never imply done; --done equivalent advances',async()=>fixture(async f=>{
+ const a=f.task('first');const b=f.task('next');f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.latest().status==='waiting-validation');
+ await f.restart();await f.until(()=>f.latest().status==='waiting-validation');assert.equal(f.launches.length,1);assert.equal(f.db.getTask(b.id).status,'todo');
+ const session=f.db.getTask(a.id).sessionId;f.db.updateSession(session,{status:'exited',exitCode:130});await f.until(()=>f.latest().status==='failed');assert.equal(f.db.getTask(a.id).status,'started');
+}));
+test('external prerequisites and backlog mutations block explicitly; stop/resume is deliberate',async()=>fixture(async f=>{
+ const external=f.db.createTask(f.project.id,'external',null);const a=f.task('first');f.db.setTaskDependencies(a.id,[external.id]);
+ assert.throws(()=>f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS),/hors epic/);f.db.updateTask(external.id,{status:'done'});
+ f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.latest().status==='waiting-validation');
+ f.task('new');await f.until(()=>f.latest().status==='blocked');assert.match(f.latest().error,/Composition/);
+ await f.runner.stop(f.latest().id);assert.equal(f.latest().status,'stopped');
+ await new Promise(r=>setTimeout(r,10));f.runner.resume(f.latest().id,true);await f.until(()=>f.latest().status==='waiting-validation');assert.equal(f.latest().order.length,2);
+}));
+test('server topological order detects cycles',()=>{
+ const a={id:'a',dependsOn:['b'],status:'todo'},b={id:'b',dependsOn:['a'],status:'todo'};assert.throws(()=>taskOrder([a,b],[a,b]),/Cycle/);
+});
+process.on('exit',()=>rmSync(root,{recursive:true,force:true}));
+test('stop during asynchronous LLM preparation cannot be overwritten by its launch callback',async()=>fixture(async f=>{
+ const a=f.task('slow');let release;let beforeLaunch;const gate=new Promise(resolve=>{release=resolve;});
+ f.sessions.create=async(p,options,validate)=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title:'slow',status:'starting',agentSessionId:'fake'},'token');beforeLaunch=validate;await gate;try{await validate();}catch(cause){f.db.updateSession(s.id,{status:'exited',exitCode:1});throw cause;}return s;};
+ f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>!!beforeLaunch);await f.runner.stop(f.latest().id);release();await new Promise(r=>setTimeout(r,30));assert.equal(f.latest().status,'stopped');assert.equal(f.db.listSessions()[0].status,'exited');
+}));

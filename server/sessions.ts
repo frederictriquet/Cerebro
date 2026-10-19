@@ -22,6 +22,9 @@ import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DI
 import type { Agent, Mode, Project, Session, SessionDefaults } from './db.ts';
 import { CerebroDatabase, resolveSessionDefaults } from './db.ts';
 import type { AgentQuestion } from './questions.ts';
+import { archiveSessionWorktree } from './worktrees.ts';
+import { assertWorktreeAvailable, deferWorktreeInput } from './worktree-gate.ts';
+import { createWorkspace, workspaceFor } from './provenance.ts';
 import { findProcessesByArgument, isAlive, processTree, signalProcesses } from './proc.ts';
 
 // @xterm/headless is CommonJS at runtime despite exposing ESM-shaped typings.
@@ -233,11 +236,12 @@ export class SessionManager {
     for (const listener of this.eventListeners) listener(event);
   }
 
-  async create(project: Project, overrides: Partial<SessionDefaults> = {}): Promise<Session> {
+  async create(project: Project, overrides: Partial<SessionDefaults> = {}, validate?: () => Promise<void>, contextPath?: string): Promise<Session> {
     const current = this.db.getProject(project.id);
     if (current === null) throw new Error('Projet introuvable');
     const defaults = this.rememberDefaults(project.id, overrides);
-    return this.launch(current, defaults.agent, defaults.mode, defaults, defaults.prompt, null);
+    assertWorktreeAvailable(contextPath??current.path);
+    return this.launch(contextPath ? {...current,path:contextPath} : current, defaults.agent, defaults.mode, defaults, defaults.prompt, null, null, validate);
   }
 
   rememberDefaults(projectId: string, overrides: Partial<SessionDefaults>): SessionDefaults {
@@ -256,6 +260,9 @@ export class SessionManager {
     if (oldSession.agentSessionId === null) throw new Error("Cette session ne peut pas être reprise");
     const project = this.db.getProject(oldSession.projectId);
     if (project === null) throw new Error('Projet introuvable');
+    const workspace=workspaceFor(this.db,id);
+    if(workspace?.removedAt)throw new Error('Le worktree a été supprimé ; la conversation reste consultable mais ne peut plus être reprise dans cet espace.');
+    assertWorktreeAvailable(workspace?.path??project.path);
     const tuning = { model: oldSession.model, effort: oldSession.effort };
     return this.launch(project, oldSession.agent, oldSession.mode, tuning, '', oldSession.agentSessionId, oldSession.id);
   }
@@ -268,6 +275,7 @@ export class SessionManager {
     prompt: string,
     resumeSessionId: string | null,
     existingId: string | null = null,
+    validate?: () => Promise<void>,
   ): Promise<Session> {
     const id = existingId ?? randomUUID();
     const command = buildAgentCommand(agent, mode, prompt, id, resumeSessionId, tuning);
@@ -298,12 +306,26 @@ export class SessionManager {
     }
     this.emit({ type: 'session', session });
 
+    let cwd = project.path;
+    try {
+      const workspace = existingId === null ? await createWorkspace(this.db, id, project) : workspaceFor(this.db, id);
+      cwd = workspace?.path ?? project.path;
+      if(workspace?.removedAt)throw new Error('Le worktree de cette conversation a été supprimé.');
+      assertWorktreeAvailable(cwd);
+      if (validate) await validate();
+      assertWorktreeAvailable(cwd);
+      if (!existsSync(cwd)) throw new Error(`Espace de session introuvable : ${cwd}`);
+    } catch (cause) {
+      this.finishSession(id, 1);
+      throw cause;
+    }
+
     this.cleanupLaunchArtifacts(id);
     const configPath = this.configPath(id);
     const config: HolderConfig = {
       cmd: command.cmd,
       args: command.args,
-      cwd: project.path,
+      cwd,
       env: ptyEnvironment(id, token),
       cols: 120,
       rows: 32,
@@ -683,7 +705,11 @@ export class SessionManager {
 
   writeInput(id: string, data: string): boolean {
     const runtime = this.runtimes.get(id);
-    if (runtime === undefined || !this.sendHolder(runtime, { type: 'input', data })) return false;
+    if (runtime === undefined) return false;
+    const origin=this.db.getSession(id);
+    const cwd=workspaceFor(this.db,id)?.path??(origin?this.db.getProject(origin.projectId)?.path:undefined);
+    if(cwd&&deferWorktreeInput(cwd,()=>{this.writeInput(id,data);}))return true;
+    if (!this.sendHolder(runtime, { type: 'input', data })) return false;
     const session = this.db.getSession(id);
     if (data.includes('\r') && (session?.status === 'waiting' || session?.status === 'idle')) {
       this.clearAsked(id);
@@ -737,6 +763,7 @@ export class SessionManager {
     if (project === null) return false;
     const projectSessions = this.db.listProjectSessions(projectId);
     await Promise.all(projectSessions.map((session) => this.stopProcesses(session.id)));
+    await Promise.all(projectSessions.map(session=>archiveSessionWorktree(this.db,session.id)));
     this.db.deleteProject(projectId);
     rmSync(join(ATTACHMENTS_DIR, `project-${projectId}`), { recursive: true, force: true });
     for (const session of projectSessions) {
@@ -763,6 +790,7 @@ export class SessionManager {
   async delete(id: string): Promise<boolean> {
     if (this.db.getSession(id) === null) return false;
     await this.stopProcesses(id);
+    await archiveSessionWorktree(this.db,id);
     this.db.deleteSession(id);
     this.cleanupAllArtifacts(id);
     this.questions.delete(id);

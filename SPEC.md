@@ -67,7 +67,7 @@ Au démarrage du serveur, toute session non `exited` passe à `exited` (les PTY 
 | GET | /api/projects | `Project[]` |
 | POST | /api/projects | `{name, path}` → `Project`. `path` : `~` expansé, doit être un répertoire existant (sinon 400 `{error}`) |
 | DELETE | /api/projects/:id | tue les sessions vivantes du projet, supprime projet + sessions |
-| GET | /api/sessions | `Session[]` (toutes, triées updatedAt desc) |
+| GET | /api/sessions | `Session[]` (toutes, triées createdAt desc : la plus récente en premier) |
 | POST | /api/projects/:id/sessions | `{agent?, mode?, model?, effort?, prompt?}` → `Session` (lance le PTY) ; les champs omis héritent de `Project.sessionDefaults`, `null` remet modèle/effort au défaut de la CLI |
 | POST | /api/sessions/:id/kill | envoie SIGTERM (puis SIGKILL après 3 s) |
 | POST | /api/sessions/:id/resume | relance une session `exited` qui a un `agentSessionId` → `Session` |
@@ -91,7 +91,11 @@ Au démarrage du serveur, toute session non `exited` passe à `exited` (les PTY 
 
 ## Lancement des agents (server/agents.ts)
 
-Le PTY : `node-pty.spawn(cmd, args, {name:'xterm-256color', cols:120, rows:32, cwd: project.path, env})`.
+Le PTY : `node-pty.spawn(cmd, args, {name:'xterm-256color', cols:120, rows:32, cwd: sessionWorkspace.path ?? project.path, env})`.
+Pour les nouvelles sessions Git avec historique, `sessionWorkspace` est un worktree
+isolé persistant avec copie du contexte et de l'index initiaux. Les sessions historiques
+ou sans historique gardent leur chemin initial et une provenance inconnue. Les actions
+Git présentent une sélection vérifiable ; voir les contrats détaillés du README.
 `env` = `process.env` **sans** les variables `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SSE_PORT`
 (éviter la détection de session imbriquée), plus `TERM=xterm-256color`, `COLORTERM=truecolor`,
 `CEREBRO_SESSION_ID`, `CEREBRO_TOKEN` (aléatoire, par session, gardé en mémoire), `CEREBRO_URL=INTERNAL_URL`.
@@ -226,7 +230,7 @@ fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jso
 - Libellés des modes : `default` = « Défaut (config de l'agent) », `acceptEdits` = « Accepter les éditions »,
   `plan` = « Plan / lecture seule », `bypass` = « Bypass (aucune confirmation) ».
 - Page d'accueil `#/` : tableau de bord — compteurs (en cours / en attente / inactives), liste des sessions vivantes de
-  tous les projets triées par attention puis date, et bouton créer un projet si aucun.
+  tous les projets dans l'ordre de création (la plus récente en premier), et bouton créer un projet si aucun.
 - Responsive : en dessous de 800 px, la barre latérale devient un tiroir (bouton menu) et le terminal prend toute la largeur.
 - Si une requête reçoit 401, afficher un écran « Token requis » avec un champ qui recharge `/?token=…`.
 
@@ -292,3 +296,37 @@ Mettre à jour : les sessions survivent au redémarrage du serveur ; comment lis
 `npx tsc --noEmit -p tsconfig.json`. Le bac à sable codex interdit les sockets réseau ; les sockets Unix dans un dossier
 du workspace peuvent fonctionner : tester si possible avec `CEREBRO_DATA_DIR=./.data/test` et un agent factice
 (ex. `bash`), sinon le signaler.
+
+## Opérations déterministes et ordonnancement
+
+- `POST /api/projects/:id/git/push`, `GET .../push` : push direct suivi par remote.
+- `POST .../git/prepare-commit`, `POST .../git/commit` : sélection et plan de commits structurés, index préservé et refus des états obsolètes.
+- `POST .../git/prepare-review`, `POST .../git/review` : périmètre calculé/capturé en code, raisonnement confié à l'agent.
+- `/api/sessions/:id/provenance`, `/api/sessions/:id/git/*` : espace persisté et sélection explicite, y compris pour les sessions arrêtées.
+- `/api/sessions/:id/findings`, `.../:report/import` : rapports structurés et import idempotent en epic/tâches ; publication agent via `cerebro-findings`.
+- `Task.execution` vaut `{type:"llm"}` par défaut (migration et compatibilité distante), ou `{type:"command",commandId,completion}`. Les commandes configurées dans `/api/projects/:id/commands` créent des opérations `/api/tasks/:id/runs`, sans Session factice.
+- `POST /api/epics/:id/start` renvoie désormais une exécution d'epic, pas une Session. `/api/epics/:id/runs` et `/api/epic-runs/:id/{stop,resume}` suivent l'étape persistée. Seule la tâche courante est started ; --done demeure compatible, idle/exited ne valent jamais done.
+- `? etat ...` et les formulations factuelles bornées du README consultent le même état local/distant sans inférence. Les questions libres gardent leur recours au LLM.
+- `/api/operations` et `POST /api/operations/:id/seen` suivent les résultats factuels et annulent les alertes consultées. Notifications, durées, préférences et déduplication sont gérées en code.
+
+## Inventaire indépendant des worktrees
+
+- Registres persistants `worktree_inventory` et `worktree_operations`, sans cascade de suppression des sessions/projets. Backfill des anciennes données `session_workspaces` ; conservation des derniers noms à la suppression.
+- `GET /api/worktrees`, `GET /api/projects/:id/worktrees`, `GET /api/worktrees/:id` : découverte Git, fichiers modifiés/ignorés, commits absents de la cible, session associée ou absente, protections et dernière opération.
+- `PATCH /api/worktrees/:id/target` `{branch:"refs/heads/..."}` : choix explicite d'une branche ouverte dans un autre worktree.
+- `POST /api/worktrees/:id/prepare-{merge,remove}` : état revérifié et jeton temporaire de confirmation. `POST .../{merge,remove}` `{token}` : opération suivie, jeton à usage unique et refus si l'état a changé.
+- Merge Git standard avec hooks, cible propre, aucune session en cours de travail. La conversation et sa branche persistent après merge ; les changements postérieurs redeviennent à intégrer. Les conflits restent à résoudre, sans reset automatique.
+- Suppression distincte du worktree uniquement propre, sans fichiers ignorés, intégré et inutilisé. Aucun `--force`, aucune suppression de branche ; reprise de conversation refusée après retrait de son worktree.
+- `/api/worktrees/:id/git/{prepare-commit,commit,push}` : préparation/exécution de plans explicites et suivi du push pour les worktrees dont la conversation n'existe plus. Aucun agent requis.
+- Inventaire visible dans le projet et sur l'accueil de la machine sélectionnée ; protections revérifiées côté serveur, indépendamment de l'état affiché par le navigateur.
+
+## Commit / push en un clic
+
+- `Project.commitSettings` : `{agent,model,effort,strategy:"single"|"atomic"}`, persistant et indépendant de `sessionDefaults`. Réglable par `PATCH /api/projects/:id` et « Réglages Git ». Migration initialisée une seule fois depuis les préférences de sessions existantes.
+- `POST /api/{projects,sessions,worktrees}/:id/git/auto-commit` `{requestId,push}` : exécution suivie, collecte déterministe, proposition de messages/regroupements par l'agent configuré, validation du plan, exécuteur Git puis push direct. Aucun JSON ou prompt à manipuler dans le parcours courant.
+- `GET /api/git/auto-commits/:id` : phases, fichiers, exclusions, hashes/titres, résultats par remote et erreurs. `POST .../:id/cancel` arrête uniquement la préparation avant mutation Git.
+- Tables `automatic_commits` et `automatic_commit_requests` : idempotence des reprises et doubles clics, y compris après redémarrage ; une opération inachevée est interrompue et jamais rejouée automatiquement.
+- Les adaptateurs Claude, Codex et Grok utilisent le modèle/effort du projet, un contexte de diffs collecté en code et une sortie structurée. Pas de Session interactive factice ni de délégation des commandes Git. Les fichiers bloqués ou incertains sont exclus avant inférence et les états obsolètes sont refusés avant commit.
+- `GET /api/sessions/:id/git/context` consulte uniquement les métadonnées persistées : dossier partagé, copie isolée ou copie retirée. Une ancienne conversation affiche explicitement « Commit / push du projet » avant de lancer l'action sur le dossier partagé ; aucune attribution implicite au contenu de cette session.
+- `WorktreeView.changesSinceCreation` compare les fichiers locaux modifiés à leur empreinte initiale : nombre et liste des changements postérieurs, nombre des changements hérités et des fichiers qui requièrent un examen. `null` si la comparaison n'est pas prouvable. Ce compteur n'attribue pas un auteur. Les contrôles Git continuent d'utiliser l'état complet du worktree.
+- L'interface présente les copies des conversations séparément du dossier principal et des copies non associées ; les fichiers ignorés et le retrait figurent dans les détails. Les diffs se consultent sans agent via la collecte existante.

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -182,6 +183,19 @@ test('API : réglages avant lancement, rechargement, backlog et validation des c
     assert.equal(response.json().session.agent, saved.agent);
     assert.equal(response.json().session.prompt, task.text);
 
+    // A push operation uses the Git service, never launchSession / an agent CLI.
+    execFileSync('git', ['-C', root, 'init', '-b', 'main']);
+    const launchCount = launches.length;
+    response = await send('POST', `${projectUrl}/git/push`);
+    assert.equal(response.statusCode, 202);
+    let operation = response.json();
+    while (operation.finishedAt === null) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      operation = (await send('GET', `${projectUrl}/git/push`)).json();
+    }
+    assert.equal(operation.status, 'failed'); // Empty repository: no commit is invented.
+    assert.equal(launches.length, launchCount);
+
     response = await send('PATCH', projectUrl, { sessionDefaults: { model: null, effort: null, prompt: '' } });
     assert.equal(response.statusCode, 200);
     assert.equal(response.json().sessionDefaults.model, null);
@@ -195,4 +209,47 @@ test('API : réglages avant lancement, rechargement, backlog et validation des c
   } finally {
     await app.close();
   }
+});
+
+test('API commit plan executes without launching an agent', async () => {
+  const repo = mkdtempSync(join(root, 'git-api-'));
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args]);
+  git('init', '-b', 'main'); git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'Test');
+  writeFileSync(join(repo, 'file'), 'new\n');
+  const app = await buildServer();
+  try {
+    const project = (await app.inject({ method:'POST',url:'/api/projects',payload:{name:'Git API',path:repo} })).json();
+    const before = launches.length;
+    const snapshot = (await app.inject({method:'POST',url:`/api/projects/${project.id}/git/prepare-commit`})).json();
+    const response = await app.inject({method:'POST',url:`/api/projects/${project.id}/git/commit`,payload:{snapshotId:snapshot.id,commits:[{message:'initial',selection:[{path:'file',all:true}]}],acknowledged:[],push:false}});
+    assert.equal(response.statusCode,200);assert.equal(response.json().error,null);assert.equal(response.json().commits.length,1);
+    assert.equal(launches.length,before);
+  } finally {await app.close();}
+});
+
+test('API command tasks never launch an agent and preserve the explicit validation distinction',async()=>{
+  const app=await buildServer();
+  try{
+    const p=(await app.inject({method:'POST',url:'/api/projects',payload:{name:'Commands',path:root}})).json();
+    const command=(await app.inject({method:'POST',url:`/api/projects/${p.id}/commands`,payload:{name:'Check',executable:process.execPath,args:['-e','console.log("checked")'],cwd:'.',timeoutSeconds:10}})).json();
+    const task=(await app.inject({method:'POST',url:`/api/projects/${p.id}/tasks`,payload:{text:'Check',execution:{type:'command',commandId:command.id,completion:'manual'}}})).json();
+    const count=launches.length;const response=await app.inject({method:'POST',url:`/api/tasks/${task.id}/start`});assert.equal(response.statusCode,202);assert.equal(response.json().session,undefined);
+    let run;do{await new Promise(r=>setTimeout(r,10));run=(await app.inject({method:'GET',url:`/api/tasks/${task.id}/runs`})).json()[0];}while(run.status==='running');
+    assert.equal(run.status,'succeeded');assert.equal(launches.length,count);
+    assert.equal((await app.inject({method:'GET',url:'/api/tasks'})).json().find(t=>t.id===task.id).status,'started');
+  }finally{await app.close();}
+});
+
+test('API epic scheduler persists the current step and remains compatible with backlog --done',async()=>{
+  let app=await buildServer();const send=(method,url,payload)=>app.inject({method,url,...(payload===undefined?{}:{payload})});
+  try{
+    const p=(await send('POST','/api/projects',{name:'Scheduled',path:root})).json();const a=(await send('POST',`/api/projects/${p.id}/tasks`,{text:'first'})).json();const b=(await send('POST',`/api/projects/${p.id}/tasks`,{text:'next'})).json();
+    const epic=(await send('POST',`/api/projects/${p.id}/epics`,{title:'Sequential',taskIds:[a.id,b.id]})).json();const before=launches.length;
+    const response=await send('POST',`/api/epics/${epic.id}/start`,{});assert.equal(response.statusCode,202);assert.equal(response.json().session,undefined);
+    assert.equal((await send('POST',`/api/epics/${epic.id}/start`,{})).statusCode,409);
+    await new Promise(r=>setTimeout(r,1100));let tasks=(await send('GET','/api/tasks')).json();const current=tasks.find(t=>t.id===a.id);assert.equal(current.status,'started');assert.equal(tasks.find(t=>t.id===b.id).status,'todo');assert.equal(launches.length,before+1);
+    await app.close();app=await buildServer();await new Promise(r=>setTimeout(r,50));assert.equal(launches.length,before+1);
+    const done=await app.inject({method:'POST',url:`/api/backlog/${current.sessionId}/tasks/${a.id}/done`,headers:{'x-cerebro-token':'test-token'},payload:{}});assert.equal(done.statusCode,200);
+    await new Promise(r=>setTimeout(r,1100));tasks=(await send('GET','/api/tasks')).json();assert.equal(tasks.find(t=>t.id===b.id).status,'started');assert.equal(launches.length,before+2);
+  }finally{await app.close();}
 });

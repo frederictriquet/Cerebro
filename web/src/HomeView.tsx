@@ -1,16 +1,12 @@
+import { Worktrees } from './Worktrees.tsx';
 import { AgentLabel } from './AgentLabel.tsx';
+import { LlmUsageStats } from './LlmUsageStats.tsx';
 import { useState, type FormEvent } from 'react';
 import { displayStatus, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { go, href, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
-import type { Session } from './types.ts';
-
-function compareLive(a: Session, b: Session): number {
-  if (a.attention !== b.attention) return a.attention ? -1 : 1;
-  return b.updatedAt - a.updatedAt;
-}
 
 export function HomeView() {
   const { projects, sessions, createProject } = useStore();
@@ -23,7 +19,7 @@ export function HomeView() {
   const running = sessions.filter((s) => s.status === 'running' || s.status === 'starting').length;
   const waiting = sessions.filter((s) => s.status === 'waiting').length;
   const idle = sessions.filter((s) => s.status === 'idle').length;
-  const live = sessions.filter((s) => s.status !== 'exited').sort(compareLive);
+  const live = sessions.filter((s) => s.status !== 'exited');
 
   const onCreate = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
@@ -82,6 +78,9 @@ export function HomeView() {
           </button>
         </form>
       ) : null}
+
+      <Worktrees />
+      <LlmUsageStats sessions={sessions} now={now} />
 
       <section className="session-table-wrap">
         <h2>Sessions vivantes</h2>

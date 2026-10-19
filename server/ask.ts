@@ -2,12 +2,11 @@ import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { loadRemotes, MACHINE_NAME, type RemoteMachine } from './config.ts';
-import type { CerebroDatabase, Epic, Project, Session, Task } from './db.ts';
+import { collectMachines, type MachineData } from './state.ts';
+import type { CerebroDatabase } from './db.ts';
 
 const execFileAsync = promisify(execFile);
 
-const REMOTE_TIMEOUT_MS = 5_000;
 const ANSWER_TIMEOUT_MS = 5 * 60 * 1_000;
 const MAX_TURNS = 25;
 const TEXT_LIMIT = 600;
@@ -15,14 +14,6 @@ const TEXT_LIMIT = 600;
 const RECENT_EXITED_SESSIONS = 5;
 // Read-only: a question never changes a project.
 const TOOLS = ['Read', 'Glob', 'Grep'];
-
-interface MachineData {
-  machine: string;
-  projects: Project[];
-  sessions: Session[];
-  tasks: Task[];
-  epics: Epic[];
-}
 
 function truncate(text: string): string {
   return text.length > TEXT_LIMIT ? `${text.slice(0, TEXT_LIMIT)}…` : text;
@@ -68,51 +59,11 @@ function snapshot(data: MachineData): unknown {
   };
 }
 
-async function fetchRemote<T>(remote: RemoteMachine, path: string): Promise<T> {
-  const url = new URL(remote.url);
-  url.pathname = `${url.pathname.replace(/\/$/, '')}${path}`;
-  const response = await fetch(url, {
-    headers: remote.token === undefined ? {} : { authorization: `Bearer ${remote.token}` },
-    signal: AbortSignal.timeout(REMOTE_TIMEOUT_MS),
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status} sur ${path}`);
-  return await response.json() as T;
-}
-
-async function remoteData(remote: RemoteMachine): Promise<MachineData> {
-  const [projects, sessions, tasks, epics] = await Promise.all([
-    fetchRemote<Project[]>(remote, '/api/projects'),
-    fetchRemote<Session[]>(remote, '/api/sessions'),
-    fetchRemote<Task[]>(remote, '/api/tasks'),
-    fetchRemote<Epic[]>(remote, '/api/epics'),
-  ]);
-  return { machine: remote.name, projects, sessions, tasks, epics };
-}
-
-/** State of this machine and of the machines declared in remotes.json; unreachable ones are listed as such. */
 async function collectState(db: CerebroDatabase): Promise<unknown> {
-  const local: MachineData = {
-    machine: MACHINE_NAME,
-    projects: db.listProjects(),
-    sessions: db.listSessions(),
-    tasks: db.listTasks(),
-    epics: db.listEpics(),
-  };
-  const remotes = await Promise.all(loadRemotes().map(async (remote) => {
-    try {
-      return { ok: true as const, data: await remoteData(remote) };
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      console.error(`[ask] machine ${remote.name} injoignable :`, reason);
-      return { ok: false as const, machine: remote.name, error: reason };
-    }
-  }));
+  const machines = await collectMachines(db);
   return {
     now: date(Date.now()),
-    machines: [
-      snapshot(local),
-      ...remotes.map((remote) => remote.ok ? snapshot(remote.data) : { machine: remote.machine, unreachable: remote.error }),
-    ],
+    machines: machines.map((machine) => machine.ok ? snapshot(machine.data) : { machine: machine.machine, unreachable: machine.error }),
   };
 }
 

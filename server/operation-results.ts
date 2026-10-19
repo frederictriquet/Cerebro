@@ -1,0 +1,33 @@
+import type { CerebroDatabase } from './db.ts';
+export interface OperationResult {id:string;projectId:string;sessionId:string|null;kind:'push'|'commit'|'command'|'epic';ok:boolean;summary:string;startedAt:number;finishedAt:number;seenAt:number|null;notifiedAt:number|null}
+export class OperationResults {
+  private db:CerebroDatabase;private timers=new Map<string,NodeJS.Timeout>();private sending=new Set<string>();private closed=false;
+  delay:()=>number=()=>30_000;
+  wanted:(result:OperationResult)=>boolean=()=>false;
+  send:(result:OperationResult)=>Promise<void>=async()=>{};
+  onError:(cause:unknown)=>void=()=>{};
+  constructor(db:CerebroDatabase){this.db=db;}
+  list(projectId?:string):OperationResult[]{return (this.db.connection.prepare('SELECT data FROM operation_results ORDER BY rowid DESC').all() as {data:string}[]).map(r=>JSON.parse(r.data)).filter(r=>!projectId||r.projectId===projectId);}
+  get(id:string):OperationResult|null{return this.list().find(r=>r.id===id)??null;}
+  private save(r:OperationResult):void{this.db.connection.prepare('INSERT INTO operation_results VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(r.id,JSON.stringify(r));}
+  record(raw:Omit<OperationResult,'seenAt'|'notifiedAt'>):void{
+    raw={...raw,summary:raw.summary.slice(0,3000)};
+    const old=this.get(raw.id);
+    if(old&&old.ok===raw.ok&&old.summary===raw.summary&&old.finishedAt===raw.finishedAt)return;
+    const result={...raw,seenAt:null,notifiedAt:null};this.save(result);this.schedule(result);
+  }
+  restore():void{for(const result of this.list())if(Date.now()-result.finishedAt<86_400_000)this.schedule(result);}
+  seen(id:string):void{const result=this.get(id);if(!result)return;result.seenAt=Date.now();this.save(result);const timer=this.timers.get(id);if(timer)clearTimeout(timer);this.timers.delete(id);}
+  private schedule(result:OperationResult):void{
+    if(this.closed||result.seenAt||result.notifiedAt||!this.wanted(result))return;
+    const previous=this.timers.get(result.id);if(previous)clearTimeout(previous);
+    const timer=setTimeout(()=>{this.timers.delete(result.id);void this.deliver(result.id).catch(this.onError);},this.delay());timer.unref();this.timers.set(result.id,timer);
+  }
+  async deliver(id:string):Promise<void>{
+    const result=this.get(id);if(this.closed||!result||result.seenAt||result.notifiedAt||!this.wanted(result)||this.sending.has(id))return;
+    this.sending.add(id);
+    try{await this.send(result);if(this.closed)return;const latest=this.get(id);if(latest&&latest.finishedAt===result.finishedAt){latest.notifiedAt=Date.now();this.save(latest);}}
+    finally{this.sending.delete(id);}
+  }
+  close():void{this.closed=true;for(const timer of this.timers.values())clearTimeout(timer);this.timers.clear();}
+}

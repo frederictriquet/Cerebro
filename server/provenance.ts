@@ -1,0 +1,144 @@
+import { execFile } from 'node:child_process';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { promisify } from 'node:util';
+import { DATA_DIR } from './config.ts';
+import type { CerebroDatabase, Project } from './db.ts';
+import { rememberWorktree } from './worktrees.ts';
+import { prepareCommit, type GitSnapshot } from './git-plan.ts';
+import { workspaceFileSignature } from './workspace-files.ts';
+const exec = promisify(execFile);
+const git = async (path: string, args: string[], index?: string): Promise<string> => (await exec('git', ['-C', path, ...args], {
+  maxBuffer: 8 * 1024 * 1024, env: {...process.env, GIT_OPTIONAL_LOCKS: '0', ...(index ? {GIT_INDEX_FILE:index} : {})},
+})).stdout.trim();
+export interface Workspace {
+  sessionId: string;
+  projectId?: string;
+  projectName?: string;
+  projectRoot?: string;
+  targetBranch?: string | null;
+  removedAt?: number;
+  mode: 'isolated' | 'unknown';
+  path: string;
+  root: string;
+  source: string;
+  base: string | null;
+  branch: string | null;
+  initialDirty: string[];
+  baseline: Record<string, string>;
+  reason: string;
+  createdAt: number;
+}
+export interface Provenance {
+  workspace: Workspace;
+  changes: { path: string; certainty: 'workspace' | 'uncertain'; reason: string }[];
+  commits: { hash: string; title: string; certainty: 'workspace' | 'uncertain' }[];
+  warning: string;
+}
+export function workspaceFor(db: CerebroDatabase, id: string): Workspace | null {
+  const row = db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(id) as {data:string} | undefined;
+  return row ? JSON.parse(row.data) as Workspace : null;
+}
+function save(db: CerebroDatabase, workspace: Workspace): Workspace {
+  db.connection.prepare('INSERT INTO session_workspaces (session_id, data) VALUES (?,?)').run(workspace.sessionId,JSON.stringify(workspace));
+  return workspace;
+}
+async function manifest(path: string): Promise<Record<string,string>> {
+  const entries: [string,string][] = [];
+  async function walk(dir: string): Promise<void> {
+    for (const entry of await readdir(dir, {withFileTypes:true})) {
+      if (dir === path && entry.name === '.git') continue;
+      const file=join(dir,entry.name); const name=relative(path,file);
+      if (entry.isDirectory()) await walk(file);
+      else {
+        const signature=await workspaceFileSignature(file);
+        if(signature===undefined)throw new Error(`Le fichier a disparu pendant la collecte : ${name}`);
+        entries.push([name,signature]);
+      }
+    }
+  }
+  await walk(path);
+  return Object.fromEntries(entries.sort(([a],[b])=>a.localeCompare(b)));
+}
+const signature = (m: Record<string,string>): string => JSON.stringify(m);
+
+/** Isolation is persisted before launching the holder. Historical sessions keep their cwd. */
+export async function createWorkspace(db: CerebroDatabase, sessionId: string, project: Project): Promise<Workspace> {
+  const common: Workspace = {sessionId,projectId:project.id,projectName:project.name,mode:'unknown',path:project.path,root:project.path,source:project.path,base:null,branch:null,initialDirty:[],baseline:{},reason:'Projet sans historique Git : sélection explicite nécessaire.',createdAt:Date.now()};
+  let root: string;
+  try { root=await git(project.path,['rev-parse','--show-toplevel']); common.base=await git(root,['rev-parse','--verify','HEAD']); }
+  catch { return save(db,common); }
+  const registeredProject=db.getProject(project.id)??project;
+  common.projectRoot=await git(registeredProject.path,['rev-parse','--show-toplevel']).catch(()=>root);
+  common.targetBranch=await git(common.projectRoot,['symbolic-ref','--quiet','HEAD']).catch(()=>null);
+  if (resolve(DATA_DIR).startsWith(`${resolve(root)}/`) || resolve(DATA_DIR)===resolve(root)) throw new Error('Le dossier Cerebro doit être situé hors du dépôt pour isoler les sessions.');
+  if ((await git(root,['ls-files','--stage'])).split('\n').some(line=>line.startsWith('160000 '))) throw new Error('Isolation des sous-modules non prise en charge : aucun agent lancé.');
+  if (await git(root,['ls-files','-u'])) throw new Error('Résolvez les conflits de l’index avant de lancer une session isolée.');
+  const before = await manifest(root);
+  const indexPath=resolve(root,await git(root,['rev-parse','--git-path','index']));
+  const indexBytes=await readFile(indexPath);
+  const dirty=(await git(root,['diff','--name-only','-z','HEAD'])).split('\0').filter(Boolean);
+  const staged=(await git(root,['diff','--cached','--name-only','-z'])).split('\0').filter(Boolean);
+  const untracked=(await git(root,['ls-files','--others','--exclude-standard','-z'])).split('\0').filter(Boolean);
+  const branch=`cerebro/session-${sessionId}`;
+  const workspace=join(DATA_DIR,'workspaces',sessionId);
+  await mkdir(join(DATA_DIR,'workspaces'),{recursive:true});
+  const temporary=await mkdtemp(join(tmpdir(),'cerebro-isolate-'));
+  let added=false;
+  try {
+    const sourceIndex=join(temporary,'source-index'); await writeFile(sourceIndex,indexBytes);
+    const tree=await git(root,['write-tree'],sourceIndex);
+    await git(root,['worktree','add','-b',branch,'--',workspace,common.base!]); added=true;
+    // Include ignored configuration/dependencies; no symlink back to the original directory.
+    for (const name of await readdir(workspace)) if(name!=='.git') await rm(join(workspace,name),{recursive:true,force:true});
+    for (const name of await readdir(root)) if(name!=='.git') await cp(join(root,name),join(workspace,name),{recursive:true,dereference:false,verbatimSymlinks:true});
+    await git(workspace,['read-tree',tree]);
+    if (common.base!==await git(root,['rev-parse','HEAD']) || !indexBytes.equals(await readFile(indexPath)) || signature(before)!==signature(await manifest(root))) throw new Error('Le projet a changé pendant son isolation : relancez la session.');
+    const baseline=await manifest(workspace);
+    if(signature(before)!==signature(baseline)) throw new Error('Copie initiale non identique : aucun agent lancé.');
+    const saved=save(db,{...common,mode:'isolated',root:workspace,path:join(workspace,relative(root,project.path)),source:root,branch,baseline,initialDirty:[...new Set([...dirty,...staged,...untracked])],reason:'Périmètre de l’espace isolé ; les auteurs des éditions dans cet espace ne sont pas identifiables.'});
+    await rememberWorktree(db,saved);
+    return saved;
+  } catch(cause) {
+    if(added) { await git(root,['worktree','remove','--force',workspace]).catch(()=>{}); await git(root,['branch','-D',branch]).catch(()=>{}); }
+    throw cause;
+  } finally {await rm(temporary,{recursive:true,force:true});}
+}
+
+export function historicalWorkspace(sessionId: string, path: string): Workspace {
+  return {sessionId,mode:'unknown',path,root:path,source:path,base:null,branch:null,initialDirty:[],baseline:{},reason:'Session historique sans provenance : sélection explicite nécessaire.',createdAt:0};
+}
+
+export async function sessionProvenance(db: CerebroDatabase, sessionId: string): Promise<Provenance> {
+  const session=db.getSession(sessionId);
+  if(!session) throw new Error('Session introuvable.');
+  const project=db.getProject(session.projectId)!;
+  const workspace=workspaceFor(db,sessionId)??historicalWorkspace(sessionId,project.path);
+  const warning='Le périmètre décrit un espace de travail, pas l’auteur des modifications. Toute édition humaine ou externe dans cet espace doit être vérifiée explicitement. Les changements initiaux ne sont pas attribués à la session.';
+  if(workspace.mode==='unknown') return {workspace,changes:[],commits:[],warning};
+  const snapshot=await prepareCommit(workspace.root);
+  const current=await manifest(workspace.root);
+  const changed=snapshot.files.filter(f=>workspace.baseline[f.path]!==current[f.path]);
+  const branchMatches = await git(workspace.root,['symbolic-ref','--short','HEAD']).then(branch => branch === workspace.branch, () => false);
+  const reflog=await git(workspace.root,['reflog','show','--format=%gs',workspace.branch!]).catch(()=> '');
+  const historyKnown=reflog.includes('branch: Created from')&&!reflog.split('\n').some(line=>line&&!/^(?:commit(?: \([^)]*\))?:|branch: Created from)/.test(line));
+  const valid=branchMatches && historyKnown && await git(workspace.root,['merge-base','--is-ancestor',workspace.base!,'HEAD']).then(()=>true,()=>false);
+  const records=valid?(await git(workspace.root,['log','--first-parent','--format=%H%x09%s',`${workspace.base}..HEAD`])).split('\n').filter(Boolean):[];
+  return {
+    workspace:{...workspace,baseline:{}},warning: valid?warning:`${warning} L’historique de base a changé : attribution incertaine.`,
+    changes:changed.map(f=>({path:f.path,certainty:valid&&!workspace.initialDirty.includes(f.path)&&!workspace.baseline[f.path]?.startsWith('link:')?'workspace':'uncertain',reason:workspace.initialDirty.includes(f.path)?'Fichier modifié avant la session : sélection manuelle des hunks nécessaire.':'Modification dans l’espace isolé ; auteur non garanti.'})),
+    commits:await Promise.all(records.map(async line=>{
+      const [oid,...title]=line.split('\t');
+      const paths=(await git(workspace.root,['diff-tree','--no-commit-id','--name-only','-r',oid])).split('\n');
+      const parents=(await git(workspace.root,['rev-list','--parents','-n','1',oid])).split(' ').length-1;
+      return {hash:oid,title:title.join('\t'),certainty:parents!==1||paths.some(p=>workspace.initialDirty.includes(p))?'uncertain' as const:'workspace' as const};
+    })),
+  };
+}
+
+export async function prepareSessionCommit(db: CerebroDatabase, id: string): Promise<GitSnapshot & { provenance: Provenance }> {
+  const provenance=await sessionProvenance(db,id);
+  const snapshot=await prepareCommit(provenance.workspace.root);
+  return {...snapshot,provenance};
+}

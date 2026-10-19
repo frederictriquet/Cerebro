@@ -1,0 +1,53 @@
+.llm-stats {
+  padding: 18px 20px;
+  margin-bottom: 24px;
+  max-width: 960px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.llm-stats-head,
+.llm-stats-agent-head,
+.llm-stats-count {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.llm-stats-head { flex-wrap: wrap; }
+.llm-stats h2 { margin: 0; font-size: 15px; }
+.llm-stats-head p { margin: 3px 0 0; font-size: 12px; }
+.llm-stats-head .choice-group { margin: 0; }
+
+.llm-stats-body {
+  margin: 16px 0 12px;
+}
+
+.llm-stats-bar { display: flex; height: 10px; overflow: hidden; border-radius: 3px; background: var(--line); margin-bottom: 14px; }
+.llm-stats-segment { height: 100%; background: var(--llm-color); }
+.llm-tone-claude { --llm-color: #d99a7e; }
+.llm-tone-codex { --llm-color: #7aa2f7; }
+.llm-tone-grok { --llm-color: #a6d9b1; }
+
+.llm-stats-total { font-variant-numeric: tabular-nums; }
+.llm-stats-total b { color: var(--text); }
+.llm-stats-agents { display: flex; flex-wrap: wrap; gap: 16px 24px; list-style: none; margin: 0; padding: 0; }
+.llm-stats-agent { flex: 1 1 200px; min-width: 0; }
+.llm-stats-agent-head .agent-label { color: var(--llm-color); }
+.llm-stats-count { justify-content: flex-end; font-variant-numeric: tabular-nums; }
+.llm-stats-count > span { min-width: 52px; text-align: right; color: var(--muted); font-size: 12px; }
+.llm-stats-tokens { margin: 6px 0; font-variant-numeric: tabular-nums; }
+.llm-stats-tokens > span { display: block; color: var(--muted); font-size: 11px; }
+.llm-stats-detail { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; color: var(--muted); font-size: 11px; }
+.llm-stats-model { overflow-wrap: anywhere; }
+.llm-stats-model b { font-weight: 500; color: var(--text); white-space: nowrap; }
+.llm-stats-note { margin: 0; font-size: 11px; }
+.home .llm-stats-note { max-width: none; }
+.llm-stats-empty { margin: 0 0 12px; font-size: 12px; }
+
+@media (max-width: 600px) {
+  .llm-stats { padding: 16px; }
+}

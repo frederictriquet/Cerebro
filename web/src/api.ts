@@ -228,6 +228,24 @@ export function getUsage(): Promise<AgentUsage[]> {
   return api<AgentUsage[]>('/api/usage');
 }
 
+export interface TokenCounts {
+  /** Includes cache reads and writes. */
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+}
+
+export interface SessionTokenUsage {
+  sessionId: string;
+  tokens: TokenCounts | null;
+  partial: boolean;
+}
+
+export function getSessionTokenUsage(): Promise<SessionTokenUsage[]> {
+  return api<SessionTokenUsage[]>('/api/usage/tokens');
+}
+
 export interface AgentUpdate {
   agent: Agent;
   installed: string | null;

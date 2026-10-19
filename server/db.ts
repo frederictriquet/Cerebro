@@ -17,6 +17,14 @@ export interface SessionDefaults {
   prompt: string;
 }
 
+export interface CommitSettings {
+  agent: Agent;
+  model: string | null;
+  effort: Effort | null;
+  strategy: 'single' | 'atomic';
+}
+export const DEFAULT_COMMIT_SETTINGS: Readonly<CommitSettings> = { agent: 'claude', model: null, effort: null, strategy: 'single' };
+
 export const DEFAULT_SESSION_DEFAULTS: Readonly<SessionDefaults> = {
   agent: 'claude', mode: 'auto', model: null, effort: null, prompt: '',
 };
@@ -40,6 +48,7 @@ export interface Project {
   path: string;
   color: string | null;
   sessionDefaults: SessionDefaults;
+  commitSettings: CommitSettings;
   createdAt: number;
 }
 
@@ -62,6 +71,7 @@ export interface Session {
   updatedAt: number;
 }
 
+export type TaskExecution = {type:'llm'} | {type:'command';commandId:string;completion:'manual'|'exit-zero'};
 // Élément du backlog d'un projet : un texte à confier plus tard à une session.
 export interface Task {
   id: string;
@@ -72,6 +82,7 @@ export interface Task {
   sourceSessionId: string | null;
   // Tâches du même projet à terminer avant de pouvoir lancer celle-ci.
   dependsOn: string[];
+  execution: TaskExecution;
   // Epic du même projet qui regroupe la tâche, ou null.
   epicId: string | null;
   createdAt: number;
@@ -95,6 +106,7 @@ interface ProjectRow {
   path: string;
   color: string | null;
   session_defaults: string | null;
+  commit_settings: string | null;
   created_at: number;
 }
 
@@ -118,6 +130,7 @@ interface SessionRow {
 }
 
 interface TaskRow {
+  execution: string;
   id: string;
   project_id: string;
   text: string;
@@ -160,6 +173,7 @@ function taskFromRow(row: TaskRow, dependsOn: string[]): Task {
     sessionId: row.session_id,
     sourceSessionId: row.source_session_id,
     dependsOn,
+    execution: row.execution ? JSON.parse(row.execution) : {type:'llm'},
     epicId: row.epic_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -170,6 +184,7 @@ function projectFromRow(row: ProjectRow): Project {
   return {
     id: row.id, name: row.name, path: row.path, color: row.color ?? null, createdAt: row.created_at,
     sessionDefaults: row.session_defaults === null ? { ...DEFAULT_SESSION_DEFAULTS } : JSON.parse(row.session_defaults),
+    commitSettings: row.commit_settings ? JSON.parse(row.commit_settings) : { ...DEFAULT_COMMIT_SETTINGS },
   };
 }
 
@@ -254,10 +269,28 @@ export class CerebroDatabase {
       );
       CREATE INDEX IF NOT EXISTS epics_project_id ON epics(project_id);
     `);
+    this.connection.exec(`
+      CREATE TABLE IF NOT EXISTS review_reports (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, digest TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL, epic_id TEXT, UNIQUE(session_id,digest));
+      CREATE TABLE IF NOT EXISTS finding_imports (report_id TEXT NOT NULL, finding_id TEXT NOT NULL, task_id TEXT NOT NULL, PRIMARY KEY(report_id,finding_id));
+    `);
+    this.connection.exec(`
+      CREATE TABLE IF NOT EXISTS worktree_inventory (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS worktree_operations (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+    `);
+    // Workspace records survive session deletion so unmerged work is never silently removed.
+    this.connection.exec('CREATE TABLE IF NOT EXISTS session_workspaces (session_id TEXT PRIMARY KEY, data TEXT NOT NULL)');
     const taskColumns = this.connection.prepare('PRAGMA table_info(tasks)').all() as unknown as { name: string }[];
     if (!taskColumns.some((column) => column.name === 'epic_id')) {
       this.connection.exec('ALTER TABLE tasks ADD COLUMN epic_id TEXT REFERENCES epics(id) ON DELETE SET NULL');
     }
+    if (!taskColumns.some(column=>column.name==='execution')) this.connection.exec(`ALTER TABLE tasks ADD COLUMN execution TEXT NOT NULL DEFAULT '{"type":"llm"}'`);
+    this.connection.exec(`
+      CREATE TABLE IF NOT EXISTS project_commands (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS operation_results (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS notification_turns (session_id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, ended_at INTEGER, custom_at INTEGER, relayed_at INTEGER, automatic_at INTEGER);
+      CREATE TABLE IF NOT EXISTS epic_runs (id TEXT PRIMARY KEY, epic_id TEXT NOT NULL, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS command_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, data TEXT NOT NULL);
+    `);
     this.connection.exec('CREATE INDEX IF NOT EXISTS tasks_epic_id ON tasks(epic_id)');
     const columns = this.connection.prepare('PRAGMA table_info(sessions)').all() as unknown as { name: string }[];
     if (!columns.some((column) => column.name === 'hook_token')) {
@@ -280,6 +313,16 @@ export class CerebroDatabase {
         )
       `);
     }
+    const commitColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as {name:string}[];
+    if (!commitColumns.some(column => column.name === 'commit_settings')) {
+      this.connection.exec(`ALTER TABLE projects ADD COLUMN commit_settings TEXT;
+        UPDATE projects SET commit_settings = json_object(
+          'agent', COALESCE(json_extract(session_defaults, '$.agent'), 'claude'),
+          'model', json_extract(session_defaults, '$.model'),
+          'effort', json_extract(session_defaults, '$.effort'), 'strategy', 'single');`);
+    }
+    this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commits (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
+    this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commit_requests (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, scope TEXT NOT NULL, push INTEGER NOT NULL)');
     this.allowAutoMode();
   }
 
@@ -322,19 +365,19 @@ export class CerebroDatabase {
 
   createProject(name: string, path: string): Project {
     const project: Project = {
-      id: randomUUID(), name, path, color: null, sessionDefaults: { ...DEFAULT_SESSION_DEFAULTS }, createdAt: Date.now(),
+      id: randomUUID(), name, path, color: null, sessionDefaults: { ...DEFAULT_SESSION_DEFAULTS }, commitSettings: { ...DEFAULT_COMMIT_SETTINGS }, createdAt: Date.now(),
     };
     this.connection.prepare('INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)')
       .run(project.id, project.name, project.path, project.createdAt);
     return project;
   }
 
-  updateProject(id: string, changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults'>>): Project | null {
+  updateProject(id: string, changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings'>>): Project | null {
     const current = this.getProject(id);
     if (current === null) return null;
     const next = { ...current, ...changes };
-    this.connection.prepare('UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ? WHERE id = ?')
-      .run(next.name, next.path, next.color, JSON.stringify(next.sessionDefaults), id);
+    this.connection.prepare('UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ? WHERE id = ?')
+      .run(next.name, next.path, next.color, JSON.stringify(next.sessionDefaults), JSON.stringify(next.commitSettings), id);
     return next;
   }
 
@@ -348,12 +391,12 @@ export class CerebroDatabase {
   }
 
   listSessions(): Session[] {
-    return (this.connection.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all() as unknown as SessionRow[])
+    return (this.connection.prepare('SELECT * FROM sessions ORDER BY created_at DESC, rowid DESC').all() as unknown as SessionRow[])
       .map(sessionFromRow);
   }
 
   listProjectSessions(projectId: string): Session[] {
-    return (this.connection.prepare('SELECT * FROM sessions WHERE project_id = ? ORDER BY updated_at DESC')
+    return (this.connection.prepare('SELECT * FROM sessions WHERE project_id = ? ORDER BY created_at DESC, rowid DESC')
       .all(projectId) as unknown as SessionRow[]).map(sessionFromRow);
   }
 
@@ -454,7 +497,7 @@ export class CerebroDatabase {
     }
   }
 
-  createTask(projectId: string, text: string, sourceSessionId: string | null, epicId: string | null = null): Task {
+  createTask(projectId: string, text: string, sourceSessionId: string | null, epicId: string | null = null, execution: TaskExecution = {type:'llm'}): Task {
     const now = Date.now();
     const task: Task = {
       id: randomUUID(),
@@ -464,23 +507,24 @@ export class CerebroDatabase {
       sessionId: null,
       sourceSessionId,
       dependsOn: [],
+      execution,
       epicId,
       createdAt: now,
       updatedAt: now,
     };
     this.connection.prepare(`
-      INSERT INTO tasks (id, project_id, text, status, session_id, source_session_id, epic_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(task.id, task.projectId, task.text, task.status, null, sourceSessionId, epicId, now, now);
+      INSERT INTO tasks (id, project_id, text, status, session_id, source_session_id, epic_id, created_at, updated_at, execution)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(task.id, task.projectId, task.text, task.status, null, sourceSessionId, epicId, now, now, JSON.stringify(execution));
     return task;
   }
 
-  updateTask(id: string, changes: Partial<Pick<Task, 'text' | 'status' | 'sessionId' | 'dependsOn' | 'epicId'>>): Task | null {
+  updateTask(id: string, changes: Partial<Pick<Task, 'text' | 'status' | 'sessionId' | 'dependsOn' | 'epicId' | 'execution'>>): Task | null {
     const current = this.getTask(id);
     if (current === null) return null;
     const next = { ...current, ...changes, updatedAt: Date.now() };
-    this.connection.prepare('UPDATE tasks SET text = ?, status = ?, session_id = ?, epic_id = ?, updated_at = ? WHERE id = ?')
-      .run(next.text, next.status, next.sessionId, next.epicId, next.updatedAt, id);
+    this.connection.prepare('UPDATE tasks SET text = ?, status = ?, session_id = ?, epic_id = ?, updated_at = ?, execution = ? WHERE id = ?')
+      .run(next.text, next.status, next.sessionId, next.epicId, next.updatedAt, JSON.stringify(next.execution), id);
     if (changes.dependsOn !== undefined) {
       this.setTaskDependencies(id, changes.dependsOn);
       next.dependsOn = this.taskDependencies(id);

@@ -10,6 +10,8 @@ import {
   SLACK_TOKEN,
   SLACK_USER,
 } from './config.ts';
+import { OperationResults } from './operation-results.ts';
+import { answerFactQuestion, FACT_HELP } from './facts.ts';
 import { answerQuestion } from './ask.ts';
 import type { Agent, CerebroDatabase, Session } from './db.ts';
 import { normalizeProjectName, type PeerSync } from './peers.ts';
@@ -39,6 +41,16 @@ function defaultSettings(): SlackSettings {
     agentMessages: true,
     delaySeconds: Number.isFinite(delaySeconds) && delaySeconds >= 0 ? delaySeconds : 30,
   };
+}
+
+// Le fil Slack reprend la session active la plus récemment touchée, pas la plus récemment créée.
+function latestActive(sessions: Session[], agent: Agent | null = null): Session | undefined {
+  return sessions
+    .filter((session) => session.status !== 'exited' && (agent === null || session.agent === agent))
+    .reduce<Session | undefined>(
+      (best, session) => (best === undefined || session.updatedAt > best.updatedAt ? session : best),
+      undefined,
+    );
 }
 
 function validDelay(value: unknown): value is number {
@@ -321,7 +333,22 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+interface NotificationTurn {started_at:number;ended_at:number|null;custom_at:number|null;relayed_at:number|null;automatic_at:number|null}
+
 export class SlackNotifier {
+  readonly operations:OperationResults;
+  private outgoing=new Map<string,Promise<void>>();
+  private turn(sessionId:string):NotificationTurn|null{return this.db.connection.prepare('SELECT * FROM notification_turns WHERE session_id=?').get(sessionId) as NotificationTurn|undefined??null;}
+  private markTurn(sessionId:string,column:'custom_at'|'relayed_at'|'automatic_at'):void{
+    const session=this.db.getSession(sessionId);if(!session)return;
+    this.db.connection.prepare('INSERT OR IGNORE INTO notification_turns (session_id,started_at) VALUES (?,?)').run(sessionId,session.createdAt);
+    this.db.connection.prepare(`UPDATE notification_turns SET ${column}=? WHERE session_id=?`).run(Date.now(),sessionId);
+  }
+  private serial(id:string,send:()=>Promise<void>):Promise<void>{
+    const previous=this.outgoing.get(id)??Promise.resolve();const next=previous.catch(()=>{}).then(send);this.outgoing.set(id,next);
+    void next.finally(()=>{if(this.outgoing.get(id)===next)this.outgoing.delete(id);}).catch(()=>{});return next;
+  }
+
   private readonly sessions: SessionManager;
   private readonly db: CerebroDatabase;
   private readonly peers: PeerSync;
@@ -342,11 +369,32 @@ export class SlackNotifier {
     this.sessions = sessions;
     this.db = db;
     this.peers = peers;
+    this.operations=new OperationResults(db);
+    this.operations.delay=()=>this.settings.delaySeconds*1000;
+    this.operations.wanted=result=>SLACK_ENABLED&&!this.stopped&&(result.ok?this.settings.idle:this.settings.waiting);
+    this.operations.onError=cause=>this.logError(cause);
+    this.operations.send=async result=>{
+      await this.peers.ready;
+      if(this.stopped)return;
+      const project=this.db.getProject(result.projectId);
+      if(!project||!this.peers.owns(project.name))return;
+      const text=`${result.ok?':white_check_mark:':':x:'} *${escapeMrkdwn(project.name)}* — ${result.kind} : ${escapeMrkdwn(result.summary)}\nDurée : ${Math.max(0,Math.round((result.finishedAt-result.startedAt)/1000))} s\n<${PUBLIC_URL.replace(/\/+$/,'')}/#/p/${encodeURIComponent(project.id)}|Ouvrir dans Cerebro>`;
+      const send=async():Promise<void>=>{
+        // Recheck after peer coordination and any pending send in this session.
+        if(this.stopped)return;
+        const current=this.operations.get(result.id);if(this.stopped||current?.seenAt||current?.notifiedAt||!this.operations.wanted(result))return;
+        const thread=result.sessionId?this.threads.get(result.sessionId):undefined;
+        if(thread)await this.postThreadReply(thread.channel,thread.ts,text);
+        else await this.slackApi('chat.postMessage',{channel:await this.openDm(),text,unfurl_links:false});
+      };
+      await this.serial(result.sessionId??`operation:${result.id}`,send);
+    };
     if (!SLACK_ENABLED) {
       this.unsubscribe = null;
       this.pollTimer = null;
       return;
     }
+    this.operations.restore();
     this.loadState();
     this.stateDirty = true;
     this.saveState();
@@ -383,16 +431,24 @@ export class SlackNotifier {
     if (!SLACK_ENABLED) throw new Error("Slack n'est pas configuré");
     const session = this.db.getSession(sessionId);
     if (session === null) throw new Error('Session introuvable');
+    this.markTurn(sessionId,'custom_at');
+    const pending=this.timers.get(sessionId);if(pending)clearTimeout(pending);this.timers.delete(sessionId);
     const header = this.header(session);
     const suffix = kind === 'ask'
       ? `\n${this.sessionLink(session.id)}\n_Réponds dans le fil : ta réponse sera envoyée à l'agent._`
       : `\n${this.sessionLink(session.id)}`;
     const message = `${kind === 'ask' ? ':question:' : ':bell:'} ${header}\n${text}${suffix}`;
-    await this.postSessionMessage(session.id, kind, message);
+    await this.serial(session.id,async()=>{
+      if(this.stopped)return;
+      const thread=this.threads.get(session.id);
+      if(kind==='notify'&&thread&&(this.turn(session.id)?.automatic_at||thread.kind==='ask'&&!thread.answered))await this.postThreadReply(thread.channel,thread.ts,message);
+      else await this.postSessionMessage(session.id,kind,message);
+    });
   }
 
   stop(): void {
     this.stopped = true;
+    this.operations.close();
     this.unsubscribe?.();
     if (this.pollTimer !== null) clearInterval(this.pollTimer);
     for (const timer of this.timers.values()) clearTimeout(timer);
@@ -400,6 +456,11 @@ export class SlackNotifier {
   }
 
   private onSessionEvent(event: SessionEvent): void {
+    if(event.type==='session'){
+      const session=event.session;const turn=this.turn(session.id);
+      if(session.status==='running'&&(!turn||turn.ended_at!==null))this.db.connection.prepare('INSERT INTO notification_turns (session_id,started_at) VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET started_at=excluded.started_at,ended_at=NULL,custom_at=NULL,relayed_at=NULL,automatic_at=NULL').run(session.id,session.updatedAt);
+      if(session.status==='idle'&&turn&&turn.ended_at===null)this.db.connection.prepare('UPDATE notification_turns SET ended_at=? WHERE session_id=?').run(Date.now(),session.id);
+    }
     if (event.type === 'session-deleted') {
       const timer = this.timers.get(event.id);
       if (timer !== undefined) clearTimeout(timer);
@@ -408,6 +469,7 @@ export class SlackNotifier {
       return;
     }
     if (event.type === 'turn-complete') {
+      this.db.connection.prepare('UPDATE notification_turns SET ended_at=COALESCE(ended_at,?) WHERE session_id=?').run(Date.now(),event.id);
       this.relayTurnEnd(event.id, event.message);
       return;
     }
@@ -432,6 +494,7 @@ export class SlackNotifier {
     }
     if (thread.moreTurns) thread.moreTurns = false;
     else thread.awaitingReply = false;
+    this.markTurn(sessionId,'relayed_at');
     this.stateChanged();
     // The answer itself lands in the thread: the "turn complete" alert would only repeat it.
     const timer = this.timers.get(sessionId);
@@ -440,16 +503,21 @@ export class SlackNotifier {
     const text = message !== null && message.trim() !== ''
       ? slackMarkdown(message)
       : `\`\`\`\n${safeCodeBlock((this.sessions.screenText(sessionId, 30) ?? []).join('\n').slice(-3_000))}\n\`\`\``;
-    void (async () => {
+    void this.serial(sessionId,async () => {
       for (const chunk of splitMessage(text)) await this.postThreadReply(thread.channel, thread.ts, chunk);
-    })().catch((error: unknown) => this.logError(error));
+    }).catch((error: unknown) => this.logError(error));
   }
 
   private async sendAutomaticAlert(sessionId: string): Promise<void> {
+    await this.serial(sessionId,()=>this.deliverAutomaticAlert(sessionId));
+  }
+  private async deliverAutomaticAlert(sessionId: string): Promise<void> {
     if (this.stopped) return;
     const session = this.db.getSession(sessionId);
     if (session === null || !session.attention || (session.status !== 'waiting' && session.status !== 'idle')) return;
     if (!this.alertWanted(session.status)) return;
+    const turn=this.turn(sessionId);
+    if(turn&&(turn.automatic_at!==null||session.status==='idle'&&(turn.custom_at!==null||turn.relayed_at!==null)))return;
     // The agent just asked a question and ended its turn: keep its thread as the one to answer.
     const thread = this.threads.get(sessionId);
     if (thread?.kind === 'ask' && !thread.answered) return;
@@ -457,14 +525,17 @@ export class SlackNotifier {
     if (questions !== null) {
       const message = `:question: ${this.header(session)}\n${formatQuestions(questions)}\n${this.sessionLink(session.id)}`;
       await this.postSessionMessage(session.id, 'alert', message, questions);
+      this.markTurn(sessionId,'automatic_at');
       return;
     }
     const icon = session.status === 'waiting' ? ':raised_hand:' : ':white_check_mark:';
     const label = session.status === 'waiting' ? 'En attente' : 'Tour terminé';
     const reason = escapeMrkdwn(session.attentionReason ?? (session.status === 'waiting' ? 'Confirmation requise' : 'Tour terminé'));
     const screen = safeCodeBlock((this.sessions.screenText(session.id, 15) ?? []).join('\n').slice(-2_500));
-    const message = `${icon} ${this.header(session)}\n*${label} :* ${reason}\n\`\`\`\n${screen}\n\`\`\`\n${this.sessionLink(session.id)} · réponds dans le fil pour écrire dans la session`;
+    const duration=turn?` · durée du tour : ${Math.max(0,Math.round(((turn.ended_at??Date.now())-turn.started_at)/1000))} s`:'';
+    const message = `${icon} ${this.header(session)}${duration}\n*${label} :* ${reason}\n\`\`\`\n${screen}\n\`\`\`\n${this.sessionLink(session.id)} · réponds dans le fil pour écrire dans la session`;
     await this.postSessionMessage(session.id, 'alert', message);
+    this.markTurn(sessionId,'automatic_at');
   }
 
   private header(session: Session): string {
@@ -680,9 +751,7 @@ export class SlackNotifier {
     }
     // Another machine has the Slack lead on this shared project.
     if (!this.peers.owns(project.name)) return;
-    let session = command.forceNew ? undefined : this.db.listProjectSessions(project.id)
-      .find((candidate) => candidate.status !== 'exited'
-        && (command.agent === null || candidate.agent === command.agent));
+    let session = command.forceNew ? undefined : latestActive(this.db.listProjectSessions(project.id), command.agent);
     const created = session === undefined;
     const queued = session?.status === 'running';
     if (session === undefined) {
@@ -741,7 +810,8 @@ export class SlackNotifier {
       .catch((error: unknown) => this.logError(error));
     let text: string;
     try {
-      text = slackMarkdown(await answerQuestion(this.db, question));
+      const factual = await answerFactQuestion(this.db, question);
+      text = slackMarkdown(factual ?? await answerQuestion(this.db, question));
     } catch (error) {
       this.logError(error);
       text = `:x: Impossible de répondre : ${escapeMrkdwn(error instanceof Error ? error.message : String(error))}`;
@@ -766,7 +836,7 @@ export class SlackNotifier {
 
   private projectLines(): string[] {
     const lines = this.db.listProjects().map((project) => {
-      const active = this.db.listProjectSessions(project.id).find((session) => session.status !== 'exited');
+      const active = latestActive(this.db.listProjectSessions(project.id));
       const detail = active === undefined
         ? '_aucune session active_'
         : `${escapeMrkdwn(active.title)} (${active.agent}, statut : ${active.status})`;
@@ -797,6 +867,7 @@ export class SlackNotifier {
       '`list` — lister les projets et leur session active',
       '`? question` — poser une question sur les projets, sessions et backlogs (ex. `? où en sont les tâches du projet ACME ?`)',
       '',
+      FACT_HELP,
       '*Projets connus*',
       ...this.projectLines(),
       '',

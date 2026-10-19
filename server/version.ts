@@ -9,7 +9,7 @@ import { ROOT } from './config.ts';
  * échange /api/peer/sync, routes relayées par /m/<id>/… et formats lus par l'UI d'une autre machine.
  * Règle : même protocole = compatible, quelle que soit la version de l'application.
  */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export interface VersionInfo {
   version: string;

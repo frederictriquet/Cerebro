@@ -1,8 +1,8 @@
-import { AgentLabel } from './AgentLabel.tsx';
 import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { clipboardImage, uploadProjectImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, restoredAttachment, useImageAttachments } from './attachments.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
+import { LlmSelector, llmChoices } from './LlmSelector.tsx';
 import { readDraft, writeDraft } from './drafts.ts';
 import { MODE_CHIP } from './format.ts';
 import { useStore } from './store.tsx';
@@ -96,18 +96,6 @@ export function NewSessionForm({
     if (!promptEdited && initialPrompt === undefined && promptFor === undefined) setPrompt(defaults.prompt);
   }, [defaults.prompt, initialPrompt, promptFor, promptEdited]);
 
-  const chooseAgent = (next: Agent): void => {
-    if (next === agent) return;
-    setAgent(next);
-    setModel(next === defaults.agent ? defaults.model : null);
-    setEffort(next === defaults.agent ? defaults.effort : null);
-    saveDefaults({
-      agent: next,
-      model: next === defaults.agent ? defaults.model : null,
-      effort: next === defaults.agent ? defaults.effort : null,
-    });
-  };
-
   useEffect(() => {
     if (savingDefaults > 0 || busy) return;
     const list = agents.filter((a) => a.available);
@@ -131,9 +119,7 @@ export function NewSessionForm({
   }, [agent, promptFor]);
 
   // Modèles proposés selon l'agent, efforts selon le modèle (catalogue découvert par le serveur).
-  const info = agents.find((a) => a.agent === agent);
-  const models = info?.models ?? [];
-  const efforts = (model === null ? info?.efforts : models.find((m) => m.value === model)?.efforts) ?? [];
+  const { info, models, efforts } = llmChoices(agents, { agent, model, effort });
   useEffect(() => {
     // Le catalogue arrive après les projets : ne pas effacer les réglages pendant son chargement.
     if (info === undefined) return;
@@ -212,62 +198,18 @@ export function NewSessionForm({
   return (
     <form className={`card new-session ${className}`.trim()} onSubmit={onSubmit}>
       {heading ? <h2>{heading}</h2> : null}
-      <div className="tuning-row">
-        <div className="tuning">
-          <span className="field-label">Agent</span>
-          {available.length === 0 ? (
-            <span className="muted">Aucun agent disponible</span>
-          ) : (
-            <ChoiceGroup
-              compact
-              label="Agent"
-              value={agent}
-              options={available.map((a) => ({ value: a.agent, label: <AgentLabel agent={a.agent} /> }))}
-              onChange={chooseAgent}
-            />
-          )}
-        </div>
-        {models.length > 0 ? (
-          <div className="tuning">
-            <span className="field-label">Modèle</span>
-            <ChoiceGroup
-              compact
-              label="Modèle"
-              value={model ?? ''}
-              options={[
-                { value: '', label: 'défaut', title: "Modèle configuré pour l'agent" },
-                ...models.map((m) => ({ value: m.value, label: m.label, title: m.description || undefined })),
-              ]}
-              onChange={(v) => {
-                const next = v === '' ? null : v;
-                const supported = (next === null ? info?.efforts : models.find((m) => m.value === next)?.efforts) ?? [];
-                const nextEffort = effort !== null && supported.includes(effort) ? effort : null;
-                setModel(next);
-                setEffort(nextEffort);
-                saveDefaults({ agent, model: next, effort: nextEffort });
-              }}
-            />
-          </div>
-        ) : null}
-        {efforts.length > 0 ? (
-          <div className="tuning">
-            <span className="field-label">Effort</span>
-            <ChoiceGroup<Effort | ''>
-              compact
-              label="Effort"
-              value={effort ?? ''}
-              options={[
-                { value: '', label: 'défaut', title: "Effort configuré pour l'agent" },
-                ...efforts.map((e) => ({ value: e, label: e })),
-              ]}
-              onChange={(v) => {
-                const next = v === '' ? null : v;
-                setEffort(next);
-                saveDefaults({ agent, model, effort: next });
-              }}
-            />
-          </div>
-        ) : null}
+      <LlmSelector
+        agents={agents}
+        value={{ agent, model, effort }}
+        defaults={defaults}
+        disabled={busy}
+        onChange={selection => {
+          setAgent(selection.agent);
+          setModel(selection.model);
+          setEffort(selection.effort);
+          saveDefaults(selection);
+        }}
+      >
         <div className="tuning">
           <span className="field-label">Mode</span>
           <ChoiceGroup
@@ -281,7 +223,7 @@ export function NewSessionForm({
             }}
           />
         </div>
-      </div>
+      </LlmSelector>
       {mode === 'bypass' ? (
         <p className="warn-bypass">Mode bypass : permissions et sandbox désactivés.</p>
       ) : null}

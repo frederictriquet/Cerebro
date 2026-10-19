@@ -1,0 +1,8 @@
+.automatic-commit { display: grid; gap: .75rem; }
+.automatic-commit p { margin: 0; }
+.automatic-commit-status { font-weight: 600; }
+.automatic-commit-result code { color: var(--accent); }
+.automatic-commit pre { max-height: 14rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.automatic-commit li { margin: .35rem 0; overflow-wrap: anywhere; }
+.commit-settings { display: grid; gap: .9rem; }
+.commit-settings p { margin: 0; }

@@ -8,7 +8,9 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from 'react';
-import { clipboardImage, uploadImage } from './api.ts';
+import type { SavedReport } from '../../server/findings.ts';
+import type { Provenance } from '../../server/provenance.ts';
+import { api, clipboardImage, uploadImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { AddTaskDialog, LaunchSessionDialog } from './Dialog.tsx';
@@ -18,6 +20,51 @@ import { go, href, useNow } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { Term, type TermApi } from './Term.tsx';
+
+function FindingsPanel({sessionId}:{sessionId:string}) {
+  const [reports,setReports]=useState<SavedReport[]>([]);
+  const [chosen,setChosen]=useState<Set<string>>(new Set());
+  const [error,setError]=useState<string|null>(null);
+  const [busy,setBusy]=useState(false);
+  const [raw,setRaw]=useState('');
+  const refresh=async():Promise<void>=>setReports(await api<SavedReport[]>(`/api/sessions/${sessionId}/findings`));
+  useEffect(()=>{void refresh();const timer=window.setInterval(()=>void refresh().catch(()=>{}),3000);return()=>window.clearInterval(timer);},[sessionId]);
+  const save=async():Promise<void>=>{setBusy(true);try{await api(`/api/sessions/${sessionId}/findings`,{method:'POST',body:JSON.stringify(JSON.parse(raw))});setRaw('');setError(null);await refresh();}catch(cause){setError(String(cause));}finally{setBusy(false);}};
+  return <details className="session-findings"><summary>Findings structurés ({reports.length} rapport(s))</summary>
+    {reports.map(report=><div key={report.id}>
+      <strong>{report.title}</strong>
+      {report.findings.map(f=><div key={f.id}>
+        <label><input type="checkbox" checked={chosen.has(`${report.id}:${f.id}`)} disabled={!!report.imported[f.id]||busy} onChange={e=>setChosen(previous=>{const next=new Set(previous);if(e.target.checked)next.add(`${report.id}:${f.id}`);else next.delete(`${report.id}:${f.id}`);return next;})}/>{f.title} [{f.severity}] — {f.file}:{f.line}{report.imported[f.id]?' — déjà enregistré':''}</label>
+        <p>{f.problem}</p><p>Scénario : {f.scenario}</p><p>Correctif attendu : {f.expectedFix}</p>
+      </div>)}
+      <button className="btn" disabled={busy||!report.findings.some(f=>chosen.has(`${report.id}:${f.id}`)&&!report.imported[f.id])} onClick={()=>{setBusy(true);void api(`/api/sessions/${sessionId}/findings/${report.id}/import`,{method:'POST',body:JSON.stringify({selected:report.findings.filter(f=>chosen.has(`${report.id}:${f.id}`)).map(f=>f.id)})}).then(()=>{setError(null);return refresh();}).catch(cause=>setError(String(cause))).finally(()=>setBusy(false));}}>Enregistrer la sélection dans un epic</button>
+    </div>)}
+    <details><summary>Importer un rapport JSON structuré</summary><p>Un finding incomplet peut rester dans le flux de discussion habituel pour être précisé.</p><textarea rows={8} value={raw} onChange={e=>setRaw(e.target.value)}/><button className="btn" disabled={busy||!raw.trim()} onClick={()=>void save()}>Enregistrer le rapport</button></details>
+    {error?<p className="form-error">{error}</p>:null}
+  </details>;
+}
+
+function ProvenancePanel({ sessionId }: { sessionId: string }) {
+  const [data, setData] = useState<Provenance | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = async (): Promise<void> => {
+    try { setData(await api<Provenance>(`/api/sessions/${sessionId}/provenance`)); setError(null); }
+    catch (cause) { setError(String(cause)); }
+  };
+  useEffect(() => { void refresh(); }, [sessionId]);
+  return <details className="session-provenance">
+    <summary>{data?.workspace.mode === 'isolated' ? 'Copie de travail de cette conversation' : 'Dossier partagé du projet'}</summary>
+    {error ? <p className="form-error">{error}</p> : null}
+    {data ? <>
+      <p>{data.workspace.path} — branche {data.workspace.branch ?? 'partagée'}</p>
+      {data.workspace.mode==='unknown'?<p>Cette conversation utilise le même dossier que le projet et les autres conversations historiques. Son bouton « Commit / push du projet » traite tous les changements de ce dossier.</p>:<><p>{data.workspace.reason}</p><p className="hint">{data.warning}</p></>}
+      <p>Changements initiaux exclus de l’attribution : {data.workspace.initialDirty.join(', ') || 'aucun'}</p>
+      {data.changes.map(c => <p key={c.path}>{c.path} — {c.certainty} : {c.reason}</p>)}
+      {data.commits.map(c => <p key={c.hash}>{c.hash} — {c.title} ({c.certainty})</p>)}
+    </> : null}
+    <button className="btn" onClick={() => void refresh()}>Actualiser</button>
+  </details>;
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -387,12 +434,14 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               Reprendre
             </button>
           ) : null}
-          <DelayedActionButton onAction={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}>
+          <DelayedActionButton title="Supprime la conversation ; son worktree reste dans l’inventaire" onAction={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}>
             Supprimer
           </DelayedActionButton>
         </div>
       </header>
       {error ? <p className="form-error session-error">{error}</p> : null}
+      <FindingsPanel key={`findings-${session.id}`} sessionId={session.id} />
+      <ProvenancePanel key={session.id} sessionId={session.id} />
       <div className="term-wrap">
         <Term
           key={`${session.id}:${live ? 'live' : 'exited'}`}
