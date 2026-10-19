@@ -13,6 +13,13 @@ import {
 import { relativeTime } from './format.ts';
 import { useNow } from './route.ts';
 
+/** Why a team login has no gauge: /usage hits the same endpoint and gets no percent. */
+const GROK_USAGE_HINT = [
+  "Compte d'équipe : xAI ne publie pas de pourcentage de conso pour ce login.",
+  '/usage lit GET /v1/billing?format=credits : la fenêtre hebdomadaire est renvoyée, sans creditUsagePercent ni répartition par produit. Le plafond mensuel est à 0.',
+  "Les limites (débit de l'API, crédits) se règlent dans la console xAI par un admin. Le jeton OAuth d'un membre ne peut pas les lire.",
+].join('\n');
+
 const REFRESH_MS = 60_000;
 // While a CLI updates, follow it closely.
 const UPDATING_REFRESH_MS = 3_000;
@@ -182,7 +189,11 @@ function AgentGauges({
           quotas relevés {relativeTime(updated, now)}
         </span>
       ) : null}
-      {usage.error === null ? null : <p className="usage-error">{usage.error}</p>}
+      {usage.error === null ? null : (
+        <p className="usage-error" title={usage.agent === 'grok' ? GROK_USAGE_HINT : undefined}>
+          {usage.error}
+        </p>
+      )}
     </div>
   );
 }

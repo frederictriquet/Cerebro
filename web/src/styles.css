@@ -326,6 +326,10 @@ textarea {
   margin: 2px 0 0;
 }
 
+.usage-error[title] {
+  cursor: help;
+}
+
 /* Installed version, update badge and auto switch, under the agent's name. */
 .update-line {
   grid-column: 1 / -1;
