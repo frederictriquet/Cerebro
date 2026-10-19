@@ -87,9 +87,9 @@ function AutomaticCommitRun({projectId,endpoint,push=true,onClose,scopeLabel,onU
       </details>:null}
       <div className="row-actions">
         {operation?.needsProjectScope&&projectId?<button type="button" className="btn primary" onClick={onUseProject}>{push?'Commiter et pousser tout le projet':'Commiter tout le projet'}</button>:null}
-        {operation?.status==='running'&&['collecting','drafting'].includes(operation.phase)?<button type="button" className="btn" disabled={cancelling} onClick={()=>void cancel()}>{cancelling?'Annulation…':'Annuler l’opération'}</button>:null}
         <button type="button" className="btn" onClick={onClose}>{active?'Continuer en arrière-plan':'Fermer'}</button>
         {active&&!error?<span className="hint">Ce bouton masque la fenêtre sans arrêter l’opération.</span>:null}
+        {operation?.status==='running'&&['collecting','drafting'].includes(operation.phase)?<button type="button" className="btn automatic-commit-cancel" disabled={cancelling} onClick={()=>void cancel()}>{cancelling?'Annulation…':'Annuler l’opération'}</button>:null}
       </div>
     </div>
   </Modal>;
