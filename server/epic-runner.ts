@@ -8,7 +8,12 @@ export interface EpicRun {
   order:string[];members:string[];versions:Record<string,string>;results:Record<string,string>;
   currentTaskId:string|null;sessionId:string|null;commandRunId:string|null;stepStartedAt:number;
   contextRoot:string;options:SessionDefaults;error:string|null;startedAt:number;updatedAt:number;
+  // When the step's session was first seen waiting; null once it is no longer waiting.
+  waitingSince?:number|null;
+  // Why a blocked run is blocked: 'session-waiting' clears by itself once the step's session stops waiting or its task is done; any other block needs an explicit resume.
+  blockReason?:'session-waiting'|null;
 }
+const askedQuestion=(session:{status:string;attentionReason:string|null}):boolean=>session.status==='waiting'&&!!session.attentionReason?.startsWith('Question : ');
 const version=(t:Task):string=>createHash('sha256').update(JSON.stringify([t.text,t.dependsOn.slice().sort(),t.execution,t.epicId])).digest('hex');
 export function taskOrder(tasks:Task[],all:Task[]):Task[]{
   const byId=new Map(all.map(t=>[t.id,t]));const ids=new Set(tasks.map(t=>t.id));const placed=new Set<string>();const result:Task[]=[];
@@ -18,6 +23,8 @@ export function taskOrder(tasks:Task[],all:Task[]):Task[]{
 }
 export class EpicRunner {
   onResult:(run:EpicRun)=>void=()=>{};
+  // A session often waits briefly at launch (accepted startup prompt, false positive of the screen heuristic): only a lasting wait blocks the run.
+  waitingGraceMs=12_000;
   private db:CerebroDatabase;private sessions:SessionManager;private commands:CommandExecutor;private broadcast:(event:unknown)=>void;
   private busy=new Set<string>();private timer:NodeJS.Timeout|null=null;private closed=false;private inFlight=new Set<Promise<void>>();
   constructor(db:CerebroDatabase,sessions:SessionManager,commands:CommandExecutor,broadcast:(event:unknown)=>void){this.db=db;this.sessions=sessions;this.commands=commands;this.broadcast=broadcast;}
@@ -43,7 +50,7 @@ export class EpicRunner {
   report(sessionId:string,taskId:string,status:'failed'|'blocked'|'waiting-validation',message:string):EpicRun{
     const run=this.list().find(r=>r.currentTaskId===taskId&&r.sessionId===sessionId&&['running','waiting-validation','blocked'].includes(r.status));
     if(!run||this.db.getTask(taskId)?.sessionId!==sessionId)throw new Error('Cette étape n’est pas confiée à cette session.');
-    run.results[taskId]=status;run.status=status;run.error=message;this.save(run);return run;
+    run.results[taskId]=status;run.status=status;run.error=message;run.blockReason=null;this.save(run);return run;
   }
   async stop(id:string):Promise<EpicRun>{
     const run=this.list().find(r=>r.id===id);if(!run)throw new Error('Exécution introuvable.');
@@ -61,7 +68,7 @@ export class EpicRunner {
       if(task?.status!=='done'&&(!session||session.status==='exited')&&command?.status!=='running'&&command?.status!=='succeeded'){
         if(session)run.contextRoot=workspaceFor(this.db,session.id)?.path??run.contextRoot;
         if(task)this.changeTask(task.id,{status:'todo',sessionId:null});
-        run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;
+        run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;run.waitingSince=null;
       }
     }
     if(replan){
@@ -70,16 +77,23 @@ export class EpicRunner {
       if(run.currentTaskId&&!members.some(t=>t.id===run.currentTaskId))throw new Error('L’étape active a quitté l’epic : arrêtez son exécution avant de recalculer.');
       const order=taskOrder(members.filter(t=>t.status!=='done'),all);run.order=order.map(t=>t.id);run.members=members.map(t=>t.id);run.versions=Object.fromEntries(order.map(t=>[t.id,version(t)]));
     }
-    run.status='running';run.error=null;this.save(run);this.poke();return run;
+    run.status='running';run.error=null;run.blockReason=null;this.save(run);this.poke();return run;
   }
   poke():void{
     if(this.closed)return;
-    for(const run of this.list())if(['running','waiting-validation'].includes(run.status)&&!this.busy.has(run.id)){
-      this.busy.add(run.id);const promise=this.tick(run).catch(cause=>{if(this.list().find(r=>r.id===run.id)?.status==='stopped')return;run.status='blocked';run.error=String(cause);this.save(run);}).finally(()=>{this.busy.delete(run.id);this.inFlight.delete(promise);});this.inFlight.add(promise);
+    for(const run of this.list())if(!this.busy.has(run.id)){
+      if(run.status==='blocked'&&run.blockReason==='session-waiting'&&this.waitOver(run)){run.status='running';run.error=null;run.blockReason=null;run.waitingSince=null;this.save(run);}
+      if(!['running','waiting-validation'].includes(run.status))continue;
+      this.busy.add(run.id);const promise=this.tick(run).catch(cause=>{if(this.list().find(r=>r.id===run.id)?.status==='stopped')return;run.status='blocked';run.error=String(cause);run.blockReason=null;this.save(run);}).finally(()=>{this.busy.delete(run.id);this.inFlight.delete(promise);});this.inFlight.add(promise);
     }
   }
+  // The step's session no longer holds the run: it stopped waiting, or its task is done and it is not asking an explicit question.
+  private waitOver(run:EpicRun):boolean{
+    const session=run.sessionId?this.db.getSession(run.sessionId):null;if(!session||session.status!=='waiting')return true;
+    return this.db.getTask(run.currentTaskId??'')?.status==='done'&&!askedQuestion(session);
+  }
   private async tick(run:EpicRun):Promise<void>{
-    const stop=(status:EpicRun['status'],error:string):void=>{run.status=status;run.error=error;this.save(run);};
+    const stop=(status:EpicRun['status'],error:string,blockReason:EpicRun['blockReason']=null):void=>{run.status=status;run.error=error;run.blockReason=blockReason;this.save(run);};
     const epic=this.db.getEpic(run.epicId);if(!epic){stop('blocked','Epic supprimé.');return;}
     const members=this.db.listTasks().filter(t=>t.epicId===run.epicId);
     if(members.map(t=>t.id).sort().join(',')!==run.members.slice().sort().join(',')){stop('blocked','Composition de l’epic modifiée : reprise avec recalcul nécessaire.');return;}
@@ -102,17 +116,23 @@ export class EpicRunner {
         if(!session){stop('blocked','Lancement de session interrompu : vérifiez puis reprenez explicitement.');return;}
         run.sessionId=session.id;
         if(task.sessionId!==session.id)this.changeTask(task.id,{sessionId:session.id,status:'started'});
-        if(session.status==='running'||session.status==='starting'){this.save(run);return;}
+        if(session.status==='running'||session.status==='starting'){run.waitingSince=null;this.save(run);return;}
+        // An explicit question (cerebro-notify --ask) blocks at once; any other wait must last beyond the grace delay.
+        if(session.status==='waiting'&&!askedQuestion(session)){
+          run.waitingSince??=session.updatedAt;
+          if(Date.now()-run.waitingSince<this.waitingGraceMs){this.save(run);return;}
+        }else run.waitingSince=null;
         if(task.status!=='done'){
           if(session.status==='exited'&&session.exitCode!==null&&session.exitCode!==0){run.results[task.id]='failed';stop('failed',`Session sortie avec code ${session.exitCode}.`);return;}
-          run.results[task.id]=session.status==='waiting'?'blocked':'waiting-validation';stop(session.status==='waiting'?'blocked':'waiting-validation',session.attentionReason??'Tour terminé sans clôture explicite de la tâche.');return;
+          run.results[task.id]=session.status==='waiting'?'blocked':'waiting-validation';stop(session.status==='waiting'?'blocked':'waiting-validation',session.attentionReason??'Tour terminé sans clôture explicite de la tâche.',session.status==='waiting'?'session-waiting':null);return;
         }
-        if(session.status==='waiting'){stop('blocked','Une question de la session reste en attente.');return;}
+        // Once the step is declared done, only an explicit question holds it: a lasting screen-detected wait no longer matters.
+        if(askedQuestion(session)){stop('blocked','Une question de la session reste en attente.','session-waiting');return;}
         run.contextRoot=workspaceFor(this.db,session.id)?.path??run.contextRoot;run.results[task.id]='declared-done';
         // The step is closed and its turn is over: free the terminal so finished steps do not pile up. The workspace stays for the next step.
         if(session.status!=='exited')this.sessions.kill(session.id);
       }
-      run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;run.status='running';run.error=null;this.save(run);
+      run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;run.waitingSince=null;run.status='running';run.error=null;this.save(run);
     }
     const pending=run.order.map(id=>this.db.getTask(id)!).filter(t=>t.status!=='done');
     if(!pending.length){run.status='succeeded';run.error=null;this.save(run);return;}

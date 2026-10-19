@@ -52,3 +52,35 @@ test('stop during asynchronous LLM preparation cannot be overwritten by its laun
  f.sessions.create=async(p,options,validate)=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title:'slow',status:'starting',agentSessionId:'fake'},'token');beforeLaunch=validate;await gate;try{await validate();}catch(cause){f.db.updateSession(s.id,{status:'exited',exitCode:1});throw cause;}return s;};
  f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>!!beforeLaunch);await f.runner.stop(f.latest().id);release();await new Promise(r=>setTimeout(r,30));assert.equal(f.latest().status,'stopped');assert.equal(f.db.listSessions()[0].status,'exited');
 }));
+test('a brief wait of the step session does not block; a lasting wait or an explicit question does',async()=>fixture(async f=>{
+ const a=f.task('first');f.sessions.create=async(p,options,validate,contextPath,title='step')=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title,status:'running',agentSessionId:'fake'},'token');f.launches.push(s);return s;};
+ const settle=async()=>{for(let i=0;i<20;i++){f.runner.poke();await new Promise(r=>setTimeout(r,5));}};
+ f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.launches.length===1&&f.latest().sessionId===f.launches[0].id);const id=f.launches[0].id;
+ f.db.updateSession(id,{status:'waiting',attentionReason:'Confirmation requise'});await settle();assert.equal(f.latest().status,'running');
+ f.db.updateSession(id,{status:'running',attentionReason:null});await settle();assert.equal(f.latest().status,'running');assert.equal(f.latest().waitingSince,null);
+ f.runner.waitingGraceMs=50;f.db.updateSession(id,{status:'waiting',attentionReason:'Confirmation requise'});
+ await f.until(()=>f.latest().status==='blocked');assert.equal(f.latest().error,'Confirmation requise');
+ f.db.updateSession(id,{status:'running',attentionReason:null});await new Promise(r=>setTimeout(r,10));f.runner.resume(f.latest().id);f.runner.waitingGraceMs=60_000;await settle();assert.equal(f.latest().status,'running');
+ f.db.updateSession(id,{status:'waiting',attentionReason:'Question : quelle base ?'});await f.until(()=>f.latest().status==='blocked');assert.equal(f.latest().error,'Question : quelle base ?');assert.equal(f.db.getTask(a.id).status,'started');
+}));
+test('a run blocked by its step session resumes by itself once the cause is gone; other blocks stay',async()=>fixture(async f=>{
+ const a=f.task('first');const b=f.task('second');f.db.setTaskDependencies(b.id,[a.id]);
+ f.sessions.create=async(p,options,validate,contextPath,title='step')=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title,status:'running',agentSessionId:'fake'},'token');f.launches.push(s);return s;};
+ const settle=async()=>{for(let i=0;i<20;i++){f.runner.poke();await new Promise(r=>setTimeout(r,5));}};
+ f.runner.waitingGraceMs=0;f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.launches.length===1&&f.latest().sessionId===f.launches[0].id);const first=f.launches[0].id;
+ f.db.updateSession(first,{status:'waiting',attentionReason:'Confirmation requise'});await f.until(()=>f.latest().status==='blocked');
+ assert.equal(f.latest().blockReason,'session-waiting');await settle();assert.equal(f.latest().status,'blocked');assert.equal(f.launches.length,1);
+ f.db.updateTask(a.id,{status:'done'});await f.until(()=>f.latest().status==='running'&&f.latest().currentTaskId===b.id&&f.launches.length===2);
+ assert.equal(f.latest().error,null);assert.equal(f.latest().blockReason,null);assert.equal(f.db.getSession(first).status,'exited');
+ // An explicit question keeps the run blocked even when the task is done, and a stopped run is never revived.
+ const second=f.launches[1].id;f.db.updateSession(second,{status:'waiting',attentionReason:'Question : quelle base ?'});await f.until(()=>f.latest().status==='blocked');
+ f.db.updateTask(b.id,{status:'done'});await settle();assert.equal(f.latest().status,'blocked');
+ await f.runner.stop(f.latest().id);f.db.updateSession(second,{status:'running',attentionReason:null});await settle();assert.equal(f.latest().status,'stopped');
+}));
+test('a run blocked by its step session resumes when the session runs again',async()=>fixture(async f=>{
+ const a=f.task('first');f.sessions.create=async(p,options,validate,contextPath,title='step')=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title,status:'running',agentSessionId:'fake'},'token');f.launches.push(s);return s;};
+ f.runner.waitingGraceMs=0;f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.launches.length===1&&f.latest().sessionId===f.launches[0].id);const id=f.launches[0].id;
+ f.db.updateSession(id,{status:'waiting',attentionReason:'Confirmation requise'});await f.until(()=>f.latest().status==='blocked');
+ f.db.updateSession(id,{status:'running',attentionReason:null});await f.until(()=>f.latest().status==='running');assert.equal(f.latest().error,null);assert.equal(f.latest().currentTaskId,a.id);
+ f.db.updateSession(id,{status:'idle',attentionReason:null});await f.until(()=>f.latest().status==='waiting-validation');
+}));

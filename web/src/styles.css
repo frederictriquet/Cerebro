@@ -2556,6 +2556,65 @@ a.btn:hover {
   background: var(--running);
 }
 
+.epic-run {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px 10px;
+  font-size: 12px;
+}
+
+.epic-run summary {
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.epic-run summary:hover {
+  color: var(--text);
+}
+
+.epic-run details > p,
+.epic-run details > ul {
+  margin: 4px 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.epic-run details > ul {
+  padding-left: 18px;
+}
+
+.epic-run-status {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.epic-run-status.running,
+.epic-run-status.succeeded {
+  color: var(--running);
+}
+
+.epic-run-status.blocked,
+.epic-run-status.waiting-validation {
+  color: var(--waiting);
+}
+
+.epic-run-status.failed {
+  color: var(--danger);
+}
+
+.epic-run-reason {
+  margin: 0;
+  padding: 6px 8px;
+  border-left: 3px solid var(--waiting);
+  border-radius: 4px;
+  background: var(--bg-2);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .epic-description {
   margin: 0;
   padding: 0 12px 10px;
