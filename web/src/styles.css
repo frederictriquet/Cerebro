@@ -2703,6 +2703,18 @@ a.btn:hover {
   text-decoration: line-through;
 }
 
+.pill.worktree-cleaned {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.session-notice {
+  padding: 6px 14px;
+  margin: 0;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
 .attention-worktree {
   grid-column: 2;
   display: flex;

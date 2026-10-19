@@ -20,7 +20,7 @@ import { go, href, useNow } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { Term, type TermApi } from './Term.tsx';
-import { WorktreeLabel } from './WorktreeLabel.tsx';
+import { RELEASE_HINT, WorktreeLabel, resumeBlockedReason } from './WorktreeLabel.tsx';
 
 type SessionDrawer = 'provenance' | 'findings' | null;
 
@@ -409,6 +409,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   }
 
   const shown = displayStatus(session, now);
+  const isolated = session.worktree !== null && !session.worktree.removed;
+  const resumeBlocked = resumeBlockedReason(session.worktree);
 
   const act = async (fn: () => Promise<unknown>, thenGo?: string): Promise<void> => {
     setError(null);
@@ -473,21 +475,22 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         <div className="row-actions">
           <SessionGitActions sessionId={session.id} live={live} />
           {session.status !== 'exited' ? (
-            <button type="button" className="btn" onClick={() => void act(() => killSession(session.id))}>
+            <button type="button" className="btn" title={isolated ? `Arrête la conversation. ${RELEASE_HINT}` : undefined} onClick={() => void act(() => killSession(session.id))}>
               Arrêter
             </button>
           ) : null}
           {session.status === 'exited' && session.agentSessionId ? (
-            <button type="button" className="btn primary" onClick={() => void act(() => resumeSession(session.id))}>
+            <button type="button" className="btn primary" disabled={resumeBlocked !== null} title={resumeBlocked ?? undefined} onClick={() => void act(() => resumeSession(session.id))}>
               Reprendre
             </button>
           ) : null}
-          <DelayedActionButton title="Supprime la conversation ; son worktree reste dans l’inventaire" onAction={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}>
+          <DelayedActionButton title={isolated ? `Supprime la conversation. ${RELEASE_HINT} Sinon, elle reste dans l’inventaire des copies de travail.` : 'Supprime la conversation'} onAction={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}>
             Supprimer
           </DelayedActionButton>
         </div>
       </header>
       {error ? <p className="form-error session-error">{error}</p> : null}
+      {session.status === 'exited' && resumeBlocked !== null ? <p className="session-notice" role="status">{resumeBlocked}</p> : null}
       {drawer !== null ? (
         <section className="session-drawer">
           <button type="button" className="btn session-drawer-close" aria-label="Fermer" onClick={() => setDrawer(null)}>

@@ -40,7 +40,10 @@ export interface WorktreeRecord {
   createdAt: number;
   removedAt: number | null;
   commitSettings?: CommitSettings;
+  /** Last automatic cleanup decision, taken when the conversation ended or was deleted. */
+  autoCleanup?: AutomaticCleanup;
 }
+export interface AutomaticCleanup { status: 'removed' | 'kept' | 'failed'; at: number; reasons: string[] }
 export interface WorktreeOperation {
   id: string;
   worktreeId: string;
@@ -54,6 +57,7 @@ export interface WorktreeOperation {
   error: string | null;
   startedAt: number;
   finishedAt: number | null;
+  automatic?: boolean;
 }
 interface RegisteredWorktree { path: string; head: string | null; branch: string | null; locked: boolean; prunable: boolean }
 export interface WorktreeView extends WorktreeRecord {
@@ -81,7 +85,12 @@ export interface WorktreeView extends WorktreeRecord {
   operation: WorktreeOperation | null;
   changesSinceCreation: {count:number;files:string[];inheritedCount:number;needsReviewCount:number} | null;
 }
-export interface WorktreeInventory { worktrees: WorktreeView[]; errors: string[] }
+/** A copy removed automatically: still listed so its branch and conversation can be found again. */
+export interface CleanedWorktree {
+  id: string; path: string; projectId: string | null; projectName: string; sessionId: string | null; sessionTitle: string | null;
+  session: { id: string; title: string; status: string } | null; branch: string | null; removedAt: number;
+}
+export interface WorktreeInventory { worktrees: WorktreeView[]; cleaned: CleanedWorktree[]; errors: string[] }
 
 function records(db: CerebroDatabase): WorktreeRecord[] {
   return (db.connection.prepare('SELECT data FROM worktree_inventory ORDER BY rowid').all() as {data: string}[]).map(row => JSON.parse(row.data));
@@ -89,6 +98,7 @@ function records(db: CerebroDatabase): WorktreeRecord[] {
 function store(db: CerebroDatabase, record: WorktreeRecord): void {
   db.connection.prepare('INSERT INTO worktree_inventory VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(record.id, JSON.stringify(record));
 }
+const CLEANED_SHOWN = 20;
 const worktreeId = (common: string, path: string): string => hash(`${common}\0${path}`).slice(0, 32);
 async function commonDirectory(path: string): Promise<string> {
   return realpath(resolve(path, (await git(path, ['rev-parse', '--git-common-dir'])).trim()));
@@ -175,6 +185,11 @@ export class WorktreeManager {
   private plans = new Map<string, { id: string; kind: 'merge' | 'remove'; fingerprint: string; expires: number }>();
   private pending = new Set<Promise<unknown>>();
   private closed = false;
+  // Automatic cleanups run one at a time: two triggers for the same copy never inspect it concurrently.
+  private cleanupQueue: Promise<void> = Promise.resolve();
+  private cleanupQueued = new Set<string>();
+  /** Sessions whose copy was just removed: their `worktree` field changed. */
+  onSessionsChanged: (ids: string[]) => void = () => {};
   constructor(db: CerebroDatabase) {
     this.db = db;
     for (const operation of this.operations()) if (operation.status === 'running') {
@@ -271,7 +286,14 @@ export class WorktreeManager {
     const selected = records(this.db).filter(r => !r.removedAt && (!projectId || r.projectId === projectId || r.commonDir === common));
     const worktrees:WorktreeView[]=[];
     for(let i=0;i<selected.length;i+=8)worktrees.push(...await Promise.all(selected.slice(i,i+8).map(record=>this.inspect(record))));
-    return {worktrees, errors};
+    const cleaned=records(this.db).filter(r=>r.removedAt&&r.autoCleanup?.status==='removed'&&(!projectId||r.projectId===projectId||r.commonDir===common))
+      .sort((left,right)=>right.removedAt!-left.removedAt!).slice(0,CLEANED_SHOWN).map(record=>{
+        const session=record.sessionId?this.db.getSession(record.sessionId):null;
+        return {id:record.id,path:record.path,projectId:record.projectId,projectName:(record.projectId?this.db.getProject(record.projectId)?.name:null)??record.projectName,
+          sessionId:record.sessionId,sessionTitle:session?.title??record.sessionTitle,session:session?{id:session.id,title:session.title,status:session.status}:null,
+          branch:record.expectedBranch,removedAt:record.removedAt!};
+      });
+    return {worktrees, cleaned, errors};
   }
   async get(id: string): Promise<WorktreeView> { await this.sync(); return this.inspect(this.record(id)); }
   private async inspect(record: WorktreeRecord, ownOperation?: string): Promise<WorktreeView> {
@@ -406,6 +428,9 @@ export class WorktreeManager {
     return {token,view};
   }
   async start(id: string, kind: 'merge' | 'remove', token: unknown): Promise<WorktreeOperation> {
+    return (await this.begin(id,kind,token,false)).operation;
+  }
+  private async begin(id: string, kind: 'merge' | 'remove', token: unknown, automatic: boolean): Promise<{operation:WorktreeOperation;done:Promise<void>}> {
     if(this.closed)throw new WorktreeError('Serveur en cours d’arrêt.');
     const plan=typeof token==='string'?this.plans.get(token):undefined;
     if(!plan||plan.id!==id||plan.kind!==kind||plan.expires<Date.now())throw new WorktreeError('Sélection absente, expirée ou déjà utilisée.');
@@ -416,10 +441,10 @@ export class WorktreeManager {
     if(this.plans.get(token as string)!==plan)throw new WorktreeError('Sélection déjà utilisée.');
     const release=lockWorktrees([view.path,...(kind==='merge'&&view.targetPath?[view.targetPath]:[])]);
     this.plans.delete(token as string);
-    const operation:WorktreeOperation={id:randomUUID(),worktreeId:id,kind,status:'running',targetBranch:view.targetBranch,sourceHead:view.head,targetHead:view.targetHead,resultHead:null,output:'',error:null,startedAt:Date.now(),finishedAt:null};
+    const operation:WorktreeOperation={id:randomUUID(),worktreeId:id,kind,status:'running',targetBranch:view.targetBranch,sourceHead:view.head,targetHead:view.targetHead,resultHead:null,output:'',error:null,startedAt:Date.now(),finishedAt:null,...(automatic?{automatic}:{})};
     try { this.saveOperation(operation); } catch(cause) {release();throw cause;}
     const promise=this.execute(view,operation,plan.fingerprint).finally(()=>{release();this.pending.delete(promise);});
-    this.pending.add(promise);return {...operation};
+    this.pending.add(promise);return {operation:{...operation},done:promise};
   }
   private async execute(view:WorktreeView, operation:WorktreeOperation, fingerprint:string):Promise<void> {
     try {
@@ -448,16 +473,70 @@ export class WorktreeManager {
         await git(view.targetPath??view.source,['worktree','remove','--',view.path]);
         const record=this.record(view.id);record.removedAt=Date.now();store(this.db,record);
         // Every epic step sharing this copy loses it, not only the session that created it.
+        const changed:string[]=[];
         for(const row of this.db.connection.prepare('SELECT session_id, data FROM session_workspaces').all() as {session_id:string;data:string}[]){
           const workspace=JSON.parse(row.data) as Workspace;
           if(row.session_id!==record.sessionId&&(workspace.mode!=='isolated'||canonicalWorktreePath(workspace.root)!==record.path))continue;
-          workspace.removedAt=record.removedAt;this.db.connection.prepare('UPDATE session_workspaces SET data=? WHERE session_id=?').run(JSON.stringify(workspace),row.session_id);
+          workspace.removedAt=record.removedAt;if(operation.automatic)workspace.removedAutomatically=true;this.db.connection.prepare('UPDATE session_workspaces SET data=? WHERE session_id=?').run(JSON.stringify(workspace),row.session_id);
+          changed.push(row.session_id);
         }
-        operation.output='Worktree supprimé ; branche, commits et conversation conservés.';
+        if(changed.length)this.onSessionsChanged(changed);
+        operation.output=operation.automatic?'Copie nettoyée automatiquement après la fin de la conversation : rien n’était à conserver. Branche, commits et conversation conservés.':'Worktree supprimé ; branche, commits et conversation conservés.';
       }
       operation.status='succeeded';
     } catch(cause) {operation.status='failed';operation.error=cause instanceof Error?cause.message:String(cause);}
     finally {operation.finishedAt=Date.now();this.saveOperation(operation);}
+  }
+  /**
+   * A conversation ended (its process really stopped) or was deleted: its copy is removed if nothing in it remains to keep.
+   * `root` is captured by the caller while the session's workspace record still exists, so copies shared by epic steps are found too.
+   */
+  releaseSession(sessionId: string, root: string | null): Promise<void> {
+    const path=root?canonicalWorktreePath(root):null;
+    return this.queueCleanup(`session:${sessionId}`,record=>record.sessionId===sessionId||record.path===path);
+  }
+  /** After a restart or the end of an epic: retries every copy whose conversation is over. */
+  resumeAutomaticCleanup(projectId?: string): Promise<void> {
+    return this.queueCleanup(`sweep:${projectId??''}`,record=>!projectId||record.projectId===projectId);
+  }
+  private queueCleanup(key: string, selects: (record: WorktreeRecord) => boolean): Promise<void> {
+    // A trigger already waiting will see the latest state: repeating it would only inspect the same copies twice.
+    if(this.closed||this.cleanupQueued.has(key))return this.cleanupQueue;
+    this.cleanupQueued.add(key);
+    const task=this.cleanupQueue.then(async()=>{
+      this.cleanupQueued.delete(key);
+      if(this.closed)return;
+      await this.sync();
+      for(const record of records(this.db).filter(r=>r.managed&&!r.removedAt&&r.sessionId!==null&&selects(r)))await this.cleanAutomatically(record.id);
+    }).catch(()=>{ /* Each decision is persisted on its record; a failed discovery is retried at the next trigger. */ });
+    this.cleanupQueue=task;this.pending.add(task);void task.finally(()=>this.pending.delete(task));
+    return task;
+  }
+  private async cleanAutomatically(id: string): Promise<void> {
+    const record=records(this.db).find(r=>r.id===id&&!r.removedAt);
+    if(!record?.managed||!record.sessionId||this.closed)return;
+    const session=this.db.getSession(record.sessionId);
+    // An idle or open conversation is not over: only an effective stop or a deletion releases its copy.
+    if(session&&session.status!=='exited')return;
+    let decision:AutomaticCleanup;
+    try {
+      // The epic runner reuses a step's copy for the next one before it records that copy as its context.
+      const epic=(this.db.connection.prepare('SELECT data FROM epic_runs').all() as {data:string}[]).map(row=>JSON.parse(row.data))
+        .some(run=>['running','waiting-validation','blocked'].includes(run.status)&&run.projectId===record.projectId);
+      if(epic)throw new WorktreeError('Un epic du projet est en cours : ses étapes peuvent encore utiliser cette copie.');
+      const {token}=await this.prepare(id,'remove');
+      if(this.closed)return;
+      const {operation,done}=await this.begin(id,'remove',token,true);
+      await done;
+      const result=this.operations().find(op=>op.id===operation.id);
+      decision=result?.status==='succeeded'?{status:'removed',at:Date.now(),reasons:[]}:{status:'failed',at:Date.now(),reasons:[result?.error??'Retrait interrompu.']};
+    } catch(cause) {
+      if(this.closed)return;
+      decision={status:'kept',at:Date.now(),reasons:(cause instanceof Error?cause.message:String(cause)).split('\n').filter(Boolean)};
+    }
+    // Re-read synchronously: the removal, a rename or an archive may have updated the record meanwhile.
+    const fresh=records(this.db).find(r=>r.id===id);
+    if(fresh){fresh.autoCleanup=decision;store(this.db,fresh);}
   }
   async shutdown():Promise<void>{this.closed=true;await Promise.allSettled([...this.pending]);}
 }

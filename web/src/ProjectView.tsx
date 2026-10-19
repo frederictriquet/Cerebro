@@ -5,7 +5,7 @@ import { Backlog } from './Backlog.tsx';
 import { CodeEditor } from './CodeEditor.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { Worktrees } from './Worktrees.tsx';
-import { WorktreeLabel } from './WorktreeLabel.tsx';
+import { RELEASE_HINT, WorktreeLabel, resumeBlockedReason } from './WorktreeLabel.tsx';
 import { GitStatus } from './GitStatus.tsx';
 import { CommitSettingsDialog } from './CommitSettingsDialog.tsx';
 import { displayStatus, isAwaiting, isDormant, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
@@ -356,6 +356,7 @@ function SessionRow({
   const anchorRef = useRef<HTMLSpanElement>(null);
   const tone = session.status === 'waiting' ? 'waiting' : 'idle';
   const shown = displayStatus(session, now);
+  const resumeBlocked = resumeBlockedReason(session.worktree);
 
   return (
     <li className="session-row">
@@ -396,12 +397,12 @@ function SessionRow({
           </>
         ) : null}
         {session.status !== 'exited' ? (
-          <button type="button" className="btn" onClick={onKill}>
+          <button type="button" className="btn" title={session.worktree !== null && !session.worktree.removed ? `Arrête la conversation. ${RELEASE_HINT}` : undefined} onClick={onKill}>
             Arrêter
           </button>
         ) : null}
         {session.status === 'exited' && session.agentSessionId ? (
-          <button type="button" className="btn" onClick={onResume}>
+          <button type="button" className="btn" disabled={resumeBlocked !== null} title={resumeBlocked ?? undefined} onClick={onResume}>
             Reprendre
           </button>
         ) : null}

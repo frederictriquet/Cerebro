@@ -188,6 +188,8 @@ export class SessionManager {
   private readonly askedQuestions = new Map<string, string>();
   private readonly eventListeners = new Set<(event: SessionEvent) => void>();
   private shuttingDown = false;
+  /** The session's process really stopped, or the session was deleted: its isolated copy may now be unused. */
+  onSessionReleased: (id: string, workspaceRoot: string | null) => void = () => {};
 
   constructor(db: CerebroDatabase) {
     this.db = db;
@@ -264,7 +266,9 @@ export class SessionManager {
     const project = this.db.getProject(oldSession.projectId);
     if (project === null) throw new Error('Projet introuvable');
     const workspace=workspaceFor(this.db,id);
-    if(workspace?.removedAt)throw new Error('Le worktree a été supprimé ; la conversation reste consultable mais ne peut plus être reprise dans cet espace.');
+    if(workspace?.removedAt)throw new Error(workspace.removedAutomatically
+      ?'La copie de travail de cette conversation a été nettoyée automatiquement à sa fin, car elle ne contenait rien à conserver. La conversation reste consultable mais ne peut plus être reprise : Cerebro ne la reprend pas dans le dossier du projet.'
+      :'Le worktree a été supprimé ; la conversation reste consultable mais ne peut plus être reprise dans cet espace.');
     assertWorktreeAvailable(workspace?.path??project.path);
     const tuning = { model: oldSession.model, effort: oldSession.effort };
     return this.launch(project, oldSession.agent, oldSession.mode, tuning, '', oldSession.agentSessionId, oldSession.id);
@@ -769,7 +773,9 @@ export class SessionManager {
     const projectSessions = this.db.listProjectSessions(projectId);
     await Promise.all(projectSessions.map((session) => this.stopProcesses(session.id)));
     await Promise.all(projectSessions.map(session=>archiveSessionWorktree(this.db,session.id)));
+    const roots = projectSessions.map((session) => workspaceFor(this.db, session.id)?.root ?? null);
     this.db.deleteProject(projectId);
+    projectSessions.forEach((session, index) => this.onSessionReleased(session.id, roots[index] ?? null));
     rmSync(join(ATTACHMENTS_DIR, `project-${projectId}`), { recursive: true, force: true });
     for (const session of projectSessions) {
       this.cleanupAllArtifacts(session.id);
@@ -796,7 +802,9 @@ export class SessionManager {
     if (this.db.getSession(id) === null) return false;
     await this.stopProcesses(id);
     await archiveSessionWorktree(this.db,id);
+    const root = workspaceFor(this.db, id)?.root ?? null;
     this.db.deleteSession(id);
+    this.onSessionReleased(id, root);
     this.cleanupAllArtifacts(id);
     this.questions.delete(id);
     this.askedQuestions.delete(id);
@@ -862,7 +870,10 @@ export class SessionManager {
       attention: false,
       attentionReason: null,
     });
-    if (updated !== null) this.emit({ type: 'session', session: updated });
+    if (updated !== null) {
+      this.emit({ type: 'session', session: updated });
+      this.onSessionReleased(id, workspaceFor(this.db, id)?.root ?? null);
+    }
     if (runtime !== undefined) {
       for (const listener of runtime.terminalListeners) listener({ type: 'exit', exitCode });
       for (const resolve of runtime.exitWaiters) resolve();

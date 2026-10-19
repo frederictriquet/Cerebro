@@ -13,7 +13,8 @@ const INVENTORY_REFRESH_MS = 30_000;
 /** Last inventory per machine and scope, shown on remount so the panel keeps its height while it refreshes. */
 const inventoryCache = new Map<string, WorktreeInventory>();
 const cacheKey = (machineBase: string, path: string): string => `${machineBase}|${path}`;
-const createdLabel = (view: WorktreeView): string => new Date(view.createdAt).toLocaleString('fr-FR', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' });
+const createdLabel = (view: WorktreeView): string => dateLabel(view.createdAt);
+const dateLabel = (at: number): string => new Date(at).toLocaleString('fr-FR', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' });
 const copyTitle = (view: WorktreeView): string => view.session?.title ?? view.sessionTitle ?? `Conversation supprimée · ${createdLabel(view)}`;
 function copyStatus(view: WorktreeView): string {
   if(view.error)return 'État indisponible';
@@ -116,12 +117,14 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   const visibleInventory=loadedBase===machineBase?inventory:null;
   const copies=visibleInventory?.worktrees.filter(view=>view.managed&&!view.primary)??[];
   const other=visibleInventory?.worktrees.filter(view=>!view.managed||view.primary)??[];
-  if(projectId&&workspaceMode==='shared'&&visibleInventory&&copies.length===0&&other.every(view=>view.primary)&&!loadError&&!error&&!visibleInventory.errors.length)return null;
+  // Absent des serveurs antérieurs au nettoyage automatique.
+  const cleaned=visibleInventory?.cleaned??[];
+  if(projectId&&workspaceMode==='shared'&&visibleInventory&&copies.length===0&&cleaned.length===0&&other.every(view=>view.primary)&&!loadError&&!error&&!visibleInventory.errors.length)return null;
   return <section className="card worktrees-panel" aria-label="Copies de travail des conversations">
     <div className="worktrees-heading"><h2>Copies de travail <span className="pill">{visibleInventory?copies.length:'…'}</span></h2>
       <button type="button" className="btn" onClick={()=>void refresh()}>Actualiser</button>
     </div>
-    <p className="worktrees-explanation">{workspaceMode==='shared'?'Ce projet utilise directement son dossier. Ses anciennes copies isolées restent accessibles ici.':'Les copies isolent le travail des conversations. Pour récupérer leur travail : créer le commit, puis l’intégrer au projet. Supprimer une conversation conserve sa copie ici.'}</p>
+    <p className="worktrees-explanation">{workspaceMode==='shared'?'Ce projet utilise directement son dossier. Ses anciennes copies isolées restent accessibles ici.':'Les copies isolent le travail des conversations. Pour récupérer leur travail : créer le commit, puis l’intégrer au projet. Quand une conversation est arrêtée ou supprimée, sa copie est nettoyée automatiquement si elle ne contient rien à conserver ; sinon elle reste ici.'}</p>
     {loadError?<p className="form-error" role="alert">{loadError}</p>:null}
     {error?<p className="form-error" role="alert">{error}</p>:null}
     {visibleInventory?.errors.map(message=><p className="form-error" key={message}>{message}</p>)}
@@ -186,7 +189,8 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
             {view.mergeBlockers.length&&!initialOnly?<><p>Pour intégrer cette copie :</p><ul>{view.mergeBlockers.map(reason=><li key={reason}>{reason}</li>)}</ul></>:null}
             {view.operation?.output?<details><summary>Résultat Git</summary><pre>{view.operation.output}</pre></details>:null}
             <details className="worktree-cleanup"><summary>Retirer cette copie</summary>
-              <p>Le retrait est distinct de la suppression de la conversation. Il est disponible uniquement quand les changements sont intégrés et qu’aucune donnée locale ne risque d’être effacée.</p>
+              <p>Le retrait est distinct de la suppression de la conversation. Il est disponible uniquement quand les changements sont intégrés et qu’aucune donnée locale ne risque d’être effacée. Il a lieu automatiquement à l’arrêt ou à la suppression de la conversation quand ces conditions sont réunies.</p>
+              {view.autoCleanup&&view.autoCleanup.status!=='removed'?<p>Nettoyage automatique {view.autoCleanup.status==='failed'?'échoué':'non effectué'} le {dateLabel(view.autoCleanup.at)} : {view.autoCleanup.reasons.join(' ')}</p>:null}
               {view.ignored?<p>{view.ignored} fichier(s) ignoré(s) par Git sont présents (par exemple dépendances ou configuration locale). Ce ne sont pas des changements à intégrer ; ils sont conservés et empêchent le retrait de la copie.</p>:null}
               {view.removeBlockers.length?<ul>{view.removeBlockers.map(reason=><li key={reason}>{reason}</li>)}</ul>:null}
               <button type="button" className="btn danger-ghost" disabled={disabled||view.removeBlockers.length>0} onClick={()=>void prepare(view,'remove')}>Retirer la copie</button>
@@ -195,6 +199,15 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
         </li>;
       })}
     </ul>
+    {cleaned.length?<details className="worktrees-other"><summary>Copies nettoyées automatiquement ({cleaned.length})</summary>
+      <p className="meta">Ces copies ne contenaient rien à conserver à la fin de leur conversation. Leur branche est conservée ; la conversation reste consultable mais ne peut plus être reprise.</p>
+      <ul className="worktree-list">{cleaned.map(copy=><li className="worktree-cleaned-row" key={copy.id}>
+        <strong>{copy.session?<a href={href(`#/s/${copy.session.id}`)}>{copy.session.title}</a>:copy.sessionTitle??'Conversation supprimée'}</strong>
+        {!projectId?<span className="meta"> · {copy.projectName}</span>:null}
+        <p className="meta">Nettoyée le {dateLabel(copy.removedAt)} · Branche conservée : {branchName(copy.branch)}</p>
+        <p className="path">{copy.path}</p>
+      </li>)}</ul>
+    </details>:null}
     {other.length?<details className="worktrees-other"><summary>Dossier principal et autres copies Git ({other.length})</summary>
       <p className="meta">Le dossier principal se traite avec « Commit / push du projet ». Les copies non associées restent visibles ici pour retrouver leur contenu.</p>
       {other.map(view=><details className="worktree-other" key={view.id}><summary>{view.primary?'Dossier principal du projet':'Copie sans conversation identifiée'}{!projectId?` · ${view.projectName}`:''} · {view.dirty??'?'} fichier(s) modifié(s)</summary>

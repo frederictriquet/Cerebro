@@ -276,7 +276,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     if(operation.projectId)notifier.operations.record({id:`auto-commit:${operation.id}`,projectId:operation.projectId,sessionId:operation.sessionId,kind:'commit',ok:operation.status==='succeeded',summary:[...operation.commits.map(commit=>`${commit.hash} ${commit.title}`),operation.error??'',operation.pushOperation?`Push : ${operation.pushOperation.status}`:''].filter(Boolean).join(' ; ')||'Aucun changement à commiter.',startedAt:operation.startedAt,finishedAt:operation.finishedAt??Date.now()});
   };
   const epicRunner = new EpicRunner(db, sessions, commands, broadcast);
-  epicRunner.onResult=run=>notifier.operations.record({id:`epic:${run.id}:${run.status}`,projectId:run.projectId,sessionId:run.sessionId,kind:'epic',ok:run.status==='succeeded',summary:run.status==='succeeded'?'Toutes les étapes ont satisfait leur critère de clôture.':`${run.status} : ${run.error??'progression arrêtée'}`,startedAt:run.startedAt,finishedAt:run.updatedAt});
+  epicRunner.onResult=run=>{
+    notifier.operations.record({id:`epic:${run.id}:${run.status}`,projectId:run.projectId,sessionId:run.sessionId,kind:'epic',ok:run.status==='succeeded',summary:run.status==='succeeded'?'Toutes les étapes ont satisfait leur critère de clôture.':`${run.status} : ${run.error??'progression arrêtée'}`,startedAt:run.startedAt,finishedAt:run.updatedAt});
+    // Copies held back while the epic ran become eligible once it ends.
+    if(run.status!=='blocked')void worktrees.resumeAutomaticCleanup(run.projectId);
+  };
   const unsubscribePush=onPushComplete((path,operation)=>{
     if(automaticCommits.list().some(commit=>commit.pushOperation?.id===operation.id))return;
     let project=db.listProjects().find(p=>resolve(p.path)===resolve(path));
@@ -286,6 +290,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     notifier.operations.record({id:operation.id,projectId:project.id,sessionId:source?.id??null,kind:'push',ok:operation.status==='succeeded',summary:operation.error??operation.remotes.map(r=>`${r.remote} : ${r.status}`).join(' ; '),startedAt:operation.startedAt,finishedAt:operation.finishedAt??Date.now()});
   });
   epicRunner.initialize();
+  sessions.onSessionReleased=(id,root)=>{void worktrees.releaseSession(id,root);};
+  worktrees.onSessionsChanged=ids=>{for(const id of ids){const session=db.getSession(id);if(session)broadcast({type:'session',session});}};
+  // Copies whose conversation ended while the server was down, or before automatic cleanup existed.
+  void worktrees.resumeAutomaticCleanup();
   commands.onChange = run => {
     epicRunner.poke();
     const task = db.getTask(run.taskId);

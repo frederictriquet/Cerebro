@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { after, mock, test } from 'node:test';
@@ -19,12 +19,15 @@ const repo=join(root,'repo');mkdirSync(repo);const git=(path,...args)=>execFileS
 git(repo,'init','-b','main');git(repo,'config','user.email','test@example.com');git(repo,'config','user.name','Test');writeFileSync(join(repo,'file'),'base\n');git(repo,'add','.');git(repo,'commit','-m','base');
 const db=new CerebroDatabase();const project=db.createProject('API Project',repo);const id=randomUUID();db.createSession({id,projectId:project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Original conversation',status:'exited',agentSessionId:'fake'},'token');const workspace=await createWorkspace(db,id,project);db.close();
 after(()=>{mock.restoreAll();rmSync(root,{recursive:true,force:true});});
-test('API keeps orphaned worktrees, executes explicit commits/merges without agents and validates stale actions',async()=>{
+test('API keeps orphaned worktrees with work, executes explicit commits/merges without agents, validates stale actions, then cleans the integrated copy',async()=>{
  let app=await buildServer();const send=(method,url,payload)=>app.inject({method,url,...(payload===undefined?{}:{payload})});
  try{
   let inventory=(await send('GET',`/api/projects/${project.id}/worktrees`)).json();let own=inventory.worktrees.find(w=>w.sessionId===id);assert.ok(own);const wid=own.id;
-  assert.equal((await send('DELETE',`/api/sessions/${id}`)).statusCode,204);
+  // Uncommitted work keeps the copy when its conversation is deleted.
   writeFileSync(join(workspace.path,'new'),'orphan work\n');
+  assert.equal((await send('DELETE',`/api/sessions/${id}`)).statusCode,204);
+  for(let i=0;i<200&&!(await send('GET',`/api/worktrees/${wid}`)).json().autoCleanup;i++)await new Promise(r=>setTimeout(r,10));
+  own=(await send('GET',`/api/worktrees/${wid}`)).json();assert.equal(own.autoCleanup.status,'kept');assert.ok(existsSync(workspace.path));
   const prepared=await send('POST',`/api/worktrees/${wid}/git/prepare-commit`);assert.equal(prepared.statusCode,200);
   const result=await send('POST',`/api/worktrees/${wid}/git/commit`,{snapshotId:prepared.json().id,commits:[{message:'orphan commit',selection:[{path:'new',all:true}]}],acknowledged:[],push:false});assert.equal(result.statusCode,200);assert.equal(result.json().error,null);
   assert.equal((await send('PATCH',`/api/worktrees/${wid}/target`,{branch:'refs/heads/missing'})).statusCode,400);
@@ -34,8 +37,13 @@ test('API keeps orphaned worktrees, executes explicit commits/merges without age
   plan=(await send('POST',`/api/worktrees/${wid}/prepare-merge`)).json();assert.equal((await send('POST',`/api/worktrees/${wid}/merge`,{token:plan.token})).statusCode,202);
   for(let i=0;i<100;i++){own=(await send('GET',`/api/worktrees/${wid}`)).json();if(own.operation?.status!=='running')break;await new Promise(r=>setTimeout(r,10));}
   assert.equal(own.operation.status,'succeeded',JSON.stringify(own));assert.equal(own.ahead,0);assert.equal(own.session,null);assert.equal(git(repo,'show','HEAD:new'),'orphan work');assert.equal(launches,0);
-  await app.close();app=await buildServer();own=(await send('GET','/api/worktrees')).json().worktrees.find(w=>w.id===wid);assert.equal(own.projectName,'API Project');assert.equal(own.session,null);
+  // Integrated, clean and without conversation: the restart resumes the cleanup the deletion could not do.
+  await app.close();app=await buildServer();let cleaned;
+  for(let i=0;i<300&&!cleaned;i++){cleaned=(await send('GET','/api/worktrees')).json().cleaned.find(c=>c.id===wid);if(!cleaned)await new Promise(r=>setTimeout(r,10));}
+  assert.ok(cleaned);assert.equal(cleaned.projectName,'API Project');assert.equal(cleaned.session,null);assert.equal(cleaned.sessionTitle,'Original conversation');
+  assert.equal(existsSync(workspace.path),false);assert.ok(git(repo,'rev-parse','--verify',cleaned.branch));
+  assert.ok(!(await send('GET','/api/worktrees')).json().worktrees.some(w=>w.id===wid));
   assert.equal((await send('DELETE',`/api/projects/${project.id}`)).statusCode,204);
-  own=(await send('GET','/api/worktrees')).json().worktrees.find(w=>w.id===wid);assert.ok(own);assert.equal(own.projectExists,false);assert.equal(own.integration,'integrated');assert.equal(launches,0);
+  assert.ok((await send('GET','/api/worktrees')).json().cleaned.some(c=>c.id===wid));assert.equal(launches,0);
  }finally{await app.close();}
 });

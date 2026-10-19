@@ -80,6 +80,9 @@ export interface SessionWorktree {
   path: string;
   branch: string | null;
   removed: boolean;
+  removedAt: number | null;
+  /** Removed by the automatic cleanup once the conversation was over. */
+  removedAutomatically: boolean;
 }
 
 export type TaskExecution = {type:'llm'} | {type:'command';commandId:string;completion:'manual'|'exit-zero'};
@@ -204,9 +207,12 @@ function projectFromRow(row: ProjectRow): Project {
 
 function worktreeFromWorkspace(data: string | null): SessionWorktree | null {
   if (data === null) return null;
-  const workspace = JSON.parse(data) as { mode: string; path: string; branch: string | null; removedAt?: number };
+  const workspace = JSON.parse(data) as { mode: string; path: string; branch: string | null; removedAt?: number; removedAutomatically?: boolean };
   if (workspace.mode !== 'isolated') return null;
-  return { name: basename(workspace.path), path: workspace.path, branch: workspace.branch, removed: workspace.removedAt !== undefined };
+  return {
+    name: basename(workspace.path), path: workspace.path, branch: workspace.branch, removed: workspace.removedAt !== undefined,
+    removedAt: workspace.removedAt ?? null, removedAutomatically: workspace.removedAutomatically === true,
+  };
 }
 
 const SESSION_SELECT = 'SELECT s.*, w.data AS workspace FROM sessions s LEFT JOIN session_workspaces w ON w.session_id = s.id';

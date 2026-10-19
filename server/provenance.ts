@@ -20,6 +20,8 @@ export interface Workspace {
   projectRoot?: string;
   targetBranch?: string | null;
   removedAt?: number;
+  /** The copy was removed by the automatic cleanup at the end of the conversation, not by an explicit action. */
+  removedAutomatically?: boolean;
   mode: 'isolated' | 'shared' | 'unknown';
   path: string;
   root: string;

@@ -32,6 +32,9 @@
 .worktree-detail > .btn, .worktree-target, .worktree-diffs { margin-top: .65rem; }
 .worktrees-other { margin-top: .75rem; padding-top: .5rem; border-top: 1px solid var(--line); font-size: .85rem; }
 .worktree-other { margin: .5rem 0; }
+.worktree-cleaned-row { padding: .4rem 0; border-top: 1px solid var(--line); min-width: 0; }
+.worktree-cleaned-row p { margin: .15rem 0 0; }
+.worktree-cleaned-row .path { overflow-wrap: anywhere; color: var(--muted); font-size: .8rem; }
 .worktrees-other pre { max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .worktree-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; }
 .worktree-reviewed { display: flex; align-items: center; gap: .4rem; margin: .4rem 0; cursor: pointer; }

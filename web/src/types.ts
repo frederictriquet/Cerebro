@@ -66,6 +66,9 @@ export interface SessionWorktree {
   path: string;
   branch: string | null;
   removed: boolean;
+  removedAt: number | null;
+  /** Retirée par le nettoyage automatique à la fin de la conversation. */
+  removedAutomatically: boolean;
 }
 
 export interface Task {
@@ -271,7 +274,10 @@ function parseSessionWorktree(v: unknown): SessionWorktree | null {
   const name = asString(v.name);
   const path = asString(v.path);
   if (name === null || path === null) return null;
-  return { name, path, branch: typeof v.branch === 'string' ? v.branch : null, removed: v.removed === true };
+  return {
+    name, path, branch: typeof v.branch === 'string' ? v.branch : null, removed: v.removed === true,
+    removedAt: typeof v.removedAt === 'number' ? v.removedAt : null, removedAutomatically: v.removedAutomatically === true,
+  };
 }
 
 export function parseTask(v: unknown): Task | null {

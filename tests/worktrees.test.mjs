@@ -245,3 +245,79 @@ test('discarding the inherited content restores only files untouched since the c
  rmSync(join(f.workspace.root,'new'));own=await f.view();assert.equal(own.dirty,0);assert.equal(own.ahead,1);
  git(f.repo,'stash','--include-untracked');assert.equal((await f.merge()).status,'succeeded');assert.equal(readFileSync(join(f.repo,'work'),'utf8'),'step work\n');
 },'untracked-too'));
+
+// Automatic cleanup at the end of a conversation. The server wires SessionManager.onSessionReleased to releaseSession.
+function wire(f){
+ const sessions=new SessionManager(f.db);const released=[];
+ sessions.onSessionReleased=(id,root)=>released.push(f.manager.releaseSession(id,root));
+ return {sessions,settled:()=>Promise.all(released)};
+}
+const record=(f,id)=>f.db.connection.prepare('SELECT data FROM worktree_inventory').all().map(row=>JSON.parse(row.data)).find(r=>r.id===id);
+const automaticRemovals=f=>f.db.connection.prepare('SELECT data FROM worktree_operations').all().map(row=>JSON.parse(row.data)).filter(op=>op.automatic&&op.kind==='remove');
+
+test('a question-only conversation is cleaned automatically once its process stops; history, branch and dependencies remain',async()=>fixture(async f=>{
+ const own=await f.view();const branch=git(f.repo,'rev-parse',f.workspace.branch);
+ f.db.updateSession(f.id,{status:'running'});const {sessions,settled}=wire(f);
+ sessions.finishSession(f.id,0);await settled();
+ assert.equal(existsSync(own.path),false);assert.equal(git(f.repo,'rev-parse',f.workspace.branch),branch);
+ assert.equal(readFileSync(join(f.repo,'node_modules','dependency','index.js'),'utf8'),'module.exports = true;\n');
+ const workspace=workspaceFor(f.db,f.id);assert.ok(workspace.removedAt);assert.equal(workspace.removedAutomatically,true);
+ const session=f.db.getSession(f.id);assert.equal(session.title,'Conversation');assert.equal(session.worktree.removed,true);assert.equal(session.worktree.removedAutomatically,true);
+ assert.equal(record(f,own.id).autoCleanup.status,'removed');assert.equal(automaticRemovals(f).length,1);
+ const inventory=await f.manager.list(f.project.id);assert.ok(!inventory.worktrees.some(w=>w.id===own.id));
+ assert.deepEqual(inventory.cleaned.map(c=>[c.id,c.session.id,c.branch]),[[own.id,f.id,`refs/heads/${f.workspace.branch}`]]);
+ await assert.rejects(sessions.resume(f.id),/nettoyée automatiquement.*ne peut plus être reprise/s);
+}));
+
+test('deleting an unused conversation cleans its copy automatically, but an idle conversation keeps it',async()=>fixture(async f=>{
+ const own=await f.view();f.db.updateSession(f.id,{status:'idle'});
+ await f.manager.releaseSession(f.id,f.workspace.root);await f.manager.resumeAutomaticCleanup();
+ assert.ok(existsSync(own.path));assert.equal(record(f,own.id).autoCleanup,undefined);
+ const {sessions,settled}=wire(f);await sessions.delete(f.id);await settled();
+ assert.equal(existsSync(own.path),false);assert.equal(f.db.getSession(f.id),null);
+ const cleaned=(await f.manager.list()).cleaned.find(c=>c.id===own.id);assert.equal(cleaned.session,null);assert.equal(cleaned.sessionTitle,'Conversation');
+}));
+
+test('inherited changes are never cleaned automatically, even with no change since creation',async()=>fixture(async f=>{
+ const own=await f.view();assert.equal(own.changesSinceCreation.count,0);
+ await f.manager.releaseSession(f.id,f.workspace.root);
+ assert.equal(readFileSync(join(own.path,'file'),'utf8'),'changes already in project\n');
+ const decision=record(f,own.id).autoCleanup;assert.equal(decision.status,'kept');assert.ok(decision.reasons.some(r=>/modifié/.test(r)));
+ assert.equal((await f.view()).autoCleanup.status,'kept');
+},true));
+
+test('local edits, unintegrated commits, ignored files and concurrent uses block the automatic cleanup',async()=>fixture(async f=>{
+ const own=await f.view();
+ const kept=async pattern=>{await f.manager.releaseSession(f.id,f.workspace.root);assert.ok(existsSync(own.path));const decision=record(f,own.id).autoCleanup;assert.equal(decision.status,'kept');assert.ok(decision.reasons.some(r=>pattern.test(r)),JSON.stringify(decision));};
+ writeFileSync(join(own.path,'new'),'answer notes\n');await kept(/modifié/);rmSync(join(own.path,'new'));
+ const head=f.commit();await kept(/commits restent/);git(own.path,'reset','--hard','HEAD~1');
+ writeFileSync(join(own.path,'ignored'),'local config\n');await kept(/ignoré/);rmSync(join(own.path,'ignored'));
+ const run={id:'command',cwd:own.path,status:'running'};f.db.connection.prepare('INSERT INTO command_runs VALUES (?,?,?)').run(run.id,'task',JSON.stringify(run));await kept(/commande/);f.db.connection.prepare('DELETE FROM command_runs').run();
+ const epic={id:'epic-run',projectId:f.project.id,status:'running',contextRoot:f.repo};f.db.connection.prepare('INSERT INTO epic_runs VALUES (?,?,?)').run(epic.id,'epic',JSON.stringify(epic));await kept(/epic/);f.db.connection.prepare('DELETE FROM epic_runs').run();
+ const step=randomUUID();f.db.createSession({id:step,projectId:f.project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Next step',status:'idle',agentSessionId:'fake'},'token');
+ await joinWorkspace(f.db,step,f.workspace);await kept(/Session Next step/);f.db.updateSession(step,{status:'exited'});
+ const release=lockWorktrees([own.path]);try{await kept(/opération Git/);}finally{release();}
+ git(own.path,'worktree','lock',own.path);await kept(/verrouillé/);git(own.path,'worktree','unlock',own.path);
+ git(own.path,'checkout','-q','--detach');await kept(/Branche du worktree/);git(own.path,'checkout','-q',f.workspace.branch);
+ assert.equal(git(own.path,'rev-parse','HEAD'),git(f.repo,'rev-parse','HEAD'));assert.notEqual(head,git(own.path,'rev-parse','HEAD'));
+ // Once nothing remains to keep, the shared copy is released through the step that joined it too.
+ await f.manager.releaseSession(step,workspaceFor(f.db,step).root);assert.equal(existsSync(own.path),false);assert.ok(workspaceFor(f.db,step).removedAutomatically);
+}));
+
+test('cleanup resumes after a restart and repeated or concurrent triggers remove a copy only once',async()=>fixture(async f=>{
+ const own=await f.view();const external=join(root,randomUUID());git(f.repo,'worktree','add','-b','external-copy',external);
+ await f.restart();
+ await Promise.all([f.manager.resumeAutomaticCleanup(),f.manager.releaseSession(f.id,f.workspace.root),f.manager.releaseSession(f.id,f.workspace.root),f.manager.resumeAutomaticCleanup()]);
+ assert.equal(existsSync(own.path),false);assert.ok(existsSync(external));assert.ok(existsSync(f.repo));
+ await f.restart();await f.manager.resumeAutomaticCleanup();await f.manager.releaseSession(f.id,f.workspace.root);
+ assert.equal(automaticRemovals(f).length,1);assert.equal(automaticRemovals(f)[0].status,'succeeded');assert.equal(record(f,own.id).autoCleanup.status,'removed');
+ const inventory=await f.manager.list();assert.equal(inventory.cleaned.filter(c=>c.id===own.id).length,1);
+ assert.equal(inventory.worktrees.find(w=>w.path===external).managed,false);
+}));
+
+test('a manual removal confirmed before an automatic cleanup cannot run twice',async()=>fixture(async f=>{
+ const own=await f.view();const plan=await f.manager.prepare(own.id,'remove');
+ await f.manager.releaseSession(f.id,f.workspace.root);assert.equal(existsSync(own.path),false);
+ await assert.rejects(f.manager.start(own.id,'remove',plan.token),/introuvable/);
+ assert.equal(git(f.repo,'rev-parse','--verify',f.workspace.branch).length>0,true);
+}));
