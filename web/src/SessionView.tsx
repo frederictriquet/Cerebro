@@ -21,16 +21,23 @@ import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { Term, type TermApi } from './Term.tsx';
 
-function FindingsPanel({sessionId}:{sessionId:string}) {
+type SessionDrawer = 'provenance' | 'findings' | null;
+
+function useFindingsReports(sessionId:string) {
   const [reports,setReports]=useState<SavedReport[]>([]);
+  const refresh=useCallback(async():Promise<void>=>setReports(await api<SavedReport[]>(`/api/sessions/${sessionId}/findings`)),[sessionId]);
+  useEffect(()=>{setReports([]);void refresh().catch(()=>{});const timer=window.setInterval(()=>void refresh().catch(()=>{}),3000);return()=>window.clearInterval(timer);},[refresh]);
+  return {reports,refresh};
+}
+
+function FindingsPanel({sessionId,reports,refresh}:{sessionId:string;reports:SavedReport[];refresh:()=>Promise<void>}) {
   const [chosen,setChosen]=useState<Set<string>>(new Set());
   const [error,setError]=useState<string|null>(null);
   const [busy,setBusy]=useState(false);
   const [raw,setRaw]=useState('');
-  const refresh=async():Promise<void>=>setReports(await api<SavedReport[]>(`/api/sessions/${sessionId}/findings`));
-  useEffect(()=>{void refresh();const timer=window.setInterval(()=>void refresh().catch(()=>{}),3000);return()=>window.clearInterval(timer);},[sessionId]);
   const save=async():Promise<void>=>{setBusy(true);try{await api(`/api/sessions/${sessionId}/findings`,{method:'POST',body:JSON.stringify(JSON.parse(raw))});setRaw('');setError(null);await refresh();}catch(cause){setError(String(cause));}finally{setBusy(false);}};
-  return <details className="session-findings"><summary>Findings structurés ({reports.length} rapport(s))</summary>
+  return <>
+    <p className="hint">Rapports de review envoyés par l’agent. Cochez des findings pour les transformer en tâches d’un epic du backlog.</p>
     {reports.map(report=><div key={report.id}>
       <strong>{report.title}</strong>
       {report.findings.map(f=><div key={f.id}>
@@ -41,29 +48,38 @@ function FindingsPanel({sessionId}:{sessionId:string}) {
     </div>)}
     <details><summary>Importer un rapport JSON structuré</summary><p>Un finding incomplet peut rester dans le flux de discussion habituel pour être précisé.</p><textarea rows={8} value={raw} onChange={e=>setRaw(e.target.value)}/><button className="btn" disabled={busy||!raw.trim()} onClick={()=>void save()}>Enregistrer le rapport</button></details>
     {error?<p className="form-error">{error}</p>:null}
-  </details>;
+  </>;
 }
 
-function ProvenancePanel({ sessionId }: { sessionId: string }) {
+function useProvenance(sessionId: string) {
   const [data, setData] = useState<Provenance | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const refresh = async (): Promise<void> => {
+  const refresh = useCallback(async (): Promise<void> => {
     try { setData(await api<Provenance>(`/api/sessions/${sessionId}/provenance`)); setError(null); }
     catch (cause) { setError(String(cause)); }
-  };
-  useEffect(() => { void refresh(); }, [sessionId]);
-  return <details className="session-provenance">
-    <summary>{data?.workspace.mode === 'isolated' ? 'Copie de travail de cette conversation' : 'Dossier partagé du projet'}</summary>
+  }, [sessionId]);
+  useEffect(() => { setData(null); setError(null); void refresh(); }, [refresh]);
+  return { data, error, refresh };
+}
+
+const WORKSPACE_PILL: Record<Provenance['workspace']['mode'], { label: string; title: string }> = {
+  isolated: { label: 'copie isolée', title: 'Cette conversation travaille dans sa propre copie du dépôt (worktree), sur sa propre branche' },
+  shared: { label: 'dossier partagé', title: 'Cette conversation travaille directement dans le dossier du projet, partagé avec les autres conversations' },
+  unknown: { label: 'provenance inconnue', title: 'Cerebro ne sait pas attribuer les changements à cette conversation' },
+};
+
+function ProvenancePanel({ data, error, refresh }: ReturnType<typeof useProvenance>) {
+  return <>
     {error ? <p className="form-error">{error}</p> : null}
     {data ? <>
       <p>{data.workspace.path} — branche {data.workspace.branch ?? 'partagée'}</p>
-      {data.workspace.mode!=='isolated'?<p>Cette conversation utilise le dossier du projet et sa branche courante, partagés avec les autres conversations qui y travaillent directement. Ses actions Git portent sur le projet entier.</p>:<><p>{data.workspace.reason}</p><p className="hint">{data.warning}</p></>}
+      {data.workspace.mode==='shared'?<p>Cette conversation utilise le dossier du projet et sa branche courante, partagés avec les autres conversations qui y travaillent directement. Ses actions Git portent sur le projet entier.</p>:<><p>{data.workspace.reason}</p><p className="hint">{data.warning}</p></>}
       <p>Changements initiaux exclus de l’attribution : {data.workspace.initialDirty.join(', ') || 'aucun'}</p>
       {data.changes.map(c => <p key={c.path}>{c.path} — {c.certainty} : {c.reason}</p>)}
       {data.commits.map(c => <p key={c.hash}>{c.hash} — {c.title} ({c.certainty})</p>)}
     </> : null}
     <button className="btn" onClick={() => void refresh()}>Actualiser</button>
-  </details>;
+  </>;
 }
 
 function delay(ms: number): Promise<void> {
@@ -369,6 +385,14 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     const text = termApi.current?.getSelection() ?? '';
     if (text !== '') setSelectionAction({ kind, text });
   };
+  const provenance = useProvenance(sessionId);
+  const findings = useFindingsReports(sessionId);
+  const [drawer, setDrawer] = useState<SessionDrawer>(null);
+  const toggleDrawer = (next: Exclude<SessionDrawer, null>): void => setDrawer((current) => (current === next ? null : next));
+
+  useEffect(() => {
+    setDrawer(null);
+  }, [sessionId]);
 
   useEffect(() => {
     void markSeen(sessionId);
@@ -408,6 +432,28 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             <span className="pill">{MODE_LABEL[session.mode]}</span>
             {session.model !== null ? <span className="pill">{agents.find((a) => a.agent === session.agent)?.models.find((m) => m.value === session.model)?.label ?? session.model}</span> : null}
             {session.effort !== null ? <span className="pill">effort {session.effort}</span> : null}
+            {provenance.data ? (
+              <button
+                type="button"
+                className={`pill pill-toggle${drawer === 'provenance' ? ' active' : ''}`}
+                aria-expanded={drawer === 'provenance'}
+                title={`${WORKSPACE_PILL[provenance.data.workspace.mode].title} — cliquer pour le détail`}
+                onClick={() => toggleDrawer('provenance')}
+              >
+                {WORKSPACE_PILL[provenance.data.workspace.mode].label}
+              </button>
+            ) : null}
+            {findings.reports.length > 0 ? (
+              <button
+                type="button"
+                className={`pill pill-toggle${drawer === 'findings' ? ' active' : ''}`}
+                aria-expanded={drawer === 'findings'}
+                title="Rapports de review à transformer en tâches du backlog — cliquer pour les voir"
+                onClick={() => toggleDrawer('findings')}
+              >
+                {findings.reports.length} rapport{findings.reports.length > 1 ? 's' : ''} de findings
+              </button>
+            ) : null}
             <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
             {project ? (
               <a className="project-crumb" href={href(`#/p/${project.id}`)}>
@@ -440,8 +486,18 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         </div>
       </header>
       {error ? <p className="form-error session-error">{error}</p> : null}
-      <FindingsPanel key={`findings-${session.id}`} sessionId={session.id} />
-      <ProvenancePanel key={session.id} sessionId={session.id} />
+      {drawer !== null ? (
+        <section className="session-drawer">
+          <button type="button" className="btn session-drawer-close" aria-label="Fermer" onClick={() => setDrawer(null)}>
+            ×
+          </button>
+          {drawer === 'provenance' ? (
+            <ProvenancePanel {...provenance} />
+          ) : (
+            <FindingsPanel key={session.id} sessionId={session.id} reports={findings.reports} refresh={findings.refresh} />
+          )}
+        </section>
+      ) : null}
       <div className="term-wrap">
         <Term
           key={`${session.id}:${live ? 'live' : 'exited'}`}

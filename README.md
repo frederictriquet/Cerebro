@@ -517,9 +517,10 @@ explicitement, sans démarrer l'agent. Le dossier de données doit être hors du
 
 La provenance est enregistrée en base avant le lancement du terminal : chemin,
 branche, HEAD de base, empreintes initiales et fichiers initialement modifiés.
-La reprise retrouve cet espace après redémarrage. Le panneau de provenance de la
-session expose le chemin, les changements et les commits du premier parent de sa
-branche. Les fichiers déjà modifiés au départ nécessitent une sélection manuelle ;
+La reprise retrouve cet espace après redémarrage. Dans l'en-tête de la session, une
+pastille indique l'espace utilisé (`copie isolée`, `dossier partagé` ou
+`provenance inconnue`) ; un clic ouvre le détail : chemin, changements et commits
+du premier parent de sa branche. Les fichiers déjà modifiés au départ nécessitent une sélection manuelle ;
 ils ne sont jamais attribués automatiquement. Un changement de branche ou une base
 réécrite rend le périmètre incertain ; les merges sont également signalés incertains.
 
@@ -566,7 +567,9 @@ Pendant une review, l'agent peut envoyer sur l'entrée standard de
 scenario,expectedFix,dependsOn:[],taskDependencies:[]}]}`. `severity` vaut
 `critical`, `high`, `medium` ou `low` ; `dependsOn` référence des findings du même
 rapport et `taskDependencies` des tâches existantes du projet. Le rapport peut
-également être collé dans le panneau **Findings structurés** d'une session.
+également être collé dans le panneau des findings d'une session, ouvert par la
+pastille **N rapport(s) de findings** de son en-tête. Cette pastille n'apparaît
+qu'à partir du premier rapport reçu.
 
 Sélectionnez les findings et cliquez **Enregistrer la sélection dans un epic**.
 Les tâches créées incluent le contexte autonome et la session source ; les
