@@ -366,6 +366,36 @@ export class WorktreeManager {
     assertWorktreeAvailable(view.path);
     const record=this.record(id); record.targetBranch=branch; store(this.db,record); return this.inspect(record);
   }
+  /** Restores the files that still hold exactly the content copied from the project when the copy was created. */
+  async discardInherited(id: string): Promise<{restored:string[];view:WorktreeView}> {
+    if(this.closed)throw new WorktreeError('Serveur en cours d’arrêt.');
+    const view=await this.get(id);
+    if(view.error)throw new WorktreeError(view.error);
+    if(!view.managed||view.primary)throw new WorktreeError('Worktree principal ou géré hors de Cerebro : lecture seule.');
+    if(view.mergeInProgress)throw new WorktreeError('Une opération Git doit être résolue dans ce worktree.');
+    if(view.operation?.status==='running')throw new WorktreeError('Une opération utilise ce worktree.');
+    const busy=this.activity(view.path,false);if(busy.length)throw new WorktreeError(busy.join('\n'));
+    const row=view.sessionId?this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(view.sessionId) as {data:string}|undefined:undefined;
+    const workspace=row?JSON.parse(row.data) as Workspace:null;
+    if(workspace?.mode!=='isolated'||canonicalWorktreePath(workspace.root)!==view.path)throw new WorktreeError('Le contenu de départ de cette copie est inconnu : rien ne peut être abandonné automatiquement.');
+    const release=lockWorktrees([view.path]);
+    try{
+      const shared=await sharedDependencyLinks(workspace,view.path);
+      const files=changedFiles(await git(view.path,['status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none']))
+        .filter(path=>!shared.some(name=>path===name||path.startsWith(`${name}/`)));
+      const restored:string[]=[];
+      // Each file is compared right before being restored: anything edited since the copy was made is kept.
+      for(const file of files){
+        if(workspace.baseline[file]!==await workspaceFileSignature(join(view.path,file)))continue;
+        const literal=`:(literal)${file}`;
+        if(await git(view.path,['cat-file','-e',`HEAD:${file}`]).then(()=>true,()=>false))await git(view.path,['restore','--source=HEAD','--staged','--worktree','--',literal]);
+        else{await git(view.path,['rm','--cached','--quiet','--ignore-unmatch','--',literal]);await rm(join(view.path,file),{force:true});}
+        restored.push(file);
+      }
+      if(!restored.length)throw new WorktreeError('Aucun fichier n’a encore le contenu de départ.');
+      return {restored,view:await this.inspect(this.record(id))};
+    }finally{release();}
+  }
   async prepare(id: string, kind: 'merge' | 'remove'): Promise<{token:string;view:WorktreeView}> {
     const view=await this.get(id); const blockers=kind==='merge'?view.mergeBlockers:view.removeBlockers;
     if (blockers.length || !view.fingerprint) throw new WorktreeError(blockers.join('\n'));

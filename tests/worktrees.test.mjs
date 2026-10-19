@@ -21,6 +21,7 @@ async function fixture(run,initialDirty=false){
  writeFileSync(join(repo,'file'),'base\n');writeFileSync(join(repo,'.gitignore'),'ignored\nnode_modules/\n');git(repo,'add','.');git(repo,'commit','-m','base');
  mkdirSync(join(repo,'node_modules','dependency'),{recursive:true});writeFileSync(join(repo,'node_modules','dependency','index.js'),'module.exports = true;\n');
  if(initialDirty)writeFileSync(join(repo,'file'),'changes already in project\n');
+ if(initialDirty==='untracked-too')writeFileSync(join(repo,'extra'),'untracked in project\n');
  let db=new CerebroDatabase(join(directory,'db.sqlite'));const project=db.createProject('Project',repo);const id=randomUUID();
  db.createSession({id,projectId:project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Conversation',status:'exited',agentSessionId:'fake'},'token');
  const workspace=await createWorkspace(db,id,project);let manager=new WorktreeManager(db);
@@ -233,3 +234,14 @@ test('an epic copy shared by several steps stays one entry and its removal reach
  assert.ok(workspaceFor(f.db,f.id).removedAt);assert.ok(workspaceFor(f.db,step).removedAt);
  await assert.rejects(new SessionManager(f.db).resume(step),/supprimé/);
 }));
+test('discarding the inherited content restores only files untouched since the copy, then integration proceeds',async()=>fixture(async f=>{
+ writeFileSync(join(f.workspace.root,'work'),'step work\n');git(f.workspace.root,'add','work');git(f.workspace.root,'commit','-m','step work');
+ writeFileSync(join(f.workspace.root,'new'),'later edit\n');
+ let own=await f.view();assert.equal(own.changesSinceCreation.inheritedCount,2);assert.ok(own.mergeBlockers.some(reason=>/modifié/.test(reason)));
+ const result=await f.manager.discardInherited(own.id);assert.deepEqual(result.restored.sort(),['extra','file']);
+ assert.equal(readFileSync(join(f.workspace.root,'file'),'utf8'),'base\n');assert.equal(existsSync(join(f.workspace.root,'extra')),false);
+ assert.equal(readFileSync(join(f.workspace.root,'new'),'utf8'),'later edit\n');assert.equal(readFileSync(join(f.repo,'extra'),'utf8'),'untracked in project\n');
+ await assert.rejects(f.manager.discardInherited(own.id),/Aucun fichier/);
+ rmSync(join(f.workspace.root,'new'));own=await f.view();assert.equal(own.dirty,0);assert.equal(own.ahead,1);
+ git(f.repo,'stash','--include-untracked');assert.equal((await f.merge()).status,'succeeded');assert.equal(readFileSync(join(f.repo,'work'),'utf8'),'step work\n');
+},'untracked-too'));
