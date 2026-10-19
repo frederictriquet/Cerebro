@@ -236,13 +236,13 @@ export class SessionManager {
     for (const listener of this.eventListeners) listener(event);
   }
 
-  async create(project: Project, overrides: Partial<SessionDefaults> = {}, validate?: () => Promise<void>, contextPath?: string): Promise<Session> {
+  async create(project: Project, overrides: Partial<SessionDefaults> = {}, validate?: () => Promise<void>, contextPath?: string, title?: string): Promise<Session> {
     const current = this.db.getProject(project.id);
     if (current === null) throw new Error('Projet introuvable');
     const defaults = this.rememberDefaults(project.id, overrides);
     const path=current.workspaceMode==='shared'?current.path:contextPath??current.path;
     assertWorktreeAvailable(path);
-    return this.launch({...current,path}, defaults.agent, defaults.mode, defaults, defaults.prompt, null, null, validate);
+    return this.launch({...current,path}, defaults.agent, defaults.mode, defaults, defaults.prompt, null, null, validate, title);
   }
 
   rememberDefaults(projectId: string, overrides: Partial<SessionDefaults>): SessionDefaults {
@@ -277,6 +277,7 @@ export class SessionManager {
     resumeSessionId: string | null,
     existingId: string | null = null,
     validate?: () => Promise<void>,
+    title?: string,
   ): Promise<Session> {
     const id = existingId ?? randomUUID();
     const command = buildAgentCommand(agent, mode, prompt, id, resumeSessionId, tuning);
@@ -290,7 +291,7 @@ export class SessionManager {
         mode,
         ...tuning,
         prompt,
-        title: titleFor(agent, prompt),
+        title: title ?? titleFor(agent, prompt),
         status: 'starting',
         agentSessionId: command.agentSessionId,
       }, token);

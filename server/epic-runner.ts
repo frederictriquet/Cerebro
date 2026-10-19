@@ -109,6 +109,8 @@ export class EpicRunner {
         }
         if(session.status==='waiting'){stop('blocked','Une question de la session reste en attente.');return;}
         run.contextRoot=workspaceFor(this.db,session.id)?.path??run.contextRoot;run.results[task.id]='declared-done';
+        // The step is closed and its turn is over: free the terminal so finished steps do not pile up. The workspace stays for the next step.
+        if(session.status!=='exited')this.sessions.kill(session.id);
       }
       run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;run.status='running';run.error=null;this.save(run);
     }
@@ -122,13 +124,14 @@ export class EpicRunner {
       const operation=await this.commands.start(next.id,run.contextRoot);run.commandRunId=operation.id;
     }else{
       const project=this.db.getProject(run.projectId)!;
+      const title=`Epic « ${epic.title} » · étape ${run.order.indexOf(next.id)+1}/${run.order.length} : ${next.text.split('\n')[0]}`.slice(0,120);
       const prompt=`[CEREBRO_EPIC_STEP ${run.id} ${next.id}]\nTraite uniquement cette étape de l’epic « ${epic.title} ».\n${epic.description}\n\n${next.text}\n\nIdentifiant : ${next.id}\nRéalise et vérifie cette tâche, puis exécute cerebro-backlog --done ${next.id} uniquement si elle est terminée. En cas d’échec utilise cerebro-backlog --fail <id> "raison" ; en cas de blocage utilise --block ; pour une validation nécessaire utilise --await-validation. Explique le résultat et termine ton tour. Le serveur pilote l’enchaînement : ne traite aucune autre tâche.\n\nInstructions supplémentaires : ${run.options.prompt}`;
       this.changeTask(next.id,{status:'started',sessionId:null});
       const session=await this.sessions.create(project,{...run.options,prompt},async()=>{
         if(this.closed||this.list().find(r=>r.id===run.id)?.status==='stopped')throw new Error('Epic arrêté avant le lancement du terminal.');
         const pending=this.db.listSessions().find(s=>s.prompt===prompt);
         if(pending){run.sessionId=pending.id;this.changeTask(next.id,{sessionId:pending.id});this.save(run);}
-      },run.contextRoot);
+      },run.contextRoot,title);
       run.sessionId=session.id;this.changeTask(next.id,{sessionId:session.id});
     }
     // A stop can arrive while the holder is starting. Preserve it and stop the new operation too.
