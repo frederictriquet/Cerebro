@@ -94,21 +94,8 @@ export function ProjectTabs({ route }: { route: Route }) {
             className={`project-tab${active ? ' active' : ''}${alerts.length > 0 ? ` alert ${alertTone}` : ''}${dragging === project.id ? ' dragging' : ''}${dropTarget?.id === project.id ? ` drop-${dropTarget.side}` : ''}`}
             href={href(`#/p/${project.id}`)}
             aria-current={active ? 'page' : undefined}
-            title={`${project.path}${alertLabel ? `\n${alertLabel}` : ''}\nGlisser pour réordonner`}
-            draggable={!saving}
-            onDragStart={(event) => {
-              if (saving) {
-                event.preventDefault();
-                return;
-              }
-              event.dataTransfer.effectAllowed = 'move';
-              event.dataTransfer.clearData();
-              event.dataTransfer.setData('application/x-cerebro-project', project.id);
-              draggedId.current = project.id;
-              setDragging(project.id);
-              setDropTarget(null);
-              setError(null);
-            }}
+            title={`${project.path}${alertLabel ? `\n${alertLabel}` : ''}`}
+            draggable={false}
             onDragOver={(event) => {
               if (draggedId.current === null || saving) return;
               event.preventDefault();
@@ -116,8 +103,43 @@ export function ProjectTabs({ route }: { route: Route }) {
               setDropTarget(draggedId.current === project.id ? null : { id: project.id, side: dropSide(event) });
             }}
             onDrop={(event) => void dropProject(event, project.id)}
-            onDragEnd={clearDrag}
           >
+            <span
+              className="project-tab-handle"
+              title="Glisser pour réordonner"
+              draggable={!saving}
+              onClick={(event) => event.preventDefault()}
+              onDragStart={(event) => {
+                if (saving) {
+                  event.preventDefault();
+                  return;
+                }
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.clearData();
+                event.dataTransfer.setData('application/x-cerebro-project', project.id);
+                const tab = event.currentTarget.parentElement;
+                if (tab) {
+                  const rect = tab.getBoundingClientRect();
+                  event.dataTransfer.setDragImage(tab, event.clientX - rect.left, event.clientY - rect.top);
+                }
+                draggedId.current = project.id;
+                setDragging(project.id);
+                setDropTarget(null);
+                setError(null);
+              }}
+              onDragEnd={clearDrag}
+            >
+              <svg viewBox="0 0 12 16" width="12" height="16" role="img" aria-label="Déplacer le projet">
+                <g fill="currentColor">
+                  <circle cx="4" cy="3" r="1.2" />
+                  <circle cx="8" cy="3" r="1.2" />
+                  <circle cx="4" cy="8" r="1.2" />
+                  <circle cx="8" cy="8" r="1.2" />
+                  <circle cx="4" cy="13" r="1.2" />
+                  <circle cx="8" cy="13" r="1.2" />
+                </g>
+              </svg>
+            </span>
             {alerts.length > 0 ? (
               <span
                 className={`project-tab-alert ${alertTone}${alertTone === 'waiting' ? ' ask-mark' : ''}`}

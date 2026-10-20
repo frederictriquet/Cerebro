@@ -168,7 +168,7 @@ export class EpicRunner {
         if(this.closed||this.list().find(r=>r.id===run.id)?.status==='stopped')throw new Error('Epic arrêté avant le lancement du terminal.');
         const pending=this.db.listSessions().find(s=>s.prompt===prompt);
         if(pending){run.sessionId=pending.id;this.changeTask(next.id,{sessionId:pending.id});this.save(run);}
-      },run.contextRoot,title);
+      },run.contextRoot,title,{rememberDefaults:false});
       run.sessionId=session.id;this.changeTask(next.id,{sessionId:session.id});
     }
     // A stop can arrive while the holder is starting. Preserve it and stop the new operation too.

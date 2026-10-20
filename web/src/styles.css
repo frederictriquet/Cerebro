@@ -1022,13 +1022,38 @@ textarea {
   text-decoration: none;
 }
 
-.project-tab[draggable='true'] {
-  cursor: grab;
+.project-tab-handle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  width: 20px;
+  margin: -4px 0 -4px -6px;
+  border-radius: 3px;
+  cursor: default;
   user-select: none;
+}
+
+.project-tab-handle[draggable='true'] {
+  cursor: grab;
+}
+
+.project-tab-handle[draggable='true']:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.project-tab-handle svg {
+  pointer-events: none;
 }
 
 .project-tab.dragging {
   opacity: 0.45;
+}
+
+.project-tab-handle[draggable='true']:active,
+.project-tab.dragging .project-tab-handle {
   cursor: grabbing;
 }
 

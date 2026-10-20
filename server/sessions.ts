@@ -238,10 +238,13 @@ export class SessionManager {
     for (const listener of this.eventListeners) listener(event);
   }
 
-  async create(project: Project, overrides: Partial<SessionDefaults> = {}, validate?: () => Promise<void>, contextPath?: string, title?: string): Promise<Session> {
+  async create(project: Project, overrides: Partial<SessionDefaults> = {}, validate?: () => Promise<void>, contextPath?: string, title?: string, options: { rememberDefaults?: boolean } = {}): Promise<Session> {
     const current = this.db.getProject(project.id);
     if (current === null) throw new Error('Projet introuvable');
-    const defaults = this.rememberDefaults(project.id, overrides);
+    // Automated launches must not replace the user's form settings with generated instructions.
+    const defaults = options.rememberDefaults === false
+      ? resolveSessionDefaults(current.sessionDefaults, overrides)
+      : this.rememberDefaults(project.id, overrides);
     const path=current.workspaceMode==='shared'?current.path:contextPath??current.path;
     assertWorktreeAvailable(path);
     // A context inside an existing copy (next epic step) reuses it instead of copying the copy.

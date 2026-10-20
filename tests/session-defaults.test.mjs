@@ -18,6 +18,8 @@ delete process.env.CEREBRO_SLACK_USER;
 
 const { CerebroDatabase, DEFAULT_SESSION_DEFAULTS } = await import('../server/db.ts');
 const { SessionManager } = await import('../server/sessions.ts');
+const { EpicRunner } = await import('../server/epic-runner.ts');
+const { CommandExecutor } = await import('../server/commands.ts');
 const { SlackNotifier } = await import('../server/slack.ts');
 const { buildAgentCommand } = await import('../server/agents.ts');
 const { catalogFor } = await import('../server/catalog.ts');
@@ -113,6 +115,56 @@ test('création avec champs omis, remplacement du prompt et remise au défaut ex
     await manager.resume(session.id);
     assert.deepEqual(db.getProject(project.id).sessionDefaults, beforeResume);
   } finally {
+    db.close();
+  }
+});
+
+test('les étapes automatiques d’une epic préservent le formulaire et transmettent leur prompt aux sessions', async () => {
+  const db = new CerebroDatabase(':memory:');
+  const manager = new SessionManager(db);
+  const commands = new CommandExecutor(db);
+  const runner = new EpicRunner(db, manager, commands, () => {});
+  const events = [];
+  manager.onEvent((event) => events.push(event));
+  try {
+    const project = db.createProject('Epic', root);
+    db.setSessionDefaults(project.id, { ...saved, prompt: '' });
+    const epic = db.createEpic(project.id, 'Correction', 'Contexte commun', null);
+    const first = db.createTask(project.id, 'Première tâche', null, epic.id);
+    const second = db.createTask(project.id, 'Deuxième tâche', null, epic.id);
+    db.setTaskDependencies(second.id, [first.id]);
+    const options = { ...saved, mode: 'plan', prompt: 'Instructions de l’epic' };
+    runner.start(epic.id, options);
+    const waitForStep = async (taskId) => {
+      for (let i = 0; i < 200; i++) {
+        runner.poke();
+        const run = runner.list(epic.id)[0];
+        if (run.status === 'waiting-validation' && run.currentTaskId === taskId) {
+          return db.getSession(run.sessionId);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      assert.fail('Étape non lancée');
+    };
+    const firstSession = await waitForStep(first.id);
+    assert.match(firstSession.prompt, /Première tâche/);
+    assert.ok(firstSession.prompt.includes(options.prompt));
+    assert.equal(firstSession.mode, 'plan');
+    assert.equal(launches.at(-1).prompt, firstSession.prompt);
+    assert.deepEqual(db.getProject(project.id).sessionDefaults, { ...saved, prompt: '' });
+
+    // Une saisie entre deux étapes doit aussi rester intacte.
+    db.setSessionDefaults(project.id, saved);
+    db.updateTask(first.id, { status: 'done' });
+    const secondSession = await waitForStep(second.id);
+    assert.match(secondSession.prompt, /Deuxième tâche/);
+    assert.ok(secondSession.prompt.includes(options.prompt));
+    assert.equal(launches.at(-1).prompt, secondSession.prompt);
+    assert.deepEqual(db.getProject(project.id).sessionDefaults, saved);
+    assert.equal(events.filter((event) => event.type === 'projects').length, 0);
+  } finally {
+    await runner.shutdown();
+    await commands.shutdown();
     db.close();
   }
 });
