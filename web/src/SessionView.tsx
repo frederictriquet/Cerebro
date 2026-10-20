@@ -18,11 +18,12 @@ import { displayStatus, MODE_LABEL, STATUS_LABEL, sessionTitle } from './format.
 import { SessionGitActions } from './GitActions.tsx';
 import { go, href, useNow } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
+import { SessionTasksPanel, useSessionTasks, sessionTasksState, TASK_STATE_LABELS } from './SessionTasks.tsx';
 import { useStore } from './store.tsx';
 import { Term, type TermApi } from './Term.tsx';
 import { RELEASE_HINT, WorktreeLabel, resumeBlockedReason } from './WorktreeLabel.tsx';
 
-type SessionDrawer = 'provenance' | 'findings' | null;
+type SessionDrawer = 'provenance' | 'findings' | 'tasks' | null;
 
 function useFindingsReports(sessionId:string) {
   const [reports,setReports]=useState<SavedReport[]>([]);
@@ -388,6 +389,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   };
   const provenance = useProvenance(sessionId);
   const findings = useFindingsReports(sessionId);
+  const sessionTasks = useSessionTasks(sessionId);
+  const taskState = sessionTasksState(sessionTasks.tasks);
   const [drawer, setDrawer] = useState<SessionDrawer>(null);
   const toggleDrawer = (next: Exclude<SessionDrawer, null>): void => setDrawer((current) => (current === next ? null : next));
 
@@ -458,6 +461,19 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               </button>
             ) : null}
             <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
+            <button
+              type="button"
+              className={`pill pill-toggle session-tasks-indicator${drawer === 'tasks' ? ' active' : ''}`}
+              data-state={sessionTasks.error ? 'empty' : taskState}
+              aria-expanded={drawer === 'tasks'}
+              title={`${sessionTasks.error ? 'Suivi indisponible' : TASK_STATE_LABELS[taskState]} · nombre terminé / total`}
+              aria-label={`Sous-tâches : ${sessionTasks.error ? 'suivi indisponible' : TASK_STATE_LABELS[taskState]}`}
+              onClick={() => toggleDrawer('tasks')}
+            >
+              Sous-tâches{sessionTasks.loaded ? ` · ${sessionTasks.tasks.filter(task => task.status === 'done').length}/${sessionTasks.tasks.length}` : ''}
+              {sessionTasks.tasks.some(task => task.status === 'blocked') ? ' · blocage' : ''}
+              {sessionTasks.error ? ' · indisponible' : ''}
+            </button>
             <WorktreeLabel worktree={session.worktree} />
             {project ? (
               <a className="project-crumb" href={href(`#/p/${project.id}`)}>
@@ -496,7 +512,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           <button type="button" className="btn session-drawer-close" aria-label="Fermer" onClick={() => setDrawer(null)}>
             ×
           </button>
-          {drawer === 'provenance' ? (
+          {drawer === 'tasks' ? (
+            <SessionTasksPanel key={session.id} sessionId={session.id} {...sessionTasks} />
+          ) : drawer === 'provenance' ? (
             <ProvenancePanel {...provenance} />
           ) : (
             <FindingsPanel key={session.id} sessionId={session.id} reports={findings.reports} refresh={findings.refresh} />

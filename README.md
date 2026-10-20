@@ -217,6 +217,61 @@ joignez-la avec le bouton image. Elle est enregistrée dans
 le prompt : Claude, Codex et Grok lisent l'image depuis ce chemin. Les images
 sont supprimées avec la session (PNG, JPEG, GIF, WebP, 20 Mo maximum).
 
+Lors de la création d’une tâche du backlog, Ctrl+V dans la description joint
+également une image, avec une miniature et un bouton de retrait. L’ajout attend
+la fin de l’envoi. Ces images sont conservées dans
+`$CEREBRO_DATA_DIR/attachments/project-<id>/` ; leur chemin est enregistré dans
+la tâche et transmis à l’agent lors de son traitement.
+
+## Sous-tâches d'une session
+
+Chaque conversation dispose d'un suivi persistant de ses sous-objectifs, accessible
+depuis la pastille **Sous-tâches** dans son en-tête. Le panneau affiche la liste
+complète, les statuts et les notes, et permet de créer, modifier ou supprimer un
+élément. Il se rafraîchit toutes les trois secondes. Ce suivi est indépendant du
+backlog du projet : il ne lance aucune session et ne clôture aucune tâche du backlog.
+
+Les agents reçoivent la consigne de l'alimenter pour les travaux comportant
+plusieurs étapes, de l'actualiser pendant le travail et de le relire après une
+reprise ou une compaction et avant leur bilan :
+
+```sh
+cerebro-tasks list
+cerebro-tasks add "Vérifier les cas limites" --note "Entrée vide et doublons"
+cerebro-tasks update <id> --status in_progress
+cerebro-tasks update <id> --status done --note "Tests des entrées vides et doublons passés"
+cerebro-tasks get <id>
+cerebro-tasks list --json
+cerebro-tasks delete <id>
+```
+
+Statuts : `todo`, `in_progress`, `blocked`, `done`, `cancelled`. Les éléments
+terminés restent visibles ; un objectif abandonné peut être marqué `cancelled`
+avec sa raison. La suppression sert notamment aux doublons ou erreurs de saisie.
+Les données survivent à l'arrêt, la reprise et au redémarrage du serveur, et sont
+supprimées avec la session. Aucune fin de tour ni sortie de processus ne change
+automatiquement leur statut. Le suivi reflète les mises à jour explicites de
+l'agent ou de l'utilisateur.
+
+API agent (en-tête `x-cerebro-token: $CEREBRO_TOKEN`) :
+`GET /api/session-tasks/:sessionId`, `POST` sur ce même chemin,
+`GET`, `PATCH` et `DELETE /api/session-tasks/:sessionId/:taskId`.
+Le jeton ne donne accès qu'au suivi de sa propre session. `POST` reçoit
+`{title, status?, note?}` ; `PATCH` reçoit les champs à modifier parmi `title`,
+`status`, `note`. Un titre contient 1 à 500 caractères et une note au plus
+10 000 caractères. Une note vide l'efface. Les réponses JSON incluent `id`,
+`sessionId`, `title`, `status`, `note`, `createdAt`, `updatedAt`.
+Les routes de l'interface `/api/sessions/:sessionId/tasks[/:taskId]` utilisent
+l'authentification habituelle de Cerebro.
+
+Une session déjà active ne reçoit pas les nouvelles instructions automatiquement.
+Après chargement de cette version du serveur, envoyez-lui par exemple :
+« Utilise désormais `cerebro-tasks` : lis son aide et la liste existante,
+reconstitue les sous-objectifs recensés dans notre échange avec leur statut réel,
+puis tiens ce suivi à jour. Conserve aussi les éléments terminés et explicite les
+incertitudes ou blocages. » Les variables d'environnement nécessaires sont déjà
+présentes dans les sessions Cerebro.
+
 ## Backlog
 
 Chaque projet a un backlog de tâches, affiché sur sa page, à confier une par une

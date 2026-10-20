@@ -1,6 +1,7 @@
 import type { EpicRun } from '../../server/epic-runner.ts';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { api } from './api.ts';
+import { api, clipboardImage, uploadProjectImage } from './api.ts';
+import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
 import type { CommandRun, ProjectCommand } from '../../server/commands.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { LaunchSessionDialog } from './Dialog.tsx';
@@ -97,6 +98,7 @@ export function Backlog({ projectId }: { projectId: string }) {
   const [launching, setLaunching] = useState<Set<string>>(() => new Set());
   const [creatingEpic, setCreatingEpic] = useState(false);
   const [busy, setBusy] = useState(false);
+  const images = useImageAttachments((image) => uploadProjectImage(projectId, image));
   const [composer, setComposer] = useState<'llm' | 'command'>('llm');
   const llmTab = useRef<HTMLButtonElement>(null);
   const commandTab = useRef<HTMLButtonElement>(null);
@@ -120,12 +122,13 @@ export function Backlog({ projectId }: { projectId: string }) {
   };
 
   const add = async (): Promise<void> => {
-    if (busy || draft.trim() === '') return;
+    if (busy || images.pending || draft.trim() === '') return;
     setBusy(true);
     setError(null);
     try {
-      await createTask(projectId, draft, undefined, epicIds.has(draftEpic) ? draftEpic : null);
+      await createTask(projectId, images.expand(draft), undefined, epicIds.has(draftEpic) ? draftEpic : null);
       setDraft('');
+      images.reset();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ajout impossible');
     } finally {
@@ -231,8 +234,24 @@ export function Backlog({ projectId }: { projectId: string }) {
             id={`task-draft-${projectId}`}
             rows={2}
             value={draft}
-            placeholder={`Nouvelle tâche (${SUBMIT_HINT} pour ajouter)`}
-            onChange={(e) => setDraft(e.target.value)}
+            disabled={busy}
+            placeholder={`Nouvelle tâche (${SUBMIT_HINT} pour ajouter) · Ctrl+V pour joindre une image`}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              images.prune(e.target.value);
+            }}
+            onPaste={(e) => {
+              const image = clipboardImage(e.clipboardData);
+              if (image === null) return;
+              e.preventDefault();
+              if (busy) return;
+              const { selectionStart, selectionEnd } = e.currentTarget;
+              const token = images.add(image, (failed, message) => {
+                setDraft((current) => removeToken(current, failed));
+                setError(`Image non envoyée : ${message}`);
+              });
+              setDraft((current) => insertToken(current, selectionStart, selectionEnd, token));
+            }}
             onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
               if (isSubmitShortcut(e)) {
                 e.preventDefault();
@@ -240,9 +259,17 @@ export function Backlog({ projectId }: { projectId: string }) {
               }
             }}
           />
+          <AttachmentStrip
+            items={images.items}
+            onRemove={(item) => {
+              if (busy) return;
+              images.remove(item.n);
+              setDraft((current) => removeToken(current, item.token));
+            }}
+          />
           <div className="task-add-actions">
             <EpicSelect epics={ownEpics} value={selectedEpic} onChange={setDraftEpic} />
-            <button type="submit" className="btn primary" disabled={busy || draft.trim() === ''}>
+            <button type="submit" className="btn primary" disabled={busy || images.pending || draft.trim() === ''}>
               Ajouter
             </button>
             <button type="button" className="btn" onClick={() => setCreatingEpic((v) => !v)} aria-expanded={creatingEpic}>
@@ -334,6 +361,7 @@ const RUN_STATUS_LABEL: Record<EpicRun['status'], string> = {
 const RUN_RESULT_LABEL: Record<string, string> = {
   'declared-done': 'déclarée terminée',
   validated: 'validée',
+  'auto-validated': 'validée automatiquement',
   'criterion-exit-zero': 'commande réussie',
   'execution-succeeded': 'exécution réussie',
   'waiting-validation': 'en attente de validation',
@@ -365,16 +393,33 @@ function runAction(run: EpicRun, name: 'stop' | 'resume'): Promise<unknown> {
 }
 
 function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (id: string) => string; onChanged: () => Promise<void> }) {
+  const { updateTask } = useStore();
   const [error, setError] = useState<string | null>(null);
-  const action = (name: 'stop' | 'resume'): void => {
-    void runAction(run, name)
+  const [pending, setPending] = useState(false);
+  const setAutoValidate = (enabled: boolean): void => {
+    if (pending) return;
+    setPending(true);
+    void api(`/api/epic-runs/${run.id}/auto-validation`, { method: 'PATCH', body: JSON.stringify({ enabled }) })
+      .then(() => { setError(null); return onChanged(); })
+      .catch((cause: unknown) => setError(String(cause)))
+      .finally(() => setPending(false));
+  };
+  const action = (name: 'stop' | 'resume' | 'validate'): void => {
+    if (pending || (name === 'validate' && !run.currentTaskId)) return;
+    setPending(true);
+    const operation = name === 'validate'
+      ? updateTask(run.currentTaskId!, { status: 'done' })
+      : runAction(run, name);
+    void operation
       .then(() => {
         setError(null);
         return onChanged();
       })
-      .catch((cause: unknown) => setError(String(cause)));
+      .catch((cause: unknown) => setError(String(cause)))
+      .finally(() => setPending(false));
   };
   const needsAction = RUN_NEEDS_ACTION.includes(run.status);
+  const awaitingValidation = run.status === 'waiting-validation' && run.currentTaskId !== null;
   const results = Object.entries(run.results);
   return (
     <div className="epic-run">
@@ -399,16 +444,38 @@ function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (
           </ul>
         ) : null}
       </details>
+      {RUN_ACTIVE.includes(run.status) ? (
+        <label className="epic-run-reason task-command-check">
+          <input type="checkbox" checked={run.autoValidate ?? false} disabled={pending}
+            onChange={(event) => setAutoValidate(event.target.checked)} />
+          <span>Valider automatiquement — clôt les étapes en attente de validation, y compris l’étape actuelle, et poursuit l’epic. Les échecs et les blocages restent à traiter.</span>
+        </label>
+      ) : null}
       {needsAction && run.error ? <p className="epic-run-reason">{run.error}</p> : null}
+      {awaitingValidation ? (
+        <p className="epic-run-reason">
+          Étape à valider : {taskLabel(run.currentTaskId!)}. Vérifiez le résultat et les critères de la tâche,
+          puis marquez cette étape terminée pour poursuivre l’epic.
+          Reprendre et recalculer actualise le plan, sans valider le travail.
+        </p>
+      ) : null}
       {RUN_ACTIVE.includes(run.status) || RUN_RESUMABLE.includes(run.status) ? (
         <div className="row-actions">
+          {needsAction && run.sessionId ? (
+            <a className="btn" href={href(`#/s/${run.sessionId}`)}>Ouvrir la session de l’étape</a>
+          ) : null}
+          {awaitingValidation ? (
+            <button type="button" className="btn primary" disabled={pending} onClick={() => action('validate')}>
+              Valider l’étape et poursuivre
+            </button>
+          ) : null}
           {RUN_RESUMABLE.includes(run.status) ? (
-            <button type="button" className={`btn ${needsAction ? 'primary' : ''}`} onClick={() => action('resume')}>
+            <button type="button" className={`btn ${needsAction && !awaitingValidation ? 'primary' : ''}`} disabled={pending} onClick={() => action('resume')}>
               Reprendre et recalculer
             </button>
           ) : null}
           {RUN_ACTIVE.includes(run.status) ? (
-            <button type="button" className="btn" onClick={() => action('stop')}>
+            <button type="button" className="btn" disabled={pending} onClick={() => action('stop')}>
               Arrêter l’epic
             </button>
           ) : null}
@@ -676,7 +743,24 @@ function EpicBlock({
   onError: (message: string) => void;
 }) {
   const { updateEpic, deleteEpic } = useStore();
-  const [collapsed, setCollapsed] = useState(false);
+  const collapsedKey = `cerebro.epicCollapsed.${epic.id}`;
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(collapsedKey) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleCollapsed = (): void => {
+    const next = !collapsed;
+    setCollapsed(next);
+    try {
+      if (next) localStorage.setItem(collapsedKey, '1');
+      else localStorage.removeItem(collapsedKey);
+    } catch {
+      /* quota / mode privé : le repli reste utilisable sans persistance */
+    }
+  };
   const [editing, setEditing] = useState(false);
   const { run, refresh: refreshRun } = useEpicRun(epic.id);
   const members = projectTasks.filter((t) => t.epicId === epic.id);
@@ -709,7 +793,7 @@ function EpicBlock({
   return (
     <div className="epic">
       <div className="epic-head">
-        <button type="button" className="epic-title" aria-expanded={!collapsed} onClick={() => setCollapsed((v) => !v)}>
+        <button type="button" className="epic-title" aria-expanded={!collapsed} onClick={toggleCollapsed}>
           <span className="task-caret">{collapsed ? '▸' : '▾'}</span>
           <span className="epic-badge">Epic</span>
           <span>{epic.title}</span>

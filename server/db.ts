@@ -271,6 +271,16 @@ export class CerebroDatabase {
       );
       CREATE INDEX IF NOT EXISTS sessions_project_id ON sessions(project_id);
       CREATE INDEX IF NOT EXISTS sessions_updated_at ON sessions(updated_at DESC);
+      CREATE TABLE IF NOT EXISTS session_tasks (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('todo', 'in_progress', 'blocked', 'done', 'cancelled')),
+        note TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS session_tasks_session_id ON session_tasks(session_id);
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

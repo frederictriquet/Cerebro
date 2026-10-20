@@ -39,6 +39,27 @@ test('external prerequisites and backlog mutations block explicitly; stop/resume
 test('server topological order detects cycles',()=>{
  const a={id:'a',dependsOn:['b'],status:'todo'},b={id:'b',dependsOn:['a'],status:'todo'};assert.throws(()=>taskOrder([a,b],[a,b]),/Cycle/);
 });
+test('replanning includes added tasks but preserves explicit validation requirements until the current task is done',async()=>fixture(async f=>{
+ const a=f.task('deploy and verify');const b=f.task('next');
+ f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.latest().status==='waiting-validation');
+ const first=f.launches[0];const reason='MR ready; merge, deploy and verify the scheduled export before closing.';
+ f.db.updateSession(first.id,{attentionReason:'Tour terminé'});
+ f.runner.report(first.id,a.id,'waiting-validation',reason);
+ // Repeated ticks and a restart must not erase the agent's criteria.
+ for(let i=0;i<3;i++){f.runner.poke();await new Promise(r=>setTimeout(r,5));assert.equal(f.latest().error,reason);}
+ await f.restart();f.runner.poke();await new Promise(r=>setTimeout(r,5));assert.equal(f.latest().error,reason);
+ const added=f.task('added while running');await f.until(()=>f.latest().status==='blocked');
+ await new Promise(r=>setTimeout(r,5));f.runner.resume(f.latest().id,true);
+ await f.until(()=>f.latest().status==='waiting-validation');
+ assert.equal(f.latest().error,reason);assert.ok(f.latest().order.includes(added.id));
+ assert.equal(f.latest().currentTaskId,a.id);assert.equal(f.db.getTask(a.id).status,'started');assert.equal(f.launches.length,1);
+ f.db.updateTask(a.id,{status:'done'});
+ await f.until(()=>f.latest().status==='waiting-validation'&&f.latest().currentTaskId===b.id);
+ assert.equal(f.db.getSession(first.id).status,'exited');assert.equal(f.latest().validationReason,null);
+ assert.notEqual(f.latest().error,reason);assert.equal(f.db.getTask(added.id).status,'todo');
+ f.db.updateTask(b.id,{status:'done'});await f.until(()=>f.latest().currentTaskId===added.id&&f.latest().status==='waiting-validation');
+ f.db.updateTask(added.id,{status:'done'});await f.until(()=>f.latest().status==='succeeded');
+}));
 test('LLM steps get a readable title and a declared-done step frees its terminal',async()=>fixture(async f=>{
  const a=f.task('first step\nmore details');const b=f.task('second step');f.db.setTaskDependencies(b.id,[a.id]);
  f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.latest().status==='waiting-validation');
@@ -83,4 +104,62 @@ test('a run blocked by its step session resumes when the session runs again',asy
  f.db.updateSession(id,{status:'waiting',attentionReason:'Confirmation requise'});await f.until(()=>f.latest().status==='blocked');
  f.db.updateSession(id,{status:'running',attentionReason:null});await f.until(()=>f.latest().status==='running');assert.equal(f.latest().error,null);assert.equal(f.latest().currentTaskId,a.id);
  f.db.updateSession(id,{status:'idle',attentionReason:null});await f.until(()=>f.latest().status==='waiting-validation');
+}));
+test('auto validation closes the waiting step and subsequent manual commands, and is recorded separately',async()=>fixture(async f=>{
+ const a=f.task('review');const b=f.task('manual command',f.command('process.exit(0)'));
+ f.db.setTaskDependencies(b.id,[a.id]);
+ f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.latest().status==='waiting-validation');
+ assert.equal(f.latest().autoValidate,false);assert.equal(f.db.getTask(a.id).status,'started');
+ f.runner.report(f.launches[0].id,a.id,'waiting-validation','Validation demandée');
+ f.runner.setAutoValidate(f.latest().id,true);
+ await f.until(()=>f.latest().status==='succeeded');
+ assert.equal(f.db.getTask(a.id).status,'done');assert.equal(f.db.getTask(b.id).status,'done');
+ assert.equal(f.latest().results[a.id],'auto-validated');assert.equal(f.latest().results[b.id],'auto-validated');
+ assert.throws(()=>f.runner.setAutoValidate(f.latest().id,false),/plus en cours/);
+}));
+test('auto validation persists through restart and can be disabled before the turn ends',async()=>fixture(async f=>{
+ const a=f.task('work');
+ f.sessions.create=async(p,options)=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title:'work',status:'running',agentSessionId:'fake'},'token');f.launches.push(s);return s;};
+ f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>!!f.latest().sessionId);
+ f.runner.setAutoValidate(f.latest().id,true);await f.restart();
+ assert.equal(f.latest().autoValidate,true);
+ f.runner.poke();await new Promise(r=>setTimeout(r,5));
+ assert.equal(f.db.getTask(a.id).status,'started');assert.equal(f.latest().status,'running');
+ f.runner.setAutoValidate(f.latest().id,false);
+ f.db.updateSession(f.launches[0].id,{status:'idle'});
+ await f.until(()=>f.latest().status==='waiting-validation');assert.equal(f.db.getTask(a.id).status,'started');
+}));
+test('auto validation leaves questions, explicit blocks, and failed sessions unresolved',async()=>fixture(async f=>{
+ const a=f.task('work');
+ f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.latest().status==='waiting-validation');
+ const sid=f.launches[0].id;
+ f.db.updateSession(sid,{status:'waiting',attentionReason:'Question : quel environnement ?'});
+ f.runner.setAutoValidate(f.latest().id,true);await f.until(()=>f.latest().status==='blocked');
+ assert.equal(f.db.getTask(a.id).status,'started');
+ f.runner.report(sid,a.id,'blocked','Service indisponible');
+ f.db.updateSession(sid,{status:'idle',attentionReason:null});
+ f.runner.poke();await new Promise(r=>setTimeout(r,5));
+ assert.equal(f.latest().status,'blocked');assert.equal(f.db.getTask(a.id).status,'started');
+ f.db.updateSession(sid,{status:'running'});f.runner.resume(f.latest().id);
+ f.db.updateSession(sid,{status:'exited',exitCode:1});
+ await f.until(()=>f.latest().status==='failed');assert.equal(f.db.getTask(a.id).status,'started');
+}));
+test('auto validation does not accept failed commands',async()=>fixture(async f=>{
+ const a=f.task('failed command',f.command('process.exit(4)'));
+ f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);f.runner.setAutoValidate(f.latest().id,true);
+ await f.until(()=>f.latest().status==='failed');assert.equal(f.db.getTask(a.id).status,'started');
+}));
+test('changing auto validation during asynchronous preparation survives launch completion',async()=>fixture(async f=>{
+ const a=f.task('slow');let release;const gate=new Promise(resolve=>{release=resolve;});
+ f.sessions.create=async(p,options,validate)=>{
+  const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title:'slow',status:'starting',agentSessionId:'fake'},'token');f.launches.push(s);
+  await gate;await validate();f.db.updateSession(s.id,{status:'idle'});return f.db.getSession(s.id);
+ };
+ f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);
+ try{
+  await f.until(()=>f.launches.length===1);
+  f.runner.setAutoValidate(f.latest().id,true);
+ }finally{release();}
+ await f.until(()=>f.latest().status==='succeeded');
+ assert.equal(f.latest().autoValidate,true);assert.equal(f.db.getTask(a.id).status,'done');
 }));

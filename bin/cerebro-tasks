@@ -1,0 +1,81 @@
+#!/usr/bin/env node
+
+const HELP = `Usage : cerebro-tasks <commande>
+
+Suivi persistant des sous-tâches de la session courante :
+  list [--json]                         liste exhaustive, terminées et annulées incluses
+  get <id>                              détail JSON d'une sous-tâche
+  add "Titre" [--note "Texte"]           crée une sous-tâche à faire
+  update <id> [--title "Titre"] [--status <statut>] [--note "Texte"]
+  delete <id>                           supprime une erreur ou un doublon
+  --help, -h                            cette aide
+
+Statuts : todo, in_progress, blocked, done, cancelled.
+Utilisez une note pour le résultat vérifié, le blocage ou la raison d'abandon.
+Une note vide (--note "") efface la note. Les modifications renvoient du JSON.
+Ce suivi est propre à la conversation et indépendant du backlog du projet.
+`;
+
+process.stdout.on('error', error => {
+  if (error.code === 'EPIPE') process.exit(0);
+  throw error;
+});
+
+async function main() {
+  const args = process.argv.slice(2);
+  const command = args.shift() ?? 'list';
+  if (command === '--help' || command === '-h') { process.stdout.write(HELP); return; }
+  const { CEREBRO_SESSION_ID: id, CEREBRO_TOKEN: token, CEREBRO_URL: base } = process.env;
+  if (!id || !token || !base) throw new Error('Commande à utiliser dans une session Cerebro.');
+  let method = 'GET', suffix = '', body;
+  let json = command !== 'list';
+  if (command === 'list') {
+    if (args[0] === '--json') { json = true; args.shift(); }
+  } else if (command === 'get' || command === 'delete' || command === 'update') {
+    const taskId = args.shift();
+    if (!taskId || taskId.startsWith('--')) throw new Error('Identifiant requis.');
+    suffix = `/${encodeURIComponent(taskId)}`;
+    method = command === 'delete' ? 'DELETE' : command === 'update' ? 'PATCH' : 'GET';
+    if (command === 'update') body = {};
+  } else if (command === 'add') {
+    const title = args.shift();
+    if (!title?.trim()) throw new Error('Titre requis.');
+    method = 'POST'; body = { title };
+  } else {
+    throw new Error(`Commande inconnue : ${command}. Consultez cerebro-tasks --help.`);
+  }
+  if (body) {
+    const allowed = command === 'add' ? ['--note'] : ['--title', '--status', '--note'];
+    const seen = new Set();
+    while (args.length) {
+      const flag = args.shift();
+      if (!allowed.includes(flag) || !args.length || seen.has(flag)) throw new Error(`Option invalide ou incomplète : ${flag}`);
+      seen.add(flag);
+      body[flag.slice(2)] = args.shift();
+    }
+    if (!Object.keys(body).length) throw new Error('Indiquez au moins un champ à modifier.');
+  }
+  if (args.length) throw new Error(`Arguments inattendus : ${args.join(' ')}`);
+  const response = await fetch(`${base.replace(/\/+$/, '')}/api/session-tasks/${encodeURIComponent(id)}${suffix}`, {
+    method,
+    headers: { 'x-cerebro-token': token, ...(body ? { 'content-type': 'application/json' } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (response.status === 204) { process.stdout.write('Sous-tâche supprimée.\n'); return; }
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error ?? `Erreur HTTP ${response.status}`);
+  if (json) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  else {
+    if (!result.length) { process.stdout.write('Aucune sous-tâche enregistrée.\n'); return; }
+    const counts = {};
+    for (const task of result) counts[task.status] = (counts[task.status] ?? 0) + 1;
+    process.stdout.write(`${result.length} sous-tâche(s) — ${Object.entries(counts).map(([status, count]) => `${count} ${status}`).join(', ')}\n`);
+    for (const task of result) {
+      process.stdout.write(`[${task.status}] ${task.id} — ${task.title}\n`);
+      if (task.note) process.stdout.write(`  ${task.note.replaceAll('\n', '\n  ')}\n`);
+    }
+  }
+}
+
+main().catch(cause => { process.stderr.write(`${cause.message}\n`); process.exitCode = 1; });

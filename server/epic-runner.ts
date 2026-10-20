@@ -10,6 +10,9 @@ export interface EpicRun {
   contextRoot:string;options:SessionDefaults;error:string|null;startedAt:number;updatedAt:number;
   // When the step's session was first seen waiting; null once it is no longer waiting.
   waitingSince?:number|null;
+  // Explicit criteria reported by the current step, retained through blocking and replanning.
+  validationReason?:string|null;
+  autoValidate?:boolean;
   // Why a blocked run is blocked: 'session-waiting' clears by itself once the step's session stops waiting or its task is done; any other block needs an explicit resume.
   blockReason?:'session-waiting'|null;
 }
@@ -33,7 +36,10 @@ export class EpicRunner {
   async shutdown():Promise<void>{this.close();await Promise.allSettled([...this.inFlight]);}
   list(epicId?:string):EpicRun[]{return (this.db.connection.prepare(epicId?'SELECT data FROM epic_runs WHERE epic_id=? ORDER BY rowid DESC':'SELECT data FROM epic_runs ORDER BY rowid DESC').all(...(epicId?[epicId]:[])) as {data:string}[]).map(row=>JSON.parse(row.data));}
   reserved(taskId:string):boolean{return this.list().some(r=>['running','waiting-validation','blocked'].includes(r.status)&&r.order.includes(taskId));}
-  private save(run:EpicRun):void{const previous=this.list(run.epicId).find(r=>r.id===run.id);run.updatedAt=Date.now();this.db.connection.prepare('INSERT INTO epic_runs VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(run.id,run.epicId,JSON.stringify(run));if(['failed','succeeded','blocked'].includes(run.status)&&(previous?.status!==run.status||previous?.error!==run.error))this.onResult(run);}
+  private save(run:EpicRun,updateSettings=false):void{const previous=this.list(run.epicId).find(r=>r.id===run.id);
+    // A setting can change while an asynchronous launch holds an older copy of the run.
+    if(!updateSettings)run.autoValidate=previous?.autoValidate??run.autoValidate??false;
+    run.updatedAt=Date.now();this.db.connection.prepare('INSERT INTO epic_runs VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(run.id,run.epicId,JSON.stringify(run));if(['failed','succeeded','blocked'].includes(run.status)&&(previous?.status!==run.status||previous?.error!==run.error))this.onResult(run);}
   private changeTask(id:string,patch:Parameters<CerebroDatabase['updateTask']>[1]):void{const task=this.db.updateTask(id,patch);if(task)this.broadcast({type:'task',task});}
   private plan(epicId:string){
     const epic=this.db.getEpic(epicId);if(!epic)throw new Error('Epic introuvable.');
@@ -50,7 +56,12 @@ export class EpicRunner {
   report(sessionId:string,taskId:string,status:'failed'|'blocked'|'waiting-validation',message:string):EpicRun{
     const run=this.list().find(r=>r.currentTaskId===taskId&&r.sessionId===sessionId&&['running','waiting-validation','blocked'].includes(r.status));
     if(!run||this.db.getTask(taskId)?.sessionId!==sessionId)throw new Error('Cette étape n’est pas confiée à cette session.');
-    run.results[taskId]=status;run.status=status;run.error=message;run.blockReason=null;this.save(run);return run;
+    run.results[taskId]=status;run.status=status;run.error=message;run.validationReason=status==='waiting-validation'?message:null;run.blockReason=null;this.save(run);return run;
+  }
+  setAutoValidate(id:string,enabled:boolean):EpicRun{
+    const run=this.list().find(r=>r.id===id);if(!run)throw new Error('Exécution introuvable.');
+    if(!['running','waiting-validation','blocked'].includes(run.status))throw new Error('Cette exécution n’est plus en cours.');
+    run.autoValidate=enabled;this.save(run,true);this.poke();return run;
   }
   async stop(id:string):Promise<EpicRun>{
     const run=this.list().find(r=>r.id===id);if(!run)throw new Error('Exécution introuvable.');
@@ -68,7 +79,7 @@ export class EpicRunner {
       if(task?.status!=='done'&&(!session||session.status==='exited')&&command?.status!=='running'&&command?.status!=='succeeded'){
         if(session)run.contextRoot=workspaceFor(this.db,session.id)?.path??run.contextRoot;
         if(task)this.changeTask(task.id,{status:'todo',sessionId:null});
-        run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;run.waitingSince=null;
+        run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;run.waitingSince=null;run.validationReason=null;
       }
     }
     if(replan){
@@ -107,9 +118,10 @@ export class EpicRunner {
         run.commandRunId=command.id;
         if(command.status==='running'){this.save(run);return;}
         if(command.status!=='succeeded'){run.results[task.id]=command.status;stop('failed',command.error??`Échec de commande : ${command.status}, code ${command.exitCode}`);return;}
-        if(task.status!=='done'&&task.execution.completion==='exit-zero')this.changeTask(task.id,{status:'done'});
+        const autoValidated=task.status!=='done'&&task.execution.completion!=='exit-zero'&&run.autoValidate;
+        if(task.status!=='done'&&(task.execution.completion==='exit-zero'||autoValidated))this.changeTask(task.id,{status:'done'});
         else if(task.status!=='done'){run.results[task.id]='execution-succeeded';stop('waiting-validation','Commande réussie ; validation explicite du travail attendue.');return;}
-        run.results[task.id]=task.execution.completion==='exit-zero'?'criterion-exit-zero':'validated';
+        run.results[task.id]=task.execution.completion==='exit-zero'?'criterion-exit-zero':autoValidated?'auto-validated':'validated';
       }else{
         const marker=`[CEREBRO_EPIC_STEP ${run.id} ${task.id}]`;
         const session=run.sessionId?this.db.getSession(run.sessionId):this.db.listSessions().find(s=>s.prompt.startsWith(marker));
@@ -122,17 +134,22 @@ export class EpicRunner {
           run.waitingSince??=session.updatedAt;
           if(Date.now()-run.waitingSince<this.waitingGraceMs){this.save(run);return;}
         }else run.waitingSince=null;
-        if(task.status!=='done'){
+        const autoValidated=task.status!=='done'&&run.autoValidate&&(session.status==='idle'||session.status==='exited'&&session.exitCode===0);
+        if(autoValidated)this.changeTask(task.id,{status:'done'});
+        if(task.status!=='done'&&!autoValidated){
           if(session.status==='exited'&&session.exitCode!==null&&session.exitCode!==0){run.results[task.id]='failed';stop('failed',`Session sortie avec code ${session.exitCode}.`);return;}
-          run.results[task.id]=session.status==='waiting'?'blocked':'waiting-validation';stop(session.status==='waiting'?'blocked':'waiting-validation',session.attentionReason??'Tour terminé sans clôture explicite de la tâche.',session.status==='waiting'?'session-waiting':null);return;
+          // Keep the agent's validation requirements instead of replacing them with the generic end-of-turn notice.
+          const reason=(session.status!=='waiting'?run.validationReason:null)
+            ??session.attentionReason??'Tour terminé sans clôture explicite de la tâche.';
+          run.results[task.id]=session.status==='waiting'?'blocked':'waiting-validation';stop(session.status==='waiting'?'blocked':'waiting-validation',reason,session.status==='waiting'?'session-waiting':null);return;
         }
         // Once the step is declared done, only an explicit question holds it: a lasting screen-detected wait no longer matters.
         if(askedQuestion(session)){stop('blocked','Une question de la session reste en attente.','session-waiting');return;}
-        run.contextRoot=workspaceFor(this.db,session.id)?.path??run.contextRoot;run.results[task.id]='declared-done';
+        run.contextRoot=workspaceFor(this.db,session.id)?.path??run.contextRoot;run.results[task.id]=autoValidated?'auto-validated':'declared-done';
         // The step is closed and its turn is over: free the terminal so finished steps do not pile up. The workspace stays for the next step.
         if(session.status!=='exited')this.sessions.kill(session.id);
       }
-      run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;run.waitingSince=null;run.status='running';run.error=null;this.save(run);
+      run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;run.waitingSince=null;run.validationReason=null;run.status='running';run.error=null;this.save(run);
     }
     const pending=run.order.map(id=>this.db.getTask(id)!).filter(t=>t.status!=='done');
     if(!pending.length){run.status='succeeded';run.error=null;this.save(run);return;}

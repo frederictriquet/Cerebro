@@ -3,6 +3,8 @@ import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
 import type { Agent, LaunchSpec } from './types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
+import { clipboardImage, uploadProjectImage } from './api.ts';
+import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
 
 // Modale native : Échap et un clic hors du contenu la ferment.
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
@@ -94,13 +96,14 @@ export function AddTaskDialog({
   const [targetId, setTargetId] = useState(projectId);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const images = useImageAttachments((image) => uploadProjectImage(targetId, image));
 
   const add = async (): Promise<void> => {
-    if (busy || text.trim() === '') return;
+    if (busy || images.pending || text.trim() === '') return;
     setBusy(true);
     setError(null);
     try {
-      await createTask(targetId, text, sourceSessionId);
+      await createTask(targetId, images.expand(text), sourceSessionId);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ajout impossible');
@@ -121,7 +124,24 @@ export function AddTaskDialog({
           autoFocus
           rows={10}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          disabled={busy}
+          placeholder="Description de la tâche · Ctrl+V pour joindre une image"
+          onChange={(e) => {
+            setText(e.target.value);
+            images.prune(e.target.value);
+          }}
+          onPaste={(e) => {
+            const image = clipboardImage(e.clipboardData);
+            if (image === null) return;
+            e.preventDefault();
+            if (busy) return;
+            const { selectionStart, selectionEnd } = e.currentTarget;
+            const token = images.add(image, (failed, message) => {
+              setText((current) => removeToken(current, failed));
+              setError(`Image non envoyée : ${message}`);
+            });
+            setText((current) => insertToken(current, selectionStart, selectionEnd, token));
+          }}
           onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
             if (isSubmitShortcut(e)) {
               e.preventDefault();
@@ -129,10 +149,18 @@ export function AddTaskDialog({
             }
           }}
         />
+        <AttachmentStrip
+          items={images.items}
+          onRemove={(item) => {
+            if (busy) return;
+            images.remove(item.n);
+            setText((current) => removeToken(current, item.token));
+          }}
+        />
         {projects.length > 1 ? (
           <label className="task-form-project">
             Backlog du projet
-            <select value={targetId} onChange={(e) => setTargetId(e.target.value)}>
+            <select value={targetId} disabled={busy || images.pending} onChange={(e) => setTargetId(e.target.value)}>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
@@ -143,7 +171,7 @@ export function AddTaskDialog({
         ) : null}
         {error ? <p className="form-error">{error}</p> : null}
         <div className="row-actions">
-          <button type="submit" className="btn primary" disabled={busy || text.trim() === ''}>
+          <button type="submit" className="btn primary" disabled={busy || images.pending || text.trim() === ''}>
             Ajouter
           </button>
           <button type="button" className="btn" onClick={onClose}>

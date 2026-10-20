@@ -32,6 +32,7 @@ import { assertLoopbackPortFree } from './ports.ts';
 import { registerRemoteGateway } from './remotes.ts';
 import { compatibility, VERSION_INFO } from './version.ts';
 import { SessionManager } from './sessions.ts';
+import { registerSessionTaskRoutes } from './session-tasks.ts';
 import { SlackNotifier } from './slack.ts';
 import { UpdateManager } from './updates.ts';
 import { UsageTracker } from './usage.ts';
@@ -232,6 +233,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       && path !== '/api/auth'
       && !path.startsWith('/api/hook/')
       && !path.startsWith('/api/notify/')
+      && !path.startsWith('/api/session-tasks/')
       && !path.startsWith('/api/backlog/')) || path.startsWith('/ws/') || path.startsWith('/m/')
       || path === '/vscode' || path.startsWith('/vscode/');
     if (BIND_TOKEN === undefined || !protectedRoute) return;
@@ -271,6 +273,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   };
 
   const worktrees=registerWorktreeRoutes(app,db);
+  registerSessionTaskRoutes(app, db, (id, token) => sessions.tokenMatches(id, token));
   const automaticCommits=registerAutomaticCommitRoutes(app,db,worktrees);
   automaticCommits.onComplete=operation=>{
     if(operation.projectId)notifier.operations.record({id:`auto-commit:${operation.id}`,projectId:operation.projectId,sessionId:operation.sessionId,kind:'commit',ok:operation.status==='succeeded',summary:[...operation.commits.map(commit=>`${commit.hash} ${commit.title}`),operation.error??'',operation.pushOperation?`Push : ${operation.pushOperation.status}`:''].filter(Boolean).join(' ; ')||'Aucun changement à commiter.',startedAt:operation.startedAt,finishedAt:operation.finishedAt??Date.now()});
@@ -821,6 +824,11 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
   app.post<{ Params: { id: string } }>('/api/epic-runs/:id/resume', async (request,reply)=>{
     try{return reply.send(epicRunner.resume(request.params.id,bodyRecord(request.body)?.replan===true));}catch(cause){return error(reply,409,String(cause));}
+  });
+  app.patch<{ Params: { id: string } }>('/api/epic-runs/:id/auto-validation', async (request,reply)=>{
+    const enabled=bodyRecord(request.body)?.enabled;
+    if(typeof enabled!=='boolean')return error(reply,400,'enabled doit être un booléen.');
+    try{return reply.send(epicRunner.setAutoValidate(request.params.id,enabled));}catch(cause){return error(reply,409,String(cause));}
   });
 
   app.post<{ Params: { id: string } }>('/api/sessions/:id/kill', async (request, reply) => {
