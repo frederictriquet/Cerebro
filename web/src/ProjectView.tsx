@@ -1,21 +1,17 @@
-import { AgentLabel } from './AgentLabel.tsx';
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 'react';
-import { acquireProjectSlack, api, getProjectSlack, type ProjectSlackStatus } from './api.ts';
+import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
+import { acquireProjectSlack, getProjectSlack, type ProjectSlackStatus } from './api.ts';
 import { Backlog } from './Backlog.tsx';
 import { CodeEditor } from './CodeEditor.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { Worktrees } from './Worktrees.tsx';
-import { RELEASE_HINT, WorktreeLabel, resumeBlockedReason } from './WorktreeLabel.tsx';
 import { GitStatus } from './GitStatus.tsx';
 import { CommitSettingsDialog } from './CommitSettingsDialog.tsx';
-import { displayStatus, isAwaiting, isDormant, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
+import { isDormant } from './format.ts';
+import { SessionRow } from './SessionRow.tsx';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
-import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
-import type { Session } from './types.ts';
-import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 
 const PROJECT_COLORS = ['#e5484d', '#f76b15', '#ffc53d', '#46a758', '#12a594', '#0090ff', '#6e56cf', '#d6409f'];
 
@@ -94,13 +90,9 @@ export function ProjectView({ projectId }: { projectId: string }) {
     projects,
     sessions,
     createSession,
-    killSession,
-    resumeSession,
-    deleteSession,
     purgeProjectSessions,
     deleteProject,
     updateProject,
-    sendSessionInput,
   } = useStore();
   const project = projects.find((p) => p.id === projectId);
   const kids = sessions.filter((s) => s.projectId === projectId);
@@ -299,31 +291,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
                   key={s.id}
                   session={s}
                   now={now}
-                  onKill={() => {
-                    void killSession(s.id).catch((err: unknown) => {
-                      setError(err instanceof Error ? err.message : 'Arrêt impossible');
-                    });
-                  }}
-                  onResume={() => {
-                    void (async () => {
-                      try {
-                        const live = await resumeSession(s.id);
-                        go(`#/s/${live.id}`);
-                      } catch (err) {
-                        setError(err instanceof Error ? err.message : 'Reprise impossible');
-                      }
-                    })();
-                  }}
-                  onDelete={() => {
-                    void deleteSession(s.id).catch((err: unknown) => {
-                      setError(err instanceof Error ? err.message : 'Suppression impossible');
-                    });
-                  }}
-                  onInput={(data) => {
-                    void sendSessionInput(s.id, data).catch((err: unknown) => {
-                      setError(err instanceof Error ? err.message : 'Envoi impossible');
-                    });
-                  }}
+                  onError={setError}
                 />
               ))}
             </ul>
@@ -333,82 +301,5 @@ export function ProjectView({ projectId }: { projectId: string }) {
         <Backlog projectId={project.id} />
       </div>
     </div>
-  );
-}
-
-function SessionRow({
-  session,
-  now,
-  onKill,
-  onResume,
-  onDelete,
-  onInput,
-}: {
-  session: Session;
-  now: number;
-  onKill: () => void;
-  onResume: () => void;
-  onDelete: () => void;
-  onInput: (data: string) => void;
-}) {
-  const awaiting = isAwaiting(session);
-  const preview = usePreviewController();
-  const anchorRef = useRef<HTMLSpanElement>(null);
-  const tone = session.status === 'waiting' ? 'waiting' : 'idle';
-  const shown = displayStatus(session, now);
-  const resumeBlocked = resumeBlockedReason(session.worktree);
-
-  return (
-    <li className="session-row">
-      <div className="session-row-main">
-        <a href={href(`#/s/${session.id}`)} className="session-main">
-          <span className="session-row-titleline">
-            <StatusDot status={shown} title={STATUS_LABEL[shown]} />
-            <span className="session-row-title">{sessionTitle(session.title)}</span>
-          </span>
-          <span className="session-row-meta">
-            <span className="pill"><AgentLabel agent={session.agent} /></span>
-            <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
-            <WorktreeLabel worktree={session.worktree} />
-            <span className="meta">{relativeTime(session.updatedAt, now)}</span>
-          </span>
-        </a>
-        {awaiting && session.attentionReason ? (
-          <p className={`reason-line ${tone}`}>{session.attentionReason}</p>
-        ) : null}
-      </div>
-      <div className="row-actions">
-        {awaiting ? (
-          <>
-            {session.status !== 'exited' ? (
-              <>
-                <button type="button" className="btn" onClick={() => onInput('\r')}>
-                  Entrée
-                </button>
-                <button type="button" className="btn" onClick={() => onInput('\x1b')}>
-                  Échap
-                </button>
-              </>
-            ) : null}
-            <a className="btn" href={href(`#/s/${session.id}`)}>
-              Ouvrir
-            </a>
-            <PreviewButton pressed={preview.open} onToggle={preview.toggle} anchorRef={anchorRef} />
-          </>
-        ) : null}
-        {session.status !== 'exited' ? (
-          <button type="button" className="btn" title={session.worktree !== null && !session.worktree.removed ? `Arrête la conversation. ${RELEASE_HINT}` : undefined} onClick={onKill}>
-            Arrêter
-          </button>
-        ) : null}
-        {session.status === 'exited' && session.agentSessionId ? (
-          <button type="button" className="btn" disabled={resumeBlocked !== null} title={resumeBlocked ?? undefined} onClick={onResume}>
-            Reprendre
-          </button>
-        ) : null}
-        <DelayedActionButton onAction={onDelete}>Supprimer</DelayedActionButton>
-      </div>
-      {awaiting && preview.open ? <ScreenPopover sessionId={session.id} anchorRef={anchorRef} /> : null}
-    </li>
   );
 }

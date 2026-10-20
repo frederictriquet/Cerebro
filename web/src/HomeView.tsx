@@ -1,12 +1,10 @@
 import { Worktrees } from './Worktrees.tsx';
-import { AgentLabel } from './AgentLabel.tsx';
 import { LlmUsageStats } from './LlmUsageStats.tsx';
 import { useState, type FormEvent } from 'react';
-import { displayStatus, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
-import { go, href, useNow } from './route.ts';
+import { go, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
-import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
+import { SessionRow } from './SessionRow.tsx';
 
 export function HomeView() {
   const { projects, sessions, createProject } = useStore();
@@ -39,21 +37,23 @@ export function HomeView() {
 
   return (
     <div className="pane padded home">
-      <h1>Cerebro</h1>
-      <div className="stats">
-        <div className="stat running">
-          <b>{running}</b>
-          <span>En cours</span>
+      <header className="home-head">
+        <h1>Cerebro</h1>
+        <div className="stats" aria-label="État des sessions">
+          <div className="stat running">
+            <b>{running}</b>
+            <span>En cours</span>
+          </div>
+          <div className="stat waiting">
+            <b>{waiting}</b>
+            <span>En attente</span>
+          </div>
+          <div className="stat idle">
+            <b>{idle}</b>
+            <span>Inactives</span>
+          </div>
         </div>
-        <div className="stat waiting">
-          <b>{waiting}</b>
-          <span>En attente</span>
-        </div>
-        <div className="stat idle">
-          <b>{idle}</b>
-          <span>Inactives</span>
-        </div>
-      </div>
+      </header>
 
       {projects.length === 0 ? (
         <form className="card home-create" onSubmit={(e) => void onCreate(e)}>
@@ -72,15 +72,18 @@ export function HomeView() {
             Chemin
             <PathInput required value={path} onChange={setPath} />
           </label>
-          {error ? <p className="form-error">{error}</p> : null}
           <button type="submit" className="btn primary" disabled={busy}>
             Créer un projet
           </button>
         </form>
       ) : null}
 
-      <Worktrees />
-      <LlmUsageStats sessions={sessions} now={now} />
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+
+      <div className="home-panels">
+        <Worktrees />
+        <LlmUsageStats sessions={sessions} now={now} />
+      </div>
 
       <section className="session-table-wrap">
         <h2>Sessions vivantes</h2>
@@ -88,34 +91,15 @@ export function HomeView() {
           <p className="empty-hint">Aucune session en cours.</p>
         ) : (
           <ul className="session-table">
-            {live.map((session) => {
-              const project = projects.find((p) => p.id === session.projectId);
-              const awaiting = isAwaiting(session);
-              const shown = displayStatus(session, now);
-              return (
-                <li key={session.id} className="session-row">
-                  <div className="session-row-main">
-                    <a href={href(`#/s/${session.id}`)} className="session-main">
-                      <StatusDot status={shown} title={STATUS_LABEL[shown]} />
-                      <span className="session-row-title">{sessionTitle(session.title)}</span>
-                      <span className="pill"><AgentLabel agent={session.agent} /></span>
-                      <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
-                      <span className="meta">{relativeTime(session.updatedAt, now)}</span>
-                    </a>
-                    {awaiting && session.attentionReason ? (
-                      <p className={`reason-line ${session.status === 'waiting' ? 'waiting' : 'idle'}`}>
-                        {session.attentionReason}
-                      </p>
-                    ) : null}
-                  </div>
-                  {project ? (
-                    <a className="meta project-jump" href={href(`#/p/${project.id}`)}>
-                      {project.name}
-                    </a>
-                  ) : null}
-                </li>
-              );
-            })}
+            {live.map((session) => (
+              <SessionRow
+                key={session.id}
+                session={session}
+                now={now}
+                project={projects.find((project) => project.id === session.projectId)}
+                onError={setError}
+              />
+            ))}
           </ul>
         )}
       </section>
