@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { AgentLabel } from './AgentLabel.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { useStore } from './store.tsx';
@@ -26,7 +26,7 @@ export function LlmSelector({ agents, value, defaults, onChange, disabled = fals
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const available = agents.filter(item => item.available);
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setRefreshing(true);
     setRefreshError(null);
     try {
@@ -36,7 +36,12 @@ export function LlmSelector({ agents, value, defaults, onChange, disabled = fals
     } finally {
       setRefreshing(false);
     }
-  };
+  }, [refreshAgents]);
+  useEffect(() => {
+    if (available.length > 0 || refreshing) return;
+    const timer = window.setTimeout(() => void refresh(), 5000);
+    return () => window.clearTimeout(timer);
+  }, [available.length, refreshing, refresh]);
   const { info, models, efforts } = llmChoices(agents, value);
   const missingModel = value.model !== null && !models.some(model => model.value === value.model);
   const missingEffort = value.effort !== null && !efforts.includes(value.effort);
