@@ -5,7 +5,9 @@ import type { GitSnapshot } from '../../server/git-plan.ts';
 import { api, apiBase } from './api.ts';
 import { Modal } from './Dialog.tsx';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
+import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { href } from './route.ts';
+import { sessionTitle } from './format.ts';
 import type { WorkspaceMode } from './types.ts';
 import './worktrees.css';
 
@@ -16,7 +18,7 @@ const inventoryCache = new Map<string, WorktreeInventory>();
 const cacheKey = (machineBase: string, path: string): string => `${machineBase}|${path}`;
 const createdLabel = (view: WorktreeView): string => dateLabel(view.createdAt);
 const dateLabel = (at: number): string => new Date(at).toLocaleString('fr-FR', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' });
-const copyTitle = (view: WorktreeView): string => view.session?.title ?? view.sessionTitle ?? `Conversation supprimée · ${createdLabel(view)}`;
+const copyTitle = (view: WorktreeView): string => sessionTitle(view.session?.title ?? view.sessionTitle ?? `Conversation supprimée · ${createdLabel(view)}`);
 function copyStatus(view: WorktreeView): string {
   if(view.error)return 'État indisponible';
   if(view.mergeInProgress)return 'Conflit à résoudre';
@@ -67,6 +69,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   const [loadError,setLoadError]=useState<string|null>(null);
   const [error,setError]=useState<string|null>(null);
   const [busy,setBusy]=useState<string|null>(null);
+  const [historyBusy,setHistoryBusy]=useState<Set<string>>(()=>new Set());
   const [confirmation,setConfirmation]=useState<Confirmation|null>(null);
   const [committing,setCommitting]=useState<WorktreeView|null>(null);
   const [reviewed,setReviewed]=useState<Reviewed|null>(null);
@@ -77,7 +80,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   },[path,machineBase]);
   useEffect(()=>{
     const cached=inventoryCache.get(cacheKey(machineBase,path))??null;
-    setInventory(cached);setLoadedBase(cached?machineBase:null);setConfirmation(null);setCommitting(null);setReviewed(null);setError(null);setLoadError(null);setBusy(null);setExpanded(new Set());
+    setInventory(cached);setLoadedBase(cached?machineBase:null);setConfirmation(null);setCommitting(null);setReviewed(null);setError(null);setLoadError(null);setBusy(null);setHistoryBusy(new Set());setExpanded(new Set());
     let disposed=false;let loading=false;let timer:number|undefined;
     const load=async():Promise<void>=>{
       if(disposed||loading)return;
@@ -115,21 +118,36 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
     finally{if(apiBase()===machineBase)setBusy(null);}
   };
   const toggle=(id:string):void=>setExpanded(current=>{const next=new Set(current);if(next.has(id))next.delete(id);else next.add(id);return next;});
+  const deleteHistory=async(ids:string[],actionKey:string):Promise<void>=>{
+    if(apiBase()!==machineBase)return;
+    // Only disable the action being executed: disabling another delayed button cancels its timer.
+    setHistoryBusy(current=>new Set(current).add(actionKey));setError(null);
+    try {
+      await api('/api/worktrees/history',{method:'DELETE',body:JSON.stringify({ids})});
+      if(apiBase()!==machineBase)return;
+      // Invalidate other scopes on this machine too, so remounting cannot restore deleted entries.
+      for(const [key,value] of inventoryCache)if(key.startsWith(`${machineBase}|`))inventoryCache.set(key,{...value,cleaned:value.cleaned?.filter(copy=>!ids.includes(copy.id))??[]});
+      setInventory(current=>current?{...current,cleaned:current.cleaned?.filter(copy=>!ids.includes(copy.id))??[]}:current);
+      await refresh();
+    } catch(cause) {if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
+    finally {if(apiBase()===machineBase)setHistoryBusy(current=>{const next=new Set(current);next.delete(actionKey);return next;});}
+  };
   const visibleInventory=loadedBase===machineBase?inventory:null;
   const copies=visibleInventory?.worktrees.filter(view=>view.managed&&!view.primary)??[];
   const other=visibleInventory?.worktrees.filter(view=>!view.managed||view.primary)??[];
   // Absent des serveurs antérieurs au nettoyage automatique.
   const cleaned=visibleInventory?.cleaned??[];
+  const historyOnly=!!projectId&&workspaceMode==='shared'&&!!visibleInventory&&copies.length===0&&other.every(view=>view.primary)&&!loadError&&!visibleInventory.errors.length;
   if(projectId&&workspaceMode==='shared'&&visibleInventory&&copies.length===0&&cleaned.length===0&&other.every(view=>view.primary)&&!loadError&&!error&&!visibleInventory.errors.length)return null;
   return <section className="card worktrees-panel" aria-label="Copies de travail des conversations">
-    <div className="worktrees-heading"><h2>Copies de travail <span className="pill">{visibleInventory?copies.length:'…'}</span></h2>
+    {!historyOnly?<><div className="worktrees-heading"><h2>Copies de travail <span className="pill">{visibleInventory?copies.length:'…'}</span></h2>
       <button type="button" className="btn" onClick={()=>void refresh()}>Actualiser</button>
     </div>
-    <p className="worktrees-explanation">{workspaceMode==='shared'?'Ce projet utilise directement son dossier. Ses anciennes copies isolées restent accessibles ici.':'Les copies isolent le travail des conversations. Pour récupérer leur travail : créer le commit, puis l’intégrer au projet. Quand une conversation est arrêtée ou supprimée, sa copie est nettoyée automatiquement si elle ne contient rien à conserver ; sinon elle reste ici.'}</p>
+    <p className="worktrees-explanation">{workspaceMode==='shared'?'Ce projet utilise directement son dossier. Ses anciennes copies isolées restent accessibles ici.':'Les copies isolent le travail des conversations. Pour récupérer leur travail : créer le commit, puis l’intégrer au projet. Quand une conversation est arrêtée ou supprimée, sa copie est nettoyée automatiquement si elle ne contient rien à conserver ; sinon elle reste ici.'}</p></>:null}
     {loadError?<p className="form-error" role="alert">{loadError}</p>:null}
     {error?<p className="form-error" role="alert">{error}</p>:null}
     {visibleInventory?.errors.map(message=><p className="form-error" key={message}>{message}</p>)}
-    {visibleInventory&&copies.length===0?<p className="empty-hint">Aucune copie de conversation à traiter.</p>:null}
+    {!historyOnly&&visibleInventory&&copies.length===0?<p className="empty-hint">Aucune copie de conversation à traiter.</p>:null}
     <ul className="worktree-list">
       {copies.map(view=>{
         const operationBusy=view.operation?.status==='running';const disabled=busy!==null||operationBusy;
@@ -200,16 +218,22 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
         </li>;
       })}
     </ul>
-    {cleaned.length?<details className="worktrees-other"><summary>Copies nettoyées automatiquement ({cleaned.length})</summary>
-      <p className="meta">Ces copies ne contenaient rien à conserver à la fin de leur conversation. Leur branche est conservée ; la conversation reste consultable mais ne peut plus être reprise.</p>
+    {cleaned.length?<details className={`worktrees-history${historyOnly?' worktrees-history-only':''}`}><summary>Historique des copies nettoyées ({cleaned.length}) · Aucune action requise</summary>
+      <p className="meta">Ces anciens dossiers de travail ont déjà été supprimés. Les branches Git et les conversations encore présentes sont conservées. Supprimer une entrée retire uniquement sa trace de cet historique.</p>
+      <DelayedActionButton disabled={historyBusy.has('all')} title="Retire uniquement les entrées affichées de l’historique ; branches et conversations conservées." onAction={()=>void deleteHistory(cleaned.map(copy=>copy.id),'all')}>Effacer {cleaned.length===1?'l’entrée affichée':`les ${cleaned.length} entrées affichées`}</DelayedActionButton>
       <ul className="worktree-list">{cleaned.map(copy=><li className="worktree-cleaned-row" key={copy.id}>
-        <strong>{copy.session?<a href={href(`#/s/${copy.session.id}`)}>{copy.session.title}</a>:copy.sessionTitle??'Conversation supprimée'}</strong>
+        <div className="worktree-history-heading"><strong>{copy.session?<a href={href(`#/s/${copy.session.id}`)}>{sessionTitle(copy.session.title)}</a>:sessionTitle(copy.sessionTitle??'Conversation supprimée')}</strong>
+          <DelayedActionButton disabled={historyBusy.has(copy.id)} title={`Supprimer de l’historique : ${sessionTitle(copy.session?.title??copy.sessionTitle??'Conversation supprimée')}. Branche et conversation conservées.`} onAction={()=>void deleteHistory([copy.id],copy.id)}>Supprimer</DelayedActionButton>
+        </div>
         {!projectId?<span className="meta"> · {copy.projectName}</span>:null}
-        <p className="meta">Nettoyée le {dateLabel(copy.removedAt)} · Branche conservée : {branchName(copy.branch)}</p>
-        <p className="path">{copy.path}</p>
+        <p className="meta">Nettoyée le {dateLabel(copy.removedAt)}</p>
+        <details className="worktree-history-details"><summary>Détails techniques</summary>
+          <p className="meta">Branche conservée : {branchName(copy.branch)}</p>
+          <p className="path">Ancien dossier supprimé : {copy.path}</p>
+        </details>
       </li>)}</ul>
     </details>:null}
-    {other.length?<details className="worktrees-other"><summary>Dossier principal et autres copies Git ({other.length})</summary>
+    {!historyOnly&&other.length?<details className="worktrees-other"><summary>Dossier principal et autres copies Git ({other.length})</summary>
       <p className="meta">Le dossier principal se traite avec « Commit / push du projet ». Les copies non associées restent visibles ici pour retrouver leur contenu.</p>
       {other.map(view=><details className="worktree-other" key={view.id}><summary>{view.primary?'Dossier principal du projet':'Copie sans conversation identifiée'}{!projectId?` · ${view.projectName}`:''} · {view.dirty??'?'} fichier(s) modifié(s)</summary>
         <p className="path">{view.path}</p><p className="meta">Branche : {branchName(view.branch??view.expectedBranch)}</p>

@@ -62,5 +62,9 @@ export function relativeTime(ts: number, now: number): string {
 
 export function sessionTitle(title: string): string {
   const t = title.trim();
+  if(/^\[CEREBRO_EPIC_STEP\b/.test(t)){
+    const epic=/de l[’']epic « ([^»]+) »/.exec(t)?.[1];
+    return epic?`Étape de l’epic « ${epic} »`:'Étape d’epic';
+  }
   return t.length > 0 ? t : 'Session';
 }
