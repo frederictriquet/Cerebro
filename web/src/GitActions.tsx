@@ -1,3 +1,4 @@
+import { ActivityStatus } from './ActivityStatus.tsx';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, apiBase } from './api.ts';
 import type { PreparedReview } from '../../server/review.ts';
@@ -88,12 +89,12 @@ function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => 
     }).catch(fail);
     return () => { disposed = true; window.clearTimeout(timer); };
   }, [projectId, machineBase]);
-  const running = operation ? operation.status === 'running' : !error;
+  const running = !error && (!operation || operation.status === 'running');
   return <Modal title="Push" onClose={onClose}>
     <div className="automatic-commit">
-      <p className="automatic-commit-status" role="status">
-        {operation?.status === 'succeeded' ? 'Push terminé.' : operation?.status === 'failed' ? 'Le push a échoué.' : error ? 'Le push n’a pas pu démarrer.' : 'Push vers les remotes…'}
-      </p>
+      <p className="automatic-commit-status"><ActivityStatus active={running}>
+        {operation?.status === 'succeeded' ? 'Push terminé.' : operation?.status === 'failed' ? 'Le push a échoué.' : error ? (operation ? 'Suivi du push interrompu.' : 'Le push n’a pas pu démarrer.') : 'Push vers les remotes…'}
+      </ActivityStatus></p>
       {operation?.branch ? <p className="meta">Branche {operation.branch}{operation.head ? ` · ${operation.head.slice(0, 8)}` : ''}</p> : null}
       {operation?.error ? <p className="form-error" role="alert">{operation.error}</p> : null}
       {error ? <p className="form-error" role="alert">{error}</p> : null}
@@ -113,6 +114,7 @@ function RepoReviewDialog({projectId,onClose}:{projectId:string;onClose:()=>void
   const [error,setError]=useState<string|null>(null);
   useEffect(()=>{void api<PreparedReview>(`/api/projects/${projectId}/git/prepare-review`,{method:'POST'}).then(setReview).catch(cause=>setError(String(cause)));},[projectId]);
   return <Modal title="Périmètre de code review" onClose={onClose}>
+    {!review&&!error?<p><ActivityStatus>Préparation du périmètre de review…</ActivityStatus></p>:null}
     {review?<>
       <p>{review.scope} — HEAD {review.head??'aucun commit'} — upstream {review.upstream??'aucun'}</p>
       <p>{review.files.join(', ')}</p><p>{review.commits.join(', ')}</p>
@@ -133,6 +135,7 @@ function SessionReviewDialog({sessionId,projectId,onClose}:{sessionId:string;pro
     setSnapshot(s);setSelection(JSON.stringify({snapshotId:s.id,selection:s.files.filter(f=>!f.warnings.length).map(f=>({path:f.path,all:true})),commits:s.provenance.commits.filter(c=>c.certainty==='workspace').map(c=>c.hash),acknowledged:[]},null,2));
   }).catch(cause=>setError(String(cause)));},[sessionId]);
   return <Modal title="Périmètre de review de la session" onClose={onClose}>
+    {!snapshot&&!error?<p><ActivityStatus>Préparation du périmètre de review…</ActivityStatus></p>:null}
     {snapshot ? <>
       <p>{snapshot.scopeNotice}</p>
       {snapshot.files.map(f=><details key={f.path}><summary>{f.path} — {f.warnings.join(' ; ')}</summary><pre>{f.diff}</pre>{f.hunks.map(h=><p key={h.id}>Hunk : {h.id}</p>)}</details>)}

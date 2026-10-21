@@ -1,3 +1,4 @@
+import { ActivityStatus } from './ActivityStatus.tsx';
 import { useEffect, useRef, useState } from 'react';
 import { api, apiBase } from './api.ts';
 import { Modal } from './Dialog.tsx';
@@ -65,10 +66,10 @@ function AutomaticCommitRun({projectId,endpoint,push=true,strategy,onClose,scope
   const steps=[['collecting','Vérifier les fichiers'],['drafting','Rédiger le message'],['committing','Créer le commit'],...(push?[['pushing','Envoyer les commits']]:[])];
   return <Modal title={push?'Commit et push automatiques':'Commit automatique'} onClose={onClose}>
     <div className="automatic-commit">
-      <p className="automatic-commit-status" role="status">
+      <p className="automatic-commit-status"><ActivityStatus active={active}>
         {operation?.status==='succeeded'?(operation.push?(operation.commits.length?'Commit et push terminés.':'Push terminé.'):operation.commits.length?'Commit créé.':'Aucun changement à commiter.')
-          :operation?.needsProjectScope?'Cette conversation utilise le dossier partagé du projet.':operation?.status==='cancelled'?'Opération annulée.':operation&&operation.status!=='running'?'L’opération s’est arrêtée.':PHASE_LABEL[operation?.phase??'collecting']}
-      </p>
+          :operation?.needsProjectScope?'Cette conversation utilise le dossier partagé du projet.':operation?.status==='cancelled'?'Opération annulée.':operation&&operation.status!=='running'?'L’opération s’est arrêtée.':!operation&&error?'L’opération n’a pas pu démarrer.':PHASE_LABEL[operation?.phase??'collecting']}
+      </ActivityStatus></p>
       {active?<div className="automatic-commit-progress">
         <ol aria-label="Étapes de l’opération">{steps.map(([key,label])=><li key={key} aria-current={phase===key?'step':undefined} className={phase===key?'current':undefined}>{label}</li>)}</ol>
         <p className="meta">{Math.max(0,Math.floor((now-(operation?.startedAt??openedAt))/1000))} s écoulées</p>
@@ -91,7 +92,7 @@ function AutomaticCommitRun({projectId,endpoint,push=true,strategy,onClose,scope
         {operation?.needsProjectScope&&projectId?<button type="button" className="btn primary" onClick={onUseProject}>{push?'Commiter et pousser tout le projet':'Commiter tout le projet'}</button>:null}
         <button type="button" className="btn" onClick={onClose}>{active?'Continuer en arrière-plan':'Fermer'}</button>
         {active&&!error?<span className="hint">Ce bouton masque la fenêtre sans arrêter l’opération.</span>:null}
-        {operation?.status==='running'&&['collecting','drafting'].includes(operation.phase)?<button type="button" className="btn automatic-commit-cancel" disabled={cancelling} onClick={()=>void cancel()}>{cancelling?'Annulation…':'Annuler l’opération'}</button>:null}
+        {operation?.status==='running'&&['collecting','drafting'].includes(operation.phase)?<button type="button" className="btn automatic-commit-cancel" disabled={cancelling} onClick={()=>void cancel()}><ActivityStatus active={cancelling}>{cancelling?'Annulation…':'Annuler l’opération'}</ActivityStatus></button>:null}
       </div>
     </div>
   </Modal>;

@@ -1,3 +1,4 @@
+import { ActivityStatus } from './ActivityStatus.tsx';
 import { useState } from 'react';
 import { Modal } from './Dialog.tsx';
 import { useStore } from './store.tsx';
@@ -34,7 +35,7 @@ export function CommitSettingsDialog({project,onClose}:{project:Project;onClose:
       <LlmSelector agents={agents} value={settings} defaults={project.commitSettings} disabled={busy} onChange={setSettings}/>
       <p className="hint">Ces réglages sont propres à ce projet et indépendants de ceux des sessions.</p>
       {error?<p className="form-error" role="alert">{error}</p>:null}
-      <div className="row-actions"><button type="submit" className="btn primary" disabled={busy}>{busy?'Enregistrement…':'Enregistrer'}</button><button type="button" className="btn" disabled={busy} onClick={onClose}>Annuler</button></div>
+      <div className="row-actions"><button type="submit" className="btn primary" disabled={busy}><ActivityStatus active={busy}>{busy?'Enregistrement…':'Enregistrer'}</ActivityStatus></button><button type="button" className="btn" disabled={busy} onClick={onClose}>Annuler</button></div>
     </form>
   </Modal>;
 }

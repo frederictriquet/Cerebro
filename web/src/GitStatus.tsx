@@ -1,3 +1,4 @@
+import { ActivityStatus } from './ActivityStatus.tsx';
 import { useEffect, useId, useState } from 'react';
 import { api } from './api.ts';
 import { GitActions } from './GitActions.tsx';
@@ -57,7 +58,7 @@ export function GitStatus({ projectId }: { projectId: string }) {
           </li>)}
         </ol>
         {preview.truncated ? <p className="meta">Les {preview.commits.length} commits les plus récents sont affichés sur {count}.</p> : null}
-      </> : <p className="meta" role="status">Chargement des commits…</p>}
+      </> : <p className="meta"><ActivityStatus>Chargement des commits…</ActivityStatus></p>}
     </section> : null}
   </>;
 }
