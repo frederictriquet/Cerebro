@@ -83,7 +83,7 @@ function taskPill(task: Task, session: Session | undefined, blocked: boolean): {
 }
 
 export function Backlog({ projectId }: { projectId: string }) {
-  const { tasks, epics, sessions, createTask, createEpic, startTask, startEpic, deleteTask } = useStore();
+  const { tasks, epics, sessions, createTask, createEpic, startTask, startEpic, deleteCompletedBacklog } = useStore();
   const own = tasks.filter((t) => t.projectId === projectId);
   const ownEpics = epics.filter((e) => e.projectId === projectId);
   const epicIds = new Set(ownEpics.map((e) => e.id));
@@ -138,7 +138,7 @@ export function Backlog({ projectId }: { projectId: string }) {
 
   const deleteDone = (): void => {
     setError(null);
-    void Promise.all(done.map((t) => deleteTask(t.id))).catch((err: unknown) =>
+    void deleteCompletedBacklog(projectId).catch((err: unknown) =>
       setError(err instanceof Error ? err.message : 'Suppression impossible'),
     );
   };

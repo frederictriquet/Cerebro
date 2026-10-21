@@ -622,6 +622,28 @@ export class CerebroDatabase {
     return Number(this.connection.prepare('DELETE FROM tasks WHERE id = ?').run(id).changes) > 0;
   }
 
+  deleteCompletedBacklog(projectId: string): { taskIds: string[]; epicIds: string[]; dependentIds: string[] } {
+    this.connection.exec('BEGIN IMMEDIATE');
+    try {
+      const tasks = this.listTasks().filter((task) => task.projectId === projectId);
+      const taskIds = tasks.filter((task) => task.status === 'done').map((task) => task.id);
+      // Identifier les epics terminés avant de retirer leurs tâches. Un epic vide reste à faire.
+      const epicIds = this.listEpics().filter((epic) => {
+        if (epic.projectId !== projectId) return false;
+        const members = tasks.filter((task) => task.epicId === epic.id);
+        return members.length > 0 && members.every((task) => task.status === 'done');
+      }).map((epic) => epic.id);
+      const dependentIds = [...new Set(taskIds.flatMap((id) => this.listDependents(id)))];
+      for (const id of taskIds) this.deleteTask(id);
+      for (const id of epicIds) this.deleteEpic(id);
+      this.connection.exec('COMMIT');
+      return { taskIds, epicIds, dependentIds };
+    } catch (cause) {
+      this.connection.exec('ROLLBACK');
+      throw cause;
+    }
+  }
+
   listEpics(): Epic[] {
     return (this.connection.prepare('SELECT * FROM epics ORDER BY created_at ASC, rowid ASC').all() as unknown as EpicRow[])
       .map(epicFromRow);

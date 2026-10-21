@@ -706,6 +706,19 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.get('/api/tasks', async () => db.listTasks());
 
+  app.delete<{ Params: { id: string } }>('/api/projects/:id/backlog/completed', async (request, reply) => {
+    const projectId = request.params.id;
+    if (db.getProject(projectId) === null) return error(reply, 404, 'Projet introuvable');
+    if (db.listTasks().some((task) => task.projectId === projectId && task.status === 'done' && commands.active(task.id))) {
+      return error(reply, 409, 'Arrêtez les commandes avant de supprimer leurs tâches.');
+    }
+    const { taskIds, epicIds, dependentIds } = db.deleteCompletedBacklog(projectId);
+    for (const id of taskIds) broadcast({ type: 'task-deleted', id });
+    for (const id of epicIds) broadcast({ type: 'epic-deleted', id });
+    broadcastTasks(dependentIds);
+    return { taskIds, epicIds };
+  });
+
   app.post<{ Params: { id: string } }>('/api/projects/:id/tasks', async (request, reply) => {
     if (db.getProject(request.params.id) === null) return error(reply, 404, 'Projet introuvable');
     const body = bodyRecord(request.body);

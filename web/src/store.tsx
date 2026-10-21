@@ -70,6 +70,7 @@ export interface Store {
   createTask: (projectId: string, text: string, sourceSessionId?: string, epicId?: string | null) => Promise<Task>;
   updateTask: (id: string, patch: TaskPatch) => Promise<Task>;
   deleteTask: (id: string) => Promise<void>;
+  deleteCompletedBacklog: (projectId: string) => Promise<void>;
   startTask: (id: string, spec: LaunchSpec) => Promise<Session>;
   createEpic: (projectId: string, title: string, description?: string) => Promise<Epic>;
   updateEpic: (id: string, patch: { title?: string; description?: string }) => Promise<Epic>;
@@ -410,6 +411,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setTasks((list) => list.filter((t) => t.id !== id).map((t) => (t.dependsOn.includes(id) ? { ...t, dependsOn: t.dependsOn.filter((d) => d !== id) } : t)));
   }, []);
 
+  const deleteCompletedBacklog = useCallback(async (projectId: string): Promise<void> => {
+    const { taskIds, epicIds } = await api<{ taskIds: string[]; epicIds: string[] }>(
+      `/api/projects/${projectId}/backlog/completed`, { method: 'DELETE' },
+    );
+    const deletedTasks = new Set(taskIds);
+    const deletedEpics = new Set(epicIds);
+    setTasks((list) => list.filter((task) => !deletedTasks.has(task.id)).map((task) => ({
+      ...task, dependsOn: task.dependsOn.filter((id) => !deletedTasks.has(id)),
+    })));
+    setEpics((list) => list.filter((epic) => !deletedEpics.has(epic.id)));
+  }, []);
+
   const startTask = useCallback(
     async (id: string, spec: LaunchSpec): Promise<Session> => {
       const raw = await api<{ task: unknown; session: unknown }>(`/api/tasks/${id}/start`, {
@@ -496,6 +509,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       createTask,
       updateTask,
       deleteTask,
+      deleteCompletedBacklog,
       startTask,
       createEpic,
       updateEpic,
@@ -531,6 +545,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       createTask,
       updateTask,
       deleteTask,
+      deleteCompletedBacklog,
       startTask,
       createEpic,
       updateEpic,
