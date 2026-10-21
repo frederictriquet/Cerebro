@@ -1,3 +1,4 @@
+import { ActivityStatus } from './ActivityStatus.tsx';
 import { useCallback, useEffect, useState } from 'react';
 import type { WorktreeInventory, WorktreeView } from '../../server/worktrees.ts';
 import type { GitSnapshot } from '../../server/git-plan.ts';
@@ -43,7 +44,7 @@ function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReview
   };
   const files=snapshot?.files.filter(file=>!view.changesSinceCreation||view.changesSinceCreation.files.includes(file.path));
   return <div className="worktree-diffs">
-    <button type="button" className="btn" disabled={busy} onClick={()=>void load()}>{busy?'Lecture des changements…':snapshot?'Actualiser les diffs':'Voir les diffs'}</button>
+    <button type="button" className="btn" disabled={busy} onClick={()=>void load()}><ActivityStatus active={busy}>{busy?'Lecture des changements…':snapshot?'Actualiser les diffs':'Voir les diffs'}</ActivityStatus></button>
     {error?<p className="form-error">{error}</p>:null}
     {snapshot?<p className="meta">Diffs par rapport au dernier commit : ils peuvent aussi contenir des changements présents avant la création de la copie.</p>:null}
     {snapshot&&onCommitReviewed?<p className="meta">Cochez les fichiers dont vous avez lu le diff : le commit les inclura tant que leur contenu reste celui affiché.</p>:null}
@@ -223,7 +224,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
       {confirmation.kind==='discard'?<p>{confirmation.view.changesSinceCreation?.inheritedCount} fichier(s) ont encore exactement le contenu copié du projet à la création de la copie. Ils seront remis à l’état du dernier commit de la copie, et les nouveaux fichiers de ce type seront supprimés de la copie. Le dossier du projet n’est pas modifié. Un fichier modifié depuis la création de la copie est toujours conservé.</p>
       :confirmation.kind==='merge'?<><p>Les commits de cette copie seront intégrés au projet. Les contrôles Git habituels s’appliquent. En cas de conflit, les fichiers resteront à résoudre dans le dossier cible.</p><p>La conversation peut continuer dans sa copie. Ses nouveaux changements pourront être intégrés ensuite.</p></>:<p>La copie propre et intégrée sera retirée. Sa branche, ses commits et la conversation seront conservés. Cette conversation ne pourra plus reprendre dans la copie supprimée.</p>}
       {error?<p className="form-error" role="alert">{error}</p>:null}
-      <div className="row-actions"><button type="button" className={`btn ${confirmation.kind==='merge'?'primary':'danger-ghost'}`} disabled={busy!==null} onClick={()=>void run()}>{confirmation.kind==='merge'?'Intégrer au projet':confirmation.kind==='discard'?'Abandonner le contenu de départ':'Retirer la copie'}</button><button type="button" className="btn" disabled={busy!==null} onClick={()=>setConfirmation(null)}>Annuler</button></div>
+      <div className="row-actions"><button type="button" className={`btn ${confirmation.kind==='merge'?'primary':'danger-ghost'}`} disabled={busy!==null} onClick={()=>void run()}><ActivityStatus active={busy!==null}>{busy!==null?(confirmation.kind==='merge'?'Intégration…':confirmation.kind==='discard'?'Abandon du contenu de départ…':'Retrait de la copie…'):(confirmation.kind==='merge'?'Intégrer au projet':confirmation.kind==='discard'?'Abandonner le contenu de départ':'Retirer la copie')}</ActivityStatus></button><button type="button" className="btn" disabled={busy!==null} onClick={()=>setConfirmation(null)}>Annuler</button></div>
     </Modal>:null}
     {committing&&loadedBase===machineBase?<AutomaticCommitDialog projectId={committing.projectId??''} reviewed={reviewed??undefined} endpoint={committing.primary?undefined:`/api/worktrees/${committing.id}/git`} push={committing.primary} scopeLabel={committing.primary?'Tous les changements du dossier partagé du projet':`Fichiers vérifiables de la copie · ${copyTitle(committing)}`} onClose={()=>{setCommitting(null);setReviewed(null);void refresh();}}/>:null}
   </section>;
