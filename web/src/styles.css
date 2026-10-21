@@ -1637,8 +1637,15 @@ label.block {
 
 .git-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   margin-left: 4px;
+}
+
+.git-actions-publish {
+  border-left: 1px solid var(--line);
+  padding-left: 12px;
 }
 
 .git-ahead-toggle {

@@ -41,13 +41,10 @@ export function GitStatus({ projectId }: { projectId: string }) {
   return <>
     <div className="git-line">
       <span className="pill">{git.branch}</span>
-      <span className={git.dirty > 0 ? 'git-dirty' : 'meta'}>{git.dirty} fichier{git.dirty === 1 ? '' : 's'} modifié{git.dirty === 1 ? '' : 's'}</span>
-      {count > 0 ? <button type="button" className="git-ahead-toggle" aria-expanded={expanded} aria-controls={previewId}
+      <GitActions projectId={projectId} git={git} pendingCommits={count > 0 ? <button type="button" className="git-ahead-toggle" aria-expanded={expanded} aria-controls={previewId}
         onClick={() => { setExpanded(value => !value); setPreviewError(null); }}>
         <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {count} commit{count === 1 ? '' : 's'} à pousser
-      </button> : null}
-      {!git.hasUpstream ? <span className="meta">pas d’upstream</span> : null}
-      <GitActions projectId={projectId} git={git} />
+      </button> : null} />
     </div>
     {expanded && count > 0 ? <section id={previewId} className="git-pending-preview" aria-label="Commits à pousser">
       {error ? <p className="form-error" role="alert">{error}</p> : preview ? <>

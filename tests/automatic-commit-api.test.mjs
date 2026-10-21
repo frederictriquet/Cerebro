@@ -14,7 +14,7 @@ const {UpdateManager}=await import('../server/updates.ts');const {PeerSync}=awai
 const {buildServer}=await import('../server/index.ts');const {parseProject}=await import('../web/src/types.ts');
 mock.method(UpdateManager.prototype,'start',()=>{});mock.method(PeerSync.prototype,'sync',async function(){this.markReady();this.markSynced();});
 let sessions=0;mock.method(SessionManager.prototype,'launch',async()=>{sessions++;throw new Error('No interactive session expected');});
-const inputs=[];mock.method(AutomaticCommits.prototype,'propose',async context=>{inputs.push(context);return {commits:[{message:'feat: requested behavior',paths:context.files.map(file=>file.path)}]};});
+const inputs=[];mock.method(AutomaticCommits.prototype,'propose',async context=>{inputs.push(context);return {commits:context.settings.strategy==='atomic'?context.files.map(file=>({message:`feat: update ${file.path}`,paths:[file.path]})):[{message:'feat: requested behavior',paths:context.files.map(file=>file.path)}]};});
 const git=(path,...args)=>execFileSync('git',['-C',path,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 after(()=>{mock.restoreAll();rmSync(root,{recursive:true,force:true});});
 test('project API stores independent commit settings and one-click execution uses exactly those settings',async()=>{
@@ -39,5 +39,31 @@ test('project API stores independent commit settings and one-click execution use
   await app.close();app=await buildServer();const projects=(await send('GET','/api/projects')).json();assert.deepEqual(projects.find(item=>item.id===project.id).commitSettings,settings);assert.equal(parseProject(projects.find(item=>item.id===project.id)).workspaceMode,'shared');
   assert.equal((await send('GET',`/api/git/auto-commits/${operationId}`)).json().status,'succeeded');
   response=await send('PATCH',url,{commitSettings:{agent:'grok'}});assert.equal(response.statusCode,200);assert.deepEqual(response.json().commitSettings,{agent:'grok',model:null,effort:null,strategy:'single'});
+ }finally{await app.close();}
+});
+
+test('each commit action overrides the project strategy for that operation only',async()=>{
+ const repo=join(root,'strategies');mkdirSync(repo);git(repo,'init','-b','main');git(repo,'config','user.email','test@example.com');git(repo,'config','user.name','Test');
+ writeFileSync(join(repo,'first'),'base\n');writeFileSync(join(repo,'second'),'base\n');git(repo,'add','.');git(repo,'commit','-m','base');
+ const app=await buildServer();const send=(method,url,payload)=>app.inject({method,url,...(payload===undefined?{}:{payload})});
+ try{
+  const project=(await send('POST','/api/projects',{name:'Strategies',path:repo})).json();const url=`/api/projects/${project.id}`;
+  for(const strategy of ['atomic','single']){
+   const defaults={...project.commitSettings,strategy:strategy==='single'?'atomic':'single'};
+   assert.equal((await send('PATCH',url,{commitSettings:defaults})).statusCode,200);
+   writeFileSync(join(repo,'first'),`${strategy}\n`);writeFileSync(join(repo,'second'),`${strategy}\n`);
+   const requestId=randomUUID();const response=await send('POST',`${url}/git/auto-commit`,{requestId,push:false,strategy});
+   assert.equal(response.statusCode,202);const id=response.json().id;
+   let result;for(let i=0;i<300;i++){result=(await send('GET',`/api/git/auto-commits/${id}`)).json();if(result.status!=='running')break;await new Promise(resolve=>setTimeout(resolve,10));}
+   assert.equal(result.status,'succeeded',result.error);assert.equal(result.commits.length,strategy==='single'?1:2);assert.equal(result.pushOperation,null);
+   assert.deepEqual(inputs.at(-1).settings,{...defaults,strategy});
+   const projects=(await send('GET','/api/projects')).json();assert.deepEqual(projects.find(item=>item.id===project.id).commitSettings,defaults);
+   assert.equal((await send('POST',`${url}/git/auto-commit`,{requestId,push:false,strategy})).json().id,id);
+   assert.equal((await send('POST',`${url}/git/auto-commit`,{requestId,push:false,strategy:defaults.strategy})).statusCode,409);
+  }
+  for(const strategy of ['invalid',null,true]){
+   const response=await send('POST',`${url}/git/auto-commit`,{requestId:randomUUID(),push:false,strategy});
+   assert.equal(response.statusCode,409);assert.match(response.json().error,/Stratégie de commit invalide/);
+  }
  }finally{await app.close();}
 });

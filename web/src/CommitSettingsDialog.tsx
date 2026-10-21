@@ -2,13 +2,16 @@ import { useState } from 'react';
 import { Modal } from './Dialog.tsx';
 import { useStore } from './store.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
-import { LlmSelector } from './LlmSelector.tsx';
-import type { CommitSettings, Project, WorkspaceMode } from './types.ts';
+import { LlmSelector, type LlmSelection } from './LlmSelector.tsx';
+import type { Project, WorkspaceMode } from './types.ts';
 import './automatic-commits.css';
 
 export function CommitSettingsDialog({project,onClose}:{project:Project;onClose:()=>void}) {
   const {agents,updateProject}=useStore();
-  const [settings,setSettings]=useState<CommitSettings>(project.commitSettings);
+  const [settings,setSettings]=useState<LlmSelection>(()=>{
+    const {agent,model,effort}=project.commitSettings;
+    return {agent,model,effort};
+  });
   const [workspaceMode,setWorkspaceMode]=useState<WorkspaceMode>(project.workspaceMode);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState<string|null>(null);
@@ -28,14 +31,7 @@ export function CommitSettingsDialog({project,onClose}:{project:Project;onClose:
       </div></div>
       <p className="hint">{workspaceMode==='shared'?`Les nouvelles conversations utilisent directement ${project.path}, sur sa branche courante. Cerebro ne crée ni ne supprime de branche pour ces conversations.`:'Chaque nouvelle conversation utilise un worktree Git : un dossier de travail isolé avec sa propre branche. Son travail peut ensuite être intégré au projet.'} Les conversations existantes conservent leur dossier.</p>
       <p>« Commit / push » utilise ces réglages pour préparer les messages, puis crée et pousse les commits automatiquement.</p>
-      <LlmSelector agents={agents} value={settings} defaults={project.commitSettings} disabled={busy} onChange={selection=>setSettings(current=>({...current,...selection}))}>
-        <div className="tuning">
-          <span className="field-label">Découpage</span>
-          <ChoiceGroup<CommitSettings['strategy']> compact label="Découpage" value={settings.strategy} disabled={busy}
-            options={[{value:'single',label:'Un seul commit'},{value:'atomic',label:'Un commit par intention'}]}
-            onChange={strategy=>setSettings(current=>({...current,strategy}))}/>
-        </div>
-      </LlmSelector>
+      <LlmSelector agents={agents} value={settings} defaults={project.commitSettings} disabled={busy} onChange={setSettings}/>
       <p className="hint">Ces réglages sont propres à ce projet et indépendants de ceux des sessions.</p>
       {error?<p className="form-error" role="alert">{error}</p>:null}
       <div className="row-actions"><button type="submit" className="btn primary" disabled={busy}>{busy?'Enregistrement…':'Enregistrer'}</button><button type="button" className="btn" disabled={busy} onClick={onClose}>Annuler</button></div>

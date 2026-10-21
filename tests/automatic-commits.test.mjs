@@ -58,6 +58,41 @@ test('concurrent edits after inference invalidate the snapshot without creating 
  f.manager.propose=async()=>{writeFileSync(join(f.repo,'file'),'human changed it\n');return {commits:[{message:'change',paths:['file']}]};};
  const result=await f.finish(await f.manager.start(f.context,randomUUID(),false));assert.equal(result.status,'failed');assert.match(result.error,/obsolète/);assert.equal(git(f.repo,'rev-parse','HEAD'),before);assert.equal(readFileSync(join(f.repo,'file'),'utf8'),'human changed it\n');
 }));
+test('an active commit can only be reused by an action requesting the same strategy',async()=>fixture(async f=>{
+ writeFileSync(join(f.repo,'file'),'work\n');
+ let unblock;const waiting=new Promise(resolve=>{unblock=resolve;});
+ f.manager.propose=async input=>{await waiting;return {commits:[{message:'change',paths:input.files.map(file=>file.path)}]};};
+ const id=randomUUID();const first=await f.manager.start(f.context,id,false,undefined,'atomic');
+ try{
+  const same=await f.manager.start(f.context,randomUUID(),false,undefined,'atomic');assert.equal(same.id,first.id);
+  await assert.rejects(f.manager.start(f.context,randomUUID(),false,undefined,'single'),/déjà en préparation/);
+  await assert.rejects(f.manager.start(f.context,id,false,undefined,'single'),/autre action/);
+ }finally{unblock();}
+ assert.equal((await f.finish(first)).status,'succeeded');
+}));
+test('new requests use the effective strategy while recorded requests remain idempotent',async()=>fixture(async f=>{
+ writeFileSync(join(f.repo,'file'),'work\n');writeFileSync(join(f.repo,'second'),'work\n');
+ let unblock;const waiting=new Promise(resolve=>{unblock=resolve;});
+ f.manager.propose=async input=>{await waiting;return {commits:input.files.map(file=>({message:`change ${file.path}`,paths:[file.path]}))};};
+ const id=randomUUID();const otherId=randomUUID();
+ const first=await f.manager.start(f.context,id,false,undefined,'atomic');
+ try{
+  assert.equal(f.context.settings.strategy,'single');
+  await assert.rejects(f.manager.start(f.context,otherId,false),/déjà en préparation/);
+  assert.equal(f.db.connection.prepare('SELECT operation_id FROM automatic_commit_requests WHERE id=?').get(otherId),undefined);
+  assert.equal((await f.manager.start(f.context,id,false)).id,first.id);
+  const matching={...f.context,settings:{...f.context.settings,strategy:'atomic'}};
+  assert.equal((await f.manager.start(matching,otherId,false)).id,first.id);
+  assert.equal((await f.manager.start(f.context,otherId,false)).id,first.id);
+ }finally{unblock();}
+ const result=await f.finish(first);assert.equal(result.status,'succeeded',result.error);assert.equal(result.commits.length,2);
+ await f.restart();
+ for(const requestId of [id,otherId]){
+  const replay=await f.manager.start(f.context,requestId,false);
+  assert.equal(replay.id,first.id);assert.equal(replay.status,'succeeded');assert.equal(replay.settings.strategy,'atomic');
+ }
+ assert.equal(git(f.repo,'rev-list','--count','HEAD'),'3');
+}));
 test('scanners exclude suspicious files and the model only sees eligible diffs',async()=>fixture(async f=>{
  writeFileSync(join(f.repo,'file'),'safe\n');writeFileSync(join(f.repo,'.env'),'TOKEN=do-not-send\n');
  f.manager.propose=async input=>{assert.deepEqual(input.files.map(file=>file.path),['file']);assert.ok(!JSON.stringify(input).includes('do-not-send'));return {commits:[{message:'safe change',paths:['file']}]};};

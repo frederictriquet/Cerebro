@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, apiBase } from './api.ts';
 import type { PreparedReview } from '../../server/review.ts';
 import { Modal } from './Dialog.tsx';
@@ -12,27 +12,33 @@ import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
 
 const canPush = (git: GitInfo): boolean => (git.ahead ?? 0) > 0 || (git.hasCommits && !git.hasUpstream);
 
-export function GitActions({ projectId, git }: { projectId: string; git: GitInfo }) {
-  const [open, setOpen] = useState<'review' | 'commit' | 'push' | null>(null);
+export function GitActions({ projectId, git, pendingCommits }: { projectId: string; git: GitInfo; pendingCommits: ReactNode }) {
+  const [open, setOpen] = useState<'review' | 'single' | 'atomic' | 'push' | null>(null);
   const close = (): void => setOpen(null);
   const hasChanges = git.dirty > 0;
   const pushable = canPush(git);
 
   return (
     <>
-      <span className="git-actions">
+      <span className="git-actions" role="group" aria-label="Changements à commiter">
+        <span className={hasChanges ? 'git-dirty' : 'meta'}>{git.dirty} fichier{git.dirty === 1 ? '' : 's'} modifié{git.dirty === 1 ? '' : 's'}</span>
         <button type="button" className="btn" onClick={() => setOpen('review')} title="Lancer une session de code review">
           Code review
         </button>
-        <button
+        {(['single', 'atomic'] as const).map(strategy => <button
+          key={strategy}
           type="button"
           className="btn"
-          onClick={() => setOpen('commit')}
+          onClick={() => setOpen(strategy)}
           disabled={!hasChanges}
-          title={hasChanges ? 'Préparer automatiquement les messages et commiter, sans pousser' : 'Rien à commiter'}
+          title={hasChanges ? `${strategy === 'single' ? 'Créer un seul commit' : 'Créer un commit par intention'}, sans pousser` : 'Rien à commiter'}
         >
-          Commit
-        </button>
+          {strategy === 'single' ? 'Un seul commit' : 'Un commit par intention'}
+        </button>)}
+      </span>
+      <span className="git-actions git-actions-publish" role="group" aria-label="Publication des commits">
+        {pendingCommits}
+        {!git.hasUpstream ? <span className="meta">pas d’upstream</span> : null}
         <button
           type="button"
           className="btn"
@@ -44,7 +50,7 @@ export function GitActions({ projectId, git }: { projectId: string; git: GitInfo
         </button>
       </span>
       {open === 'review' ? <RepoReviewDialog projectId={projectId} onClose={close} /> : null}
-      {open === 'commit' ? <AutomaticCommitDialog projectId={projectId} push={false} onClose={close} /> : null}
+      {open === 'single' || open === 'atomic' ? <AutomaticCommitDialog projectId={projectId} push={false} strategy={open} onClose={close} /> : null}
       {open === 'push' ? <PushDialog projectId={projectId} onClose={close} /> : null}
     </>
   );

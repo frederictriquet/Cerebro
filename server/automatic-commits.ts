@@ -54,9 +54,10 @@ export class AutomaticCommits {
       const run=JSON.parse(row.data);if(run.status==='running'&&inside(path,run.cwd))throw new CommitBlocked('Une commande utilise encore ce dépôt. Attendez sa fin avant de commiter.');
     }
   }
-  async start(context:AutomaticCommitContext,id:unknown,push:unknown,reviewed?:unknown):Promise<AutomaticCommit> {
+  async start(context:AutomaticCommitContext,id:unknown,push:unknown,reviewed?:unknown,strategy?:unknown):Promise<AutomaticCommit> {
     if(this.closed)throw new Error('Serveur en cours d’arrêt.');
     if(typeof id!=='string'||!/^[\da-f-]{36}$/i.test(id)||typeof push!=='boolean')throw new Error('Identifiant de lancement ou option push invalide.');
+    if(strategy!==undefined&&strategy!=='single'&&strategy!=='atomic')throw new Error('Stratégie de commit invalide.');
     const review=reviewed as AutomaticCommit['reviewed']|undefined;
     if(review!==undefined&&(typeof review?.snapshotId!=='string'||!Array.isArray(review.paths)||!review.paths.every(path=>typeof path==='string')))throw new Error('Sélection des fichiers examinés invalide.');
     const path=canonicalWorktreePath((await exec('git',['-C',context.path,'rev-parse','--show-toplevel'])).stdout.trim());
@@ -64,12 +65,13 @@ export class AutomaticCommits {
     const request=this.db.connection.prepare('SELECT operation_id,scope,push FROM automatic_commit_requests WHERE id=?').get(id) as {operation_id:string;scope:string;push:number}|undefined;
     if(request&&(request.scope!==context.scope||Boolean(request.push)!==push))throw new Error('Ce lancement correspond à une autre action.');
     const previous=this.get(request?.operation_id??id);
-    if(previous){if(previous.scope!==context.scope||previous.push!==push)throw new Error('Ce lancement correspond à une autre action.');return previous;}
+    if(previous){if(previous.scope!==context.scope||previous.push!==push||(strategy!==undefined&&previous.settings.strategy!==strategy))throw new Error('Ce lancement correspond à une autre action.');return previous;}
     if(request)throw new Error('Le résultat de ce lancement n’est plus disponible. Vérifiez Git avant de relancer.');
+    const effectiveStrategy=strategy??context.settings.strategy;
     const remember=(operationId:string):void=>{this.db.connection.prepare('INSERT INTO automatic_commit_requests VALUES (?,?,?,?)').run(id,operationId,context.scope,push?1:0);};
     const active=this.active.get(path);
-    if(active){if(active.operation.scope!==context.scope||active.operation.push!==push)throw new Error('Un commit est déjà en préparation dans ce dépôt.');remember(active.operation.id);return active.operation;}
-    const operation:AutomaticCommit={id,scope:context.scope,path,projectId:context.projectId,sessionId:context.sessionId,settings:{...context.settings},push,status:'running',phase:'collecting',files:[],exclusions:[],commits:[],pushOperation:null,error:null,startedAt:Date.now(),finishedAt:null,needsProjectScope:false,...(review?{reviewed:{snapshotId:review.snapshotId,paths:[...new Set(review.paths)]}}:{})};
+    if(active){if(active.operation.scope!==context.scope||active.operation.push!==push||active.operation.settings.strategy!==effectiveStrategy)throw new Error('Un commit est déjà en préparation dans ce dépôt.');remember(active.operation.id);return active.operation;}
+    const operation:AutomaticCommit={id,scope:context.scope,path,projectId:context.projectId,sessionId:context.sessionId,settings:{...context.settings,strategy:effectiveStrategy},push,status:'running',phase:'collecting',files:[],exclusions:[],commits:[],pushOperation:null,error:null,startedAt:Date.now(),finishedAt:null,needsProjectScope:false,...(review?{reviewed:{snapshotId:review.snapshotId,paths:[...new Set(review.paths)]}}:{})};
     this.db.connection.exec('BEGIN IMMEDIATE');
     try{this.save(operation);remember(operation.id);this.db.connection.exec('COMMIT');}
     catch(cause){this.db.connection.exec('ROLLBACK');throw cause;}
@@ -100,7 +102,7 @@ export class AutomaticCommits {
         const mode=(snapshot as GitSnapshot&{provenance?:{workspace:{mode:string}}}).provenance?.workspace.mode;
         operation.needsProjectScope=mode==='unknown'||mode==='shared';
         throw new CommitBlocked(operation.needsProjectScope
-          ? 'Cette ancienne conversation ne permet pas d’attribuer les changements. Pour traiter le dépôt entier, utilisez « Commit » dans l’en-tête du projet.'
+          ? 'Cette ancienne conversation ne permet pas d’attribuer les changements. Pour traiter le dépôt entier, utilisez les boutons de commit dans l’en-tête du projet.'
           : snapshot.files.every(file=>file.warnings.includes(INHERITED_WARNING))
             ? 'Rien de nouveau à commiter : ces fichiers ont encore le contenu copié du projet à la création de la copie. Ils ne sont pas le travail de cette conversation.'
             : 'Tous les fichiers demandent une vérification : aucun commit automatique ne peut être créé.');
