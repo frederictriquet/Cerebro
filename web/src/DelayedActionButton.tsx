@@ -6,7 +6,8 @@ const UNDO_WINDOW_MS = 5000;
 /**
  * Bouton à action différée pour les actions destructrices (remplace window.confirm).
  * Le clic programme l'action et ouvre un délai de rétractation de 5 s : un second
- * clic (ou Échap) l'annule et rend au bouton son état initial ; sinon l'action
+ * clic l'annule ; Échap annule tous les délais actifs, quel que soit le focus.
+ * Le bouton retrouve alors son état initial ; sinon l'action
  * s'exécute à l'expiration du délai. Si le bouton disparaît entre-temps (navigation),
  * l'action part quand même à l'échéance : elle a été demandée et n'a pas été annulée.
  */
@@ -28,6 +29,12 @@ export function DelayedActionButton({
   const [remaining, setRemaining] = useState<number | null>(null);
   const fire = useRef<number | undefined>(undefined);
   const tick = useRef<number | undefined>(undefined);
+  const escapeListener = useRef<((event: KeyboardEvent) => void) | null>(null);
+
+  const stopListening = (): void => {
+    if (escapeListener.current) window.removeEventListener('keydown', escapeListener.current, true);
+    escapeListener.current = null;
+  };
 
   const stopTick = (): void => {
     window.clearInterval(tick.current);
@@ -38,10 +45,11 @@ export function DelayedActionButton({
     window.clearTimeout(fire.current);
     fire.current = undefined;
     stopTick();
+    stopListening();
     setRemaining(null);
   };
 
-  // Au démontage, seul le compte à rebours s'arrête : l'action programmée reste due.
+  // Au démontage, le délai reste dû et annulable par Échap jusqu'à son échéance.
   useEffect(() => stopTick, []);
   useEffect(() => {
     if (disabled) cancel();
@@ -55,6 +63,11 @@ export function DelayedActionButton({
       return;
     }
     const deadline = performance.now() + UNDO_WINDOW_MS;
+    // Capture reaches every pending action, even from an input or a modal that stops propagation.
+    escapeListener.current = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') cancel();
+    };
+    window.addEventListener('keydown', escapeListener.current, true);
     setRemaining(Math.ceil(UNDO_WINDOW_MS / 1000));
     tick.current = window.setInterval(() => {
       setRemaining(Math.max(1, Math.ceil((deadline - performance.now()) / 1000)));
@@ -62,6 +75,7 @@ export function DelayedActionButton({
     fire.current = window.setTimeout(() => {
       fire.current = undefined;
       stopTick();
+      stopListening();
       setRemaining(null);
       onAction();
     }, UNDO_WINDOW_MS);
@@ -74,9 +88,6 @@ export function DelayedActionButton({
       disabled={disabled}
       title={title}
       onClick={onClick}
-      onKeyDown={(e) => {
-        if (pending && e.key === 'Escape') cancel();
-      }}
       style={{ ['--undo-window' as string]: `${UNDO_WINDOW_MS}ms` }}
     >
       {/* Les deux libellés occupent la même cellule : la largeur ne bouge pas. */}
