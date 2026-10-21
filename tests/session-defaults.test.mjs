@@ -169,7 +169,7 @@ test('les étapes automatiques d’une epic préservent le formulaire et transme
   }
 });
 
-test('Slack hérite des réglages, garde son instruction et mémorise un changement explicite d’agent', async () => {
+test('Slack hérite des réglages, préserve le prompt du formulaire et mémorise un changement explicite d’agent', async () => {
   const db = new CerebroDatabase(':memory:');
   const manager = new SessionManager(db);
   const peers = {
@@ -177,22 +177,35 @@ test('Slack hérite des réglages, garde son instruction et mémorise un changem
     conflictMachines: () => [], owns: () => true,
   };
   const notifier = new SlackNotifier(manager, db, peers);
+  const events = [];
+  manager.onEvent((event) => events.push(event));
   mock.method(notifier, 'slackApi', async () => ({ ok: true, ts: '123.456' }));
   try {
     const project = db.createProject('Demo', root);
+    db.setSessionDefaults(project.id, { ...saved, prompt: '' });
+    await notifier.handleDmMessage('test', { ts: '0.0', text: 'Demo: Première demande Slack' });
+    assert.equal(launches.at(-1).prompt, 'Première demande Slack');
+    assert.deepEqual(db.getProject(project.id).sessionDefaults, { ...saved, prompt: '' });
+
     db.setSessionDefaults(project.id, saved);
     await notifier.handleDmMessage('test', { ts: '1.0', text: 'Demo+: Demande Slack' });
-    assert.deepEqual(db.getProject(project.id).sessionDefaults, { ...saved, prompt: 'Demande Slack' });
+    assert.deepEqual(db.getProject(project.id).sessionDefaults, saved);
+    assert.equal(events.filter((event) => event.type === 'projects').length, 0);
+    assert.equal(launches.at(-1).prompt, 'Demande Slack');
     assert.equal(launches.at(-1).agent, 'codex');
     assert.equal(launches.at(-1).model, saved.model);
     assert.equal(launches.at(-1).effort, saved.effort);
 
     await notifier.handleDmMessage('test', { ts: '2.0', text: 'Demo/claude+: Changer d’agent' });
     assert.deepEqual(db.getProject(project.id).sessionDefaults, {
-      agent: 'claude', mode: saved.mode, model: null, effort: null, prompt: 'Changer d’agent',
+      agent: 'claude', mode: saved.mode, model: null, effort: null, prompt: saved.prompt,
     });
+    assert.equal(launches.at(-1).prompt, 'Changer d’agent');
+    assert.equal(events.at(-1).projects[0].sessionDefaults.prompt, saved.prompt);
     await notifier.handleDmMessage('test', { ts: '3.0', text: 'Demo+: Demande suivante' });
     assert.equal(launches.at(-1).agent, 'claude');
+    assert.equal(launches.at(-1).prompt, 'Demande suivante');
+    assert.equal(db.getProject(project.id).sessionDefaults.prompt, saved.prompt);
 
     const active = await manager.create(project, saved);
     db.updateSession(active.id, { status: 'idle' });
@@ -202,6 +215,7 @@ test('Slack hérite des réglages, garde son instruction et mémorise un changem
     await notifier.handleDmMessage('test', { ts: '4.0', text: 'Demo/codex: Continuer' });
     assert.equal(launches.length, count);
     assert.equal(db.getProject(project.id).sessionDefaults.agent, 'codex');
+    assert.equal(db.getProject(project.id).sessionDefaults.prompt, saved.prompt);
   } finally {
     notifier.stop();
     db.close();

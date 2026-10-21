@@ -17,7 +17,7 @@ import { registerAutomaticCommitRoutes } from './automatic-commit-routes.ts';
 import { AGENTS, getAgentAvailability } from './agents.ts';
 import { getCatalog, parseTuning, refreshCatalog, startCatalogRefresh } from './catalog.ts';
 import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
-import { CerebroDatabase, resolveSessionDefaults } from './db.ts';
+import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError } from './db.ts';
 import type { Agent, CommitSettings, Epic, Mode, Project, Session, SessionDefaults, Task, TaskExecution, TaskStatus } from './db.ts';
 import { prepareCommit, executeCommitPlan } from './git-plan.ts';
 import { currentPush, startPush, onPushComplete } from './git-push.ts';
@@ -63,7 +63,7 @@ async function orError<T>(reply: FastifyReply, run: () => Promise<T>): Promise<{
   try {
     return { ok: true, value: await run() };
   } catch (cause) {
-    return { ok: false, reply: error(reply, 500, cause instanceof Error ? cause.message : String(cause)) };
+    return { ok: false, reply: error(reply, cause instanceof SessionProtectionError ? 409 : 500, cause instanceof Error ? cause.message : String(cause)) };
   }
 }
 
@@ -594,6 +594,15 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   app.get('/api/sessions', async () => db.listSessions());
+
+  app.patch<{ Params: { id: string } }>('/api/sessions/:id/protection', async (request, reply) => {
+    const body = bodyRecord(request.body);
+    if (body === null || typeof body.protected !== 'boolean') return error(reply, 400, 'Le champ protected doit être un booléen');
+    const value = body.protected;
+    const result = await orError(reply, async () => sessions.setProtected(request.params.id, value));
+    if (!result.ok) return result.reply;
+    return result.value === null ? error(reply, 404, 'Session introuvable') : reply.send(result.value);
+  });
 
   app.patch<{ Params: { id: string } }>('/api/sessions/:id', async (request, reply) => {
     if (db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');

@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import { AgentLabel } from './AgentLabel.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
+import { SessionProtection, SESSION_PROTECTED_HINT } from './SessionProtection.tsx';
 import { displayStatus, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { go, href } from './route.ts';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
@@ -62,6 +63,7 @@ export function SessionRow({
           <p className={`reason-line ${tone}`}>{session.attentionReason}</p>
         ) : null}
       </div>
+      <SessionProtection session={session} onError={onError} />
       <div className="row-actions">
         {project ? (
           <a className="meta project-jump" href={href(`#/p/${project.id}`)}>
@@ -96,7 +98,7 @@ export function SessionRow({
             Reprendre
           </button>
         ) : null}
-        <DelayedActionButton onAction={onDelete}>Supprimer</DelayedActionButton>
+        <DelayedActionButton disabled={session.protected} title={session.protected ? SESSION_PROTECTED_HINT : undefined} onAction={onDelete}>Supprimer</DelayedActionButton>
       </div>
       {awaiting && preview.open ? <ScreenPopover sessionId={session.id} anchorRef={anchorRef} /> : null}
     </li>

@@ -950,6 +950,49 @@ body.sidebar-resizing .main {
   flex-wrap: wrap;
 }
 
+.session-protection {
+  position: relative;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  align-self: start;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.session-protection:hover {
+  background: var(--bg-2);
+}
+
+.session-protection.active {
+  color: var(--accent);
+}
+
+.session-protection:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.session-protection:has(input:disabled) {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.session-protection input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
 input,
 select,
 textarea {
@@ -1317,6 +1360,20 @@ label.block {
   border-bottom: 0;
 }
 
+.session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.session-row > .row-actions,
+.session-head > .row-actions {
+  grid-column: 1 / -1;
+}
+
+.session-head > .row-actions {
+  justify-content: flex-end;
+}
+
 .session-main {
   display: flex;
   flex-direction: column;
@@ -1444,9 +1501,9 @@ label.block {
 }
 
 .session-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 12px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--line);
@@ -1998,10 +2055,6 @@ a.btn:hover {
     padding: 16px 14px 28px;
   }
 
-  .session-head,
-  .session-row {
-    flex-wrap: wrap;
-  }
 }
 
 /* Images jointes (prompt de nouvelle session, message rapide) */

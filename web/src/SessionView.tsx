@@ -16,6 +16,7 @@ import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { AddTaskDialog, LaunchSessionDialog } from './Dialog.tsx';
 import { displayStatus, MODE_LABEL, STATUS_LABEL, sessionTitle } from './format.ts';
 import { SessionGitActions } from './GitActions.tsx';
+import { SessionProtection, SESSION_PROTECTED_HINT } from './SessionProtection.tsx';
 import { go, href, useNow } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { SessionTasksPanel, useSessionTasks, sessionTasksState, TASK_STATE_LABELS } from './SessionTasks.tsx';
@@ -488,6 +489,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             ) : null}
           </p>
         </div>
+        <SessionProtection session={session} onError={setError} />
         <div className="row-actions">
           <SessionGitActions sessionId={session.id} live={live} />
           {session.status !== 'exited' ? (
@@ -500,7 +502,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               Reprendre
             </button>
           ) : null}
-          <DelayedActionButton title={isolated ? `Supprime la conversation. ${RELEASE_HINT} Sinon, elle reste dans l’inventaire des copies de travail.` : 'Supprime la conversation'} onAction={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}>
+          <DelayedActionButton disabled={session.protected} title={session.protected ? SESSION_PROTECTED_HINT : isolated ? `Supprime la conversation. ${RELEASE_HINT} Sinon, elle reste dans l’inventaire des copies de travail.` : 'Supprime la conversation'} onAction={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}>
             Supprimer
           </DelayedActionButton>
         </div>

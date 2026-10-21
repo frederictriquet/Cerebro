@@ -10,6 +10,8 @@ export type TaskStatus = 'todo' | 'started' | 'done';
 export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export type WorkspaceMode = 'isolated' | 'shared';
 
+export class SessionProtectionError extends Error {}
+
 export interface SessionDefaults {
   agent: Agent;
   mode: Mode;
@@ -66,6 +68,7 @@ export interface Session {
   title: string;
   status: Status;
   attention: boolean;
+  protected: boolean;
   attentionReason: string | null;
   agentSessionId: string | null;
   exitCode: number | null;
@@ -136,6 +139,7 @@ interface SessionRow {
   title: string;
   status: Status;
   attention: number;
+  protected: number;
   attention_reason: string | null;
   agent_session_id: string | null;
   exit_code: number | null;
@@ -229,6 +233,7 @@ function sessionFromRow(row: SessionRow): Session {
     title: row.title,
     status: row.status,
     attention: row.attention !== 0,
+    protected: row.protected !== 0,
     attentionReason: row.attention_reason,
     agentSessionId: row.agent_session_id,
     exitCode: row.exit_code,
@@ -333,6 +338,9 @@ export class CerebroDatabase {
     `);
     this.connection.exec('CREATE INDEX IF NOT EXISTS tasks_epic_id ON tasks(epic_id)');
     const columns = this.connection.prepare('PRAGMA table_info(sessions)').all() as unknown as { name: string }[];
+    if (!columns.some((column) => column.name === 'protected')) {
+      this.connection.exec('ALTER TABLE sessions ADD COLUMN protected INTEGER NOT NULL DEFAULT 0');
+    }
     if (!columns.some((column) => column.name === 'hook_token')) {
       this.connection.exec('ALTER TABLE sessions ADD COLUMN hook_token TEXT');
     }
@@ -451,6 +459,9 @@ export class CerebroDatabase {
   }
 
   deleteProject(id: string): boolean {
+    if (this.listProjectSessions(id).some((session) => session.protected)) {
+      throw new SessionProtectionError('Ce projet contient des sessions protégées. Décochez leur protection avant de le supprimer.');
+    }
     return Number(this.connection.prepare('DELETE FROM projects WHERE id = ?').run(id).changes) > 0;
   }
 
@@ -477,6 +488,7 @@ export class CerebroDatabase {
     const session: Session = {
       ...input,
       attention: false,
+      protected: false,
       attentionReason: null,
       exitCode: null,
       createdAt: now,
@@ -520,7 +532,16 @@ export class CerebroDatabase {
     return next;
   }
 
+  setSessionProtected(id: string, value: boolean): Session | null {
+    // Changing protection is not activity: keep the session's age and dormant status.
+    this.connection.prepare('UPDATE sessions SET protected = ? WHERE id = ?').run(value ? 1 : 0, id);
+    return this.getSession(id);
+  }
+
   deleteSession(id: string): boolean {
+    if (this.getSession(id)?.protected) {
+      throw new SessionProtectionError('Session protégée. Décochez sa protection avant de la supprimer.');
+    }
     return Number(this.connection.prepare('DELETE FROM sessions WHERE id = ?').run(id).changes) > 0;
   }
 

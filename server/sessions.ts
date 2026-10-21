@@ -20,7 +20,7 @@ import * as headlessPackage from '@xterm/headless';
 import { buildAgentCommand, type Tuning } from './agents.ts';
 import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
 import type { Agent, Mode, Project, Session, SessionDefaults } from './db.ts';
-import { CerebroDatabase, resolveSessionDefaults } from './db.ts';
+import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError } from './db.ts';
 import type { AgentQuestion } from './questions.ts';
 import { archiveSessionWorktree } from './worktrees.ts';
 import { assertWorktreeAvailable, deferWorktreeInput } from './worktree-gate.ts';
@@ -183,6 +183,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export class SessionManager {
   readonly db: CerebroDatabase;
   private readonly runtimes = new Map<string, Runtime>();
+  private readonly deleting = new Set<string>();
   private readonly questions = new Map<string, AgentQuestion[]>();
   /** Free-text question sent by the agent (`cerebro-notify --ask`), unanswered yet. */
   private readonly askedQuestions = new Map<string, string>();
@@ -715,6 +716,13 @@ export class SessionManager {
     return updated;
   }
 
+  setProtected(id: string, value: boolean): Session | null {
+    if (this.deleting.has(id)) throw new SessionProtectionError('Suppression déjà en cours pour cette session.');
+    const updated = this.db.setSessionProtected(id, value);
+    if (updated !== null) this.emit({ type: 'session', session: updated });
+    return updated;
+  }
+
   writeInput(id: string, data: string): boolean {
     const runtime = this.runtimes.get(id);
     if (runtime === undefined) return false;
@@ -774,24 +782,35 @@ export class SessionManager {
     const project = this.db.getProject(projectId);
     if (project === null) return false;
     const projectSessions = this.db.listProjectSessions(projectId);
-    await Promise.all(projectSessions.map((session) => this.stopProcesses(session.id)));
-    await Promise.all(projectSessions.map(session=>archiveSessionWorktree(this.db,session.id)));
-    const roots = projectSessions.map((session) => workspaceFor(this.db, session.id)?.root ?? null);
-    this.db.deleteProject(projectId);
-    projectSessions.forEach((session, index) => this.onSessionReleased(session.id, roots[index] ?? null));
-    rmSync(join(ATTACHMENTS_DIR, `project-${projectId}`), { recursive: true, force: true });
-    for (const session of projectSessions) {
-      this.cleanupAllArtifacts(session.id);
-      this.emit({ type: 'session-deleted', id: session.id });
+    if (projectSessions.some((session) => session.protected)) {
+      throw new SessionProtectionError('Ce projet contient des sessions protégées. Décochez leur protection avant de le supprimer.');
     }
-    return true;
+    if (projectSessions.some((session) => this.deleting.has(session.id))) {
+      throw new SessionProtectionError('Suppression déjà en cours pour une session de ce projet.');
+    }
+    projectSessions.forEach((session) => this.deleting.add(session.id));
+    try {
+      await Promise.all(projectSessions.map((session) => this.stopProcesses(session.id)));
+      await Promise.all(projectSessions.map(session=>archiveSessionWorktree(this.db,session.id)));
+      const roots = projectSessions.map((session) => workspaceFor(this.db, session.id)?.root ?? null);
+      this.db.deleteProject(projectId);
+      projectSessions.forEach((session, index) => this.onSessionReleased(session.id, roots[index] ?? null));
+      rmSync(join(ATTACHMENTS_DIR, `project-${projectId}`), { recursive: true, force: true });
+      for (const session of projectSessions) {
+        this.cleanupAllArtifacts(session.id);
+        this.emit({ type: 'session-deleted', id: session.id });
+      }
+      return true;
+    } finally {
+      projectSessions.forEach((session) => this.deleting.delete(session.id));
+    }
   }
 
   async purgeProject(projectId: string): Promise<number | null> {
     if (this.db.getProject(projectId) === null) return null;
     const inactive = this.db
       .listProjectSessions(projectId)
-      .filter((session) => isDormant(session, Date.now()));
+      .filter((session) => !session.protected && isDormant(session, Date.now()));
     const results = await Promise.allSettled(inactive.map((session) => this.delete(session.id)));
     const failed = results.filter((result) => result.status === 'rejected');
     if (failed.length > 0) {
@@ -802,17 +821,25 @@ export class SessionManager {
   }
 
   async delete(id: string): Promise<boolean> {
-    if (this.db.getSession(id) === null) return false;
-    await this.stopProcesses(id);
-    await archiveSessionWorktree(this.db,id);
-    const root = workspaceFor(this.db, id)?.root ?? null;
-    this.db.deleteSession(id);
-    this.onSessionReleased(id, root);
-    this.cleanupAllArtifacts(id);
-    this.questions.delete(id);
-    this.askedQuestions.delete(id);
-    this.emit({ type: 'session-deleted', id });
-    return true;
+    const session = this.db.getSession(id);
+    if (session === null) return false;
+    if (session.protected) throw new SessionProtectionError('Session protégée. Décochez sa protection avant de la supprimer.');
+    if (this.deleting.has(id)) throw new SessionProtectionError('Suppression déjà en cours pour cette session.');
+    this.deleting.add(id);
+    try {
+      await this.stopProcesses(id);
+      await archiveSessionWorktree(this.db,id);
+      const root = workspaceFor(this.db, id)?.root ?? null;
+      this.db.deleteSession(id);
+      this.onSessionReleased(id, root);
+      this.cleanupAllArtifacts(id);
+      this.questions.delete(id);
+      this.askedQuestions.delete(id);
+      this.emit({ type: 'session-deleted', id });
+      return true;
+    } finally {
+      this.deleting.delete(id);
+    }
   }
 
   // Deleting a session must not leave its holder running: once its socket file is removed, nothing

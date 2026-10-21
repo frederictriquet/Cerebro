@@ -53,6 +53,7 @@ export interface Session {
   title: string;
   status: Status;
   attention: boolean;
+  protected: boolean;
   attentionReason: string | null;
   agentSessionId: string | null;
   exitCode: number | null;
@@ -259,6 +260,7 @@ export function parseSession(v: unknown): Session | null {
     title,
     status: v.status,
     attention: v.attention,
+    protected: v.protected === true,
     attentionReason,
     agentSessionId,
     exitCode,

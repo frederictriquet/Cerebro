@@ -97,7 +97,8 @@ export function ProjectView({ projectId }: { projectId: string }) {
   const project = projects.find((p) => p.id === projectId);
   const kids = sessions.filter((s) => s.projectId === projectId);
   const now = useNow();
-  const dormantCount = kids.filter((s) => isDormant(s, now)).length;
+  const dormantCount = kids.filter((s) => !s.protected && isDormant(s, now)).length;
+  const hasProtectedSessions = kids.some((s) => s.protected);
 
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -249,7 +250,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
               Éditer
             </button>
           )}
-          <DelayedActionButton onAction={onDeleteProject} title="Supprime le projet et ses conversations ; les worktrees restent dans l’inventaire global">
+          <DelayedActionButton onAction={onDeleteProject} disabled={hasProtectedSessions} title={hasProtectedSessions ? 'Décochez la protection des sessions de ce projet avant de le supprimer.' : 'Supprime le projet et ses conversations ; les worktrees restent dans l’inventaire global'}>
             Supprimer
           </DelayedActionButton>
         </div>
@@ -266,7 +267,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
             {dormantCount > 0 ? (
               <DelayedActionButton
                 onAction={onPurge}
-                title="Supprime les sessions inactives depuis plus d'une heure ; celles encore ouvertes seront arrêtées"
+                title="Supprime les sessions non protégées inactives depuis plus d'une heure ; celles encore ouvertes seront arrêtées"
               >
                 Purger les sessions en sommeil ({dormantCount})
               </DelayedActionButton>

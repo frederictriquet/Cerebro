@@ -206,7 +206,9 @@ Les nouvelles sessions lancées depuis le web, le backlog ou Slack reprennent ce
 réglages. Un prompt fourni explicitement (instruction Slack, tâche du backlog,
 sélection du terminal) remplace le prompt mémorisé. Changer d'agent remet le
 modèle et l'effort au défaut de cet agent ; un agent choisi explicitement depuis
-Slack devient aussi le choix par défaut du projet. Reprendre une ancienne session
+Slack devient aussi le choix par défaut du projet. Le texte d'une commande Slack
+reste propre à la session et ne remplit pas le formulaire « Nouvelle session » :
+son prompt vide ou son brouillon sont préservés. Reprendre une ancienne session
 conserve ses propres réglages.
 
 ## Captures d'écran

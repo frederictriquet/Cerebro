@@ -10,7 +10,6 @@ import {
   type ReactNode,
 } from 'react';
 import { api, wsUrl } from './api.ts';
-import { isDormant } from './format.ts';
 import {
   armNotificationPermission,
   playAlert,
@@ -62,6 +61,7 @@ export interface Store {
   killSession: (id: string) => Promise<void>;
   resumeSession: (id: string) => Promise<Session>;
   deleteSession: (id: string) => Promise<void>;
+  setSessionProtected: (id: string, value: boolean) => Promise<void>;
   purgeProjectSessions: (projectId: string) => Promise<void>;
   markSeen: (id: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<Session>;
@@ -334,8 +334,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const purgeProjectSessions = useCallback(async (projectId: string): Promise<void> => {
     await api<unknown>(`/api/projects/${projectId}/purge`, { method: 'POST' });
-    const now = Date.now();
-    setSessions((list) => list.filter((s) => s.projectId !== projectId || !isDormant(s, now)));
+    const raw = await api<unknown>('/api/sessions');
+    setSessions(sortSessions(parseSessionList(raw)));
+  }, []);
+
+  const setSessionProtected = useCallback(async (id: string, value: boolean): Promise<void> => {
+    const raw = await api<unknown>(`/api/sessions/${id}/protection`, {
+      method: 'PATCH',
+      body: JSON.stringify({ protected: value }),
+    });
+    const session = parseSession(raw);
+    if (!session) throw new Error('Réponse session invalide');
+    setSessions((list) => upsertSession(list, session));
   }, []);
 
   const renameSession = useCallback(async (id: string, title: string): Promise<Session> => {
@@ -477,6 +487,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       killSession,
       resumeSession,
       deleteSession,
+      setSessionProtected,
       purgeProjectSessions,
       markSeen,
       renameSession,
@@ -511,6 +522,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       killSession,
       resumeSession,
       deleteSession,
+      setSessionProtected,
       purgeProjectSessions,
       markSeen,
       renameSession,

@@ -759,7 +759,7 @@ export class SlackNotifier {
         session = await this.sessions.create(project, {
           ...(command.agent === null ? {} : { agent: command.agent }),
           prompt: command.text,
-        });
+        }, undefined, undefined, undefined, { rememberDefaults: false });
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         await this.postThreadReply(channel, message.ts, `:x: Impossible de créer la session : ${escapeMrkdwn(reason)}`);
@@ -768,7 +768,9 @@ export class SlackNotifier {
     } else if (!await this.injectDmMessage(session, command.text)) {
       await this.postThreadReply(channel, message.ts, 'Session inactive : message non transmis.');
       return;
-    } else if (command.agent !== null) {
+    }
+    // Slack instructions belong to the session; preserve the web form's prompt.
+    if (command.agent !== null) {
       this.sessions.rememberDefaults(project.id, { agent: command.agent });
     }
     const response = await this.slackApi('chat.postMessage', {
