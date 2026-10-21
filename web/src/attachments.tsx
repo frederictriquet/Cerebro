@@ -1,3 +1,4 @@
+import { ActivityStatus } from './ActivityStatus.tsx';
 import { useEffect, useRef, useState } from 'react';
 
 // Images jointes à un champ de saisie : le texte affiche un jeton court « [Image #N] »
@@ -113,7 +114,7 @@ export function AttachmentStrip({ items, onRemove }: { items: Attachment[]; onRe
           ) : (
             <img src={item.previewUrl} alt={item.token} />
           )}
-          <figcaption>{item.path === null ? 'Envoi…' : `#${item.n}`}</figcaption>
+          <figcaption><ActivityStatus active={item.path === null}>{item.path === null ? 'Envoi…' : `#${item.n}`}</ActivityStatus></figcaption>
           <button type="button" aria-label={`Retirer ${item.token}`} title="Retirer" onClick={() => onRemove(item)}>
             ×
           </button>

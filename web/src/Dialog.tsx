@@ -1,3 +1,4 @@
+import { ActivityStatus } from './ActivityStatus.tsx';
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
@@ -172,7 +173,7 @@ export function AddTaskDialog({
         {error ? <p className="form-error">{error}</p> : null}
         <div className="row-actions">
           <button type="submit" className="btn primary" disabled={busy || images.pending || text.trim() === ''}>
-            Ajouter
+            <ActivityStatus active={busy || images.pending}>{busy ? 'Ajout…' : images.pending ? 'Envoi des images…' : 'Ajouter'}</ActivityStatus>
           </button>
           <button type="button" className="btn" onClick={onClose}>
             Annuler

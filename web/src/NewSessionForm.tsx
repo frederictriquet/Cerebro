@@ -1,3 +1,4 @@
+import { ActivityStatus } from './ActivityStatus.tsx';
 import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { clipboardImage, uploadProjectImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, restoredAttachment, useImageAttachments } from './attachments.tsx';
@@ -262,7 +263,7 @@ export function NewSessionForm({
       {defaultsError ? <p className="form-error">Réglages non sauvegardés : {defaultsError}</p> : null}
       <div className="row-actions">
         <button type="submit" className="btn primary" disabled={launchDisabled || busy || images.pending || available.length === 0}>
-          {submitLabel}
+          <ActivityStatus active={busy || images.pending}>{busy ? 'Lancement…' : images.pending ? 'Envoi des images…' : submitLabel}</ActivityStatus>
         </button>
         {onCancel ? (
           <button type="button" className="btn" onClick={onCancel}>
