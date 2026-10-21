@@ -199,6 +199,22 @@ function AgentGauges({
 }
 
 export function UsageGauges() {
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('cerebro.usageCollapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleCollapsed = (): void => {
+    const next = !collapsed;
+    setCollapsed(next);
+    try {
+      localStorage.setItem('cerebro.usageCollapsed', next ? '1' : '0');
+    } catch {
+      /* Le panneau reste utilisable si le stockage est indisponible. */
+    }
+  };
   const [usage, setUsage] = useState<AgentUsage[] | null>(null);
   const [failed, setFailed] = useState(false);
   const now = useNow(REFRESH_MS);
@@ -249,22 +265,36 @@ export function UsageGauges() {
 
   return (
     <section className="side-section side-usage">
-      <h2>Consommation</h2>
-      {usage === null ? (
-        <p className="empty-hint">{failed ? 'Indisponible' : 'Chargement…'}</p>
-      ) : (
-        <div className="usage-grid">
-          {usage.map((u) => (
-            <AgentGauges
-              key={u.agent}
-              usage={u}
-              update={updates.find((x) => x.agent === u.agent)}
-              now={now}
-              onUpdate={replaceUpdate}
-            />
-          ))}
-        </div>
-      )}
+      <h2>
+        <button
+          type="button"
+          className="usage-toggle"
+          aria-expanded={!collapsed}
+          aria-controls="sidebar-usage-content"
+          title={collapsed ? 'Afficher la consommation' : 'Replier la consommation'}
+          onClick={toggleCollapsed}
+        >
+          Consommation
+          <span aria-hidden="true">{collapsed ? '▴' : '▾'}</span>
+        </button>
+      </h2>
+      <div id="sidebar-usage-content" hidden={collapsed}>
+        {usage === null ? (
+          <p className="empty-hint">{failed ? 'Indisponible' : 'Chargement…'}</p>
+        ) : (
+          <div className="usage-grid">
+            {usage.map((u) => (
+              <AgentGauges
+                key={u.agent}
+                usage={u}
+                update={updates.find((x) => x.agent === u.agent)}
+                now={now}
+                onUpdate={replaceUpdate}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </section>
   );
 }

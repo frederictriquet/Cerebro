@@ -450,30 +450,34 @@ export function SessionView({ sessionId }: { sessionId: string }) {
                 {project.name}
               </a>
             ) : null}
-            {session.attentionReason ? (
-              <span className="reason">{session.attentionReason}</span>
-            ) : null}
             {session.status === 'exited' && session.exitCode !== null ? (
               <span className="pill">code {session.exitCode}</span>
             ) : null}
           </p>
         </div>
         <SessionProtection session={session} onError={setError} />
-        <div className="row-actions">
-          <SessionGitActions sessionId={session.id} live={live} />
-          {session.status !== 'exited' ? (
-            <button type="button" className="btn" title={isolated ? `Arrête la conversation. ${RELEASE_HINT}` : undefined} onClick={() => void act(() => killSession(session.id))}>
-              Arrêter
-            </button>
+        <div className="session-head-actions">
+          {session.attentionReason ? (
+            <span className="reason session-head-reason" title={session.attentionReason}>
+              {session.attentionReason}
+            </span>
           ) : null}
-          {session.status === 'exited' && session.agentSessionId ? (
-            <button type="button" className="btn primary" disabled={resumeBlocked !== null} title={resumeBlocked ?? undefined} onClick={() => void act(() => resumeSession(session.id))}>
-              Reprendre
-            </button>
-          ) : null}
-          <DelayedActionButton disabled={session.protected} title={session.protected ? SESSION_PROTECTED_HINT : isolated ? `Supprime la conversation. ${RELEASE_HINT} Sinon, elle reste dans l’inventaire des copies de travail.` : 'Supprime la conversation'} onAction={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}>
-            Supprimer
-          </DelayedActionButton>
+          <div className="row-actions">
+            <SessionGitActions sessionId={session.id} live={live} />
+            {session.status !== 'exited' ? (
+              <button type="button" className="btn" title={isolated ? `Arrête la conversation. ${RELEASE_HINT}` : undefined} onClick={() => void act(() => killSession(session.id))}>
+                Arrêter
+              </button>
+            ) : null}
+            {session.status === 'exited' && session.agentSessionId ? (
+              <button type="button" className="btn primary" disabled={resumeBlocked !== null} title={resumeBlocked ?? undefined} onClick={() => void act(() => resumeSession(session.id))}>
+                Reprendre
+              </button>
+            ) : null}
+            <DelayedActionButton disabled={session.protected} title={session.protected ? SESSION_PROTECTED_HINT : isolated ? `Supprime la conversation. ${RELEASE_HINT} Sinon, elle reste dans l’inventaire des copies de travail.` : 'Supprime la conversation'} onAction={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}>
+              Supprimer
+            </DelayedActionButton>
+          </div>
         </div>
       </header>
       {error ? <p className="form-error session-error">{error}</p> : null}

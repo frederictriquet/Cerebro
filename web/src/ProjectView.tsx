@@ -237,8 +237,6 @@ export function ProjectView({ projectId }: { projectId: string }) {
               <p className="path">{project.path}</p>
             </>
           )}
-          <GitStatus key={project.id} projectId={project.id} />
-          <SlackLead key={`slack-${project.id}`} projectId={project.id} />
         </div>
         <div className="row-actions">
           <button type="button" className="btn" onClick={()=>setCommitSettingsOpen(true)}>Réglages Git</button>
@@ -253,6 +251,10 @@ export function ProjectView({ projectId }: { projectId: string }) {
           <DelayedActionButton onAction={onDeleteProject} disabled={hasProtectedSessions} title={hasProtectedSessions ? 'Décochez la protection des sessions de ce projet avant de le supprimer.' : 'Supprime le projet et ses conversations ; les worktrees restent dans l’inventaire global'}>
             Supprimer
           </DelayedActionButton>
+        </div>
+        <div className="project-head-details">
+          <GitStatus key={project.id} projectId={project.id} />
+          <SlackLead key={`slack-${project.id}`} projectId={project.id} />
         </div>
       </header>
       {commitSettingsOpen?<CommitSettingsDialog project={project} onClose={()=>setCommitSettingsOpen(false)}/>:null}
