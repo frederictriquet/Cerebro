@@ -43,6 +43,14 @@ export const MODE_CHIP: Record<Mode, string> = {
   bypass: '⏵⏵ bypass',
 };
 
+export const MODE_DESCRIPTION: Record<Mode, string> = {
+  auto: 'Gestion automatique des autorisations par l’agent.',
+  default: 'Utilise les autorisations définies dans la configuration de l’agent.',
+  acceptEdits: 'Accepte automatiquement les modifications de fichiers. Avec Codex, exécute sans confirmation dans le sandbox du projet.',
+  plan: 'Analyse et prépare un plan sans modifier les fichiers.',
+  bypass: 'Exécute sans demander d’autorisation. Avec Codex, désactive également le sandbox.',
+};
+
 export const AGENT_LABEL: Record<Agent, string> = {
   claude: 'claude',
   codex: 'codex',

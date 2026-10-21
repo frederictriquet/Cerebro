@@ -5,7 +5,7 @@ import { AttachmentStrip, insertToken, removeToken, restoredAttachment, useImage
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { LlmSelector, llmChoices } from './LlmSelector.tsx';
 import { readDraft, writeDraft } from './drafts.ts';
-import { MODE_CHIP } from './format.ts';
+import { MODE_CHIP, MODE_DESCRIPTION } from './format.ts';
 import { useStore } from './store.tsx';
 import { DEFAULT_SESSION_DEFAULTS, MODES, type Agent, type Effort, type LaunchSpec, type Mode } from './types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
@@ -199,8 +199,12 @@ export function NewSessionForm({
 
   return (
     <form className={`card new-session ${className}`.trim()} onSubmit={onSubmit}>
-      {heading ? <h2>{heading}</h2> : null}
-      {project?.workspaceMode==='shared'?<p className="hint">Travail dans le dossier du projet, sur sa branche courante.</p>:null}
+      {heading || project?.workspaceMode === 'shared' ? (
+        <div className="new-session-heading">
+          {heading ? <h2>{heading}</h2> : null}
+          {project?.workspaceMode === 'shared' ? <p className="hint">Travail dans le dossier du projet, sur sa branche courante.</p> : null}
+        </div>
+      ) : null}
       <LlmSelector
         agents={agents}
         value={{ agent, model, effort }}
@@ -219,7 +223,7 @@ export function NewSessionForm({
             compact
             label="Mode"
             value={mode}
-            options={MODES.map((m) => ({ value: m, label: MODE_CHIP[m], danger: m === 'bypass' }))}
+            options={MODES.map((m) => ({ value: m, label: MODE_CHIP[m], title: MODE_DESCRIPTION[m], danger: m === 'bypass' }))}
             onChange={(next) => {
               setMode(next);
               saveDefaults({ mode: next });
@@ -227,9 +231,6 @@ export function NewSessionForm({
           />
         </div>
       </LlmSelector>
-      {mode === 'bypass' ? (
-        <p className="warn-bypass">Mode bypass : permissions et sandbox désactivés.</p>
-      ) : null}
       <label className="block">
         Prompt
         <textarea
