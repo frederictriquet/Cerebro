@@ -1,0 +1,67 @@
+.findings-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border: 0;
+  border-left: 4px solid var(--accent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-1));
+  text-align: left;
+  cursor: pointer;
+}
+.findings-notice:hover { background: color-mix(in srgb, var(--accent) 19%, var(--bg-1)); }
+.findings-notice:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.findings-notice-icon { display: flex; color: var(--accent); }
+.findings-notice-copy { display: grid; gap: 3px; min-width: 0; }
+.findings-notice-copy strong { font-size: 14px; }
+.findings-notice-copy > span { color: var(--muted); font-size: 12px; }
+.findings-notice-action { margin-left: auto; color: var(--accent); font-weight: 600; white-space: nowrap; }
+.session-drawer.findings-drawer { max-height: 65vh; min-height: 0; flex-shrink: 1; padding: 20px 42px 20px 16px; }
+.findings-panel { max-width: 1200px; margin: 0 auto; }
+.findings-panel-heading { margin-bottom: 20px; }
+.findings-panel h2 { margin: 0 0 6px; font-size: 18px; }
+.findings-panel-heading p { color: var(--muted); }
+.finding-report + .finding-report { margin-top: 28px; }
+.finding-report-header, .finding-report-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.finding-report-header { margin-bottom: 12px; }
+.finding-report-header > div { min-width: 0; flex: 1 1 240px; }
+.finding-report h3 { margin: 0 0 4px; font-size: 14px; overflow-wrap: anywhere; }
+.finding-cards { display: grid; gap: 12px; }
+.finding-card { border: 1px solid var(--line); border-radius: 8px; padding: 16px; background: var(--bg-2); }
+.finding-card.selected { border-color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
+.finding-card.imported { background: var(--bg-1); }
+.finding-card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.finding-card-meta code { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; min-width: 0; }
+.finding-severity { --severity-color: var(--muted); flex-shrink: 0; padding: 3px 8px; border-radius: 4px; background: color-mix(in srgb, var(--severity-color) 13%, transparent); color: var(--severity-color); font-size: 11px; font-weight: 650; }
+.finding-severity[data-severity='critical'] { --severity-color: #ff8795; }
+.finding-severity[data-severity='high'] { --severity-color: #ffb16b; }
+.finding-severity[data-severity='medium'] { --severity-color: #e6c76b; }
+.finding-severity[data-severity='low'] { --severity-color: var(--accent); }
+.finding-imported { color: var(--running); font-size: 12px; margin-left: auto; }
+.finding-card h4 { margin: 12px 0 16px; font-size: 15px; }
+.findings-panel label.finding-choice { display: flex; margin: 0; gap: 10px; font-size: inherit; font-weight: 600; cursor: pointer; }
+.findings-panel .finding-choice input { flex-shrink: 0; width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--accent); }
+.finding-choice span { min-width: 0; overflow-wrap: anywhere; }
+.finding-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; margin: 0; }
+.finding-problem { grid-column: 1 / -1; }
+.finding-details dt { margin-bottom: 5px; color: var(--muted); font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; }
+.finding-details dd { margin: 0; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.finding-dependencies { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.finding-report-footer { padding: 12px 0; color: var(--muted); font-size: 12px; }
+.findings-json { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 14px; color: var(--muted); }
+.findings-json summary { cursor: pointer; }
+.findings-panel .findings-json label { flex-direction: column; }
+.findings-json textarea { font-family: var(--mono); }
+@media (max-width: 700px) {
+  .findings-notice { flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
+  .findings-notice-copy { flex: 1; }
+  .findings-notice-action { margin-left: 30px; flex-basis: 100%; }
+  .session-drawer.findings-drawer { padding: 16px 12px; }
+  .findings-panel-heading { padding-right: 32px; }
+  .finding-card { padding: 12px; }
+  .finding-details { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .finding-report-footer .btn { width: 100%; }
+}

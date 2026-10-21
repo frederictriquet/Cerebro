@@ -490,8 +490,10 @@ partagé avec les autres conversations » : le clic vise explicitement tous les
 changements du projet. Pour une conversation isolée, l'action reste limitée à sa
 copie. Le périmètre est annoncé avant lancement et rappelé dans le suivi.
 
-Dans la page du projet, **Réglages Git** mémorise l'agent, le modèle, l'effort et
-le découpage (un commit ou plusieurs commits par intention). Ces réglages sont
+Dans l'en-tête du projet, les boutons **Un seul commit** et **Un commit par intention**
+lancent directement la création des commits selon le découpage choisi, sans push.
+Le bouton **Push** permet ensuite de les envoyer. Ce choix vaut pour l'opération lancée.
+**Réglages Git** mémorise l'agent, le modèle et l'effort. Ces réglages sont
 indépendants de ceux des sessions. La migration initialise les réglages de commits
 avec l'agent, le modèle et l'effort déjà enregistrés pour le projet, puis les
 conserve séparément. Un changement d'agent remet le modèle et l'effort au défaut
@@ -625,8 +627,10 @@ scenario,expectedFix,dependsOn:[],taskDependencies:[]}]}`. `severity` vaut
 `critical`, `high`, `medium` ou `low` ; `dependsOn` référence des findings du même
 rapport et `taskDependencies` des tâches existantes du projet. Le rapport peut
 également être collé dans le panneau des findings d'une session, ouvert par la
-pastille **N rapport(s) de findings** de son en-tête. Cette pastille n'apparaît
-qu'à partir du premier rapport reçu.
+bandeau **N finding(s) de review disponible(s)** au-dessus du terminal, via
+**Examiner les findings**. Ce bandeau apparaît dès le premier rapport reçu.
+Chaque finding présente sa gravité, son emplacement, le problème, le scénario
+et le correctif attendu dans une carte distincte.
 
 Sélectionnez les findings et cliquez **Enregistrer la sélection dans un epic**.
 Les tâches créées incluent le contexte autonome et la session source ; les

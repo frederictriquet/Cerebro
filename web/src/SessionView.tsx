@@ -9,6 +9,7 @@ import {
   type KeyboardEvent,
 } from 'react';
 import type { SavedReport } from '../../server/findings.ts';
+import { FindingsNotice, FindingsPanel } from './Findings.tsx';
 import type { Provenance } from '../../server/provenance.ts';
 import { api, clipboardImage, uploadImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
@@ -31,27 +32,6 @@ function useFindingsReports(sessionId:string) {
   const refresh=useCallback(async():Promise<void>=>setReports(await api<SavedReport[]>(`/api/sessions/${sessionId}/findings`)),[sessionId]);
   useEffect(()=>{setReports([]);void refresh().catch(()=>{});const timer=window.setInterval(()=>void refresh().catch(()=>{}),3000);return()=>window.clearInterval(timer);},[refresh]);
   return {reports,refresh};
-}
-
-function FindingsPanel({sessionId,reports,refresh}:{sessionId:string;reports:SavedReport[];refresh:()=>Promise<void>}) {
-  const [chosen,setChosen]=useState<Set<string>>(new Set());
-  const [error,setError]=useState<string|null>(null);
-  const [busy,setBusy]=useState(false);
-  const [raw,setRaw]=useState('');
-  const save=async():Promise<void>=>{setBusy(true);try{await api(`/api/sessions/${sessionId}/findings`,{method:'POST',body:JSON.stringify(JSON.parse(raw))});setRaw('');setError(null);await refresh();}catch(cause){setError(String(cause));}finally{setBusy(false);}};
-  return <>
-    <p className="hint">Rapports de review envoyés par l’agent. Cochez des findings pour les transformer en tâches d’un epic du backlog.</p>
-    {reports.map(report=><div key={report.id}>
-      <strong>{report.title}</strong>
-      {report.findings.map(f=><div key={f.id}>
-        <label><input type="checkbox" checked={chosen.has(`${report.id}:${f.id}`)} disabled={!!report.imported[f.id]||busy} onChange={e=>setChosen(previous=>{const next=new Set(previous);if(e.target.checked)next.add(`${report.id}:${f.id}`);else next.delete(`${report.id}:${f.id}`);return next;})}/>{f.title} [{f.severity}] — {f.file}:{f.line}{report.imported[f.id]?' — déjà enregistré':''}</label>
-        <p>{f.problem}</p><p>Scénario : {f.scenario}</p><p>Correctif attendu : {f.expectedFix}</p>
-      </div>)}
-      <button className="btn" disabled={busy||!report.findings.some(f=>chosen.has(`${report.id}:${f.id}`)&&!report.imported[f.id])} onClick={()=>{setBusy(true);void api(`/api/sessions/${sessionId}/findings/${report.id}/import`,{method:'POST',body:JSON.stringify({selected:report.findings.filter(f=>chosen.has(`${report.id}:${f.id}`)).map(f=>f.id)})}).then(()=>{setError(null);return refresh();}).catch(cause=>setError(String(cause))).finally(()=>setBusy(false));}}>Enregistrer la sélection dans un epic</button>
-    </div>)}
-    <details><summary>Importer un rapport JSON structuré</summary><p>Un finding incomplet peut rester dans le flux de discussion habituel pour être précisé.</p><textarea rows={8} value={raw} onChange={e=>setRaw(e.target.value)}/><button className="btn" disabled={busy||!raw.trim()} onClick={()=>void save()}>Enregistrer le rapport</button></details>
-    {error?<p className="form-error">{error}</p>:null}
-  </>;
 }
 
 function useProvenance(sessionId: string) {
@@ -450,17 +430,6 @@ export function SessionView({ sessionId }: { sessionId: string }) {
                 {WORKSPACE_PILL[provenance.data.workspace.mode].label}
               </button>
             ) : null}
-            {findings.reports.length > 0 ? (
-              <button
-                type="button"
-                className={`pill pill-toggle${drawer === 'findings' ? ' active' : ''}`}
-                aria-expanded={drawer === 'findings'}
-                title="Rapports de review à transformer en tâches du backlog — cliquer pour les voir"
-                onClick={() => toggleDrawer('findings')}
-              >
-                {findings.reports.length} rapport{findings.reports.length > 1 ? 's' : ''} de findings
-              </button>
-            ) : null}
             <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
             <button
               type="button"
@@ -509,8 +478,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       </header>
       {error ? <p className="form-error session-error">{error}</p> : null}
       {session.status === 'exited' && resumeBlocked !== null ? <p className="session-notice" role="status">{resumeBlocked}</p> : null}
+      <FindingsNotice reports={findings.reports} expanded={drawer === 'findings'} onToggle={() => toggleDrawer('findings')} />
       {drawer !== null ? (
-        <section className="session-drawer">
+        <section id={drawer === 'findings' ? 'session-findings' : undefined} className={`session-drawer${drawer === 'findings' ? ' findings-drawer' : ''}`} aria-label={drawer === 'findings' ? 'Résultats de la review' : undefined}>
           <button type="button" className="btn session-drawer-close" aria-label="Fermer" onClick={() => setDrawer(null)}>
             ×
           </button>
