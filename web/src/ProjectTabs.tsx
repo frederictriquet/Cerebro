@@ -1,3 +1,4 @@
+import { ActivityStatus } from './ActivityStatus.tsx';
 import { useRef, useState, type DragEvent, type FormEvent } from 'react';
 import { Modal } from './Dialog.tsx';
 import { PathInput } from './PathInput.tsx';
@@ -217,7 +218,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
         {error ? <p className="form-error">{error}</p> : null}
         <div className="row-actions">
           <button type="submit" className="btn primary" disabled={busy}>
-            Créer
+            <ActivityStatus active={busy}>{busy ? 'Création…' : 'Créer'}</ActivityStatus>
           </button>
           <button type="button" className="btn" onClick={onClose}>
             Annuler

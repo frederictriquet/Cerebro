@@ -1,3 +1,4 @@
+import { ActivityStatus } from './ActivityStatus.tsx';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api.ts';
 
@@ -121,12 +122,13 @@ export function PathInput({
             </label>
           </div>
           {error ? <p className="form-error">{error}</p> : null}
-          <ul className="dir-picker-list">
+          {loading ? <p className="meta"><ActivityStatus>Chargement des dossiers…</ActivityStatus></p> : null}
+          <ul className="dir-picker-list" aria-busy={loading}>
             {listing && dirs.length === 0 ? <li className="empty-hint">Aucun sous-dossier</li> : null}
             {listing
               ? dirs.map((d) => (
                   <li key={d}>
-                    <button type="button" onClick={() => enter(joinPath(listing.path, d))}>
+                    <button type="button" disabled={loading} onClick={() => enter(joinPath(listing.path, d))}>
                       📁 {d}
                     </button>
                   </li>

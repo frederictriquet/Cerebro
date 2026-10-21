@@ -1,3 +1,4 @@
+import { ActivityStatus } from './ActivityStatus.tsx';
 import { Worktrees } from './Worktrees.tsx';
 import { LlmUsageStats } from './LlmUsageStats.tsx';
 import { useState, type FormEvent } from 'react';
@@ -73,7 +74,7 @@ export function HomeView() {
             <PathInput required value={path} onChange={setPath} />
           </label>
           <button type="submit" className="btn primary" disabled={busy}>
-            Créer un projet
+            <ActivityStatus active={busy}>{busy ? 'Création…' : 'Créer un projet'}</ActivityStatus>
           </button>
         </form>
       ) : null}
