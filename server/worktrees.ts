@@ -42,6 +42,8 @@ export interface WorktreeRecord {
   commitSettings?: CommitSettings;
   /** Last automatic cleanup decision, taken when the conversation ended or was deleted. */
   autoCleanup?: AutomaticCleanup;
+  /** Removed from the visible history; retain provenance and cleanup records. */
+  historyDeletedAt?: number;
 }
 export interface AutomaticCleanup { status: 'removed' | 'kept' | 'failed'; at: number; reasons: string[] }
 export interface WorktreeOperation {
@@ -310,7 +312,7 @@ export class WorktreeManager {
     const selected = records(this.db).filter(r => !r.removedAt && (!projectId || r.projectId === projectId || r.commonDir === common));
     const worktrees:WorktreeView[]=[];
     for(let i=0;i<selected.length;i+=8)worktrees.push(...await Promise.all(selected.slice(i,i+8).map(record=>this.inspect(record))));
-    const cleaned=records(this.db).filter(r=>r.removedAt&&r.autoCleanup?.status==='removed'&&(!projectId||r.projectId===projectId||r.commonDir===common))
+    const cleaned=records(this.db).filter(r=>r.removedAt&&r.autoCleanup?.status==='removed'&&!r.historyDeletedAt&&(!projectId||r.projectId===projectId||r.commonDir===common))
       .sort((left,right)=>right.removedAt!-left.removedAt!).slice(0,CLEANED_SHOWN).map(record=>{
         const session=record.sessionId?this.db.getSession(record.sessionId):null;
         return {id:record.id,path:record.path,projectId:record.projectId,projectName:(record.projectId?this.db.getProject(record.projectId)?.name:null)??record.projectName,
@@ -318,6 +320,21 @@ export class WorktreeManager {
           branch:record.expectedBranch,removedAt:record.removedAt!};
       });
     return {worktrees, cleaned, errors};
+  }
+  deleteHistory(ids: unknown): void {
+    if(!Array.isArray(ids)||!ids.length||ids.some(id=>typeof id!=='string'))throw new WorktreeError('Liste d’entrées requise.',400);
+    const inventory=new Map(records(this.db).map(record=>[record.id,record]));
+    const selected=[...new Set<string>(ids)].map(id=>{
+      const record=inventory.get(id);
+      if(!record)throw new WorktreeError('Entrée introuvable.',404);
+      if(!record.removedAt||record.autoCleanup?.status!=='removed')throw new WorktreeError('Seules les copies déjà nettoyées peuvent être retirées de l’historique.');
+      return record;
+    });
+    this.db.connection.exec('BEGIN');
+    try {
+      for(const record of selected)store(this.db,{...record,historyDeletedAt:Date.now()});
+      this.db.connection.exec('COMMIT');
+    } catch(cause) {this.db.connection.exec('ROLLBACK');throw cause;}
   }
   async get(id: string): Promise<WorktreeView> { await this.sync(); return this.inspect(this.record(id)); }
   private async inspect(record: WorktreeRecord, ownOperation?: string): Promise<WorktreeView> {

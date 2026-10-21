@@ -278,6 +278,40 @@ test('deleting an unused conversation cleans its copy automatically, but an idle
  const cleaned=(await f.manager.list()).cleaned.find(c=>c.id===own.id);assert.equal(cleaned.session,null);assert.equal(cleaned.sessionTitle,'Conversation');
 }));
 
+test('deleting cleanup history preserves branches, conversations and provenance across restart',async()=>fixture(async f=>{
+ const own=await f.view();
+ await f.manager.releaseSession(f.id,f.workspace.root);
+ const refs=git(f.repo,'show-ref');const session=f.db.getSession(f.id);const workspace=workspaceFor(f.db,f.id);
+ f.manager.deleteHistory([own.id]);f.manager.deleteHistory([own.id]);
+ assert.equal((await f.manager.list(f.project.id)).cleaned.length,0);
+ await f.restart();await f.manager.resumeAutomaticCleanup();
+ assert.equal((await f.manager.list()).cleaned.length,0);
+ assert.equal(git(f.repo,'show-ref'),refs);
+ assert.deepEqual(f.db.getSession(f.id),session);assert.deepEqual(workspaceFor(f.db,f.id),workspace);
+ assert.ok(record(f,own.id).historyDeletedAt);assert.equal(automaticRemovals(f).length,1);
+}));
+
+test('history deletion validates the whole batch and cannot remove live copies',async()=>fixture(async f=>{
+ const own=await f.view();
+ for(const ids of [undefined,[],[null],'all'])assert.throws(()=>f.manager.deleteHistory(ids),/Liste/);
+ assert.throws(()=>f.manager.deleteHistory([own.id]),/déjà nettoyées/);
+ assert.ok(existsSync(own.path));
+ await f.manager.releaseSession(f.id,f.workspace.root);
+ const secondId=randomUUID();f.db.createSession({id:secondId,projectId:f.project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Second',status:'exited',agentSessionId:'fake'},'token');
+ const second=await createWorkspace(f.db,secondId,f.project);
+ await f.manager.releaseSession(secondId,second.root);
+ const inventory=await f.manager.list();const primary=inventory.worktrees.find(w=>w.primary);
+ assert.equal(inventory.cleaned.length,2);
+ for(const invalid of [primary.id,'unknown']){
+  assert.throws(()=>f.manager.deleteHistory([own.id,invalid]));
+  assert.equal((await f.manager.list()).cleaned.length,2);assert.equal(record(f,own.id).historyDeletedAt,undefined);
+ }
+ f.manager.deleteHistory(inventory.cleaned.map(c=>c.id));
+ assert.equal((await f.manager.list()).cleaned.length,0);
+ assert.ok(existsSync(f.repo));assert.ok(f.db.getSession(secondId));
+ assert.ok(git(f.repo,'rev-parse','--verify',second.branch));
+}));
+
 test('inherited changes are never cleaned automatically, even with no change since creation',async()=>fixture(async f=>{
  const own=await f.view();assert.equal(own.changesSinceCreation.count,0);
  await f.manager.releaseSession(f.id,f.workspace.root);

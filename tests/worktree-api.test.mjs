@@ -23,6 +23,9 @@ test('API keeps orphaned worktrees with work, executes explicit commits/merges w
  let app=await buildServer();const send=(method,url,payload)=>app.inject({method,url,...(payload===undefined?{}:{payload})});
  try{
   let inventory=(await send('GET',`/api/projects/${project.id}/worktrees`)).json();let own=inventory.worktrees.find(w=>w.sessionId===id);assert.ok(own);const wid=own.id;
+  assert.equal((await send('DELETE','/api/worktrees/history',{})).statusCode,400);
+  assert.equal((await send('DELETE','/api/worktrees/history',{ids:[wid]})).statusCode,409);
+  assert.equal((await send('DELETE','/api/worktrees/history',{ids:['missing']})).statusCode,404);
   // Uncommitted work keeps the copy when its conversation is deleted.
   writeFileSync(join(workspace.path,'new'),'orphan work\n');
   assert.equal((await send('DELETE',`/api/sessions/${id}`)).statusCode,204);
@@ -45,5 +48,9 @@ test('API keeps orphaned worktrees with work, executes explicit commits/merges w
   assert.ok(!(await send('GET','/api/worktrees')).json().worktrees.some(w=>w.id===wid));
   assert.equal((await send('DELETE',`/api/projects/${project.id}`)).statusCode,204);
   assert.ok((await send('GET','/api/worktrees')).json().cleaned.some(c=>c.id===wid));assert.equal(launches,0);
+  assert.equal((await send('DELETE','/api/worktrees/history',{ids:[wid]})).statusCode,204);
+  await app.close();app=await buildServer();
+  assert.ok(!(await send('GET','/api/worktrees')).json().cleaned.some(c=>c.id===wid));
+  assert.ok(git(repo,'rev-parse','--verify',cleaned.branch));assert.equal(launches,0);
  }finally{await app.close();}
 });

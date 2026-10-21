@@ -12,6 +12,9 @@ export function registerWorktreeRoutes(app: FastifyInstance, db: CerebroDatabase
     catch(cause){return reply.code(cause instanceof WorktreeError?cause.statusCode:409).send({error:cause instanceof Error?cause.message:String(cause)});}
   };
   app.get('/api/worktrees',async(_request,reply)=>attempt(reply,()=>manager.list()));
+  app.delete('/api/worktrees/history',async(request,reply)=>attempt(reply,async()=>{
+    manager.deleteHistory((request.body as {ids?:unknown})?.ids);
+  },204));
   app.get<{Params:{id:string}}>('/api/projects/:id/worktrees',async(request,reply)=>attempt(reply,()=>manager.list(request.params.id)));
   app.get<{Params:{id:string}}>('/api/worktrees/:id',async(request,reply)=>attempt(reply,()=>manager.get(request.params.id)));
   app.patch<{Params:{id:string}}>('/api/worktrees/:id/target',async(request,reply)=>attempt(reply,()=>manager.target(request.params.id,(request.body as {branch?:unknown})?.branch)));
