@@ -1,5 +1,6 @@
 import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
 import { dismissPeerNotice, getPeerNotices, setApiBase, subscribeUnauthorized, type PeerNotice } from './api.ts';
+import { CouncilRunView } from './CouncilRunView.tsx';
 import { HomeView } from './HomeView.tsx';
 import { ProjectTabs } from './ProjectTabs.tsx';
 import { ProjectView } from './ProjectView.tsx';
@@ -114,7 +115,13 @@ function Shell() {
   const [navOpen, setNavOpen] = useState(false);
   const sidebar = useSidebarLayout();
   const routeKey =
-    route.kind === 'home' ? 'home' : route.kind === 'project' ? `p:${route.projectId}` : `s:${route.sessionId}`;
+    route.kind === 'home'
+      ? 'home'
+      : route.kind === 'project'
+        ? `p:${route.projectId}`
+        : route.kind === 'council'
+          ? `c:${route.councilId}`
+          : `s:${route.sessionId}`;
 
   useEffect(() => {
     setNavOpen(false);
@@ -155,6 +162,8 @@ function Shell() {
           <ProjectView projectId={route.projectId} />
         ) : route.kind === 'session' ? (
           <SessionView sessionId={route.sessionId} />
+        ) : route.kind === 'council' ? (
+          <CouncilRunView key={route.councilId} councilId={route.councilId} />
         ) : (
           <HomeView />
         )}

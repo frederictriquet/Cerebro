@@ -31,6 +31,103 @@ export interface CommitSettings {
 /** Session that separates the starting content of a copy from the conversation's work. */
 export type ResolutionSettings = Pick<LaunchSpec, 'agent' | 'mode' | 'model' | 'effort'>;
 
+export interface Llm {
+  agent: Agent;
+  model: string | null;
+  effort: Effort | null;
+}
+
+export interface Persona {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  // Fournie par Cerebro (badge « fournie »), modifiable et supprimable.
+  builtin: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface Participant extends Llm {
+  personaId: string;
+}
+
+export interface CouncilSettings {
+  // Agent, modèle et effort par défaut de chaque persona (clé : personaId).
+  assignments: Record<string, Llm>;
+  // Participants cochés par défaut au lancement.
+  defaultPersonaIds: string[];
+  chairman: Llm;
+  readProject: boolean;
+}
+
+// Limites de l'API des personas.
+export const MAX_PERSONA_NAME_LENGTH = 80;
+export const MAX_PERSONA_DESCRIPTION_LENGTH = 300;
+export const MAX_PERSONA_PROMPT_LENGTH = 4000;
+export const MIN_PERSONAS = 2;
+// Nombre de conseillers d'un council (bornes du serveur).
+export const MIN_ADVISORS = 2;
+export const MAX_ADVISORS = 8;
+
+// Copie figée d'une persona jouée par un agent dans un run.
+export interface Advisor extends Participant {
+  name: string;
+  description: string;
+  prompt: string;
+}
+
+export type CouncilStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
+export type CouncilPhase = 'answering' | 'reviewing' | 'synthesizing' | 'finished';
+
+// advisorId : personaId du conseiller, unique dans un run.
+export interface CouncilAnswer {
+  advisorId: string;
+  text: string | null;
+  error: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+}
+
+export interface CouncilReview {
+  advisorId: string;
+  ranking: { letter: string; reason: string }[];
+  blindSpot: string | null;
+  missed: string | null;
+  error: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+}
+
+export interface CouncilSynthesis {
+  agreements: string;
+  disagreements: string;
+  blindSpots: string;
+  recommendation: string;
+  firstAction: string;
+}
+
+export interface CouncilRun {
+  id: string;
+  projectId: string | null;
+  origin: 'web' | 'slack';
+  question: string;
+  context: string;
+  readProject: boolean;
+  settings: CouncilSettings;
+  advisors: Advisor[];
+  status: CouncilStatus;
+  phase: CouncilPhase;
+  // advisorId -> lettre d'anonymisation.
+  letters: Record<string, string>;
+  answers: CouncilAnswer[];
+  reviews: CouncilReview[];
+  synthesis: CouncilSynthesis | null;
+  error: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+}
+
 export const STATUSES: readonly Status[] = ['starting', 'running', 'waiting', 'idle', 'exited'];
 
 export interface Project {
@@ -40,6 +137,8 @@ export interface Project {
   color: string | null;
   sessionDefaults: LaunchSpec;
   commitSettings: CommitSettings;
+  // null : le projet suit les réglages globaux du council.
+  councilSettings: CouncilSettings | null;
   resolutionSettings: ResolutionSettings;
   workspaceMode: WorkspaceMode;
   createdAt: number;
@@ -200,6 +299,120 @@ function asNullableNumber(v: unknown): number | null | undefined {
   return undefined;
 }
 
+function parseLlm(v: unknown): Llm | null {
+  if (!isRecord(v) || !isAgent(v.agent)) return null;
+  return { agent: v.agent, model: typeof v.model === 'string' ? v.model : null, effort: isEffort(v.effort) ? v.effort : null };
+}
+
+export function parseCouncilSettings(v: unknown): CouncilSettings | null {
+  if (!isRecord(v) || !isRecord(v.assignments) || !Array.isArray(v.defaultPersonaIds)) return null;
+  const chairman = parseLlm(v.chairman);
+  if (chairman === null) return null;
+  const assignments: Record<string, Llm> = {};
+  for (const [personaId, raw] of Object.entries(v.assignments)) {
+    const llm = parseLlm(raw);
+    if (llm !== null) assignments[personaId] = llm;
+  }
+  const defaultPersonaIds = v.defaultPersonaIds.filter((id): id is string => typeof id === 'string');
+  return { assignments, defaultPersonaIds, chairman, readProject: v.readProject !== false };
+}
+
+export function parsePersona(v: unknown): Persona | null {
+  if (!isRecord(v)) return null;
+  const id = asString(v.id);
+  const name = asString(v.name);
+  const prompt = asString(v.prompt);
+  if (id === null || name === null || prompt === null) return null;
+  const createdAt = asNumber(v.createdAt) ?? 0;
+  return {
+    id, name, prompt, description: asString(v.description) ?? '', builtin: v.builtin === true,
+    createdAt, updatedAt: asNumber(v.updatedAt) ?? createdAt,
+  };
+}
+
+export function parsePersonaList(v: unknown): Persona[] {
+  if (!Array.isArray(v)) return [];
+  return v.map(parsePersona).filter((p): p is Persona => p !== null);
+}
+
+const COUNCIL_STATUSES: readonly CouncilStatus[] = ['running', 'succeeded', 'failed', 'cancelled', 'interrupted'];
+const COUNCIL_PHASES: readonly CouncilPhase[] = ['answering', 'reviewing', 'synthesizing', 'finished'];
+
+function asText(v: unknown): string | null {
+  return typeof v === 'string' ? v : null;
+}
+
+function parseAdvisor(v: unknown): Advisor | null {
+  if (!isRecord(v)) return null;
+  const llm = parseLlm(v);
+  const personaId = asString(v.personaId);
+  const name = asString(v.name);
+  if (llm === null || personaId === null || name === null) return null;
+  return { ...llm, personaId, name, description: asText(v.description) ?? '', prompt: asText(v.prompt) ?? '' };
+}
+
+function parseCouncilAnswer(v: unknown): CouncilAnswer | null {
+  if (!isRecord(v)) return null;
+  const advisorId = asString(v.advisorId);
+  if (advisorId === null) return null;
+  return {
+    advisorId, text: asText(v.text), error: asText(v.error),
+    startedAt: asNumber(v.startedAt) ?? 0, finishedAt: asNumber(v.finishedAt),
+  };
+}
+
+function parseCouncilReview(v: unknown): CouncilReview | null {
+  if (!isRecord(v)) return null;
+  const advisorId = asString(v.advisorId);
+  if (advisorId === null) return null;
+  const ranking = Array.isArray(v.ranking)
+    ? v.ranking.flatMap((r) => (isRecord(r) && typeof r.letter === 'string' ? [{ letter: r.letter, reason: asText(r.reason) ?? '' }] : []))
+    : [];
+  return {
+    advisorId, ranking, blindSpot: asText(v.blindSpot), missed: asText(v.missed), error: asText(v.error),
+    startedAt: asNumber(v.startedAt) ?? 0, finishedAt: asNumber(v.finishedAt),
+  };
+}
+
+function parseCouncilSynthesis(v: unknown): CouncilSynthesis | null {
+  if (!isRecord(v)) return null;
+  return {
+    agreements: asText(v.agreements) ?? '', disagreements: asText(v.disagreements) ?? '',
+    blindSpots: asText(v.blindSpots) ?? '', recommendation: asText(v.recommendation) ?? '',
+    firstAction: asText(v.firstAction) ?? '',
+  };
+}
+
+function parseItems<T>(v: unknown, parse: (item: unknown) => T | null): T[] {
+  return Array.isArray(v) ? v.map(parse).filter((item): item is T => item !== null) : [];
+}
+
+export function parseCouncilRun(v: unknown): CouncilRun | null {
+  if (!isRecord(v)) return null;
+  const id = asString(v.id);
+  const question = asString(v.question);
+  const settings = parseCouncilSettings(v.settings);
+  const status = COUNCIL_STATUSES.find((s) => s === v.status);
+  const phase = COUNCIL_PHASES.find((p) => p === v.phase);
+  const startedAt = asNumber(v.startedAt);
+  if (id === null || question === null || settings === null || status === undefined || phase === undefined || startedAt === null) return null;
+  const letters: Record<string, string> = {};
+  if (isRecord(v.letters)) {
+    for (const [advisorId, letter] of Object.entries(v.letters)) if (typeof letter === 'string') letters[advisorId] = letter;
+  }
+  return {
+    id, projectId: asString(v.projectId), origin: v.origin === 'slack' ? 'slack' : 'web', question,
+    context: asText(v.context) ?? '', readProject: v.readProject === true, settings,
+    advisors: parseItems(v.advisors, parseAdvisor), status, phase, letters,
+    answers: parseItems(v.answers, parseCouncilAnswer), reviews: parseItems(v.reviews, parseCouncilReview),
+    synthesis: parseCouncilSynthesis(v.synthesis), error: asText(v.error), startedAt, finishedAt: asNumber(v.finishedAt),
+  };
+}
+
+export function parseCouncilRunList(v: unknown): CouncilRun[] {
+  return parseItems(v, parseCouncilRun);
+}
+
 export function parseProject(v: unknown): Project | null {
   if (!isRecord(v)) return null;
   const id = asString(v.id);
@@ -233,7 +446,8 @@ export function parseProject(v: unknown): Project | null {
     effort: isEffort(resolution.effort) ? resolution.effort : null,
   };
   const workspaceMode:WorkspaceMode=v.workspaceMode==='shared'?'shared':'isolated';
-  return { id, name, path, color, sessionDefaults, commitSettings, resolutionSettings, workspaceMode, createdAt };
+  const councilSettings = parseCouncilSettings(v.councilSettings);
+  return { id, name, path, color, sessionDefaults, commitSettings, resolutionSettings, councilSettings, workspaceMode, createdAt };
 }
 
 export function parseSession(v: unknown): Session | null {

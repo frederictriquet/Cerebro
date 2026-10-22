@@ -3,7 +3,8 @@ import { useEffect, useState } from 'react';
 export type Route =
   | { kind: 'home' }
   | { kind: 'project'; projectId: string }
-  | { kind: 'session'; sessionId: string; panel?: 'findings' };
+  | { kind: 'session'; sessionId: string; panel?: 'findings' }
+  | { kind: 'council'; councilId: string };
 
 const MACHINE_ID = /^[a-z0-9-]{1,32}$/;
 
@@ -30,6 +31,9 @@ export function parseHash(hash: string): Route {
   }
   if (routeParts[0] === 's' && routeParts[1] !== undefined && routeParts[1].length > 0) {
     return { kind: 'session', sessionId: decodeURIComponent(routeParts[1]), ...(routeParts[2] === 'findings' ? { panel: 'findings' as const } : {}) };
+  }
+  if (routeParts[0] === 'c' && routeParts[1] !== undefined && routeParts[1].length > 0) {
+    return { kind: 'council', councilId: decodeURIComponent(routeParts[1]) };
   }
   return { kind: 'home' };
 }

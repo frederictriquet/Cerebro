@@ -32,6 +32,46 @@ test('known operation success/failure uses no model, preserves question threads 
  assert.ok(notifier.operations.get('failed').notifiedAt);assert.equal(db.getSession('question').status,'waiting');
 });
 test('notification persistence survives notifier recreation without re-sending acknowledged results',async()=>{
- const {OperationResults}=await import('../server/operation-results.ts');const results=new OperationResults(db);const sent=[];results.wanted=()=>true;results.delay=()=>0;results.send=async result=>{sent.push(result.id);};
+ const {OperationResults}=await import('../server/operation-results.ts');const results=new OperationResults(db);const sent=[];results.wanted=()=>true;results.delay=()=>0;results.send=async result=>{sent.push(result.id);return true;};
  results.restore();await wait();assert.ok(!sent.includes('failed'));assert.ok(!sent.includes('seen-operation'));results.close();
+});
+
+test('operation results acknowledge only confirmed sends and leave skipped or failed sends retryable',async()=>{
+ const {OperationResults}=await import('../server/operation-results.ts');
+ const localDb=new CerebroDatabase(':memory:');const results=new OperationResults(localDb);
+ results.wanted=()=>true;results.delay=()=>60_000;
+ const id='council:pending';
+ try{
+  results.record({id,projectId:null,sessionId:null,kind:'council',ok:true,summary:'Résultat local',startedAt:Date.now()-1000,finishedAt:Date.now()});
+  await results.deliver(id);assert.equal(results.get(id).notifiedAt,null);
+  results.send=async()=>false;
+  await results.deliver(id);assert.equal(results.get(id).notifiedAt,null);
+  results.send=async()=>{throw new Error('Échec Slack');};
+  await assert.rejects(results.deliver(id),/Échec Slack/);assert.equal(results.get(id).notifiedAt,null);
+  let sent=0;results.send=async()=>{sent++;return true;};
+  await Promise.all([results.deliver(id),results.deliver(id)]);
+  assert.ok(results.get(id).notifiedAt);assert.equal(sent,1);
+  await results.deliver(id);assert.equal(sent,1);
+ }finally{results.close();localDb.close();}
+});
+
+test('an operation skipped for another project owner stays pending until an actual post',async t=>{
+ notifier.updateSettings({idle:true});
+ let local=false;t.mock.method(peers,'owns',()=>local);
+ const id='pending-owner';const n=posted.length;
+ notifier.operations.record({id,projectId:project.id,sessionId:null,kind:'command',ok:true,summary:'Commande terminée',startedAt:Date.now()-1000,finishedAt:Date.now()});
+ await notifier.operations.deliver(id);
+ assert.equal(posted.length,n);assert.equal(notifier.operations.get(id).notifiedAt,null);
+ local=true;await notifier.operations.deliver(id);
+ assert.equal(posted.length,n+1);assert.ok(notifier.operations.get(id).notifiedAt);
+});
+
+test('an operation seen during peer coordination is not acknowledged as sent',async()=>{
+ const previous=peers.ready;const ready=Promise.withResolvers();peers.ready=ready.promise;
+ const id='seen-during-coordination';const n=posted.length;
+ try{
+  notifier.operations.record({id,projectId:project.id,sessionId:null,kind:'command',ok:true,summary:'Résultat consulté',startedAt:Date.now()-1000,finishedAt:Date.now()});
+  const delivery=notifier.operations.deliver(id);notifier.operations.seen(id);ready.resolve();await delivery;
+  assert.equal(posted.length,n);assert.ok(notifier.operations.get(id).seenAt);assert.equal(notifier.operations.get(id).notifiedAt,null);
+ }finally{ready.resolve();peers.ready=previous;}
 });

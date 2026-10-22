@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { DATA_DIR } from './config.ts';
+import { convertLegacyCouncilSettings, DEFAULT_PERSONAS, isLegacyCouncilSettings, withoutPersona } from './council.ts';
+import type { CouncilRun, CouncilSettings, Persona, PersonaInput } from './council.ts';
 
 export type Agent = 'claude' | 'codex' | 'grok';
 export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
@@ -61,6 +63,8 @@ export interface Project {
   color: string | null;
   sessionDefaults: SessionDefaults;
   commitSettings: CommitSettings;
+  // null : le projet suit les réglages globaux du council.
+  councilSettings: CouncilSettings | null;
   resolutionSettings: ResolutionSettings;
   workspaceMode: WorkspaceMode;
   createdAt: number;
@@ -138,6 +142,7 @@ interface ProjectRow {
   color: string | null;
   session_defaults: string | null;
   commit_settings: string | null;
+  council_settings: string | null;
   resolution_settings: string | null;
   workspace_mode: WorkspaceMode;
   created_at: number;
@@ -218,11 +223,29 @@ function taskFromRow(row: TaskRow, dependsOn: string[]): Task {
   };
 }
 
+interface PersonaRow {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  builtin: number;
+  created_at: number | null;
+  updated_at: number | null;
+}
+
+function personaFromRow(row: PersonaRow): Persona {
+  return {
+    id: row.id, name: row.name, description: row.description, prompt: row.prompt, builtin: row.builtin === 1,
+    createdAt: row.created_at ?? 0, updatedAt: row.updated_at ?? row.created_at ?? 0,
+  };
+}
+
 function projectFromRow(row: ProjectRow): Project {
   return {
     id: row.id, name: row.name, path: row.path, color: row.color ?? null, createdAt: row.created_at,
     sessionDefaults: row.session_defaults === null ? { ...DEFAULT_SESSION_DEFAULTS } : JSON.parse(row.session_defaults),
     commitSettings: row.commit_settings ? JSON.parse(row.commit_settings) : { ...DEFAULT_COMMIT_SETTINGS },
+    councilSettings: row.council_settings ? JSON.parse(row.council_settings) : null,
     resolutionSettings: row.resolution_settings ? JSON.parse(row.resolution_settings) : { ...DEFAULT_RESOLUTION_SETTINGS },
     workspaceMode: row.workspace_mode ?? 'isolated',
   };
@@ -424,7 +447,42 @@ export class CerebroDatabase {
     if (!commitColumns.some(column => column.name === 'resolution_settings')) this.connection.exec('ALTER TABLE projects ADD COLUMN resolution_settings TEXT');
     this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commits (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
     this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commit_requests (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, scope TEXT NOT NULL, push INTEGER NOT NULL)');
+    this.connection.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS council_runs (id TEXT PRIMARY KEY, project_id TEXT, data TEXT NOT NULL);`);
+    const councilColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as {name:string}[];
+    if (!councilColumns.some(column => column.name === 'council_settings')) this.connection.exec('ALTER TABLE projects ADD COLUMN council_settings TEXT');
+    this.connection.exec(`CREATE TABLE IF NOT EXISTS personas (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+      prompt TEXT NOT NULL, builtin INTEGER NOT NULL DEFAULT 0, created_at INTEGER, updated_at INTEGER)`);
+    this.seedPersonas();
+    this.convertLegacyCouncilSettings();
     this.allowAutoMode();
+  }
+
+  // Une seule fois par base : une persona par défaut supprimée n'est jamais réinsérée.
+  private seedPersonas(): void {
+    if (this.getSetting('personas_seeded') !== null) return;
+    const now = Date.now();
+    const insert = this.connection.prepare('INSERT OR IGNORE INTO personas (id, name, description, prompt, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)');
+    for (const persona of DEFAULT_PERSONAS) insert.run(persona.id, persona.name, persona.description, persona.prompt, now, now);
+    this.putSetting('personas_seeded', true);
+  }
+
+  // Réglages enregistrés au format `advisors[]` (conseillers embarqués) : passage au catalogue de personas.
+  private convertLegacyCouncilSettings(): void {
+    const convert = (raw: unknown): CouncilSettings | null => {
+      if (!isLegacyCouncilSettings(raw)) return null;
+      const { settings, created } = convertLegacyCouncilSettings(raw, this.listPersonas());
+      const insert = this.connection.prepare('INSERT INTO personas (id, name, description, prompt, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)');
+      for (const persona of created) insert.run(persona.id, persona.name, persona.description, persona.prompt, persona.createdAt, persona.updatedAt);
+      return settings;
+    };
+    const global = convert(this.getSetting('council'));
+    if (global !== null) this.putSetting('council', global);
+    const rows = this.connection.prepare('SELECT id, council_settings FROM projects WHERE council_settings IS NOT NULL').all() as { id: string; council_settings: string }[];
+    for (const row of rows) {
+      const settings = convert(JSON.parse(row.council_settings));
+      if (settings !== null) this.connection.prepare('UPDATE projects SET council_settings = ? WHERE id = ?').run(JSON.stringify(settings), row.id);
+    }
   }
 
   private backfillSessionEpics(): void {
@@ -500,7 +558,7 @@ export class CerebroDatabase {
 
   createProject(name: string, path: string, workspaceMode: WorkspaceMode = 'isolated'): Project {
     const project: Project = {
-      id: randomUUID(), name, path, color: null, sessionDefaults: { ...DEFAULT_SESSION_DEFAULTS }, commitSettings: { ...DEFAULT_COMMIT_SETTINGS }, resolutionSettings: { ...DEFAULT_RESOLUTION_SETTINGS }, workspaceMode, createdAt: Date.now(),
+      id: randomUUID(), name, path, color: null, sessionDefaults: { ...DEFAULT_SESSION_DEFAULTS }, commitSettings: { ...DEFAULT_COMMIT_SETTINGS }, councilSettings: null, resolutionSettings: { ...DEFAULT_RESOLUTION_SETTINGS }, workspaceMode, createdAt: Date.now(),
     };
     this.connection.prepare(`INSERT INTO projects (id, name, path, created_at, workspace_mode, sort_order)
       VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM projects))`)
@@ -508,13 +566,100 @@ export class CerebroDatabase {
     return project;
   }
 
-  updateProject(id: string, changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'resolutionSettings' | 'workspaceMode'>>): Project | null {
+  updateProject(id: string, changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'resolutionSettings' | 'councilSettings' | 'workspaceMode'>>): Project | null {
     const current = this.getProject(id);
     if (current === null) return null;
     const next = { ...current, ...changes };
-    this.connection.prepare('UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, resolution_settings = ?, workspace_mode = ? WHERE id = ?')
-      .run(next.name, next.path, next.color, JSON.stringify(next.sessionDefaults), JSON.stringify(next.commitSettings), JSON.stringify(next.resolutionSettings), next.workspaceMode, id);
+    this.connection.prepare('UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, resolution_settings = ?, council_settings = ?, workspace_mode = ? WHERE id = ?')
+      .run(next.name, next.path, next.color, JSON.stringify(next.sessionDefaults), JSON.stringify(next.commitSettings), JSON.stringify(next.resolutionSettings),
+        next.councilSettings === null ? null : JSON.stringify(next.councilSettings), next.workspaceMode, id);
     return next;
+  }
+
+  // Réglages globaux de la machine, stockés en JSON par clé.
+  getSetting<T>(key: string): T | null {
+    const row = this.connection.prepare('SELECT data FROM settings WHERE key = ?').get(key) as { data: string } | undefined;
+    return row === undefined ? null : JSON.parse(row.data) as T;
+  }
+
+  putSetting(key: string, value: unknown): void {
+    this.connection.prepare('INSERT INTO settings (key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data')
+      .run(key, JSON.stringify(value));
+  }
+
+  listPersonas(): Persona[] {
+    return (this.connection.prepare('SELECT * FROM personas ORDER BY created_at, rowid').all() as unknown as PersonaRow[]).map(personaFromRow);
+  }
+
+  getPersona(id: string): Persona | null {
+    const row = this.connection.prepare('SELECT * FROM personas WHERE id = ?').get(id) as PersonaRow | undefined;
+    return row === undefined ? null : personaFromRow(row);
+  }
+
+  createPersona(input: PersonaInput): Persona {
+    const now = Date.now();
+    const persona: Persona = { id: randomUUID(), ...input, builtin: false, createdAt: now, updatedAt: now };
+    this.connection.prepare('INSERT INTO personas (id, name, description, prompt, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)')
+      .run(persona.id, persona.name, persona.description, persona.prompt, now, now);
+    return persona;
+  }
+
+  updatePersona(id: string, changes: Partial<PersonaInput>): Persona | null {
+    const current = this.getPersona(id);
+    if (current === null) return null;
+    const next = { ...current, ...changes, updatedAt: Date.now() };
+    this.connection.prepare('UPDATE personas SET name = ?, description = ?, prompt = ?, updated_at = ? WHERE id = ?')
+      .run(next.name, next.description, next.prompt, next.updatedAt, id);
+    return next;
+  }
+
+  // Retire aussi la persona des réglages globaux et des surcharges projet ; les runs gardent leur copie.
+  deletePersona(id: string): boolean {
+    this.connection.exec('BEGIN');
+    try {
+      const deleted = Number(this.connection.prepare('DELETE FROM personas WHERE id = ?').run(id).changes) > 0;
+      if (deleted) {
+        const remaining = this.listPersonas();
+        const global = this.getSetting<CouncilSettings>('council');
+        if (global !== null) this.putSetting('council', withoutPersona(global, id, remaining));
+        const rows = this.connection.prepare('SELECT id, council_settings FROM projects WHERE council_settings IS NOT NULL').all() as { id: string; council_settings: string }[];
+        const update = this.connection.prepare('UPDATE projects SET council_settings = ? WHERE id = ?');
+        for (const row of rows) update.run(JSON.stringify(withoutPersona(JSON.parse(row.council_settings), id, remaining)), row.id);
+      }
+      this.connection.exec('COMMIT');
+      return deleted;
+    } catch (error) {
+      this.connection.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  saveCouncilRun(run: CouncilRun): boolean {
+    // Une fin d'appel tardive ne doit jamais recréer un rapport après suppression du projet.
+    return Number(this.connection.prepare(`INSERT INTO council_runs (id, project_id, data)
+      SELECT ?, ?, ? WHERE ? IS NULL OR EXISTS (SELECT 1 FROM projects WHERE id = ?)
+      ON CONFLICT(id) DO UPDATE SET project_id = excluded.project_id, data = excluded.data`)
+      .run(run.id, run.projectId, JSON.stringify(run), run.projectId, run.projectId).changes) > 0;
+  }
+
+  getCouncilRun(id: string): CouncilRun | null {
+    const row = this.connection.prepare('SELECT data FROM council_runs WHERE id = ?').get(id) as { data: string } | undefined;
+    return row === undefined ? null : JSON.parse(row.data) as CouncilRun;
+  }
+
+  // undefined : tous les runs ; null : ceux lancés hors projet. Les plus récents d'abord.
+  listCouncilRuns(projectId?: string | null): CouncilRun[] {
+    const order = "ORDER BY json_extract(data, '$.startedAt') DESC, rowid DESC";
+    const rows = projectId === undefined
+      ? this.connection.prepare(`SELECT data FROM council_runs ${order}`).all()
+      : projectId === null
+        ? this.connection.prepare(`SELECT data FROM council_runs WHERE project_id IS NULL ${order}`).all()
+        : this.connection.prepare(`SELECT data FROM council_runs WHERE project_id = ? ${order}`).all(projectId);
+    return (rows as { data: string }[]).map((row) => JSON.parse(row.data) as CouncilRun);
+  }
+
+  deleteCouncilRun(id: string): boolean {
+    return Number(this.connection.prepare('DELETE FROM council_runs WHERE id = ?').run(id).changes) > 0;
   }
 
   setSessionDefaults(projectId: string, defaults: SessionDefaults): void {
@@ -526,6 +671,7 @@ export class CerebroDatabase {
     if (this.listProjectSessions(id).some((session) => session.protected)) {
       throw new SessionProtectionError('Ce projet contient des sessions protégées. Décochez leur protection avant de le supprimer.');
     }
+    this.connection.prepare('DELETE FROM council_runs WHERE project_id = ?').run(id);
     return Number(this.connection.prepare('DELETE FROM projects WHERE id = ?').run(id).changes) > 0;
   }
 

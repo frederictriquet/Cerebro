@@ -91,6 +91,14 @@ lecture de ces commandes nécessite le scope Bot Token `im:history`. Envoyez `he
 active et la façon de répondre dans un fil. `list` (ou `liste`, `projets`) affiche seulement
 la liste des projets avec leur session active.
 
+`council: question` réunit le [council](#council) hors projet, sans accès aux
+fichiers ; `projet/council: question` le réunit sur un projet, avec les réglages
+effectifs de ce projet (participants par défaut et lecture du dépôt comprise). Le
+mot-clé `council` prime sur un projet qui porterait ce nom. Un sablier marque le
+message pendant les quelques minutes d'exécution, puis la recommandation, la
+première action, les accords et les désaccords sont publiés dans le fil avec le
+lien du rapport, sans notification séparée.
+
 Écrivez `? question` pour interroger Cerebro en langage libre, par exemple
 `? où en sont les tâches du projet ACME ?`. Claude (CLI `claude` locale, via le SDK)
 répond dans le fil à partir de l'état des projets, sessions, epics et tâches de la
@@ -126,8 +134,8 @@ reconnues exactement. Les autres questions conservent le traitement Claude décr
 ci-dessus ; une commande `etat` invalide affiche l'aide sans appeler de modèle.
 
 Si plusieurs machines lisent le même message privé, une seule traite les
-commandes sans projet : `help`, `list`, `? question`, messages non reconnus et
-projets introuvables. Par défaut, Cerebro la choisit automatiquement parmi les
+commandes sans projet : `help`, `list`, `? question`, `council: question`,
+messages non reconnus et projets introuvables. Par défaut, Cerebro la choisit automatiquement parmi les
 machines actives. Pour imposer la machine, cochez « Commandes générales » dans
 le panneau Slack de la barre latérale de cette machine. Le choix est partagé
 avec les autres machines ; pour le changer, cochez la case sur une autre machine.
@@ -753,8 +761,12 @@ lancement dont l'issue est incertaine n'est rejoué automatiquement.
 
 ## Notifications factuelles
 
-Les résultats structurés des pushes, commits, commandes et exécutions d'epic
-produisent leurs notifications en code, avec durée et statut effectif. Le succès
+Les résultats structurés des pushes, commits, commandes, exécutions d'epic et
+councils produisent leurs notifications en code, avec durée et statut effectif.
+Un council lancé depuis le web hors projet est notifié par la machine qui l'exécute,
+même si une autre machine traite les commandes générales Slack. Un council lancé
+depuis Slack répond dans son fil, sans notification séparée. Un résultat est marqué
+notifié uniquement après confirmation de l'envoi par Slack. Le succès
 d'une commande ou la fin d'un tour n'attestent pas la validation du travail.
 Les préférences existantes s'appliquent : résultats réussis via **idle**, échecs ou
 blocages via **waiting**, délai configurable et choix de la machine répondante.
@@ -874,3 +886,132 @@ changé restent protégés. Une confirmation devient invalide si Git a changé e
 sa préparation et son exécution. La suppression passe par Git sans `--force` et
 conserve la branche, les commits et la conversation. La conversation reste lisible,
 mais sa reprise est refusée lorsque son worktree a été supprimé.
+
+## Council
+
+Le council soumet une question ou une décision à plusieurs conseillers LLM, puis
+fait synthétiser leurs avis. Chaque conseiller associe une **persona** (un angle de
+réflexion) à un **agent** (`claude`, `codex` ou `grok`), avec son modèle et son
+effort : le même angle peut être joué par des modèles différents, et un même modèle
+peut tenir plusieurs angles. Un council réunit de 2 à 8 conseillers et se déroule en
+trois phases, sans session interactive :
+
+1. **Réponses** : chaque conseiller répond indépendamment et en parallèle, en
+   assumant son angle (150 à 300 mots demandés).
+2. **Relecture croisée anonymisée** : chaque conseiller ayant répondu relit les
+   réponses des autres, désignées par une lettre tirée au hasard pour chaque
+   council (ni l'ordre de lancement ni la persona ne se devinent), jamais la
+   sienne. Il les classe toutes de la meilleure à la moins bonne avec une raison
+   courte, signale l'angle mort le plus important et ce que toutes ont manqué.
+   Les rangs sont agrégés en rang moyen.
+3. **Synthèse du chairman** : un agent désigné reçoit les réponses avec leurs
+   auteurs révélés, les relectures et le classement agrégé, qu'il traite comme un
+   signal et non comme un vote. Il rédige les points d'accord, les désaccords, les
+   angles morts, sa recommandation et la première action à mener.
+
+Un council de N conseillers coûte **2N + 1 appels LLM** (N réponses, au plus N
+relectures, une synthèse) ; le formulaire affiche ce nombre avant le lancement.
+Chaque appel est borné : 10 minutes pour une réponse, 5 pour une relecture, 10 pour
+la synthèse. Les réponses, relectures et la synthèse sont conservées avec le run.
+
+### Personas
+
+Les personas forment un catalogue propre à la machine : nom, description brève
+(300 caractères au plus) et prompt (4 000 caractères au plus). Cinq personas sont
+fournies à la première ouverture de la base : **Contrarien** (cherche la faille
+fatale), **Premiers principes** (repart du vrai problème), **Expansionniste**
+(potentiel inexploité, effet de levier), **Outsider** (regard naïf d'un nouveau
+venu) et **Exécutant** (plan concret, premier résultat vérifiable). Elles portent
+le badge « fournie » mais se modifient et se suppriment comme les autres ; une
+persona fournie supprimée n'est jamais réinsérée.
+
+**Gérer les personas** (dans les réglages du council) ou **Nouvelle persona** (dans le
+formulaire de lancement) ouvre le catalogue : créer, modifier, supprimer. Le
+catalogue garde au moins deux personas. Supprimer une persona la retire des
+réglages globaux et des réglages des projets ; les rapports existants conservent
+la copie de la persona figée au lancement.
+
+### Réglages globaux et surcharge par projet
+
+Les **Réglages** du council indiquent, pour chaque persona, l'agent, le modèle et
+l'effort qui la jouent par défaut, les personas cochées par défaut au lancement
+(de 2 à 8), le chairman et la valeur par défaut de « Lire le projet ». Ouverts
+depuis l'accueil, ils s'appliquent à toute la machine : councils hors projet,
+commandes Slack et projets sans réglages propres. Ouverts depuis un projet, ils
+créent une surcharge propre à ce projet ; **Revenir aux réglages globaux** la
+supprime. Tant qu'aucun réglage n'est enregistré, toutes les personas sont cochées,
+réparties en tourniquet sur les agents disponibles, avec `claude` comme chairman
+et la lecture du projet activée.
+
+### Lancer un council
+
+- **Depuis un projet** : bouton **Council** de l'en-tête du projet.
+- **Depuis l'accueil** : carte **Council**, pour une question hors projet.
+- **Depuis Slack** : `council: question` (hors projet) ou
+  `projet/council: question` (voir ci-dessous).
+
+Le formulaire demande la question, un contexte facultatif (contraintes, options
+envisagées…) et les participants : les personas cochées par défaut sont
+proposées, et l'agent, le modèle et l'effort de chacune peuvent être changés pour
+ce lancement seulement, sans modifier les réglages. **Convoquer** lance le council
+et ouvre son rapport ; la liste des councils précédents du projet (ou de l'accueil)
+figure sous le formulaire, avec suppression des runs terminés.
+
+Depuis un projet, la case **Laisser les conseillers lire le projet** (valeur par
+défaut issue des réglages) donne aux conseillers, pendant la phase de réponse
+seulement, un accès en lecture seule au dossier du projet ; ils sont invités à
+citer les fichiers sur lesquels ils s'appuient. Les relectures et la synthèse
+portent uniquement sur les réponses. Hors projet, et pour les relectures et la
+synthèse, aucun outil ni fichier n'est accessible : l'agent travaille dans un
+dossier temporaire vide. Les options passées aux CLI :
+
+| Agent | Sans outils | Lecture seule du dépôt |
+|---|---|---|
+| `claude` | `--print --tools ""` | `--print --tools Read,Glob,Grep --max-turns 30` |
+| `codex` | `exec --sandbox read-only --disable shell_tool` | `exec --sandbox read-only` (shell conservé pour `cat`/`rg`, écriture interdite par le bac à sable) |
+| `grok` | `--tools "" --deny '*' --max-turns 2` | `--tools Read,Glob,Grep --allow Read --allow Glob --allow Grep --max-turns 30` |
+
+Dans tous les cas : sortie JSON validée par un schéma, aucun serveur MCP
+(`--strict-mcp-config` pour Claude ; pour Codex, `--ignore-user-config --ignore-rules` :
+ni serveurs MCP, ni plugins, ni règles, ni approbation des projets, donc jamais le
+`.codex/config.toml` d'un projet ; seuls le modèle, l'effort par défaut et les réglages
+d'authentification de `~/.codex/config.toml` sont repris), pas de recherche web ni de sous-agents pour Codex et Grok,
+`--permission-mode dontAsk` pour Claude et Grok, `approval_policy="never"` pour
+Codex. Les variables `CEREBRO_*` ne sont pas transmises. Le contenu des fichiers,
+du contexte et des réponses citées est présenté aux agents comme une donnée, jamais
+comme une instruction.
+
+### Rapport et suites
+
+Le rapport s'ouvre sur `#/c/<id>`. Pendant l'exécution, il montre la phase en cours
+et l'état de chaque conseiller ; **Annuler** arrête le council et **Continuer en
+arrière-plan** quitte la page sans l'interrompre. Le résultat est ensuite notifié
+comme les autres opérations (voir [Notifications factuelles](#notifications-factuelles)),
+avec un lien vers le rapport. Le rapport présente la synthèse, l'avis de chaque
+conseiller (lettre, persona, agent), les relectures croisées et le classement
+agrégé.
+
+Le panneau **Suites** propose, quand une synthèse existe :
+
+- **Ajouter au backlog** : une tâche préremplie avec la recommandation, la
+  première action et le lien du rapport, modifiable avant ajout ;
+- **Ouvrir une session** : la synthèse devient le prompt du formulaire « Nouvelle
+  session » du projet (à la suite d'un éventuel brouillon), où l'agent se choisit
+  avant de lancer ;
+- **Exporter en Markdown** (toujours disponible) : question, contexte, synthèse,
+  avis, relectures et classement agrégé dans un fichier `council-<id>.md`.
+
+Pour un council hors projet, les deux premières suites demandent le projet cible.
+
+### Échecs et limites
+
+- Un conseiller en échec (délai, sortie invalide) n'arrête pas le council ; il en
+  faut au moins deux réponses pour la relecture croisée, sinon le council échoue.
+  Une relecture invalide (lettre manquante, en double ou inconnue) est écartée du
+  classement. Un échec de la synthèse fait échouer le council, en conservant les
+  réponses et relectures obtenues.
+- Les tokens consommés par les appels headless du council n'apparaissent pas dans
+  les [statistiques d'usage](#statistiques-dutilisation-des-llm).
+- Un council en cours lors d'un arrêt ou d'un redémarrage du serveur est marqué
+  interrompu, avec les avis déjà obtenus ; il n'est jamais rejoué automatiquement.
+- Supprimer un projet supprime ses councils.
