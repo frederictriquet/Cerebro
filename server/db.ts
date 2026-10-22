@@ -76,6 +76,10 @@ export interface Session {
   updatedAt: number;
   // Copie de travail isolée de la conversation ; null quand elle travaille dans le dossier du projet.
   worktree: SessionWorktree | null;
+  // Origine conservée même après nettoyage du backlog.
+  epic: { id: string; title: string } | null;
+  // Findings publiés qui n’ont pas encore été importés dans le backlog.
+  pendingFindings: number;
 }
 
 export interface SessionWorktree {
@@ -147,6 +151,9 @@ interface SessionRow {
   created_at: number;
   updated_at: number;
   workspace: string | null;
+  epic_id: string | null;
+  resolved_epic_title: string | null;
+  pending_findings: number;
 }
 
 interface TaskRow {
@@ -219,7 +226,13 @@ function worktreeFromWorkspace(data: string | null): SessionWorktree | null {
   };
 }
 
-const SESSION_SELECT = 'SELECT s.*, w.data AS workspace FROM sessions s LEFT JOIN session_workspaces w ON w.session_id = s.id';
+const SESSION_SELECT = `SELECT s.*, w.data AS workspace, COALESCE(e.title, s.epic_title) AS resolved_epic_title,
+  (SELECT COUNT(*) FROM review_reports r, json_each(r.data, '$.findings') f
+    WHERE r.session_id = s.id AND NOT EXISTS (
+      SELECT 1 FROM finding_imports i WHERE i.report_id = r.id AND i.finding_id = json_extract(f.value, '$.id')
+    )) AS pending_findings
+  FROM sessions s LEFT JOIN session_workspaces w ON w.session_id = s.id
+  LEFT JOIN epics e ON e.id = s.epic_id AND e.project_id = s.project_id`;
 
 function sessionFromRow(row: SessionRow): Session {
   return {
@@ -240,6 +253,8 @@ function sessionFromRow(row: SessionRow): Session {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     worktree: worktreeFromWorkspace(row.workspace),
+    epic: row.epic_id && row.resolved_epic_title !== null ? { id: row.epic_id, title: row.resolved_epic_title } : null,
+    pendingFindings: row.pending_findings,
   };
 }
 
@@ -334,8 +349,12 @@ export class CerebroDatabase {
       CREATE TABLE IF NOT EXISTS operation_results (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS notification_turns (session_id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, ended_at INTEGER, custom_at INTEGER, relayed_at INTEGER, automatic_at INTEGER);
       CREATE TABLE IF NOT EXISTS epic_runs (id TEXT PRIMARY KEY, epic_id TEXT NOT NULL, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS epic_workspaces (epic_id TEXT PRIMARY KEY REFERENCES epics(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS command_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, data TEXT NOT NULL);
     `);
+    // Contextes mémorisés avant la vérification complète des historiques : ils seront recontrôlés.
+    const epicWorkspaceColumns = this.connection.prepare('PRAGMA table_info(epic_workspaces)').all() as unknown as { name: string }[];
+    if (!epicWorkspaceColumns.some((column) => column.name === 'verified')) this.connection.exec('ALTER TABLE epic_workspaces ADD COLUMN verified INTEGER NOT NULL DEFAULT 0');
     this.connection.exec('CREATE INDEX IF NOT EXISTS tasks_epic_id ON tasks(epic_id)');
     const columns = this.connection.prepare('PRAGMA table_info(sessions)').all() as unknown as { name: string }[];
     if (!columns.some((column) => column.name === 'protected')) {
@@ -346,6 +365,21 @@ export class CerebroDatabase {
     }
     for (const column of ['model', 'effort']) {
       if (!columns.some((c) => c.name === column)) this.connection.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
+    }
+    const epicColumns = ['epic_id', 'epic_title'];
+    if (epicColumns.some((name) => !columns.some((column) => column.name === name))) {
+      // Le schéma et la reprise de l'historique doivent être validés ensemble.
+      this.connection.exec('BEGIN');
+      try {
+        for (const name of epicColumns) {
+          if (!columns.some((column) => column.name === name)) this.connection.exec(`ALTER TABLE sessions ADD COLUMN ${name} TEXT`);
+        }
+        this.backfillSessionEpics();
+        this.connection.exec('COMMIT');
+      } catch (error) {
+        this.connection.exec('ROLLBACK');
+        throw error;
+      }
     }
     const projectColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as unknown as { name: string }[];
     if (!projectColumns.some((column) => column.name === 'sort_order')) {
@@ -378,6 +412,23 @@ export class CerebroDatabase {
     this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commits (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
     this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commit_requests (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, scope TEXT NOT NULL, push INTEGER NOT NULL)');
     this.allowAutoMode();
+  }
+
+  private backfillSessionEpics(): void {
+    const sessions = this.connection.prepare('SELECT id, project_id, prompt FROM sessions').all() as { id: string; project_id: string; prompt: string }[];
+    const fromRun = this.connection.prepare(`SELECT e.id, e.title FROM epic_runs r
+      JOIN epics e ON e.id = r.epic_id WHERE r.id = ? AND e.project_id = ?`);
+    const fromTasks = this.connection.prepare(`SELECT DISTINCT e.id, e.title FROM tasks t
+      JOIN epics e ON e.id = t.epic_id WHERE t.session_id = ? AND t.project_id = ? AND e.project_id = t.project_id`);
+    const save = this.connection.prepare('UPDATE sessions SET epic_id = ?, epic_title = ? WHERE id = ?');
+    for (const session of sessions) {
+      // Les marqueurs identifient aussi les anciennes tentatives remplacées sur la tâche.
+      const marker = /^\[CEREBRO_EPIC_STEP ([^\s\]]+) [^\s\]]+\](?:\r?\n|$)/.exec(session.prompt);
+      const origin = marker ? fromRun.get(marker[1], session.project_id) as { id: string; title: string } | undefined : undefined;
+      const candidates = origin ? [origin] : fromTasks.all(session.id, session.project_id) as { id: string; title: string }[];
+      // Aucun rapprochement sur le titre : deux epics peuvent porter le même nom.
+      if (candidates.length === 1) save.run(candidates[0].id, candidates[0].title, session.id);
+    }
   }
 
   // SQLite ne permet pas de modifier une contrainte CHECK : on reconstruit la table.
@@ -483,7 +534,10 @@ export class CerebroDatabase {
   createSession(
     input: Pick<Session, 'id' | 'projectId' | 'agent' | 'mode' | 'model' | 'effort' | 'prompt' | 'title' | 'status' | 'agentSessionId'>,
     hookToken: string,
+    epicId: string | null = null,
   ): Session {
+    const epic = epicId === null ? null : this.getEpic(epicId);
+    if (epicId !== null && (!epic || epic.projectId !== input.projectId)) throw new Error('Epic introuvable dans ce projet');
     const now = Date.now();
     const session: Session = {
       ...input,
@@ -494,16 +548,19 @@ export class CerebroDatabase {
       createdAt: now,
       updatedAt: now,
       worktree: null,
+      epic: epic ? { id: epic.id, title: epic.title } : null,
+      pendingFindings: 0,
     };
     this.connection.prepare(`
       INSERT INTO sessions (
         id, project_id, agent, mode, prompt, title, status, attention,
-        attention_reason, agent_session_id, exit_code, hook_token, created_at, updated_at, model, effort
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        attention_reason, agent_session_id, exit_code, hook_token, created_at, updated_at, model, effort, epic_id, epic_title
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       session.id, session.projectId, session.agent, session.mode, session.prompt,
       session.title, session.status, 0, null, session.agentSessionId, null, hookToken,
       session.createdAt, session.updatedAt, session.model, session.effort,
+      session.epic?.id ?? null, session.epic?.title ?? null,
     );
     return session;
   }
@@ -670,6 +727,7 @@ export class CerebroDatabase {
     const next = { ...current, ...changes, updatedAt: Date.now() };
     this.connection.prepare('UPDATE epics SET title = ?, description = ?, updated_at = ? WHERE id = ?')
       .run(next.title, next.description, next.updatedAt, id);
+    this.connection.prepare('UPDATE sessions SET epic_title = ? WHERE epic_id = ?').run(next.title, id);
     return next;
   }
 

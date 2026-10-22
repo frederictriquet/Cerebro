@@ -1,12 +1,14 @@
 import { useRef } from 'react';
 import { AgentLabel } from './AgentLabel.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
+import { FindingsLink } from './FindingsLink.tsx';
 import { SessionProtection, SESSION_PROTECTED_HINT } from './SessionProtection.tsx';
 import { displayStatus, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { go, href } from './route.ts';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
+import { groupedSessionTitle } from './session-groups.ts';
 import type { Project, Session } from './types.ts';
 import { RELEASE_HINT, WorktreeLabel, resumeBlockedReason } from './WorktreeLabel.tsx';
 
@@ -14,11 +16,13 @@ export function SessionRow({
   session,
   now,
   project,
+  grouped = false,
   onError,
 }: {
   session: Session;
   now: number;
   project?: Pick<Project, 'id' | 'name'>;
+  grouped?: boolean;
   onError: (message: string) => void;
 }) {
   const { killSession, resumeSession, deleteSession, sendSessionInput } = useStore();
@@ -45,12 +49,12 @@ export function SessionRow({
   const resumeBlocked = resumeBlockedReason(session.worktree);
 
   return (
-    <li className="session-row">
+    <li className={`session-row${session.pendingFindings > 0 ? ' has-findings' : ''}`}>
       <div className="session-row-main">
         <a href={href(`#/s/${session.id}`)} className="session-main">
           <span className="session-row-titleline">
             <StatusDot status={shown} title={STATUS_LABEL[shown]} />
-            <span className="session-row-title">{sessionTitle(session.title)}</span>
+            <span className="session-row-title">{grouped ? groupedSessionTitle(session) : sessionTitle(session.title)}</span>
           </span>
           <span className="session-row-meta">
             <span className="pill"><AgentLabel agent={session.agent} /></span>
@@ -59,6 +63,7 @@ export function SessionRow({
             <span className="meta">{relativeTime(session.updatedAt, now)}</span>
           </span>
         </a>
+        <FindingsLink sessionId={session.id} count={session.pendingFindings} />
         {awaiting && session.attentionReason ? (
           <p className={`reason-line ${tone}`}>{session.attentionReason}</p>
         ) : null}

@@ -8,7 +8,7 @@ import { Worktrees } from './Worktrees.tsx';
 import { GitStatus } from './GitStatus.tsx';
 import { CommitSettingsDialog } from './CommitSettingsDialog.tsx';
 import { isDormant } from './format.ts';
-import { SessionRow } from './SessionRow.tsx';
+import { SessionList } from './SessionList.tsx';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
@@ -102,7 +102,7 @@ function WorkspaceModeControl({ project }: { project: Project }) {
   };
 
   return (
-    <div className="workspace-mode" title="Travail des conversations : dossier utilisé par les nouvelles conversations de ce projet">
+    <div className="workspace-mode" title="Dossier des nouveaux contextes de travail. Les epics déjà commencés conservent leur dossier d’origine, y compris pour les corrections de review.">
       <ChoiceGroup<WorkspaceMode>
         compact
         label="Travail des conversations"
@@ -112,12 +112,12 @@ function WorkspaceModeControl({ project }: { project: Project }) {
           {
             value: 'isolated',
             label: 'Worktree Git par conversation',
-            title: 'Chaque nouvelle conversation utilise un worktree Git : un dossier isolé avec sa propre branche, dont le travail peut ensuite être intégré au projet',
+            title: 'Les nouvelles conversations indépendantes utilisent un worktree Git. Les étapes d’un epic commencé continuent dans son dossier d’origine.',
           },
           {
             value: 'shared',
             label: 'Dossier du projet',
-            title: `Les nouvelles conversations travaillent directement dans ${project.path}, sur sa branche courante, sans création ni suppression de branche`,
+            title: `Les nouvelles conversations indépendantes travaillent dans ${project.path}. Les epics déjà commencés conservent leur dossier d’origine.`,
           },
         ]}
         onChange={(mode) => void change(mode)}
@@ -319,7 +319,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
             ) : null}
           </div>
           <NewSessionForm
-            key={project.id}
+            key={`new-session-${project.id}`}
             className="project-create"
             heading="Nouvelle session"
             projectId={project.id}
@@ -331,16 +331,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
           {kids.length === 0 ? (
             <p className="empty-hint">Aucune session pour ce projet.</p>
           ) : (
-            <ul className="session-table">
-              {kids.map((s) => (
-                <SessionRow
-                  key={s.id}
-                  session={s}
-                  now={now}
-                  onError={setError}
-                />
-              ))}
-            </ul>
+            <SessionList key={`sessions-${project.id}`} sessions={kids} now={now} onError={setError} />
           )}
         </section>
 

@@ -13,6 +13,7 @@ const exec = promisify(execFile);
 const git = async (path: string, args: string[], index?: string): Promise<string> => (await exec('git', ['-C', path, ...args], {
   maxBuffer: 8 * 1024 * 1024, env: {...process.env, GIT_OPTIONAL_LOCKS: '0', ...(index ? {GIT_INDEX_FILE:index} : {})},
 })).stdout.trim();
+export interface WorkspaceContext { mode: 'isolated' | 'shared' | 'unknown'; path: string }
 export interface Workspace {
   sessionId: string;
   projectId?: string;
@@ -168,6 +169,19 @@ export async function joinWorkspace(db: CerebroDatabase, sessionId: string, owne
   // Work left by previous steps is inherited, exactly like changes present in a project at copy creation.
   return save(db,{...owner,sessionId,baseline:await manifest(owner.root,excluded),initialDirty:[...new Set([...dirty,...staged,...untracked])].filter(inScope),
     reason:`${owner.reason} Copie partagée avec les étapes précédentes de l’epic.`,createdAt:Date.now()});
+}
+
+/** A started epic keeps its original location even when the project preference changes. */
+export async function createWorkspaceInContext(db: CerebroDatabase, sessionId: string, project: Project, context: WorkspaceContext): Promise<Workspace> {
+  if (context.mode === 'isolated') {
+    const owner = workspaceAt(db, context.path);
+    if (!owner || owner.projectId && owner.projectId !== project.id) throw new Error('Le worktree d’origine de l’epic est introuvable dans ce projet.');
+    return joinWorkspace(db, sessionId, owner);
+  }
+  const root = await git(context.path, ['rev-parse', '--show-toplevel']).catch(() => context.path);
+  return save(db, {sessionId, projectId:project.id, projectName:project.name, projectRoot:root,
+    mode:context.mode, path:context.path, root, source:root, base:null, branch:null, initialDirty:[], baseline:{},
+    reason:'Dossier d’origine de l’epic, conservé indépendamment du réglage des nouvelles conversations.', createdAt:Date.now()});
 }
 
 export function historicalWorkspace(sessionId: string, path: string): Workspace {

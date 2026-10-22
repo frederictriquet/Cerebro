@@ -60,6 +60,13 @@ export interface Session {
   createdAt: number;
   updatedAt: number;
   worktree: SessionWorktree | null;
+  epic: SessionEpic | null;
+  pendingFindings: number;
+}
+
+export interface SessionEpic {
+  id: string;
+  title: string;
 }
 
 export interface SessionWorktree {
@@ -136,6 +143,7 @@ export type EventsMessage =
   | { type: 'epic-deleted'; id: string }
   | { type: 'projects'; projects: Project[] }
   | { type: 'alert'; session: Session }
+  | { type: 'findings-available'; session: Session }
   | { type: 'peers' };
 
 export type TermClientMessage =
@@ -267,6 +275,10 @@ export function parseSession(v: unknown): Session | null {
     createdAt,
     updatedAt,
     worktree,
+    // Serveurs antérieurs : le lien peut encore être retrouvé par les tâches.
+    epic: isRecord(v.epic) && typeof v.epic.id === 'string' && typeof v.epic.title === 'string'
+      ? { id: v.epic.id, title: v.epic.title } : null,
+    pendingFindings: typeof v.pendingFindings === 'number' && Number.isSafeInteger(v.pendingFindings) && v.pendingFindings >= 0 ? v.pendingFindings : 0,
   };
 }
 
@@ -463,9 +475,10 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
     }
     case 'projects':
       return { type: 'projects', projects: parseProjectList(v.projects) };
-    case 'alert': {
+    case 'alert':
+    case 'findings-available': {
       const session = parseSession(v.session);
-      return session ? { type: 'alert', session } : null;
+      return session ? { type: v.type, session } : null;
     }
     case 'peers':
       return { type: 'peers' };
