@@ -19,6 +19,26 @@
 .findings-notice-copy strong { font-size: 14px; }
 .findings-notice-copy > span { color: var(--muted); font-size: 12px; }
 .findings-notice-action { margin-left: auto; color: var(--accent); font-weight: 600; white-space: nowrap; }
+.findings-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 5px 9px;
+  border: 1px solid color-mix(in srgb, var(--waiting) 55%, var(--line));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--waiting) 12%, var(--bg-1));
+  color: var(--waiting);
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+}
+.findings-link svg, .findings-link > span { flex-shrink: 0; }
+.findings-link:hover { background: color-mix(in srgb, var(--waiting) 22%, var(--bg-1)); text-decoration: none; }
+.findings-link:focus-visible { outline: 2px solid var(--waiting); outline-offset: 2px; }
+.session-row.has-findings { box-shadow: inset 3px 0 var(--waiting); }
+.session-row-main > .findings-link { margin: 6px 0 0 16px; }
+.attention-extra > .findings-link { align-self: stretch; }
 .session-drawer.findings-drawer { max-height: 65vh; min-height: 0; flex-shrink: 1; padding: 20px 42px 20px 16px; }
 .findings-panel { max-width: 1200px; margin: 0 auto; }
 .findings-panel-heading { margin-bottom: 20px; }
@@ -29,6 +49,11 @@
 .finding-report-header { margin-bottom: 12px; }
 .finding-report-header > div { min-width: 0; flex: 1 1 240px; }
 .finding-report h3 { margin: 0 0 4px; font-size: 14px; overflow-wrap: anywhere; }
+.finding-import-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; width: 100%; }
+.finding-report-routing { min-width: 0; }
+.finding-report-routing label { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin: 0; }
+.finding-report-routing select { width: 100%; min-width: 0; max-width: 100%; }
+.finding-report-routing p { margin: 0; }
 .finding-cards { display: grid; gap: 12px; }
 .finding-card { border: 1px solid var(--line); border-radius: 8px; padding: 16px; background: var(--bg-2); }
 .finding-card.selected { border-color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
@@ -63,5 +88,6 @@
   .findings-panel-heading { padding-right: 32px; }
   .finding-card { padding: 12px; }
   .finding-details { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .finding-import-actions { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .finding-report-footer .btn { width: 100%; }
 }

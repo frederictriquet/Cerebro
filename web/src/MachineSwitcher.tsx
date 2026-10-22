@@ -16,7 +16,8 @@ import {
   type RemoteVersionStatus,
   type VersionInfo,
 } from './api.ts';
-import { playAlert, readMuted, showAlertNotification } from './notify.ts';
+import { playAlert, readMuted, showAlertNotification, showFindingsNotification } from './notify.ts';
+import { needsAttention } from './format.ts';
 import { goMachine, useMachine } from './route.ts';
 import { useStore } from './store.tsx';
 import { parseEventsMessage, type Session } from './types.ts';
@@ -54,7 +55,7 @@ function countAttention(list: Session[]): AttentionCounts {
   let total = 0;
   let waiting = 0;
   for (const session of list) {
-    if (!session.attention) continue;
+    if (!needsAttention(session)) continue;
     total += 1;
     if (session.status === 'waiting') waiting += 1;
   }
@@ -210,6 +211,12 @@ function startWatcher(
           publish(true);
           showAlertNotification(msg.session, target.machineId);
           if (!readMuted()) playAlert(msg.session.status);
+          break;
+        case 'findings-available':
+          sessions = upsertSession(sessions, msg.session);
+          publish(true);
+          showFindingsNotification(msg.session, target.machineId);
+          if (!readMuted()) playAlert('idle');
           break;
         case 'projects':
           break;

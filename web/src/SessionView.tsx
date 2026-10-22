@@ -18,12 +18,13 @@ import { AddTaskDialog, LaunchSessionDialog } from './Dialog.tsx';
 import { displayStatus, MODE_LABEL, STATUS_LABEL, sessionTitle } from './format.ts';
 import { SessionGitActions } from './GitActions.tsx';
 import { SessionProtection, SESSION_PROTECTED_HINT } from './SessionProtection.tsx';
-import { go, href, useNow } from './route.ts';
+import { go, href, parseHash, useNow } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { SessionTasksPanel, useSessionTasks, sessionTasksState, TASK_STATE_LABELS } from './SessionTasks.tsx';
 import { useStore } from './store.tsx';
 import { Term, type TermApi } from './Term.tsx';
 import { RELEASE_HINT, WorktreeLabel, resumeBlockedReason } from './WorktreeLabel.tsx';
+import { SessionEpicBadge } from './SessionEpicBadge.tsx';
 
 type SessionDrawer = 'provenance' | 'findings' | 'tasks' | null;
 
@@ -373,10 +374,24 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const sessionTasks = useSessionTasks(sessionId);
   const taskState = sessionTasksState(sessionTasks.tasks);
   const [drawer, setDrawer] = useState<SessionDrawer>(null);
-  const toggleDrawer = (next: Exclude<SessionDrawer, null>): void => setDrawer((current) => (current === next ? null : next));
+  const showDrawer = (next: SessionDrawer): void => {
+    const route = parseHash(window.location.hash);
+    if (next !== 'findings' && route.kind === 'session' && route.sessionId === sessionId && route.panel === 'findings') {
+      window.history.replaceState(window.history.state, '', href(`#/s/${sessionId}`));
+    }
+    setDrawer(next);
+  };
+  const toggleDrawer = (next: Exclude<SessionDrawer, null>): void => showDrawer(drawer === next ? null : next);
 
   useEffect(() => {
     setDrawer(null);
+    const onNavigate = (): void => {
+      const route = parseHash(window.location.hash);
+      if (route.kind === 'session' && route.sessionId === sessionId) setDrawer(route.panel === 'findings' ? 'findings' : null);
+    };
+    onNavigate();
+    window.addEventListener('hashchange', onNavigate);
+    return () => window.removeEventListener('hashchange', onNavigate);
   }, [sessionId]);
 
   useEffect(() => {
@@ -445,6 +460,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               {sessionTasks.error ? ' · indisponible' : ''}
             </button>
             <WorktreeLabel worktree={session.worktree} />
+            <SessionEpicBadge session={session} />
             {project ? (
               <a className="project-crumb" href={href(`#/p/${project.id}`)}>
                 {project.name}
@@ -485,7 +501,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       <FindingsNotice reports={findings.reports} expanded={drawer === 'findings'} onToggle={() => toggleDrawer('findings')} />
       {drawer !== null ? (
         <section id={drawer === 'findings' ? 'session-findings' : undefined} className={`session-drawer${drawer === 'findings' ? ' findings-drawer' : ''}`} aria-label={drawer === 'findings' ? 'Résultats de la review' : undefined}>
-          <button type="button" className="btn session-drawer-close" aria-label="Fermer" onClick={() => setDrawer(null)}>
+          <button type="button" className="btn session-drawer-close" aria-label="Fermer" onClick={() => showDrawer(null)}>
             ×
           </button>
           {drawer === 'tasks' ? (
@@ -493,7 +509,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           ) : drawer === 'provenance' ? (
             <ProvenancePanel {...provenance} />
           ) : (
-            <FindingsPanel key={session.id} sessionId={session.id} reports={findings.reports} refresh={findings.refresh} />
+            <FindingsPanel key={session.id} sessionId={session.id} epic={session.epic} reports={findings.reports} refresh={findings.refresh} />
           )}
         </section>
       ) : null}

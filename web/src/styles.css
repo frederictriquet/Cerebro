@@ -2790,6 +2790,23 @@ a.btn:hover {
   overflow: hidden;
 }
 
+.session-epic-badge {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 7px;
+  border: 1px solid rgba(122, 162, 247, 0.3);
+  border-radius: 4px;
+  background: rgba(122, 162, 247, 0.08);
+  color: var(--accent);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attention-link > .session-epic-badge { grid-column: 2; justify-self: start; }
+
 .epic-progress > span {
   display: block;
   height: 100%;
@@ -2853,6 +2870,50 @@ a.btn:hover {
   color: var(--text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.epic-workspace-picker {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--waiting);
+  border-radius: 6px;
+  background: var(--bg-2);
+  overflow-wrap: anywhere;
+}
+
+.epic-workspace-picker p {
+  margin: 0;
+}
+
+.epic-workspace-picker > button {
+  justify-self: start;
+}
+
+.epic-workspace-choice {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.epic-workspace-choice label {
+  display: flex;
+  align-items: start;
+  gap: 8px;
+}
+
+.epic-workspace-choice label code {
+  display: block;
+  white-space: pre-wrap;
+}
+
+.epic-workspace-choice ul {
+  margin: 6px 0;
+  padding-left: 20px;
+  max-height: 200px;
+  overflow: auto;
 }
 
 .epic-description {

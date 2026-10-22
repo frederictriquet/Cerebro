@@ -15,11 +15,11 @@ export const STATUS_LABEL: Record<DisplayStatus, string> = {
   dormant: 'En sommeil',
 };
 
-export function isDormant(session: Pick<Session, 'status' | 'updatedAt'>, now: number): boolean {
-  return (session.status === 'idle' || session.status === 'exited') && now - session.updatedAt >= DORMANT_AFTER_MS;
+export function isDormant(session: Pick<Session, 'status' | 'updatedAt'> & Partial<Pick<Session, 'pendingFindings'>>, now: number): boolean {
+  return !session.pendingFindings && (session.status === 'idle' || session.status === 'exited') && now - session.updatedAt >= DORMANT_AFTER_MS;
 }
 
-export function displayStatus(session: Pick<Session, 'status' | 'updatedAt'>, now: number): DisplayStatus {
+export function displayStatus(session: Pick<Session, 'status' | 'updatedAt'> & Partial<Pick<Session, 'pendingFindings'>>, now: number): DisplayStatus {
   return isDormant(session, now) ? 'dormant' : session.status;
 }
 
@@ -33,6 +33,10 @@ export const MODE_LABEL: Record<Mode, string> = {
 
 export function isAwaiting(session: Pick<Session, 'attention' | 'status'>): boolean {
   return session.attention || session.status === 'waiting';
+}
+
+export function needsAttention(session: Pick<Session, 'attention' | 'pendingFindings'>): boolean {
+  return session.attention || session.pendingFindings > 0;
 }
 
 export const MODE_CHIP: Record<Mode, string> = {
