@@ -90,4 +90,5 @@ test('the prompt tells where each starting content can be read, and leaves the t
  assert.match(prompt,/`git show 0123456789abcdef:c` \(commit 0123456 « Projet » de main\)/);
  assert.match(prompt,/main a reçu 2 commits depuis la création : ne les intègre pas/);
  assert.match(prompt,/git log base0\.\.HEAD/);assert.doesNotMatch(prompt,/Conversation d’origine/);assert.doesNotMatch(prompt,/seront traités automatiquement/);
+ assert.match(prompt,/reconnaît automatiquement les fichiers dont le contenu de départ a disparu/);
 });

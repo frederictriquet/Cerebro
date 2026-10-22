@@ -56,5 +56,5 @@ Contraintes :
 - Ne crée aucun commit, ne fais ni merge, ni rebase, ni stash, ni checkout de branche : les changements restent non commités pour être relus.
 - Ne modifie pas le dossier du projet (${view.targetPath ?? 'dossier cible'}).${plan.targetUpdate ? `\n- ${target} a reçu ${plan.targetUpdate.commits} commit${plan.targetUpdate.commits === 1 ? '' : 's'} depuis la création : ne les intègre pas, Cerebro le fera au retrait du contenu de départ. Travaille par rapport à HEAD de la copie.` : ''}
 
-Termine par un bilan court, fichier par fichier : résolu (ce qui a été retiré, ce qui a été gardé) ou laissé à examiner (pourquoi). Rappelle ensuite les étapes suivantes dans Cerebro : « Retirer le contenu de départ » pour les fichiers restants, puis « Créer le commit ».`;
+Termine par un bilan court, fichier par fichier : résolu (ce qui a été retiré, ce qui a été gardé) ou laissé à examiner (pourquoi). Rappelle ensuite les étapes suivantes dans Cerebro : relire tes changements, puis ouvrir « Retirer le contenu de départ… » dans la copie. Cerebro y reconnaît automatiquement les fichiers dont le contenu de départ a disparu ; les autres s’y valident en cochant leur diff une fois vérifié. Viendra ensuite « Créer le commit ».`;
 }

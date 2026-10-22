@@ -36,6 +36,8 @@ interface Journey {
   next: string | null;
   inherited: StartingContentStep['path'][];
   mixed: { path: string; origin: StartingOrigin | null; separable: boolean }[];
+  /** Files edited since the copy whose starting content is gone: only the removal action settles them. */
+  settled: { path: string; origin: StartingOrigin | null }[];
   ownWork: number;
   save: StepState;
   update: StepState;
@@ -46,6 +48,7 @@ function journey(view: WorktreeView): Journey {
   const starting = view.startingContent ?? [];
   const inherited = starting.filter(file=>file.state==='inherited').map(file=>file.path);
   const mixed = starting.filter(file=>file.state==='mixed');
+  const settled = starting.filter(file=>file.state==='settled');
   const ownWork = changes ? changes.count-changes.needsReviewCount : 0;
   const target = branchName(view.targetBranch);
   const dirty = !!view.dirty;
@@ -58,7 +61,8 @@ function journey(view: WorktreeView): Journey {
   if(view.error){status='État indisponible';next=null;}
   else if(view.mergeInProgress){status='Conflits à résoudre';next=view.conflicts.length?`Résolvez les conflits dans la copie (${fileCount(view.conflicts.length)}), puis terminez la mise à jour.`:'Les conflits sont résolus : terminez la mise à jour.';}
   else if(dirty&&!view.ahead&&!changes?.count){status='Copie de départ';next='Aucun travail de la conversation : la copie ne contient que le contenu copié du projet.';}
-  else if(dirty&&(inherited.length||mixed.some(file=>file.separable))){status='Contenu de départ à retirer';next=`Retirez le contenu copié du projet à la création (${fileCount(inherited.length+mixed.filter(file=>file.separable).length)}), pour ne garder que le travail de la conversation.`;}
+  else if(dirty&&(inherited.length||mixed.some(file=>file.separable))){status='Contenu de départ à retirer';next=`Retirez le contenu copié du projet à la création (${fileCount(inherited.length+mixed.filter(file=>file.separable).length+settled.length)}), pour ne garder que le travail de la conversation.`;}
+  else if(dirty&&settled.length){status='Contenu de départ à retirer';next=`Le contenu de départ a déjà disparu de ${fileCount(settled.length)} : « Retirer le contenu de départ » ${settled.length===1?'le rattache':'les rattache'} au travail de la conversation, sans ${settled.length===1?'le':'les'} modifier.`;}
   else if(dirty&&ownWork){status='Travail à enregistrer';next=mixed.length?`Créez le commit du travail de la conversation, puis commitez tel${mixed.length===1?'':'s'} quel${mixed.length===1?'':'s'} ${fileCount(mixed.length)} après lecture de ${mixed.length===1?'son':'leur'} diff.`:'Créez le commit du travail de la conversation.';}
   else if(dirty&&mixed.length){status='Fichiers à commiter tels quels';next=`Lisez le diff de ${fileCount(mixed.length)} qui mêlent contenu de départ et travail récent, puis commitez-${mixed.length===1?'le tel quel':'les tels quels'}.`;}
   else if(dirty){status='Changements à examiner';next=`Examinez ${fileCount(view.dirty!)} : leur origine ne peut pas être vérifiée automatiquement.`;}
@@ -67,7 +71,7 @@ function journey(view: WorktreeView): Journey {
   else if(view.ahead){status='Prêt à intégrer';next=`Intégrez ${view.ahead===1?'le commit':`les ${view.ahead} commits`} dans ${target}.`;}
   else if(view.integration==='integrated'){status='Intégré au projet';next=`Le travail est dans ${target} sur cette machine. Utilisez « Push » dans l’en-tête du projet pour le publier.`;}
   else {status='État à vérifier';next=null;}
-  return {status,next,inherited,mixed:mixed.map(({path,origin,separable})=>({path,origin,separable})),ownWork,save,update,integrate};
+  return {status,next,inherited,mixed:mixed.map(({path,origin,separable})=>({path,origin,separable})),settled:settled.map(({path,origin})=>({path,origin})),ownWork,save,update,integrate};
 }
 const STEP_LABEL: Record<StepState,string> = {done:'Fait',todo:'À faire',blocked:'Bloqué',waiting:'En attente'};
 function Step({number,title,state,children}:{number:number;title:string;state:StepState;children?:ReactNode}) {
@@ -106,8 +110,8 @@ function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReview
   </div>;
 }
 
-const ACTION_LABEL: Record<StartingContentStep['action'],string> = {restore:'remis à l’état de la copie',separate:'seul le travail fait depuis la création est gardé',keep:'laissé tel quel, à examiner'};
-interface DiscardResult { restored:string[];separated:string[];kept:StartingContentStep[];targetUpdate:StartingContentPlan['targetUpdate'] }
+const ACTION_LABEL: Record<StartingContentStep['action'],string> = {restore:'remis à l’état de la copie',separate:'seul le travail fait depuis la création est gardé',settle:'rattaché tel quel au travail de la conversation',keep:'laissé tel quel, à examiner'};
+interface DiscardResult { restored:string[];separated:string[];settled:string[];kept:StartingContentStep[];targetUpdate:StartingContentPlan['targetUpdate'] }
 type Resolver = Pick<Session,'id'|'title'>;
 /** Preview, then removal of the content copied from the project when the copy was created. */
 function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeView;onClose:()=>void;onDone:(result:DiscardResult)=>void;onResolving:(session:Resolver)=>void}) {
@@ -117,6 +121,8 @@ function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeV
   const [plan,setPlan]=useState<StartingContentPlan|null>(null);
   const [busy,setBusy]=useState<'loading'|'running'|'resolving'|null>('loading');
   const [error,setError]=useState<string|null>(null);
+  // Kept files checked as holding only the conversation's work, with the content they were checked with.
+  const [confirmed,setConfirmed]=useState<Map<string,string>>(()=>new Map());
   const target=branchName(view.targetBranch);
   useEffect(()=>{
     let disposed=false;
@@ -128,7 +134,7 @@ function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeV
   },[view.id,machineBase]);
   const run=async():Promise<void>=>{
     setBusy('running');setError(null);
-    try{const result=await api<DiscardResult>(`/api/worktrees/${view.id}/discard-inherited`,{method:'POST'});if(apiBase()===machineBase)onDone(result);}
+    try{const result=await api<DiscardResult>(`/api/worktrees/${view.id}/discard-inherited`,{method:'POST',body:JSON.stringify({confirmed:[...confirmed].map(([path,version])=>({path,version}))})});if(apiBase()===machineBase)onDone(result);}
     catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
     finally{if(apiBase()===machineBase)setBusy(null);}
   };
@@ -139,7 +145,8 @@ function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeV
     catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
     finally{if(apiBase()===machineBase)setBusy(null);}
   };
-  const actionable=plan?.steps.some(step=>step.action!=='keep');
+  const actionable=plan?.steps.some(step=>step.action!=='keep')||confirmed.size>0;
+  const confirm=(step:StartingContentStep,checked:boolean):void=>setConfirmed(current=>{const next=new Map(current);if(checked&&step.version)next.set(step.path,step.version);else next.delete(step.path);return next;});
   const toReview=plan?.steps.filter(step=>step.action==='keep').length??0;
   return <Modal title="Retirer le contenu de départ" onClose={onClose}>
     <p>{copyTitle(view)}</p>
@@ -150,9 +157,10 @@ function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeV
       <code>{step.path}</code> — {ACTION_LABEL[step.action]}
       <div className="meta">Contenu de départ : {originLabel(step.origin,target)}</div>
       {step.reason?<div className={step.action==='keep'?'worktree-warning':'meta'}>{step.reason}</div>:null}
-      {step.diff?<details><summary>Travail gardé</summary><pre>{step.diff}</pre></details>:null}
+      {step.diff?<details><summary>{step.action==='keep'?'Changements non commités':'Travail gardé'}</summary><pre>{step.diff}</pre></details>:null}
+      {step.action==='keep'&&step.state==='mixed'&&step.version?<label className="worktree-reviewed"><input type="checkbox" checked={confirmed.has(step.path)} disabled={busy!==null} onChange={event=>confirm(step,event.target.checked)}/> Vérifié : ne contient que le travail de la conversation</label>:null}
     </li>)}</ul>:null}
-    {plan&&!actionable?<p className="worktree-warning">Aucun fichier ne peut être traité automatiquement : examinez-les dans les diffs{toReview?', ou confiez-les à l’IA':''}.</p>:null}
+    {plan&&!actionable?<p className="worktree-warning">Aucun fichier ne peut être traité automatiquement : examinez leurs changements, puis cochez ceux qui ne contiennent que le travail de la conversation{toReview?', ou confiez-les à l’IA':''}.</p>:null}
     {toReview?<p className="meta">« Résoudre avec l’IA » lance une session dans la copie pour séparer le contenu de départ du travail de la conversation dans {toReview===1?'le fichier laissé':`les ${toReview} fichiers laissés`} à examiner. Elle ne commite rien : relisez ensuite ses changements, puis retirez le contenu de départ restant.{settings?` Session : ${AGENT_LABEL[settings.agent]} · ${settings.model??'modèle par défaut'} · ${settings.effort??'effort par défaut'} · ${MODE_CHIP[settings.mode]} (« Réglages LLM » du projet).`:''}</p>:null}
     {error?<p className="form-error" role="alert">{error}</p>:null}
     <div className="row-actions">
@@ -269,7 +277,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
         const plan=journey(view);const target=branchName(view.targetBranch);
         const commitBlocked=disabled||!!view.error||view.mergeInProgress||view.activeSessions.some(session=>session.status!=='idle');
         const separable=plan.mixed.filter(file=>file.separable);const manual=plan.mixed.filter(file=>!file.separable);
-        const removable=plan.inherited.length>0||separable.length>0;
+        const removable=plan.inherited.length>0||separable.length>0||plan.settled.length>0;
         const result=results.get(view.id);const resolver=resolvers.get(view.id);
         const startDiscard=():void=>setDiscarding(view);
         const integrateTitle=view.mergeBlockers.join('\n')||(view.integrationConflicts?.length?`Conflits prévus : ${view.integrationConflicts.join(', ')}`:`Intégrer dans ${target}`);
@@ -321,6 +329,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
                   {result.targetUpdate?`Copie mise à jour avec ${branchName(result.targetUpdate.branch)}. `:''}
                   {result.restored.length?`${fileCount(result.restored.length)} remis à l’état de la copie. `:''}
                   {result.separated.length?`${fileCount(result.separated.length)} ${result.separated.length===1?'ne contient':'ne contiennent'} plus que le travail fait depuis la création. `:''}
+                  {result.settled?.length?`${fileCount(result.settled.length)} rattaché${result.settled.length===1?'':'s'} au travail de la conversation. `:''}
                   {result.kept.length?`Non séparé${result.kept.length===1?'':'s'} : ${result.kept.map(step=>step.path).join(', ')}, à commiter tel${result.kept.length===1?'':'s'} quel${result.kept.length===1?'':'s'} ci-dessous.`:''}
                 </p>:null}
                 {resolver?<p className="worktree-notice" role="status">Session de résolution lancée dans la copie : <a href={href(`#/s/${resolver.id}`)}>{sessionTitle(resolver.title)}</a>. Une fois son tour terminé, relisez ses changements dans les diffs, puis retirez le contenu de départ restant.</p>:null}
@@ -332,6 +341,10 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
                   <p><strong>{fileCount(separable.length)} mêlant contenu de départ et travail récent, séparable{separable.length===1?'':'s'}.</strong> Le contenu de départ peut en être retiré automatiquement, en gardant le travail fait dans la copie.</p>
                   <ul className="worktree-files">{separable.map(file=><li key={file.path}><code>{file.path}</code> <span className="meta">— contenu de départ {originLabel(file.origin,target)}</span></li>)}</ul>
                 </div>:null}
+                {!view.mergeInProgress&&plan.settled.length?<div className="worktree-group">
+                  <p><strong>{fileCount(plan.settled.length)} sans contenu de départ restant.</strong> {plan.settled.length===1?'Ses changements non commités ne contiennent':'Leurs changements non commités ne contiennent'} plus que du travail récent : le contenu de départ en a été retiré, par la conversation ou par une session de résolution.</p>
+                  <ul className="worktree-files">{plan.settled.map(file=><li key={file.path}><code>{file.path}</code> <span className="meta">— contenu de départ {originLabel(file.origin,target)}</span></li>)}</ul>
+                </div>:null}
                 {!view.mergeInProgress&&removable&&view.dirty?<button type="button" className="btn primary" disabled={commitBlocked} onClick={startDiscard}>Retirer le contenu de départ…</button>:null}
                 {!view.mergeInProgress&&plan.ownWork&&view.dirty?<div className="worktree-group">
                   <p><strong>{fileCount(plan.ownWork)} modifié{plan.ownWork===1?'':'s'} par la conversation.</strong> Le commit automatique ne prend que les fichiers dont l’origine est vérifiable.</p>
@@ -341,8 +354,8 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
                   {manual.length?<>
                     <p><strong>{fileCount(manual.length)} à commiter tel{manual.length===1?'':'s'} quel{manual.length===1?'':'s'}.</strong> {manual.length===1?'Il mêle':'Ils mêlent'} contenu de départ et travail récent, sans séparation automatique possible :</p>
                     <ul className="worktree-files">{manual.map(file=><li key={file.path}><code>{file.path}</code> <span className="worktree-warning">— {file.origin?`contenu de départ ${originLabel(file.origin,target)}, mais le travail récent touche les mêmes lignes ou a déjà été commité`:'contenu de départ introuvable'}</span></li>)}</ul>
-                    <p className="meta">Pour terminer cette étape, {manual.length===1?'lisez son diff puis cochez-le : le commit emportera aussi son':'lisez leur diff puis cochez-les : le commit emportera aussi leur'} contenu de départ. S’il diffère de {target}, l’écart apparaîtra comme conflit à l’étape 2 et se résoudra dans la copie. Pour ne garder que le travail de la conversation, confiez plutôt {manual.length===1?'ce fichier':'ces fichiers'} à l’IA : une session sépare le contenu de départ dans la copie, sans rien commiter.</p>
-                    <button type="button" className="btn" disabled={commitBlocked} onClick={startDiscard}>Résoudre avec l’IA…</button>
+                    <p className="meta">Pour terminer cette étape, {manual.length===1?'lisez son diff puis cochez-le : le commit emportera aussi son':'lisez leur diff puis cochez-les : le commit emportera aussi leur'} contenu de départ. S’il diffère de {target}, l’écart apparaîtra comme conflit à l’étape 2 et se résoudra dans la copie. Pour ne garder que le travail de la conversation, confiez plutôt {manual.length===1?'ce fichier':'ces fichiers'} à l’IA : une session sépare le contenu de départ dans la copie, sans rien commiter. Une fois ce tri fait, validez {manual.length===1?'le fichier':'les fichiers'} dans la même fenêtre après lecture de {manual.length===1?'son':'leur'} diff : {manual.length===1?'il est rattaché':'ils sont rattachés'} au travail de la conversation.</p>
+                    <button type="button" className="btn" disabled={commitBlocked} onClick={startDiscard}>Résoudre avec l’IA ou valider…</button>
                   </>:<p className="meta">L’origine de ces changements ne peut pas être vérifiée : lisez leur diff puis cochez ceux à commiter.</p>}
                   {showDetails?<WorktreeDiffs view={view} onCommitReviewed={commitBlocked?undefined:value=>{setReviewed(value);setCommitting(view);}}/>:null}
                 </div>:null}

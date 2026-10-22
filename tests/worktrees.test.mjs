@@ -426,6 +426,37 @@ test('a file whose recent changes overlap the starting content is left for a man
  await assert.rejects(f.manager.discardInherited(own.id),/Aucun contenu de départ ne peut être retiré automatiquement/);
  assert.equal(readFileSync(join(f.workspace.root,'doc'),'utf8'),document({2:'conversation over the project edit'}));
 },projectWithEditedDocument()));
+test('a file whose starting content was already taken out is settled unchanged as the conversation’s work',async()=>fixture(async f=>{
+ const copy=f.workspace.root;
+ // The conversation (or a resolution session) rewrote the file without the project's edit of line 2.
+ writeFileSync(join(copy,'doc'),document({3:'conversation'}));
+ let own=await f.view();
+ assert.deepEqual(own.startingContent.map(file=>[file.path,file.state,file.separable]),[['doc','settled',false]]);
+ const plan=await f.manager.startingContentPlan(own.id);
+ assert.deepEqual(plan.steps.map(step=>[step.path,step.state,step.action]),[['doc','settled','settle']]);
+ assert.match(plan.steps[0].diff,/^\+conversation$/m);
+ const result=await f.manager.discardInherited(own.id);
+ assert.deepEqual(result.settled,['doc']);assert.deepEqual(result.kept,[]);
+ assert.equal(readFileSync(join(copy,'doc'),'utf8'),document({3:'conversation'}));
+ own=await f.view();assert.deepEqual(own.startingContent,[]);assert.equal(own.changesSinceCreation.needsReviewCount,0);
+ assert.equal((await sessionProvenance(f.db,f.id)).changes.find(change=>change.path==='doc').certainty,'workspace');
+},projectWithEditedDocument()));
+test('a kept file is settled once checked, only with the content it was checked with',async()=>fixture(async f=>{
+ const copy=f.workspace.root;
+ writeFileSync(join(copy,'doc'),document({2:'conversation over the project edit'}));
+ let own=await f.view();
+ const plan=await f.manager.startingContentPlan(own.id);
+ assert.equal(plan.steps[0].action,'keep');assert.match(plan.steps[0].diff,/^\+conversation over the project edit$/m);
+ const confirmed=[{path:'doc',version:plan.steps[0].version}];
+ writeFileSync(join(copy,'doc'),document({2:'conversation, edited again'}));
+ await assert.rejects(f.manager.discardInherited(own.id,confirmed),/modifié depuis votre vérification/);
+ await assert.rejects(f.manager.discardInherited(own.id,[{path:'doc'}]),/Confirmations invalides/);
+ writeFileSync(join(copy,'doc'),document({2:'conversation over the project edit'}));
+ const result=await f.manager.discardInherited(own.id,confirmed);
+ assert.deepEqual(result.settled,['doc']);
+ assert.equal(readFileSync(join(copy,'doc'),'utf8'),document({2:'conversation over the project edit'}));
+ own=await f.view();assert.deepEqual(own.startingContent,[]);
+},projectWithEditedDocument()));
 test('conflicts with the target are forecast, then resolved in the copy by updating it',async()=>fixture(async f=>{
  const copy=f.workspace.root;f.commit('session work');
  writeFileSync(join(f.repo,'file'),'project work\n');git(f.repo,'commit','-am','project work');

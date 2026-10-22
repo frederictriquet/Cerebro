@@ -95,7 +95,7 @@ export interface WorktreeView extends WorktreeRecord {
   error: string | null;
   operation: WorktreeOperation | null;
   changesSinceCreation: {count:number;files:string[];inheritedCount:number;needsReviewCount:number} | null;
-  /** Dirty files still holding content copied from the project at creation (first 100). */
+  /** Dirty files holding content copied from the project at creation, or not yet confirmed free of it (first 100). */
   startingContent: StartingContent[] | null;
   /** Number of files with uncommitted changes in the target worktree, when it is known. */
   targetDirty: number | null;
@@ -114,8 +114,11 @@ export type StartingOrigin = { kind: 'target-commit'; commit: string; subject: s
 /** A dirty file of the copy that still holds content copied from the project at creation. */
 export interface StartingContent {
   path: string;
-  /** inherited: unchanged since the copy; mixed: copied content edited since, by the conversation or someone else. */
-  state: 'inherited' | 'mixed';
+  /**
+   * inherited: unchanged since the copy; mixed: copied content edited since, by the conversation or someone else;
+   * settled: edited since, and the copied content no longer appears in its uncommitted changes.
+   */
+  state: 'inherited' | 'mixed' | 'settled';
   /** null: this content now only exists in the copy. */
   origin: StartingOrigin | null;
   /** A mixed file whose starting content can be removed automatically, unless its recent changes overlap it. */
@@ -126,12 +129,19 @@ export interface StartingContentStep {
   path: string;
   state: StartingContent['state'];
   origin: StartingOrigin | null;
-  /** restore: back to the copy's last commit; separate: keep only the changes made since the copy; keep: left for a manual review. */
-  action: 'restore' | 'separate' | 'keep';
+  /**
+   * restore: back to the copy's last commit; separate: keep only the changes made since the copy; settle: no starting
+   * content left, the file becomes the conversation's work unchanged; keep: left for a manual review.
+   */
+  action: 'restore' | 'separate' | 'settle' | 'keep';
   reason: string | null;
-  /** Changes left to commit for this file once the action is applied. */
+  /** Changes left to commit for this file once the action is applied; for a kept file, its current changes. */
   diff: string;
+  /** Content the plan was made with: a confirmation applies to this content only. */
+  version: string | null;
 }
+/** A kept file the user checked: it only holds the conversation's work, as long as its content stays `version`. */
+export interface StartingConfirmation { path: string; version: string }
 export interface StartingContentPlan {
   /** The copy first receives the target's new commits, so the changes kept apply to its latest version. */
   targetUpdate: { branch: string; commits: number } | null;
@@ -255,6 +265,20 @@ async function contentDiff(cwd: string, file: string, before: Buffer | null, aft
     return `--- a/${file}\n+++ b/${file}\n${hunks}`;
   }
 }
+/**
+ * Lines a diff adds and removes. Lines without a letter or digit (blank lines, braces) are ignored: too common to
+ * tell two changes apart.
+ */
+function diffLines(diff: string): {added:Set<string>;removed:Set<string>} {
+  const added=new Set<string>();const removed=new Set<string>();
+  for(const line of diff.split('\n').slice(2)){
+    if(!/[\p{L}\p{N}]/u.test(line.slice(1)))continue;
+    if(line.startsWith('+'))added.add(line.slice(1));else if(line.startsWith('-'))removed.add(line.slice(1));
+  }
+  return {added,removed};
+}
+/** separable: its starting content can be removed automatically; removed: none is left in its uncommitted changes. */
+type StartingState = 'removed' | 'separable' | 'manual';
 function changedFiles(status: string): string[] {
   const entries = status.split('\0'); const files: string[] = [];
   for (let i = 0; i < entries.length; i++) {
@@ -271,7 +295,7 @@ export class WorktreeManager {
   private plans = new Map<string, { id: string; kind: 'merge' | 'remove'; fingerprint: string; expires: number }>();
   private startingCommits = new Map<string, {commit:string;subject:string} | null>();
   private forecasts = new Map<string, string[] | null>();
-  private separations = new Map<string, boolean>();
+  private separations = new Map<string, StartingState>();
   private forecastQueue: Promise<void> = Promise.resolve();
   private forecastQueued = new Set<string>();
   private pending = new Set<Promise<unknown>>();
@@ -441,8 +465,8 @@ export class WorktreeManager {
             if(!inherited)changed.push(file);
             if((inherited||workspace.initialDirty.includes(file))&&starting.length<100){
               const found=await this.findStarting(record.path,workspace,view.targetPath,view.targetHead,file).catch(()=>null);
-              const separable=!inherited&&!!found&&await this.separable(record.path,workspace,view.head!,file,found.content).catch(()=>false);
-              starting.push({path:file,state:inherited?'inherited':'mixed',origin:found?.origin??null,separable});
+              const state=!inherited&&found?await this.startingState(record.path,workspace,view.head!,file,found.content).catch(():StartingState=>'manual'):'manual';
+              starting.push({path:file,state:inherited?'inherited':state==='removed'?'settled':'mixed',origin:found?.origin??null,separable:state==='separable'});
             }
           }
           view.changesSinceCreation={count:changed.length,files:changed.slice(0,100),inheritedCount:files.length-changed.length,needsReviewCount:changed.filter(file=>workspace.initialDirty.includes(file)).length};
@@ -546,29 +570,50 @@ export class WorktreeManager {
     return null;
   }
   /**
-   * Whether removing the starting content of a mixed file succeeds against the copy's last commit: the file was
-   * not committed in the copy, and its recent changes do not touch the lines of the starting content.
+   * What is left of the starting content of a mixed file. Removed when none of the lines it added or removed is
+   * still added or removed by the file's uncommitted changes: the conversation or a resolution session already took
+   * it out. Otherwise separable when its removal succeeds against the copy's last commit: the file was not committed
+   * in the copy, and its recent changes do not touch the lines of the starting content.
    */
-  private async separable(path: string, workspace: Workspace, head: string, file: string, starting: () => Promise<Buffer>): Promise<boolean> {
+  private async startingState(path: string, workspace: Workspace, head: string, file: string, starting: () => Promise<Buffer>): Promise<StartingState> {
     const target=join(path,file);
     const key=[path,file,await workspaceFileSignature(target),workspace.baseline[file],head].join('\0');
     const cached=this.separations.get(key);
     if(cached!==undefined)return cached;
-    let result=false;
-    const committed=workspace.base?await git(path,['diff','--quiet',workspace.base,'HEAD','--',`:(literal)${file}`]).then(()=>false,()=>true):false;
+    let result:StartingState='manual';
     const last=await gitBytes(path,['cat-file','blob',`${head}:${file}`]).catch(()=>null);
     const current=await readFile(target).catch(()=>null);
-    if(!committed&&last&&current){
+    if(current){
       const temporary=await mkdtemp(join(tmpdir(),'cerebro-separable-'));
       try{
-        const base=join(temporary,'base');const other=join(temporary,'head');
-        await writeFile(base,await starting());await writeFile(other,last);
-        result=await git(path,['merge-file','-p',target,base,other]).then(()=>true,()=>false);
+        const copied=await starting();
+        if(await this.startingRemoved(path,workspace,file,copied,last,current,temporary))result='removed';
+        else{
+          const committed=workspace.base?await git(path,['diff','--quiet',workspace.base,'HEAD','--',`:(literal)${file}`]).then(()=>false,()=>true):false;
+          if(!committed&&last){
+            const base=join(temporary,'base');const other=join(temporary,'head');
+            await writeFile(base,copied);await writeFile(other,last);
+            if(await git(path,['merge-file','-p',target,base,other]).then(()=>true,()=>false))result='separable';
+          }
+        }
       }finally{await rm(temporary,{recursive:true,force:true});}
     }
     if(this.separations.size>=500)this.separations.delete(this.separations.keys().next().value!);
     this.separations.set(key,result);
     return result;
+  }
+  /**
+   * Whether none of the lines the starting content added or removed is still added or removed by the changes from
+   * `last` to `current`. False for binary content, which has no lines to compare, and for a starting content that
+   * only changed lines too common to recognize.
+   */
+  private async startingRemoved(path: string, workspace: Workspace, file: string, copied: Buffer, last: Buffer | null, current: Buffer, temporary: string): Promise<boolean> {
+    const base=workspace.base?await gitBytes(path,['cat-file','blob',`${workspace.base}:${file}`]).catch(()=>null):null;
+    if([copied,base,last,current].some(content=>content?.includes(0)))return false;
+    const brought=diffLines(await contentDiff(path,file,base,copied,temporary));
+    if(!brought.added.size&&!brought.removed.size)return false;
+    const left=diffLines(await contentDiff(path,file,last,current,temporary));
+    return ![...brought.added].some(line=>left.added.has(line))&&![...brought.removed].some(line=>left.removed.has(line));
   }
   private startingWorkspace(view: WorktreeView): Workspace {
     const row=view.sessionId?this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(view.sessionId) as {data:string}|undefined:undefined;
@@ -691,9 +736,10 @@ export class WorktreeManager {
   /**
    * Decides, file by file, how the starting content leaves the copy while the changes made since stay.
    * With `merge`, every dirty file is carried onto the merged version; null when one of the conversation's
-   * files cannot be, since writing it unchanged would silently undo the target's changes.
+   * files cannot be, since writing it unchanged would silently undo the target's changes. A mixed file without
+   * starting content left, or `confirmed` as such, is settled: it stays as is and becomes the conversation's work.
    */
-  private async planFiles(view: WorktreeView, workspace: Workspace, paths: string[], merge: TargetMerge | null, temporary: string): Promise<PlannedFile[] | null> {
+  private async planFiles(view: WorktreeView, workspace: Workspace, paths: string[], merge: TargetMerge | null, temporary: string, confirmed: StartingConfirmation[]): Promise<PlannedFile[] | null> {
     const planned:PlannedFile[]=[];
     const threeWay=async(current:Buffer,base:Buffer|null,other:Buffer|null):Promise<Buffer|null>=>{
       const files=['current','base','other'].map(name=>join(temporary,`plan-${name}`));
@@ -723,8 +769,20 @@ export class WorktreeManager {
         file.write=carried;continue;
       }
       const found=await this.findStarting(view.path,workspace,view.targetPath,view.targetHead,path).catch(()=>null);
-      const step:StartingContentStep={path,state:inherited?'inherited':'mixed',origin:found?.origin??null,action:'keep',reason:null,diff:''};
+      const step:StartingContentStep={path,state:inherited?'inherited':'mixed',origin:found?.origin??null,action:'keep',reason:null,diff:'',version:signature??null};
       file.step=step;
+      const removed=!inherited&&!!found&&!!current&&await this.startingState(view.path,workspace,view.head!,path,found.content).catch(()=>'manual')==='removed';
+      if(removed||!inherited&&confirmed.some(entry=>entry.path===path&&entry.version===signature)){
+        step.state=removed?'settled':'mixed';step.action='settle';
+        step.reason=removed?'Le contenu de départ n’apparaît plus dans ses changements non commités.':'Vérifié par vous : ne contient que le travail de la conversation.';
+        if(changedByMerge){
+          const carried=await carry();
+          if(carried===undefined)return null;
+          file.write=carried;
+        }
+        step.diff=await contentDiff(view.path,path,next,file.write!==undefined?file.write:current,temporary);
+        continue;
+      }
       if(inherited){
         step.action='restore';file.write=next;
         if(!found)step.reason='Ce contenu n’existe plus que dans cette copie : il ne se trouve ni dans la cible, ni dans le dossier du projet.';
@@ -740,6 +798,7 @@ export class WorktreeManager {
         if(separated){step.action='separate';file.write=separated;step.diff=await contentDiff(view.path,path,next,separated,temporary);continue;}
         reason='Les changements faits depuis la création touchent les mêmes lignes que le contenu de départ.';
       }
+      step.diff=await contentDiff(view.path,path,head,current,temporary);
       if(changedByMerge){
         const carried=await carry();
         if(carried!==undefined){file.write=carried;step.reason=`${reason} Le fichier est reporté tel quel sur la version à jour de la copie : examinez son diff.`;continue;}
@@ -753,15 +812,15 @@ export class WorktreeManager {
     }
     return planned;
   }
-  private async planStartingContent(view: WorktreeView, workspace: Workspace, temporary: string): Promise<PlannedStarting> {
+  private async planStartingContent(view: WorktreeView, workspace: Workspace, temporary: string, confirmed: StartingConfirmation[] = []): Promise<PlannedStarting> {
     const shared=await sharedDependencyLinks(workspace,view.path);
     const paths=changedFiles(await git(view.path,['status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none']))
       .filter(path=>!shared.some(name=>path===name||path.startsWith(`${name}/`)));
     const simulated=await this.simulateTargetMerge(view,temporary).catch(()=>null);
     const merge=simulated&&'tree' in simulated?simulated:null;
-    const merged=merge?await this.planFiles(view,workspace,paths,merge,temporary):null;
+    const merged=merge?await this.planFiles(view,workspace,paths,merge,temporary,confirmed):null;
     if(merge&&merged)return {files:merged,merge};
-    return {files:(await this.planFiles(view,workspace,paths,null,temporary))!,merge:null};
+    return {files:(await this.planFiles(view,workspace,paths,null,temporary,confirmed))!,merge:null};
   }
   private publicPlan(view: WorktreeView, plan: PlannedStarting): StartingContentPlan {
     return {targetUpdate:plan.merge&&view.targetBranch?{branch:view.targetBranch,commits:plan.merge.commits}:null,steps:plan.files.flatMap(file=>file.step?[file.step]:[])};
@@ -797,7 +856,10 @@ export class WorktreeManager {
    * its commits (a merge commit), so the changes kept apply to its latest version. Files untouched since the copy
    * take that version; files edited since keep only those edits when the starting content can be found.
    */
-  async discardInherited(id: string): Promise<{restored:string[];separated:string[];kept:StartingContentStep[];targetUpdate:StartingContentPlan['targetUpdate'];view:WorktreeView}> {
+  async discardInherited(id: string, confirmations: unknown = []): Promise<{restored:string[];separated:string[];settled:string[];kept:StartingContentStep[];targetUpdate:StartingContentPlan['targetUpdate'];view:WorktreeView}> {
+    if(!Array.isArray(confirmations)||!confirmations.every(entry=>typeof entry?.path==='string'&&typeof entry?.version==='string'))
+      throw new WorktreeError('Confirmations invalides.',400);
+    const confirmed=confirmations as StartingConfirmation[];
     if(this.closed)throw new WorktreeError('Serveur en cours d’arrêt.');
     const view=await this.get(id);
     if(view.error)throw new WorktreeError(view.error);
@@ -809,14 +871,16 @@ export class WorktreeManager {
     const release=lockWorktrees([view.path]);
     const temporary=await mkdtemp(join(tmpdir(),'cerebro-starting-'));
     try{
-      const plan=await this.planStartingContent(view,workspace,temporary);
+      const plan=await this.planStartingContent(view,workspace,temporary,confirmed);
       const steps=plan.files.flatMap(file=>file.step?[file.step]:[]);
+      const stale=confirmed.filter(entry=>steps.find(step=>step.path===entry.path)?.action==='keep');
+      if(stale.length)throw new WorktreeError(`${stale.map(entry=>entry.path).join(', ')} : contenu modifié depuis votre vérification. Rien n’a été modifié : relisez-le et recommencez.`);
       const kept=steps.filter(step=>step.action==='keep');
       if(!steps.some(step=>step.action!=='keep'))throw new WorktreeError(kept.length
         ?`Aucun contenu de départ ne peut être retiré automatiquement :\n${kept.map(step=>`${step.path} : ${step.reason}`).join('\n')}`
         :'Aucun fichier n’a encore le contenu de départ.');
       // Compared again right before writing: anything edited since the plan stops the action.
-      for(const file of plan.files)if(file.write!==undefined&&await workspaceFileSignature(join(view.path,file.path))!==file.signature)
+      for(const file of plan.files)if((file.write!==undefined||file.step?.action==='settle')&&await workspaceFileSignature(join(view.path,file.path))!==file.signature)
         throw new WorktreeError(`${file.path} a changé pendant la préparation : rien n’a été modifié, recommencez.`);
       const written=plan.files.filter(file=>file.write!==undefined);
       const putBack=async(files:PlannedFile[],content:(file:PlannedFile)=>Buffer|null):Promise<void>=>{
@@ -849,15 +913,16 @@ export class WorktreeManager {
       await putBack(written,file=>file.write!);
       const restored=steps.filter(step=>step.action==='restore').map(step=>step.path);
       const separated=steps.filter(step=>step.action==='separate').map(step=>step.path);
+      const settled=steps.filter(step=>step.action==='settle').map(step=>step.path);
       // These files now start from the copy's last commit: what changes in them next belongs to the copy.
-      const done=new Set([...restored,...separated]);
+      const done=new Set([...restored,...separated,...settled]);
       workspace.initialDirty=workspace.initialDirty.filter(file=>!done.has(file));
       for(const file of plan.files)if(done.has(file.path)){
         if(file.next===null)delete workspace.baseline[file.path];
         else workspace.baseline[file.path]=`${(await lstat(join(view.path,file.path))).mode}:${hash(file.next)}`;
       }
       this.db.connection.prepare('UPDATE session_workspaces SET data=? WHERE session_id=?').run(JSON.stringify(workspace),workspace.sessionId);
-      return {restored,separated,kept,targetUpdate:this.publicPlan(view,plan).targetUpdate,view:await this.inspect(this.record(id))};
+      return {restored,separated,settled,kept,targetUpdate:this.publicPlan(view,plan).targetUpdate,view:await this.inspect(this.record(id))};
     }finally{release();await rm(temporary,{recursive:true,force:true});}
   }
   async prepare(id: string, kind: 'merge' | 'remove'): Promise<{token:string;view:WorktreeView}> {

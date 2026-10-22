@@ -811,7 +811,11 @@ prochaine action est aussi proposée directement sur la ligne de la copie.
    où lire son contenu de départ et le constat de Cerebro, et réécrit le fichier pour
    ne garder que la version de la copie plus le travail de la conversation. Elle ne
    touche pas aux autres fichiers et ne commite rien : relisez ses changements, puis
-   retirez le contenu de départ restant.
+   rouvrez **Retirer le contenu de départ**. Un fichier dont le contenu de départ a
+   disparu de ses changements non commités (retiré par la conversation ou par cette
+   session) y est reconnu automatiquement ; les autres se valident en cochant leur
+   diff une fois vérifié. Ces fichiers sont alors rattachés tels quels au travail
+   de la conversation.
    **Créer le commit** enregistre ensuite le travail de la conversation.
 2. **Régler les conflits avec la cible.** Cerebro prévoit les fichiers que
    l'intégration laisserait en conflit. **Mettre à jour avec master** merge la cible
