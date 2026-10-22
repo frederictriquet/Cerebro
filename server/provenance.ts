@@ -31,6 +31,8 @@ export interface Workspace {
   branch: string | null;
   initialDirty: string[];
   baseline: Record<string, string>;
+  /** Commit holding the files that were already modified in the project when the copy was created. */
+  startingSnapshot?: string;
   sharedIgnored?: string[];
   reason: string;
   createdAt: number;
@@ -63,6 +65,24 @@ const signature = (m: Record<string,string>): string => JSON.stringify(m);
 function firstDifference(a:Record<string,string>,b:Record<string,string>):string{
   for(const name of new Set([...Object.keys(a),...Object.keys(b)]))if(a[name]!==b[name])return name;
   return 'inconnue';
+}
+/**
+ * Keeps the content copied from the project, so it can still be separated from the conversation's
+ * work once the project has changed. Best effort: a copy without it only loses that separation.
+ */
+async function snapshotStartingContent(workspace:string,base:string,sessionId:string,paths:string[]):Promise<string|undefined>{
+  if(!paths.length)return undefined;
+  const temporary=await mkdtemp(join(tmpdir(),'cerebro-start-'));
+  try{
+    const index=join(temporary,'index');
+    await writeFile(index,await readFile(resolve(workspace,await git(workspace,['rev-parse','--git-path','index']))));
+    await git(workspace,['add','-A','--',...paths.map(path=>`:(literal)${path}`)],index);
+    const tree=await git(workspace,['write-tree'],index);
+    const commit=await git(workspace,['-c','user.name=Cerebro','-c','user.email=cerebro@localhost','commit-tree',tree,'-p',base,'-m','Cerebro : contenu de départ de la copie']);
+    await git(workspace,['update-ref',`refs/cerebro/starting/${sessionId}`,commit]);
+    return commit;
+  }catch{return undefined;}
+  finally{await rm(temporary,{recursive:true,force:true});}
 }
 const SHARED_DEPENDENCY_DIRS = new Set(['node_modules','.venv','venv','vendor']);
 
@@ -141,11 +161,13 @@ export async function createWorkspace(db: CerebroDatabase, sessionId: string, pr
     const baseline=await manifest(workspace,sharedIgnored);
     if(signature(before)!==signature(baseline)) throw new Error(`Copie initiale non identique (${firstDifference(before,baseline)}) : aucun agent lancé.`);
     const dependencyNotice=sharedIgnored.length?` Dépendances partagées avec le projet source : ${sharedIgnored.join(', ')}.`:'';
-    const saved=save(db,{...common,mode:'isolated',root:workspace,path:join(workspace,relative(root,project.path)),source:root,branch,baseline,sharedIgnored,initialDirty:[...new Set([...dirty,...staged,...untracked])],reason:`Périmètre de l’espace isolé ; les auteurs des éditions dans cet espace ne sont pas identifiables.${dependencyNotice}`});
+    const initialDirty=[...new Set([...dirty,...staged,...untracked])];
+    const startingSnapshot=await snapshotStartingContent(workspace,common.base!,sessionId,initialDirty);
+    const saved=save(db,{...common,mode:'isolated',root:workspace,path:join(workspace,relative(root,project.path)),source:root,branch,baseline,...(startingSnapshot?{startingSnapshot}:{}),sharedIgnored,initialDirty,reason:`Périmètre de l’espace isolé ; les auteurs des éditions dans cet espace ne sont pas identifiables.${dependencyNotice}`});
     await rememberWorktree(db,saved);
     return saved;
   } catch(cause) {
-    if(added) { await git(root,['worktree','remove','--force',workspace]).catch(()=>{}); await git(root,['branch','-D',branch]).catch(()=>{}); }
+    if(added) { await git(root,['worktree','remove','--force',workspace]).catch(()=>{}); await git(root,['branch','-D',branch]).catch(()=>{}); await git(root,['update-ref','-d',`refs/cerebro/starting/${sessionId}`]).catch(()=>{}); }
     throw cause;
   } finally {await rm(temporary,{recursive:true,force:true});}
 }

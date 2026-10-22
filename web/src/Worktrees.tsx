@@ -1,6 +1,6 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { useCallback, useEffect, useState } from 'react';
-import type { WorktreeInventory, WorktreeView } from '../../server/worktrees.ts';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import type { StartingContentPlan, StartingContentStep, StartingOrigin, WorktreeInventory, WorktreeView } from '../../server/worktrees.ts';
 import type { GitSnapshot } from '../../server/git-plan.ts';
 import { api, apiBase } from './api.ts';
 import { Modal } from './Dialog.tsx';
@@ -19,18 +19,62 @@ const cacheKey = (machineBase: string, path: string): string => `${machineBase}|
 const createdLabel = (view: WorktreeView): string => dateLabel(view.createdAt);
 const dateLabel = (at: number): string => new Date(at).toLocaleString('fr-FR', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' });
 const copyTitle = (view: WorktreeView): string => sessionTitle(view.session?.title ?? view.sessionTitle ?? `Conversation supprimée · ${createdLabel(view)}`);
-function copyStatus(view: WorktreeView): string {
-  if(view.error)return 'État indisponible';
-  if(view.mergeInProgress)return 'Conflit à résoudre';
-  if(view.changesSinceCreation?.count===0&&view.ahead===0&&view.dirty)return 'Copie de départ';
-  if(view.changesSinceCreation?.count===0&&view.dirty)return 'Contenu de départ à abandonner';
-  if(view.changesSinceCreation?.needsReviewCount||!view.changesSinceCreation&&view.dirty)return 'Changements à examiner';
-  if(view.dirty)return 'Changements à enregistrer';
-  if(view.ahead)return view.mergeBlockers.length?'Intégration bloquée':'Prêt à intégrer';
-  if(view.integration==='integrated')return 'Intégré au projet';
-  return 'État à vérifier';
+const fileCount = (count: number): string => `${count} fichier${count===1?'':'s'}`;
+function originLabel(origin: StartingOrigin | null, target: string): string {
+  if(!origin)return 'ce contenu n’existe plus que dans cette copie';
+  if(origin.kind==='target-commit')return `déjà dans ${target} · ${origin.commit.slice(0,7)} ${origin.subject}`;
+  if(origin.kind==='target-worktree')return `toujours présent, non commité, dans le dossier de ${target}`;
+  return 'conservé par Cerebro à la création de la copie';
 }
-interface Confirmation { kind:'merge'|'remove'|'discard';token:string;view:WorktreeView;machineBase:string }
+
+type StepState = 'done' | 'todo' | 'blocked' | 'waiting';
+/** The path of a copy towards the project: save its work, settle conflicts with the target, integrate, publish. */
+interface Journey {
+  status: string;
+  /** One sentence telling what to do next. */
+  next: string | null;
+  inherited: StartingContentStep['path'][];
+  mixed: { path: string; origin: StartingOrigin | null; separable: boolean }[];
+  ownWork: number;
+  save: StepState;
+  update: StepState;
+  integrate: StepState;
+}
+function journey(view: WorktreeView): Journey {
+  const changes = view.changesSinceCreation;
+  const starting = view.startingContent ?? [];
+  const inherited = starting.filter(file=>file.state==='inherited').map(file=>file.path);
+  const mixed = starting.filter(file=>file.state==='mixed');
+  const ownWork = changes ? changes.count-changes.needsReviewCount : 0;
+  const target = branchName(view.targetBranch);
+  const dirty = !!view.dirty;
+  const conflicts = view.integrationConflicts;
+  const otherBlockers = view.mergeBlockers.filter(reason=>!reason.startsWith('La copie contient'));
+  const save: StepState = view.mergeInProgress ? 'waiting' : dirty ? 'todo' : 'done';
+  const update: StepState = view.mergeInProgress ? 'todo' : !view.ahead || !view.behind || conflicts?.length===0 ? 'done' : conflicts===null ? 'waiting' : dirty ? 'blocked' : 'todo';
+  const integrate: StepState = view.integration==='integrated' ? 'done' : !view.ahead ? 'waiting' : view.mergeBlockers.length ? 'blocked' : 'todo';
+  let status: string; let next: string | null;
+  if(view.error){status='État indisponible';next=null;}
+  else if(view.mergeInProgress){status='Conflits à résoudre';next=view.conflicts.length?`Résolvez les conflits dans la copie (${fileCount(view.conflicts.length)}), puis terminez la mise à jour.`:'Les conflits sont résolus : terminez la mise à jour.';}
+  else if(dirty&&!view.ahead&&!changes?.count){status='Copie de départ';next='Aucun travail de la conversation : la copie ne contient que le contenu copié du projet.';}
+  else if(dirty&&(inherited.length||mixed.some(file=>file.separable))){status='Contenu de départ à retirer';next=`Retirez le contenu copié du projet à la création (${fileCount(inherited.length+mixed.filter(file=>file.separable).length)}), pour ne garder que le travail de la conversation.`;}
+  else if(dirty&&ownWork){status='Travail à enregistrer';next=mixed.length?`Créez le commit du travail de la conversation, puis examinez ${fileCount(mixed.length)} à part.`:'Créez le commit du travail de la conversation.';}
+  else if(dirty){status='Changements à examiner';next=`Examinez ${fileCount(view.dirty!)} : leur origine ne peut pas être vérifiée automatiquement.`;}
+  else if(view.ahead&&conflicts?.length){status='Conflits prévus';next=`Mettez la copie à jour avec ${target} pour résoudre ${conflicts.length===1?'le conflit':'les conflits'} dans la copie.`;}
+  else if(view.ahead&&otherBlockers.length){status='Intégration bloquée';next=otherBlockers[0];}
+  else if(view.ahead){status='Prêt à intégrer';next=`Intégrez ${view.ahead===1?'le commit':`les ${view.ahead} commits`} dans ${target}.`;}
+  else if(view.integration==='integrated'){status='Intégré au projet';next=`Le travail est dans ${target} sur cette machine. Utilisez « Push » dans l’en-tête du projet pour le publier.`;}
+  else {status='État à vérifier';next=null;}
+  return {status,next,inherited,mixed:mixed.map(({path,origin,separable})=>({path,origin,separable})),ownWork,save,update,integrate};
+}
+const STEP_LABEL: Record<StepState,string> = {done:'Fait',todo:'À faire',blocked:'Bloqué',waiting:'En attente'};
+function Step({number,title,state,children}:{number:number;title:string;state:StepState;children?:ReactNode}) {
+  return <li className={`worktree-step worktree-step-${state}`}>
+    <div className="worktree-step-heading"><span className="worktree-step-number" aria-hidden="true">{state==='done'?'✓':number}</span><strong>{title}</strong><span className="worktree-step-state">{STEP_LABEL[state]}</span></div>
+    {children?<div className="worktree-step-body">{children}</div>:null}
+  </li>;
+}
+interface Confirmation { kind:'merge'|'remove';token:string;view:WorktreeView;machineBase:string }
 
 interface Reviewed { snapshotId:string;paths:string[] }
 function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReviewed?:(reviewed:Reviewed)=>void}) {
@@ -48,7 +92,7 @@ function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReview
   return <div className="worktree-diffs">
     <button type="button" className="btn" disabled={busy} onClick={()=>void load()}><ActivityStatus active={busy}>{busy?'Lecture des changements…':snapshot?'Actualiser les diffs':'Voir les diffs'}</ActivityStatus></button>
     {error?<p className="form-error">{error}</p>:null}
-    {snapshot?<p className="meta">Diffs par rapport au dernier commit : ils peuvent aussi contenir des changements présents avant la création de la copie.</p>:null}
+    {snapshot?<p className="meta">Diffs par rapport au dernier commit de la copie : pour les fichiers modifiés avant sa création, ils contiennent aussi le contenu de départ.</p>:null}
     {snapshot&&onCommitReviewed?<p className="meta">Cochez les fichiers dont vous avez lu le diff : le commit les inclura tant que leur contenu reste celui affiché.</p>:null}
     {files?.map(file=><details key={file.path}><summary>{file.path}{file.blocked?' — secret détecté':file.warnings.length?' — à examiner':''}</summary>
       {file.blocked?<p>Contenu masqué : le scanner a détecté un secret.</p>:<>
@@ -58,6 +102,50 @@ function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReview
     </details>)}
     {snapshot&&onCommitReviewed?<button type="button" className="btn" disabled={!checked.size} onClick={()=>onCommitReviewed({snapshotId:snapshot.id,paths:[...checked]})}>Commiter avec {checked.size} fichier{checked.size===1?'':'s'} examiné{checked.size===1?'':'s'}</button>:null}
   </div>;
+}
+
+const ACTION_LABEL: Record<StartingContentStep['action'],string> = {restore:'remis à l’état de la copie',separate:'seul le travail fait depuis la création est gardé',keep:'laissé tel quel, à examiner'};
+interface DiscardResult { restored:string[];separated:string[];kept:StartingContentStep[];targetUpdate:StartingContentPlan['targetUpdate'] }
+/** Preview, then removal of the content copied from the project when the copy was created. */
+function StartingContentDialog({view,onClose,onDone}:{view:WorktreeView;onClose:()=>void;onDone:(result:DiscardResult)=>void}) {
+  const [machineBase]=useState(apiBase);
+  const [plan,setPlan]=useState<StartingContentPlan|null>(null);
+  const [busy,setBusy]=useState<'loading'|'running'|null>('loading');
+  const [error,setError]=useState<string|null>(null);
+  const target=branchName(view.targetBranch);
+  useEffect(()=>{
+    let disposed=false;
+    api<StartingContentPlan>(`/api/worktrees/${view.id}/starting-content`)
+      .then(value=>{if(!disposed&&apiBase()===machineBase)setPlan(value);})
+      .catch(cause=>{if(!disposed&&apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));})
+      .finally(()=>{if(!disposed&&apiBase()===machineBase)setBusy(null);});
+    return()=>{disposed=true;};
+  },[view.id,machineBase]);
+  const run=async():Promise<void>=>{
+    setBusy('running');setError(null);
+    try{const result=await api<DiscardResult>(`/api/worktrees/${view.id}/discard-inherited`,{method:'POST'});if(apiBase()===machineBase)onDone(result);}
+    catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
+    finally{if(apiBase()===machineBase)setBusy(null);}
+  };
+  const actionable=plan?.steps.some(step=>step.action!=='keep');
+  return <Modal title="Retirer le contenu de départ" onClose={onClose}>
+    <p>{copyTitle(view)}</p>
+    <p className="meta">À sa création, la copie a reçu les fichiers alors non commités du dossier du projet. Ce contenu n’est pas le travail de la conversation : le retirer laisse dans la copie uniquement ce qu’elle a changé. Le dossier du projet n’est pas modifié.</p>
+    {busy==='loading'?<p><ActivityStatus active>Analyse des fichiers…</ActivityStatus></p>:null}
+    {plan?.targetUpdate?<p className="worktree-notice">La copie reçoit d’abord {plan.targetUpdate.commits===1?'le nouveau commit':`les ${plan.targetUpdate.commits} nouveaux commits`} de {branchName(plan.targetUpdate.branch)} (un commit de merge) : le travail gardé s’applique ainsi à la version à jour des fichiers.</p>:null}
+    {plan?<ul className="worktree-plan">{plan.steps.map(step=><li key={step.path} className={`worktree-plan-${step.action}`}>
+      <code>{step.path}</code> — {ACTION_LABEL[step.action]}
+      <div className="meta">Contenu de départ : {originLabel(step.origin,target)}</div>
+      {step.reason?<div className={step.action==='keep'?'worktree-warning':'meta'}>{step.reason}</div>:null}
+      {step.diff?<details><summary>Travail gardé</summary><pre>{step.diff}</pre></details>:null}
+    </li>)}</ul>:null}
+    {plan&&!actionable?<p className="worktree-warning">Aucun fichier ne peut être traité automatiquement : examinez-les dans les diffs.</p>:null}
+    {error?<p className="form-error" role="alert">{error}</p>:null}
+    <div className="row-actions">
+      <button type="button" className="btn primary" disabled={busy!==null||!actionable} onClick={()=>void run()}><ActivityStatus active={busy==='running'}>{busy==='running'?'Retrait du contenu de départ…':'Retirer le contenu de départ'}</ActivityStatus></button>
+      <button type="button" className="btn" disabled={busy==='running'} onClick={onClose}>Annuler</button>
+    </div>
+  </Modal>;
 }
 
 /** Keep preserved work visible, without presenting the main repository as another pending session. */
@@ -71,6 +159,8 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   const [busy,setBusy]=useState<string|null>(null);
   const [historyBusy,setHistoryBusy]=useState<Set<string>>(()=>new Set());
   const [confirmation,setConfirmation]=useState<Confirmation|null>(null);
+  const [discarding,setDiscarding]=useState<WorktreeView|null>(null);
+  const [results,setResults]=useState<Map<string,DiscardResult>>(()=>new Map());
   const [committing,setCommitting]=useState<WorktreeView|null>(null);
   const [reviewed,setReviewed]=useState<Reviewed|null>(null);
   const [expanded,setExpanded]=useState<Set<string>>(()=>new Set());
@@ -80,7 +170,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   },[path,machineBase]);
   useEffect(()=>{
     const cached=inventoryCache.get(cacheKey(machineBase,path))??null;
-    setInventory(cached);setLoadedBase(cached?machineBase:null);setConfirmation(null);setCommitting(null);setReviewed(null);setError(null);setLoadError(null);setBusy(null);setHistoryBusy(new Set());setExpanded(new Set());
+    setInventory(cached);setLoadedBase(cached?machineBase:null);setConfirmation(null);setDiscarding(null);setResults(new Map());setCommitting(null);setReviewed(null);setError(null);setLoadError(null);setBusy(null);setHistoryBusy(new Set());setExpanded(new Set());
     let disposed=false;let loading=false;let timer:number|undefined;
     const load=async():Promise<void>=>{
       if(disposed||loading)return;
@@ -103,11 +193,18 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
     if(!confirmation||confirmation.machineBase!==apiBase())return;
     const {view,kind,token}=confirmation;setBusy(view.id);setError(null);
     try{
-      if(kind==='discard')await api(`/api/worktrees/${view.id}/discard-inherited`,{method:'POST'});
-      else await api(`/api/worktrees/${view.id}/${kind}`,{method:'POST',body:JSON.stringify({token})});
+      await api(`/api/worktrees/${view.id}/${kind}`,{method:'POST',body:JSON.stringify({token})});
       if(apiBase()!==machineBase)return;
       setConfirmation(null);await refresh();window.setTimeout(()=>void refresh(),500);
     }catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
+    finally{if(apiBase()===machineBase)setBusy(null);}
+  };
+  /** A synchronous Git action on one copy, followed by a refresh. */
+  const act=async(view:WorktreeView,action:string):Promise<void>=>{
+    if(apiBase()!==machineBase)return;
+    setBusy(view.id);setError(null);
+    try{await api(`/api/worktrees/${view.id}/${action}`,{method:'POST'});if(apiBase()===machineBase)await refresh();}
+    catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
     finally{if(apiBase()===machineBase)setBusy(null);}
   };
   const chooseTarget=async(view:WorktreeView,branch:string):Promise<void>=>{
@@ -118,6 +215,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
     finally{if(apiBase()===machineBase)setBusy(null);}
   };
   const toggle=(id:string):void=>setExpanded(current=>{const next=new Set(current);if(next.has(id))next.delete(id);else next.add(id);return next;});
+  const open=(id:string):void=>setExpanded(current=>new Set(current).add(id));
   const deleteHistory=async(ids:string[],actionKey:string):Promise<void>=>{
     if(apiBase()!==machineBase)return;
     // Only disable the action being executed: disabling another delayed button cancels its timer.
@@ -143,7 +241,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
     {!historyOnly?<><div className="worktrees-heading"><h2>Copies de travail <span className="pill">{visibleInventory?copies.length:'…'}</span></h2>
       <button type="button" className="btn" onClick={()=>void refresh()}>Actualiser</button>
     </div>
-    <p className="worktrees-explanation">{workspaceMode==='shared'?'Ce projet utilise directement son dossier. Ses anciennes copies isolées restent accessibles ici.':'Les copies isolent le travail des conversations. Pour récupérer leur travail : créer le commit, puis l’intégrer au projet. Quand une conversation est arrêtée ou supprimée, sa copie est nettoyée automatiquement si elle ne contient rien à conserver ; sinon elle reste ici.'}</p></>:null}
+    <p className="worktrees-explanation">{workspaceMode==='shared'?'Ce projet utilise directement son dossier. Ses anciennes copies isolées restent accessibles ici.':'Chaque conversation travaille dans sa copie, sur sa propre branche. Pour récupérer son travail : l’enregistrer (commit) dans la copie, régler les conflits éventuels avec la branche du projet, l’intégrer, puis le publier avec « Push ». Une copie sans rien à conserver est nettoyée automatiquement à la fin de sa conversation.'}</p></>:null}
     {loadError?<p className="form-error" role="alert">{loadError}</p>:null}
     {error?<p className="form-error" role="alert">{error}</p>:null}
     {visibleInventory?.errors.map(message=><p className="form-error" key={message}>{message}</p>)}
@@ -152,39 +250,42 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
       {copies.map(view=>{
         const operationBusy=view.operation?.status==='running';const disabled=busy!==null||operationBusy;
         const showDetails=expanded.has(view.id);const changes=view.changesSinceCreation;
-        const inheritedOnly=changes?.count===0&&!!view.dirty;
-        const initialOnly=inheritedOnly&&view.ahead===0;
-        const discard=():void=>setConfirmation({kind:'discard',token:'',view,machineBase});
-        const needsReview=!!changes?.needsReviewCount||!changes;
-        const changedCount=changes?.count??view.dirty;
-        const commitBlocked=disabled||!!view.error||view.activeSessions.some(session=>session.status!=='idle');
+        const plan=journey(view);const target=branchName(view.targetBranch);
+        const commitBlocked=disabled||!!view.error||view.mergeInProgress||view.activeSessions.some(session=>session.status!=='idle');
+        const removable=plan.inherited.length>0||plan.mixed.some(file=>file.separable);
+        const result=results.get(view.id);
+        const startDiscard=():void=>setDiscarding(view);
+        const integrateTitle=view.mergeBlockers.join('\n')||(view.integrationConflicts?.length?`Conflits prévus : ${view.integrationConflicts.join(', ')}`:`Intégrer dans ${target}`);
+        // The next action, also offered in the overview so the usual path needs no expansion.
+        const primary=view.error?null
+          :view.mergeInProgress?<button type="button" className="btn primary" onClick={()=>open(view.id)}>Résoudre les conflits</button>
+          :view.dirty&&removable?<button type="button" className="btn primary" disabled={commitBlocked} onClick={startDiscard}>Retirer le contenu de départ</button>
+          :view.dirty&&plan.ownWork?<button type="button" className="btn primary" disabled={commitBlocked} onClick={()=>setCommitting(view)}>Créer le commit</button>
+          :view.dirty&&changes?.count!==0?<button type="button" className="btn primary" onClick={()=>open(view.id)}>Examiner</button>
+          :view.ahead&&view.integrationConflicts?.length?<button type="button" className="btn primary" disabled={commitBlocked} onClick={()=>void act(view,'update-from-target')}>Mettre à jour avec {target}</button>
+          :view.ahead?<button type="button" className={`btn ${view.mergeBlockers.length?'':'primary'}`} disabled={disabled||view.mergeBlockers.length>0} title={integrateTitle} onClick={()=>void prepare(view,'merge')}>Intégrer dans {target}</button>
+          :null;
         return <li className="worktree-row" key={view.id}>
           <div className="worktree-overview">
             <div className="worktree-identity">
               <div className="worktree-title">
                 <strong title={copyTitle(view)}>{view.session?<a href={href(`#/s/${view.session.id}`)}>{copyTitle(view)}</a>:copyTitle(view)}</strong>
-                <span className={`pill ${!initialOnly&&(view.ahead||changes?.count)?'worktree-pending':''}`}>{copyStatus(view)}</span>
+                <span className={`pill ${plan.status!=='Intégré au projet'&&plan.status!=='Copie de départ'?'worktree-pending':''}`}>{plan.status}</span>
               </div>
               <div className="worktree-meta">
                 {!projectId?<span className="worktree-context">{view.projectName}{view.projectExists?'':' (projet retiré)'}</span>:null}
                 <span>{view.session?'Conversation conservée':view.sessionTitle?'Conversation supprimée':'Titre d’origine indisponible'}</span>
-                <span className="worktree-destination">Cible : {branchName(view.targetBranch)}</span>
+                <span className="worktree-destination">Cible : {target}</span>
               </div>
-              {initialOnly?<p className="worktree-guidance">Aucun nouveau changement depuis sa création. Les fichiers modifiés proviennent de la copie de départ.</p>
-                :inheritedOnly?<p className="worktree-guidance">Les fichiers modifiés proviennent de la copie de départ. Abandonnez ce contenu de départ pour pouvoir intégrer les commits.</p>
-                :needsReview&&view.dirty?<p className="worktree-guidance">Examinez les changements avant de les enregistrer : certains existaient déjà dans le projet à la création de cette copie. Dans les diffs, cochez les fichiers examinés pour les commiter.</p>
-                :view.dirty?<p className="worktree-guidance">Créez le commit pour pouvoir ensuite l’intégrer au projet.</p>
-                :view.ahead&&view.mergeBlockers.length?<p className="worktree-guidance">L’intégration est bloquée. Les détails indiquent ce qu’il faut résoudre.</p>:null}
+              {plan.next?<p className="worktree-guidance">{plan.next}</p>:null}
             </div>
             <div className="worktree-counts">
-              {!initialOnly?<span title={changes?'Fichiers modifiés depuis la création de la copie ; ce compteur n’attribue pas leur auteur.':'Modifications locales dont l’origine n’est pas connue.'}>{changedCount??'?'} fichier{changedCount===1?'':'s'} {changes?`modifié${changedCount===1?'':'s'}`:'à examiner'}</span>:null}
+              {view.dirty&&!view.mergeInProgress?<span title="Fichiers modifiés et non commités dans la copie, contenu de départ compris.">{fileCount(view.dirty)} non commité{view.dirty===1?'':'s'}</span>:null}
               {view.ahead?<span>{view.ahead} commit{view.ahead===1?'':'s'} à intégrer</span>:null}
             </div>
             <div className="worktree-actions">
-              {inheritedOnly&&!initialOnly?<button type="button" className="btn" disabled={commitBlocked} onClick={discard}>Abandonner le contenu de départ</button>
-                :!initialOnly&&!!view.dirty?(needsReview?<button type="button" className="btn" onClick={()=>toggle(view.id)}>Examiner</button>:<button type="button" className="btn" disabled={commitBlocked} onClick={()=>setCommitting(view)}>Créer le commit</button>):null}
-              {!view.dirty&&!!view.ahead?<button type="button" className="btn" disabled={disabled||view.mergeBlockers.length>0} title={view.mergeBlockers.join('\n')} onClick={()=>void prepare(view,'merge')}>Intégrer au projet</button>:null}
-              <button type="button" className="btn worktree-toggle" aria-expanded={showDetails} aria-controls={`worktree-details-${view.id}`} onClick={()=>toggle(view.id)}>{showDetails?'Réduire':'Détails'}</button>
+              {primary}
+              <button type="button" className="btn worktree-toggle" aria-expanded={showDetails} aria-controls={`worktree-details-${view.id}`} onClick={()=>toggle(view.id)}>{showDetails?'Réduire':'Étapes'}</button>
             </div>
           </div>
           {/* A failed merge finished by hand (conflict resolved in the project) no longer needs attention. */}
@@ -195,17 +296,71 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
           <div className="worktree-detail" id={`worktree-details-${view.id}`} hidden={!showDetails}>
             <p className="path">{view.path}</p><p className="meta">Branche : {branchName(view.branch??view.expectedBranch)} · Créée le {createdLabel(view)}</p>
             {view.error?<p className="form-error">{view.error}</p>:null}
-            {changes?.inheritedCount?<><p>{changes.inheritedCount} fichier(s) ont encore le contenu copié du projet au départ. Ils ne représentent pas du nouveau travail dans cette copie.</p>
-              <button type="button" className="btn" disabled={commitBlocked} title="Remet ces fichiers à l’état du dernier commit de la copie. Les fichiers modifiés depuis la création sont conservés." onClick={discard}>Abandonner le contenu de départ</button></>:null}
-            {changes?.count?<><p>Fichiers modifiés depuis la création{changes.count>changes.files.length?' (100 premiers)':''} :</p><pre>{changes.files.join('\n')}</pre></>:null}
-            {changes?.needsReviewCount?<p>{changes.needsReviewCount} de ces fichiers étaient déjà modifiés au départ. Leurs changements doivent être examinés ; ils ne sont pas attribués automatiquement à la conversation.</p>:null}
-            {showDetails&&!initialOnly&&!!view.dirty?<WorktreeDiffs view={view} onCommitReviewed={commitBlocked?undefined:value=>{setReviewed(value);setCommitting(view);}}/>:null}
-            {!initialOnly&&!!view.dirty&&needsReview?<button type="button" className="btn" disabled={commitBlocked} title="Crée les commits uniquement pour les fichiers dont la sélection automatique est vérifiable. Les autres restent dans la copie." onClick={()=>setCommitting(view)}>Commiter les fichiers vérifiables</button>:null}
-            <div className="worktree-target"><label>Intégrer dans <select aria-label={`Cible de ${copyTitle(view)}`} value={view.targetBranch??''} disabled={disabled} onChange={event=>void chooseTarget(view,event.target.value)}>
-              {!view.targets.some(target=>target.branch===view.targetBranch)?<option value={view.targetBranch??''}>{view.targetBranch?`${branchName(view.targetBranch)} (dossier non ouvert)`:'Choisir une branche'}</option>:null}
-              {view.targets.map(target=><option key={target.branch} value={target.branch}>{branchName(target.branch)} — {target.path}</option>)}
-            </select></label></div>
-            {view.mergeBlockers.length&&!initialOnly?<><p>Pour intégrer cette copie :</p><ul>{view.mergeBlockers.map(reason=><li key={reason}>{reason}</li>)}</ul></>:null}
+            <ol className="worktree-steps">
+              <Step number={1} title="Enregistrer le travail dans la copie" state={plan.save}>
+                {view.mergeInProgress?<p>Une mise à jour avec {target} est en cours : terminez-la ou annulez-la à l’étape 2 avant d’enregistrer d’autres changements.</p>
+                :!view.dirty?<p>Aucun changement non commité : tout le travail de la copie est dans ses commits.</p>:null}
+                {result?<p className="worktree-notice" role="status">
+                  {result.targetUpdate?`Copie mise à jour avec ${branchName(result.targetUpdate.branch)}. `:''}
+                  {result.restored.length?`${fileCount(result.restored.length)} remis à l’état de la copie. `:''}
+                  {result.separated.length?`${fileCount(result.separated.length)} ne contiennent plus que le travail fait depuis la création. `:''}
+                  {result.kept.length?`Restent à examiner : ${result.kept.map(step=>step.path).join(', ')}.`:''}
+                </p>:null}
+                {!view.mergeInProgress&&plan.inherited.length?<div className="worktree-group">
+                  <p><strong>{fileCount(plan.inherited.length)} sans nouveau travail.</strong> {plan.inherited.length===1?'Ce fichier a':'Ces fichiers ont'} encore le contenu copié du dossier du projet à la création de la copie : ce n’est pas le travail de la conversation.</p>
+                  <ul className="worktree-files">{(view.startingContent??[]).filter(file=>file.state==='inherited').map(file=><li key={file.path}><code>{file.path}</code> <span className={file.origin?'meta':'worktree-warning'}>— {originLabel(file.origin,target)}</span></li>)}</ul>
+                </div>:null}
+                {!view.mergeInProgress&&plan.mixed.length?<div className="worktree-group">
+                  <p><strong>{fileCount(plan.mixed.length)} mélangeant contenu de départ et travail récent.</strong> {plan.mixed.length===1?'Il était':'Ils étaient'} déjà modifié{plan.mixed.length===1?'':'s'} dans le dossier du projet à la création de la copie, puis {plan.mixed.length===1?'a été modifié':'ont été modifiés'} dans la copie.</p>
+                  <ul className="worktree-files">{plan.mixed.map(file=><li key={file.path}><code>{file.path}</code> <span className={file.separable?'meta':'worktree-warning'}>— {file.separable?`contenu de départ retrouvé (${originLabel(file.origin,target)}) : séparation automatique possible`:file.origin?'déjà modifié par un commit de la copie : examen manuel':'contenu de départ introuvable : examen manuel'}</span></li>)}</ul>
+                </div>:null}
+                {!view.mergeInProgress&&removable&&view.dirty?<button type="button" className="btn primary" disabled={commitBlocked} onClick={startDiscard}>Retirer le contenu de départ…</button>:null}
+                {!view.mergeInProgress&&plan.ownWork&&view.dirty?<div className="worktree-group">
+                  <p><strong>{fileCount(plan.ownWork)} modifié{plan.ownWork===1?'':'s'} par la conversation.</strong> Le commit automatique ne prend que les fichiers dont l’origine est vérifiable.</p>
+                  <button type="button" className="btn" disabled={commitBlocked} onClick={()=>setCommitting(view)}>Créer le commit</button>
+                </div>:null}
+                {!view.mergeInProgress&&view.dirty&&(plan.mixed.length||!changes)?<details className="worktree-group" open={!removable&&!plan.ownWork}><summary>Examiner les diffs et commiter à la main</summary>
+                  <p className="meta">Pour un fichier qui mélange contenu de départ et travail récent, le commit emporte les deux. Si son contenu de départ est déjà dans {target}, les écarts éventuels se règlent à l’étape 2.</p>
+                  {showDetails?<WorktreeDiffs view={view} onCommitReviewed={commitBlocked?undefined:value=>{setReviewed(value);setCommitting(view);}}/>:null}
+                </details>:null}
+              </Step>
+              <Step number={2} title={`Régler les conflits avec ${target}`} state={plan.update}>
+                {view.mergeInProgress?<>
+                  {view.conflicts.length?<><p>Mise à jour en cours : {view.conflicts.length===1?'ce fichier est':'ces fichiers sont'} en conflit dans la copie.</p><ul className="worktree-files">{view.conflicts.map(file=><li key={file}><code>{file}</code></li>)}</ul>
+                    <p className="meta">Résolvez-les dans le dossier de la copie, vous-même ou en le demandant à la conversation{view.session?<> (<a href={href(`#/s/${view.session.id}`)}>ouvrir la conversation</a>)</>:null}, puis terminez la mise à jour.</p></>
+                    :<p>Les conflits sont résolus : terminez la mise à jour pour créer le commit de merge.</p>}
+                  <div className="row-actions">
+                    <button type="button" className="btn primary" disabled={disabled} onClick={()=>void act(view,'update-from-target/finish')}>Terminer la mise à jour</button>
+                    <button type="button" className="btn danger-ghost" disabled={disabled} onClick={()=>void act(view,'update-from-target/abort')}>Annuler la mise à jour</button>
+                  </div>
+                </>
+                :!view.ahead?<p>{view.integration==='integrated'?'Rien à régler : tout le travail commité est déjà dans la cible.':'Rien à intégrer pour l’instant.'}</p>
+                :!view.behind?<p>La copie contient déjà tous les commits de {target} : aucun conflit possible.</p>
+                :view.integrationConflicts===null?<p><ActivityStatus active>Recherche des conflits avec {target}…</ActivityStatus></p>
+                :view.integrationConflicts.length===0?<p>Aucun conflit prévu avec {target}, qui a reçu {view.behind} commit{view.behind===1?'':'s'} depuis la création de la copie.</p>
+                :<>
+                  <p>Les commits de la copie et ceux de {target} modifient les mêmes lignes de {fileCount(view.integrationConflicts.length)} :</p>
+                  <ul className="worktree-files">{view.integrationConflicts.map(file=><li key={file}><code>{file}</code></li>)}</ul>
+                  <p className="meta">Mettez d’abord la copie à jour avec {target} : les conflits se résolvent alors dans la copie, sans toucher au dossier du projet.</p>
+                  {view.dirty?<p className="worktree-warning">Terminez d’abord l’étape 1 : la copie doit être entièrement commitée.</p>:null}
+                  <button type="button" className="btn primary" disabled={commitBlocked||!!view.dirty} onClick={()=>void act(view,'update-from-target')}>Mettre à jour avec {target}</button>
+                </>}
+              </Step>
+              <Step number={3} title={`Intégrer dans ${target}`} state={plan.integrate}>
+                <div className="worktree-target"><label>Branche cible <select aria-label={`Cible de ${copyTitle(view)}`} value={view.targetBranch??''} disabled={disabled} onChange={event=>void chooseTarget(view,event.target.value)}>
+                  {!view.targets.some(target=>target.branch===view.targetBranch)?<option value={view.targetBranch??''}>{view.targetBranch?`${branchName(view.targetBranch)} (dossier non ouvert)`:'Choisir une branche'}</option>:null}
+                  {view.targets.map(target=><option key={target.branch} value={target.branch}>{branchName(target.branch)} — {target.path}</option>)}
+                </select></label></div>
+                {view.integration==='integrated'&&!view.ahead?<p>Tout le travail commité de la copie est dans {target}.</p>
+                  :view.ahead&&view.mergeBlockers.length?<><p>L’intégration attend :</p><ul>{view.mergeBlockers.map(reason=><li key={reason}>{reason}</li>)}</ul></>
+                  :view.ahead?<p>{view.ahead===1?'Le commit sera intégré':`Les ${view.ahead} commits seront intégrés`} par un merge dans {view.targetPath}.</p>
+                  :<p>Aucun commit à intégrer : enregistrez d’abord le travail (étape 1).</p>}
+                {view.ahead?<button type="button" className={`btn ${view.mergeBlockers.length||view.integrationConflicts?.length?'':'primary'}`} disabled={disabled||view.mergeBlockers.length>0} title={integrateTitle} onClick={()=>void prepare(view,'merge')}>Intégrer dans {target}</button>:null}
+              </Step>
+              <Step number={4} title="Publier" state={view.integration==='integrated'&&!view.ahead?'todo':'waiting'}>
+                <p>L’intégration reste locale à cette machine. Pour envoyer le travail vers le dépôt distant, utilisez « Push » dans l’en-tête du projet ({target}).</p>
+              </Step>
+            </ol>
             {view.operation?.output?<details><summary>Résultat Git</summary><pre>{view.operation.output}</pre></details>:null}
             <details className="worktree-cleanup"><summary>Retirer cette copie</summary>
               <p>Le retrait est distinct de la suppression de la conversation. Il est disponible uniquement quand les changements sont intégrés et qu’aucune donnée locale ne risque d’être effacée. Il a lieu automatiquement à l’arrêt ou à la suppression de la conversation quand ces conditions sont réunies.</p>
@@ -243,13 +398,19 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
         {view.primary&&view.projectExists&&view.projectId?<button type="button" className="btn" onClick={()=>setCommitting(view)}>Commit / push du projet</button>:null}
       </details>)}
     </details>:null}
-    {confirmation&&confirmation.machineBase===machineBase?<Modal title={confirmation.kind==='merge'?'Intégrer le travail au projet':confirmation.kind==='discard'?'Abandonner le contenu de départ':'Retirer la copie de travail'} onClose={()=>setConfirmation(null)}>
-      <p>{copyTitle(confirmation.view)}</p><p>Copie : {confirmation.view.path}</p>{confirmation.kind!=='discard'?<p>Projet cible : {confirmation.view.targetPath} · {branchName(confirmation.view.targetBranch)}</p>:null}
-      {confirmation.kind==='discard'?<p>{confirmation.view.changesSinceCreation?.inheritedCount} fichier(s) ont encore exactement le contenu copié du projet à la création de la copie. Ils seront remis à l’état du dernier commit de la copie, et les nouveaux fichiers de ce type seront supprimés de la copie. Le dossier du projet n’est pas modifié. Un fichier modifié depuis la création de la copie est toujours conservé.</p>
-      :confirmation.kind==='merge'?<><p>Les commits de cette copie seront intégrés au projet. Les contrôles Git habituels s’appliquent. En cas de conflit, les fichiers resteront à résoudre dans le dossier cible.</p><p>La conversation peut continuer dans sa copie. Ses nouveaux changements pourront être intégrés ensuite.</p></>:<p>La copie propre et intégrée sera retirée. Sa branche, ses commits et la conversation seront conservés. Cette conversation ne pourra plus reprendre dans la copie supprimée.</p>}
+    {confirmation&&confirmation.machineBase===machineBase?<Modal title={confirmation.kind==='merge'?`Intégrer dans ${branchName(confirmation.view.targetBranch)}`:'Retirer la copie de travail'} onClose={()=>setConfirmation(null)}>
+      <p>{copyTitle(confirmation.view)}</p><p>Copie : {confirmation.view.path}</p><p>Projet cible : {confirmation.view.targetPath} · {branchName(confirmation.view.targetBranch)}</p>
+      {confirmation.kind==='merge'?<>
+        <p>Les commits de cette copie seront intégrés au projet par un merge. Les contrôles Git habituels s’appliquent.</p>
+        {confirmation.view.integrationConflicts?.length?<p className="worktree-warning">Conflits prévus dans {confirmation.view.integrationConflicts.join(', ')} : ils resteront à résoudre dans {confirmation.view.targetPath}. Pour les résoudre plutôt dans la copie, annulez et utilisez « Mettre à jour avec {branchName(confirmation.view.targetBranch)} ».</p>:null}
+        <p>Ensuite, publiez avec « Push » dans l’en-tête du projet. La conversation peut continuer dans sa copie ; ses nouveaux changements pourront être intégrés plus tard.</p>
+      </>:<p>La copie propre et intégrée sera retirée. Sa branche, ses commits et la conversation seront conservés. Cette conversation ne pourra plus reprendre dans la copie supprimée.</p>}
       {error?<p className="form-error" role="alert">{error}</p>:null}
-      <div className="row-actions"><button type="button" className={`btn ${confirmation.kind==='merge'?'primary':'danger-ghost'}`} disabled={busy!==null} onClick={()=>void run()}><ActivityStatus active={busy!==null}>{busy!==null?(confirmation.kind==='merge'?'Intégration…':confirmation.kind==='discard'?'Abandon du contenu de départ…':'Retrait de la copie…'):(confirmation.kind==='merge'?'Intégrer au projet':confirmation.kind==='discard'?'Abandonner le contenu de départ':'Retirer la copie')}</ActivityStatus></button><button type="button" className="btn" disabled={busy!==null} onClick={()=>setConfirmation(null)}>Annuler</button></div>
+      <div className="row-actions"><button type="button" className={`btn ${confirmation.kind==='merge'?'primary':'danger-ghost'}`} disabled={busy!==null} onClick={()=>void run()}><ActivityStatus active={busy!==null}>{busy!==null?(confirmation.kind==='merge'?'Intégration…':'Retrait de la copie…'):(confirmation.kind==='merge'?`Intégrer dans ${branchName(confirmation.view.targetBranch)}`:'Retirer la copie')}</ActivityStatus></button><button type="button" className="btn" disabled={busy!==null} onClick={()=>setConfirmation(null)}>Annuler</button></div>
     </Modal>:null}
+    {discarding&&loadedBase===machineBase?<StartingContentDialog view={discarding} onClose={()=>setDiscarding(null)} onDone={result=>{
+      setResults(current=>new Map(current).set(discarding.id,result));setDiscarding(null);open(discarding.id);void refresh();
+    }}/>:null}
     {committing&&loadedBase===machineBase?<AutomaticCommitDialog projectId={committing.projectId??''} reviewed={reviewed??undefined} endpoint={committing.primary?undefined:`/api/worktrees/${committing.id}/git`} push={committing.primary} scopeLabel={committing.primary?'Tous les changements du dossier partagé du projet':`Fichiers vérifiables de la copie · ${copyTitle(committing)}`} onClose={()=>{setCommitting(null);setReviewed(null);void refresh();}}/>:null}
   </section>;
 }

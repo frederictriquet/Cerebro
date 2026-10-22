@@ -790,6 +790,31 @@ du nouveau travail à intégrer. Ce compteur décrit des changements depuis la
 création, sans en déduire l'auteur. Un fichier déjà modifié au départ qui a encore
 changé est signalé comme nécessitant un examen.
 
+Chaque copie suit un parcours en quatre étapes, affiché avec « Étapes ». La
+prochaine action est aussi proposée directement sur la ligne de la copie.
+
+1. **Enregistrer le travail dans la copie.** Une copie reçoit, à sa création, les
+   fichiers alors non commités du dossier du projet : c'est le *contenu de départ*,
+   qui n'est pas le travail de la conversation. Le panneau le montre par groupe
+   (fichiers inchangés depuis la création, fichiers modifiés depuis) et indique où
+   ce contenu se trouve encore : déjà commité dans la cible, toujours dans le dossier
+   du projet, conservé par Cerebro à la création, ou seulement dans la copie.
+   **Retirer le contenu de départ** affiche d'abord, fichier par fichier, ce qui sera
+   fait : remise à l'état de la copie, ou conservation du seul travail fait depuis la
+   création (avec son diff). Si la cible a avancé sans conflit, la copie reçoit
+   d'abord ses commits, pour que ce travail s'applique à la version à jour. Les
+   fichiers qui ne peuvent pas être séparés restent à examiner dans les diffs.
+   **Créer le commit** enregistre ensuite le travail de la conversation.
+2. **Régler les conflits avec la cible.** Cerebro prévoit les fichiers que
+   l'intégration laisserait en conflit. **Mettre à jour avec master** merge la cible
+   dans la copie : les conflits se résolvent dans la copie (soi-même ou en le
+   demandant à la conversation), puis **Terminer la mise à jour** crée le commit de
+   merge. **Annuler la mise à jour** remet la copie dans son état précédent.
+3. **Intégrer** : le bouton reste visible, désactivé tant qu'un blocage subsiste, et
+   la liste des blocages dit quoi faire.
+4. **Publier** : l'intégration reste locale ; **Push** dans l'en-tête du projet
+   envoie le travail vers les remotes.
+
 Le dossier principal et les copies sans métadonnées figurent dans une section
 repliée distincte. Le dossier principal n'a pas à être intégré dans lui-même. Les
 fichiers ignorés (dépendances, configuration, etc.) apparaissent dans les détails
@@ -802,7 +827,7 @@ ne la remplace pas silencieusement. Les références sont relues à chaque
 actualisation et avant une action. Un état indisponible est indiqué comme inconnu
 et bloque les mutations.
 
-**Intégrer au projet** prépare une confirmation avec les références source/cible et le chemin
+**Intégrer dans master** (ou la branche cible choisie) prépare une confirmation avec les références source/cible et le chemin
 exact du worktree cible. La cible doit être une branche ouverte dans un autre
 worktree, son index et ses fichiers doivent être propres et les agents qui
 l'utilisent doivent avoir fini leur tour. Aucun commit implicite, push, squash,

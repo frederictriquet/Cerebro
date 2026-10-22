@@ -28,6 +28,7 @@
 .worktree-detail .path { overflow-wrap: anywhere; }
 .worktree-target, .worktree-target label { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; min-width: 0; }
 .worktree-target select { max-width: 100%; min-width: 0; }
+.worktree-target label { flex-direction: row; }
 .worktree-detail details { margin-top: .5rem; }
 .worktree-detail > .btn, .worktree-target, .worktree-diffs { margin-top: .65rem; }
 .worktrees-other { margin-top: .75rem; padding-top: .5rem; border-top: 1px solid var(--line); font-size: .85rem; }
@@ -59,3 +60,26 @@
   .worktree-actions { grid-column: 1; grid-row: 3; justify-content: flex-start; }
   .worktree-target select { width: 100%; }
 }
+.worktree-steps { list-style: none; margin: .65rem 0 0; padding: 0; display: grid; gap: .5rem; }
+.worktree-step { padding: .45rem .6rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-1); min-width: 0; }
+.worktree-step-heading { display: flex; align-items: center; gap: .5rem; }
+.worktree-step-number { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 1.35rem; height: 1.35rem; border-radius: 50%; border: 1px solid var(--line); color: var(--muted); font-size: .75rem; }
+.worktree-step-state { margin-left: auto; color: var(--muted); font-size: .75rem; white-space: nowrap; }
+.worktree-step-body { margin: .3rem 0 0 1.85rem; min-width: 0; }
+.worktree-step-body > p:first-child { margin-top: 0; }
+.worktree-step-todo { border-color: var(--accent); }
+.worktree-step-todo .worktree-step-number, .worktree-step-todo .worktree-step-state { color: var(--accent); border-color: var(--accent); }
+.worktree-step-blocked .worktree-step-number, .worktree-step-blocked .worktree-step-state { color: var(--waiting); border-color: var(--waiting); }
+.worktree-step-done .worktree-step-number, .worktree-step-done .worktree-step-state { color: var(--running); border-color: var(--running); }
+.worktree-step-waiting { opacity: .8; }
+.worktree-group { margin: .5rem 0; }
+.worktree-group > p { margin: .25rem 0; }
+.worktree-files { margin: .25rem 0; padding-left: 1.1rem; }
+.worktree-files li { overflow-wrap: anywhere; }
+.worktree-notice { padding: .35rem .5rem; border-left: 3px solid var(--accent); background: var(--bg-2); }
+.worktree-warning { color: var(--waiting); }
+.worktree-plan { margin: .5rem 0; padding-left: 1.1rem; max-height: 50vh; overflow: auto; }
+.worktree-plan li { margin: .4rem 0; overflow-wrap: anywhere; }
+.worktree-plan pre { max-height: 16rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8rem; }
+.worktree-step-body .row-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .4rem; }
+@media (max-width: 640px) { .worktree-step-body { margin-left: 0; } }
