@@ -4,7 +4,8 @@ import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
 import type { Agent, LaunchSpec } from './types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
-import { clipboardImage, uploadProjectImage } from './api.ts';
+import { api, clipboardImage, uploadProjectImage } from './api.ts';
+import type { WorkspaceContext } from '../../server/provenance.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
 
 // Modale native : Échap et un clic hors du contenu la ferment.
@@ -55,6 +56,8 @@ export function LaunchSessionDialog({
   projectId,
   initialPrompt,
   promptFor,
+  submitLabel,
+  epicId,
   onLaunch,
   onClose,
 }: {
@@ -62,16 +65,28 @@ export function LaunchSessionDialog({
   projectId: string;
   initialPrompt: string;
   promptFor?: (agent: Agent) => string;
+  submitLabel?: string;
+  epicId?: string | null;
   onLaunch: (spec: LaunchSpec) => Promise<void>;
   onClose: () => void;
 }) {
+  const [workspace, setWorkspace] = useState<WorkspaceContext | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setWorkspace(null);
+    if (epicId) void api<WorkspaceContext | null>(`/api/epics/${epicId}/workspace`).then(value => { if (!cancelled) setWorkspace(value); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [epicId]);
+  const contextLabel = workspace ? workspace.mode === 'isolated' ? 'Poursuivre dans le worktree de l’epic' : 'Poursuivre dans le dossier d’origine de l’epic' : undefined;
   return (
     <Modal title={title} onClose={onClose}>
+      {workspace ? <p className="hint">Dossier conservé pour cet epic : <code>{workspace.path}</code>. Le réglage des nouvelles conversations ne le modifie pas.</p> : null}
       <NewSessionForm
         className="bare"
         projectId={projectId}
         initialPrompt={initialPrompt}
         promptFor={promptFor}
+        submitLabel={submitLabel ?? contextLabel}
         autoFocus
         onLaunch={onLaunch}
         onCancel={onClose}
