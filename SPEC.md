@@ -332,7 +332,7 @@ du workspace peuvent fonctionner : tester si possible avec `CEREBRO_DATA_DIR=./.
 
 ## Commit / push en un clic
 
-- `Project.commitSettings` : `{agent,model,effort,strategy:"single"|"atomic"}`, persistant et indépendant de `sessionDefaults`. Réglable par `PATCH /api/projects/:id` : les boutons d'action de l'en-tête (« Un seul commit » et « Un commit par intention ») transmettent la stratégie pour cette opération sans modifier la préférence persistée ; l'agent, le modèle et l'effort restent dans « Réglages Git ». Migration initialisée une seule fois depuis les préférences de sessions existantes.
+- `Project.commitSettings` : `{agent,model,effort,strategy:"single"|"atomic"}`, persistant et indépendant de `sessionDefaults`. Réglable par `PATCH /api/projects/:id` : les boutons d'action de l'en-tête (« Un seul commit » et « Un commit par intention ») transmettent la stratégie pour cette opération sans modifier la préférence persistée ; l'agent, le modèle et l'effort restent dans « Réglages LLM ». Migration initialisée une seule fois depuis les préférences de sessions existantes.
 - `POST /api/{projects,sessions,worktrees}/:id/git/auto-commit` `{requestId,push,strategy?}` : stratégie optionnelle `single` ou `atomic` (sinon préférence du projet), exécution suivie, collecte déterministe, proposition de messages/regroupements par l'agent configuré, validation du plan, exécuteur Git puis push direct. Aucun JSON ou prompt à manipuler dans le parcours courant.
 - `GET /api/git/auto-commits/:id` : phases, fichiers, exclusions, hashes/titres, résultats par remote et erreurs. `POST .../:id/cancel` arrête uniquement la préparation avant mutation Git.
 - Tables `automatic_commits` et `automatic_commit_requests` : idempotence des reprises et doubles clics, y compris après redémarrage ; une opération inachevée est interrompue et jamais rejouée automatiquement.
@@ -345,7 +345,8 @@ du workspace peuvent fonctionner : tester si possible avec `CEREBRO_DATA_DIR=./.
 
 ## Choix du dossier de travail
 
-- `Project.workspaceMode` vaut `isolated` (défaut et migration) ou `shared`, configurable à la création et par `PATCH /api/projects/:id`, ainsi que dans Réglages Git.
+- `Project.workspaceMode` vaut `isolated` (défaut et migration) ou `shared`, configurable à la création et par `PATCH /api/projects/:id`, ainsi que depuis l'en-tête du projet dans l'interface.
 - En mode `shared`, une nouvelle session travaille dans le chemin du projet enregistré et sur sa branche courante. Pas de création, checkout ou suppression de branche, de worktree ni de copie des fichiers. Un ancien `contextPath` d'epic ne redirige pas une nouvelle session de ce mode vers un worktree.
+- Les boutons de lancement annoncent ce choix : « Lancer dans un worktree » / « Lancer dans le dossier du projet » (formulaires de nouvelle session), et de même « Traiter l'epic … » ; un epic composé uniquement de commandes garde « Traiter l'epic ».
 - `Workspace.mode=shared` persiste ce choix par session. Reprise et suppression de conversation conservent le dossier et la branche de travail. Une modification de la préférence du projet ne déplace aucune session existante.
 - Provenance partagée sans attribution individuelle ; les boutons Commit / push et Code review visent explicitement le périmètre du projet. Les anciens worktrees restent visibles même si le projet passe en mode partagé.

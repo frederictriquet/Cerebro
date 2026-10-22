@@ -493,10 +493,10 @@ copie. Le périmètre est annoncé avant lancement et rappelé dans le suivi.
 Dans l'en-tête du projet, les boutons **Un seul commit** et **Un commit par intention**
 lancent directement la création des commits selon le découpage choisi, sans push.
 Le bouton **Push** permet ensuite de les envoyer. Ce choix vaut pour l'opération lancée.
-**Réglages Git** mémorise l'agent, le modèle et l'effort. Ces réglages sont
-indépendants de ceux des sessions. La migration initialise les réglages de commits
-avec l'agent, le modèle et l'effort déjà enregistrés pour le projet, puis les
-conserve séparément. Un changement d'agent remet le modèle et l'effort au défaut
+**Réglages LLM** mémorise l'agent, le modèle et l'effort. Ces réglages sont
+indépendants de ceux des sessions et du choix du dossier de travail. La migration
+initialise les réglages de commits avec l'agent, le modèle et l'effort déjà
+enregistrés pour le projet, puis les conserve séparément. Un changement d'agent remet le modèle et l'effort au défaut
 pour ne pas transmettre ceux de l'ancien agent.
 
 Le serveur collecte HEAD, les diffs, l'index préexistant et les derniers messages.
@@ -538,7 +538,7 @@ dans le worktree. Le push seul, sur un dépôt propre, ne lance aucune session.
 
 ## Choisir le dossier de travail par projet
 
-Dans **Réglages Git → Travail des conversations**, chaque projet choisit entre :
+Dans l'en-tête du projet, le réglage **Travail des conversations** permet à chaque projet de choisir entre :
 
 - **Copie isolée par conversation** (défaut) : un worktree et une branche par nouvelle conversation, puis intégration du travail au projet.
 - **Dossier du projet** : les nouvelles conversations utilisent le chemin du projet et la branche qui y est déjà sélectionnée, sans créer de worktree, de branche ou de copie des fichiers. Ce mode convient aux tests liés à un chemin précis et au développement séquentiel sur une branche de longue durée.
