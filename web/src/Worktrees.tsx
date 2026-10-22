@@ -69,6 +69,7 @@ function journey(view: WorktreeView): Journey {
   else if(view.ahead&&conflicts?.length){status='Conflits prévus';next=`Mettez la copie à jour avec ${target} pour résoudre ${conflicts.length===1?'le conflit':'les conflits'} dans la copie.`;}
   else if(view.ahead&&otherBlockers.length){status='Intégration bloquée';next=otherBlockers[0];}
   else if(view.ahead){status='Prêt à intégrer';next=`Intégrez ${view.ahead===1?'le commit':`les ${view.ahead} commits`} dans ${target}.`;}
+  else if(view.integration==='integrated'&&view.published){status='Publié';next=`Le travail est dans ${target} et sur le dépôt distant.`;}
   else if(view.integration==='integrated'){status='Intégré au projet';next=`Le travail est dans ${target} sur cette machine. Utilisez « Push » dans l’en-tête du projet pour le publier.`;}
   else {status='État à vérifier';next=null;}
   return {status,next,inherited,mixed:mixed.map(({path,origin,separable})=>({path,origin,separable})),settled:settled.map(({path,origin})=>({path,origin})),ownWork,save,update,integrate};
@@ -295,7 +296,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
             <div className="worktree-identity">
               <div className="worktree-title">
                 <strong title={copyTitle(view)}>{view.session?<a href={href(`#/s/${view.session.id}`)}>{copyTitle(view)}</a>:copyTitle(view)}</strong>
-                <span className={`pill ${plan.status!=='Intégré au projet'&&plan.status!=='Copie de départ'?'worktree-pending':''}`}>{plan.status}</span>
+                <span className={`pill ${plan.status!=='Intégré au projet'&&plan.status!=='Publié'&&plan.status!=='Copie de départ'?'worktree-pending':''}`}>{plan.status}</span>
               </div>
               <div className="worktree-meta">
                 {!projectId?<span className="worktree-context">{view.projectName}{view.projectExists?'':' (projet retiré)'}</span>:null}
@@ -393,8 +394,9 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
                   :<p>Aucun commit à intégrer : enregistrez d’abord le travail (étape 1).</p>}
                 {view.ahead?<button type="button" className={`btn ${view.mergeBlockers.length||view.integrationConflicts?.length?'':'primary'}`} disabled={disabled||view.mergeBlockers.length>0} title={integrateTitle} onClick={()=>void prepare(view,'merge')}>Intégrer dans {target}</button>:null}
               </Step>
-              <Step number={4} title="Publier" state={view.integration==='integrated'&&!view.ahead?'todo':'waiting'}>
-                <p>L’intégration reste locale à cette machine. Pour envoyer le travail vers le dépôt distant, utilisez « Push » dans l’en-tête du projet ({target}).</p>
+              <Step number={4} title="Publier" state={view.integration==='integrated'&&!view.ahead?view.published?'done':'todo':'waiting'}>
+                {view.integration==='integrated'&&view.published?<p>Tout le travail de la copie est sur le dépôt distant de {target}.</p>
+                  :<p>L’intégration reste locale à cette machine. Pour envoyer le travail vers le dépôt distant, utilisez « Push » dans l’en-tête du projet ({target}).</p>}
               </Step>
             </ol>
             {view.operation?.output?<details><summary>Résultat Git</summary><pre>{view.operation.output}</pre></details>:null}

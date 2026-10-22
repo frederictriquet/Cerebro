@@ -166,6 +166,14 @@ test('ordinary Git merges outside Cerebro are detected without any historical me
  f.commit();git(f.repo,'merge','--ff-only',f.workspace.branch);assert.equal((await f.view()).integration,'integrated');f.commit('another change');assert.equal((await f.view()).integration,'pending');
 }));
 
+test('an integrated copy is published once its commits reach the target upstream',async()=>fixture(async f=>{
+ assert.equal((await f.view()).published,null);
+ const remote=join(f.repo,'..','remote.git');git(f.repo,'init','--bare',remote);git(f.repo,'remote','add','origin',remote);git(f.repo,'push','-u','origin','main');
+ assert.equal((await f.view()).published,true);
+ f.commit();assert.equal((await f.view()).published,null);assert.equal((await f.merge()).status,'succeeded');assert.equal((await f.view()).published,false);
+ git(f.repo,'push','origin','main');assert.equal((await f.view()).published,true);
+}));
+
 test('resume after merge keeps the same conversation and cwd (fake CLI, no model)',async()=>fixture(async f=>{
  f.commit();assert.equal((await f.merge()).status,'succeeded');
  const bin=join(root,randomUUID());mkdirSync(bin);const captured=join(bin,'cwd');

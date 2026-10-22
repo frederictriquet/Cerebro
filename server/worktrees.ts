@@ -87,6 +87,8 @@ export interface WorktreeView extends WorktreeRecord {
   targetHead: string | null;
   targets: { branch: string; path: string }[];
   integration: 'integrated' | 'pending' | 'unknown';
+  /** Whether the copy's commits are in the target's upstream branch; null without upstream or before integration. */
+  published: boolean | null;
   mergeInProgress: boolean;
   activeSessions: { id: string; title: string; status: string }[];
   mergeBlockers: string[];
@@ -430,7 +432,7 @@ export class WorktreeManager {
     const session = record.sessionId ? this.db.getSession(record.sessionId) : null;
     const view: WorktreeView = {...record, projectName:(record.projectId?this.db.getProject(record.projectId)?.name:null)??record.projectName, projectExists: record.projectId !== null && this.db.getProject(record.projectId) !== null,
       session: session ? {id:session.id,title:session.title,status:session.status} : null,
-      primary:false,branch:null,head:null,dirty:null,files:[],ignored:null,ignoredFiles:[],disposableIgnored:[],ahead:null,behind:null,targetPath:null,targetHead:null,targets:[],integration:'unknown',mergeInProgress:false,
+      primary:false,branch:null,head:null,dirty:null,files:[],ignored:null,ignoredFiles:[],disposableIgnored:[],ahead:null,behind:null,targetPath:null,targetHead:null,targets:[],integration:'unknown',published:null,mergeInProgress:false,
       activeSessions:[],mergeBlockers:[],removeBlockers:[],fingerprint:null,error:null,operation:this.operations().find(op => op.worktreeId === record.id) ?? null,changesSinceCreation:null,startingContent:null,targetDirty:null,integrationConflicts:null,conflicts:[]};
     try {
       const common = await commonDirectory(record.path);
@@ -480,6 +482,11 @@ export class WorktreeManager {
         const counts = (await git(record.path,['rev-list','--left-right','--count',`${view.targetHead}...${view.head}`])).trim().split(/\s+/).map(Number);
         view.behind=counts[0]; view.ahead=counts[1]; view.integration = view.ahead === 0 && view.dirty === 0 ? 'integrated' : 'pending';
         if (view.ahead && view.behind && !view.mergeInProgress) view.integrationConflicts = this.forecast(view);
+        if (view.integration === 'integrated') {
+          const upstream = (await git(record.path,['for-each-ref','--format=%(upstream)',record.targetBranch!])).trim();
+          if (upstream && await git(record.path,['rev-parse','--verify','--quiet',`${upstream}^{commit}`]).then(() => true, () => false))
+            view.published = await git(record.path,['merge-base','--is-ancestor',view.head!,upstream]).then(() => true, () => false);
+        }
       }
       const active = this.db.listSessions().filter(s => s.status !== 'exited' && this.activityForSession(s.id,record.path));
       view.activeSessions = active.map(s => ({id:s.id,title:s.title,status:s.status}));
