@@ -1,4 +1,4 @@
-import type { Agent, Mode, Session, Status } from './types.ts';
+import type { Agent, Mode, Session, Status, WorkspaceMode } from './types.ts';
 
 // Statut affiché : une session inactive ou terminée depuis plus d'une heure passe « en sommeil »,
 // signe qu'on n'en aura sans doute plus besoin ; ce sont celles que la purge supprime.
@@ -15,11 +15,11 @@ export const STATUS_LABEL: Record<DisplayStatus, string> = {
   dormant: 'En sommeil',
 };
 
-export function isDormant(session: Pick<Session, 'status' | 'updatedAt'>, now: number): boolean {
-  return (session.status === 'idle' || session.status === 'exited') && now - session.updatedAt >= DORMANT_AFTER_MS;
+export function isDormant(session: Pick<Session, 'status' | 'updatedAt'> & Partial<Pick<Session, 'pendingFindings'>>, now: number): boolean {
+  return !session.pendingFindings && (session.status === 'idle' || session.status === 'exited') && now - session.updatedAt >= DORMANT_AFTER_MS;
 }
 
-export function displayStatus(session: Pick<Session, 'status' | 'updatedAt'>, now: number): DisplayStatus {
+export function displayStatus(session: Pick<Session, 'status' | 'updatedAt'> & Partial<Pick<Session, 'pendingFindings'>>, now: number): DisplayStatus {
   return isDormant(session, now) ? 'dormant' : session.status;
 }
 
@@ -33,6 +33,10 @@ export const MODE_LABEL: Record<Mode, string> = {
 
 export function isAwaiting(session: Pick<Session, 'attention' | 'status'>): boolean {
   return session.attention || session.status === 'waiting';
+}
+
+export function needsAttention(session: Pick<Session, 'attention' | 'pendingFindings'>): boolean {
+  return session.attention || session.pendingFindings > 0;
 }
 
 export const MODE_CHIP: Record<Mode, string> = {
@@ -55,6 +59,12 @@ export const AGENT_LABEL: Record<Agent, string> = {
   claude: 'claude',
   codex: 'codex',
   grok: 'grok',
+};
+
+// Suffixe des boutons de lancement : rappelle où travailleront les nouvelles conversations du projet.
+export const WORKSPACE_TARGET: Record<WorkspaceMode, string> = {
+  isolated: 'dans un worktree',
+  shared: 'dans le dossier du projet',
 };
 
 export function relativeTime(ts: number, now: number): string {

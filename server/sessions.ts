@@ -24,7 +24,8 @@ import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError } from 
 import type { AgentQuestion } from './questions.ts';
 import { archiveSessionWorktree } from './worktrees.ts';
 import { assertWorktreeAvailable, deferWorktreeInput } from './worktree-gate.ts';
-import { createWorkspace, joinWorkspace, workspaceAt, workspaceFor, type Workspace } from './provenance.ts';
+import { createWorkspace, createWorkspaceInContext, joinWorkspace, workspaceAt, workspaceFor, type Workspace, type WorkspaceContext } from './provenance.ts';
+import { assertEpicWorkspace, epicWorkspace, rememberEpicWorkspace, withEpicWorkspace } from './epic-workspace.ts';
 import { findProcessesByArgument, isAlive, processTree, signalProcesses } from './proc.ts';
 
 // @xterm/headless is CommonJS at runtime despite exposing ESM-shaped typings.
@@ -84,7 +85,7 @@ const IDLE_DELAY_MS = 20_000;
 const DORMANT_AFTER_MS = 60 * 60_000;
 
 function isDormant(session: Session, now: number): boolean {
-  return (session.status === 'idle' || session.status === 'exited') && now - session.updatedAt >= DORMANT_AFTER_MS;
+  return session.pendingFindings === 0 && (session.status === 'idle' || session.status === 'exited') && now - session.updatedAt >= DORMANT_AFTER_MS;
 }
 const SCREEN_CHECK_DELAY_MS = 2_000;
 const CATCH_UP_DELAY_MS = 4_000;
@@ -241,18 +242,26 @@ export class SessionManager {
     for (const listener of this.eventListeners) listener(event);
   }
 
-  async create(project: Project, overrides: Partial<SessionDefaults> = {}, validate?: () => Promise<void>, contextPath?: string, title?: string, options: { rememberDefaults?: boolean } = {}): Promise<Session> {
+  async create(project: Project, overrides: Partial<SessionDefaults> = {}, validate?: () => Promise<void>, contextPath?: string, title?: string, options: { rememberDefaults?: boolean; epicId?: string | null; workspace?: WorkspaceContext } = {}): Promise<Session> {
+    const create = (): Promise<Session> => this.createInContext(project, overrides, validate, contextPath, title, options);
+    return options.epicId ? withEpicWorkspace(this.db, options.epicId, create) : create();
+  }
+
+  private async createInContext(project: Project, overrides: Partial<SessionDefaults>, validate: (() => Promise<void>) | undefined, contextPath: string | undefined, title: string | undefined, options: { rememberDefaults?: boolean; epicId?: string | null; workspace?: WorkspaceContext }): Promise<Session> {
     const current = this.db.getProject(project.id);
     if (current === null) throw new Error('Projet introuvable');
+    // An explicit workspace (a copy to repair) is joined whatever the project's current preference.
+    const context = options.epicId ? epicWorkspace(this.db, options.epicId) : options.workspace ?? null;
+    if (options.epicId && context) assertEpicWorkspace(this.db, context);
     // Automated launches must not replace the user's form settings with generated instructions.
     const defaults = options.rememberDefaults === false
       ? resolveSessionDefaults(current.sessionDefaults, overrides)
       : this.rememberDefaults(project.id, overrides);
-    const path=current.workspaceMode==='shared'?current.path:contextPath??current.path;
+    const path=context?.path??(current.workspaceMode==='shared'?current.path:contextPath??current.path);
     assertWorktreeAvailable(path);
     // A context inside an existing copy (next epic step) reuses it instead of copying the copy.
-    const joined=current.workspaceMode==='shared'||!contextPath?null:workspaceAt(this.db,contextPath);
-    return this.launch({...current,path}, defaults.agent, defaults.mode, defaults, defaults.prompt, null, null, validate, joined, title);
+    const joined=context||current.workspaceMode==='shared'||!contextPath?null:workspaceAt(this.db,contextPath);
+    return this.launch({...current,path}, defaults.agent, defaults.mode, defaults, defaults.prompt, null, null, validate, joined, title, options.epicId, context);
   }
 
   rememberDefaults(projectId: string, overrides: Partial<SessionDefaults>): SessionDefaults {
@@ -291,6 +300,8 @@ export class SessionManager {
     validate?: () => Promise<void>,
     joined: Workspace | null = null,
     title?: string,
+    epicId: string | null = null,
+    context: WorkspaceContext | null = null,
   ): Promise<Session> {
     const id = existingId ?? randomUUID();
     const command = buildAgentCommand(agent, mode, prompt, id, resumeSessionId, tuning);
@@ -307,7 +318,7 @@ export class SessionManager {
         title: title ?? titleFor(agent, prompt),
         status: 'starting',
         agentSessionId: command.agentSessionId,
-      }, token);
+      }, token, epicId);
     } else {
       this.db.setHookToken(id, token);
       const updated = this.db.updateSession(id, {
@@ -323,9 +334,10 @@ export class SessionManager {
 
     let cwd = project.path;
     try {
-      const workspace = existingId !== null ? workspaceFor(this.db, id) : joined ? await joinWorkspace(this.db, id, joined) : await createWorkspace(this.db, id, project);
+      const workspace = existingId !== null ? workspaceFor(this.db, id) : context ? await createWorkspaceInContext(this.db, id, project, context) : joined ? await joinWorkspace(this.db, id, joined) : await createWorkspace(this.db, id, project);
       cwd = workspace?.path ?? project.path;
       if(workspace?.removedAt)throw new Error('Le worktree de cette conversation a été supprimé.');
+      if (epicId && workspace) rememberEpicWorkspace(this.db, epicId, {path:workspace.path,mode:workspace.mode});
       assertWorktreeAvailable(cwd);
       if (validate) await validate();
       assertWorktreeAvailable(cwd);

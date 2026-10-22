@@ -9,13 +9,15 @@ import {
   type SlackSettings,
   type SlackStatus,
 } from './api.ts';
-import { relativeTime, sessionTitle } from './format.ts';
+import { needsAttention, relativeTime, sessionTitle } from './format.ts';
+import { FindingsLink } from './FindingsLink.tsx';
 import { AppVersion, MachineSwitcher } from './MachineSwitcher.tsx';
 import { href, useNow, type Route } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { UsageGauges } from './UsageGauges.tsx';
 import { WorktreeLabel } from './WorktreeLabel.tsx';
+import { SessionEpicBadge } from './SessionEpicBadge.tsx';
 import type { Session } from './types.ts';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
 
@@ -25,7 +27,7 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
   const [slack, setSlack] = useState<SlackStatus | null>(null);
   const [showSlack, setShowSlack] = useState(false);
 
-  const attention = sessions.filter((s) => s.attention);
+  const attention = sessions.filter(needsAttention);
   const activeSessionId = route.kind === 'session' ? route.sessionId : null;
 
   useEffect(() => {
@@ -266,6 +268,7 @@ function AttentionItem({
         <span className="meta">
           <AgentLabel agent={session.agent} /> · {relativeTime(session.updatedAt, now)}
         </span>
+        <SessionEpicBadge session={session} />
         {session.worktree ? (
           <span className="attention-worktree">
             <WorktreeLabel worktree={session.worktree} />
@@ -273,6 +276,7 @@ function AttentionItem({
         ) : null}
       </a>
       <div className="attention-extra">
+        <FindingsLink sessionId={session.id} count={session.pendingFindings} onNavigate={onNavigate} />
         {session.attentionReason ? <p className={`reason-line ${tone}`}>{session.attentionReason}</p> : null}
         <PreviewButton pressed={preview.open} onToggle={preview.toggle} anchorRef={anchorRef} />
       </div>

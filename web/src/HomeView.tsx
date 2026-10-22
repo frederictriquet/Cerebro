@@ -6,7 +6,7 @@ import { useState, type FormEvent } from 'react';
 import { go, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { useStore } from './store.tsx';
-import { SessionRow } from './SessionRow.tsx';
+import { SessionList } from './SessionList.tsx';
 
 export function HomeView() {
   const { projects, sessions, createProject } = useStore();
@@ -19,7 +19,7 @@ export function HomeView() {
   const running = sessions.filter((s) => s.status === 'running' || s.status === 'starting').length;
   const waiting = sessions.filter((s) => s.status === 'waiting').length;
   const idle = sessions.filter((s) => s.status === 'idle').length;
-  const live = sessions.filter((s) => s.status !== 'exited');
+  const live = sessions.filter((s) => s.status !== 'exited' || s.pendingFindings > 0);
 
   const onCreate = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
@@ -93,21 +93,11 @@ export function HomeView() {
       </div>
 
       <section className="session-table-wrap">
-        <h2>Sessions vivantes</h2>
+        <h2>Sessions vivantes et reviews à traiter</h2>
         {live.length === 0 ? (
           <p className="empty-hint">Aucune session en cours.</p>
         ) : (
-          <ul className="session-table">
-            {live.map((session) => (
-              <SessionRow
-                key={session.id}
-                session={session}
-                now={now}
-                project={projects.find((project) => project.id === session.projectId)}
-                onError={setError}
-              />
-            ))}
-          </ul>
+          <SessionList sessions={live} now={now} showProject onError={setError} />
         )}
       </section>
     </div>

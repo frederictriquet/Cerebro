@@ -9,7 +9,7 @@ import { after, test } from 'node:test';
 const root=mkdtempSync(join(tmpdir(),'cerebro-worktree-tests-'));
 process.env.CEREBRO_DATA_DIR=join(root,'data');process.env.HOME=root;
 const {CerebroDatabase}=await import('../server/db.ts');
-const {createWorkspace,joinWorkspace,workspaceFor}=await import('../server/provenance.ts');
+const {createWorkspace,joinWorkspace,sessionProvenance,workspaceFor}=await import('../server/provenance.ts');
 const {WorktreeManager,rememberWorktree}=await import('../server/worktrees.ts');
 const {SessionManager}=await import('../server/sessions.ts');
 const {assertWorktreeAvailable,deferWorktreeInput,lockWorktrees}=await import('../server/worktree-gate.ts');
@@ -20,8 +20,9 @@ async function fixture(run,initialDirty=false){
  git(repo,'init','-b','main');git(repo,'config','user.email','test@example.com');git(repo,'config','user.name','Test');
  writeFileSync(join(repo,'file'),'base\n');writeFileSync(join(repo,'.gitignore'),'ignored\nnode_modules/\n');git(repo,'add','.');git(repo,'commit','-m','base');
  mkdirSync(join(repo,'node_modules','dependency'),{recursive:true});writeFileSync(join(repo,'node_modules','dependency','index.js'),'module.exports = true;\n');
- if(initialDirty)writeFileSync(join(repo,'file'),'changes already in project\n');
+ if(initialDirty===true||initialDirty==='untracked-too')writeFileSync(join(repo,'file'),'changes already in project\n');
  if(initialDirty==='untracked-too')writeFileSync(join(repo,'extra'),'untracked in project\n');
+ if(typeof initialDirty==='function')initialDirty(repo);
  let db=new CerebroDatabase(join(directory,'db.sqlite'));const project=db.createProject('Project',repo);const id=randomUUID();
  db.createSession({id,projectId:project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Conversation',status:'exited',agentSessionId:'fake'},'token');
  const workspace=await createWorkspace(db,id,project);let manager=new WorktreeManager(db);
@@ -366,4 +367,86 @@ test('ignored copies identical to the project, links into it and regenerable dir
  writeFileSync(join(f.workspace.root,'ignored'),'project value\n');own=await f.view();assert.equal(own.ignored,0);assert.deepEqual(own.disposableIgnored.sort(),['.claude/','dist/','ignored','linked']);
  const plan=await f.manager.prepare(own.id,'remove');await f.manager.start(own.id,'remove',plan.token);await f.manager.shutdown();
  assert.equal(existsSync(f.workspace.root),false);assert.equal(readFileSync(join(f.repo,'linked','data'),'utf8'),'kept\n');assert.equal(readFileSync(join(f.repo,'.claude','settings.local.json'),'utf8'),'{"permissions":{}}\n');
+}));
+
+// A twelve-line document: the project edits line 2 before the copy, the conversation edits a line of its choice.
+const LINES=Array.from({length:12},(_,i)=>`line ${i+1}`);
+const document=(edits={})=>LINES.map((line,i)=>edits[i+1]??line).join('\n')+'\n';
+const projectWithEditedDocument=extra=>repo=>{
+ writeFileSync(join(repo,'doc'),document());git(repo,'add','doc');git(repo,'commit','-m','doc');
+ writeFileSync(join(repo,'doc'),document({2:'project edit'}));
+ if(extra)writeFileSync(join(repo,'extra'),'untracked in project\n');
+};
+test('removing the starting content keeps only the work done since the copy, found in the snapshot taken at creation',async()=>fixture(async f=>{
+ const copy=f.workspace.root;
+ assert.ok(f.workspace.startingSnapshot);assert.equal(git(f.repo,'rev-parse',`refs/cerebro/starting/${f.id}`),f.workspace.startingSnapshot);
+ writeFileSync(join(copy,'doc'),document({2:'project edit',9:'conversation'}));
+ // The project folder moves on: the copied content now only exists in the snapshot.
+ writeFileSync(join(f.repo,'doc'),document({2:'other project edit'}));rmSync(join(f.repo,'extra'));
+ let own=await f.view();
+ assert.deepEqual(own.startingContent.map(file=>[file.path,file.state,file.origin?.kind,file.separable]),[['doc','mixed','snapshot',true],['extra','inherited','snapshot',false]]);
+ const plan=await f.manager.startingContentPlan(own.id);
+ assert.equal(plan.targetUpdate,null);
+ assert.deepEqual(plan.steps.map(step=>[step.path,step.action]),[['doc','separate'],['extra','restore']]);
+ assert.match(plan.steps[0].diff,/^\+conversation$/m);assert.doesNotMatch(plan.steps[0].diff,/project edit/);
+ const result=await f.manager.discardInherited(own.id);
+ assert.deepEqual(result.separated,['doc']);assert.deepEqual(result.restored,['extra']);
+ assert.equal(readFileSync(join(copy,'doc'),'utf8'),document({9:'conversation'}));assert.equal(existsSync(join(copy,'extra')),false);
+ own=await f.view();assert.deepEqual(own.changesSinceCreation,{count:1,files:['doc'],inheritedCount:0,needsReviewCount:0});assert.deepEqual(own.startingContent,[]);
+ // The conversation's change is now attributed to the copy and can be committed automatically.
+ assert.equal((await sessionProvenance(f.db,f.id)).changes.find(change=>change.path==='doc').certainty,'workspace');
+},projectWithEditedDocument(true)));
+test('when the target received the starting content, the copy is first updated with it, then keeps only its own work',async()=>fixture(async f=>{
+ const copy=f.workspace.root;
+ writeFileSync(join(copy,'doc'),document({2:'project edit',3:'conversation'}));
+ git(f.repo,'commit','-am','project edit');writeFileSync(join(f.repo,'doc'),document({2:'project edit',6:'target later'}));git(f.repo,'commit','-am','target later');
+ let own=await f.view();
+ assert.equal(own.startingContent[0].origin.kind,'target-commit');assert.equal(own.startingContent[0].origin.subject,'project edit');assert.equal(own.behind,2);
+ const plan=await f.manager.startingContentPlan(own.id);
+ assert.deepEqual(plan.targetUpdate,{branch:'refs/heads/main',commits:2});assert.equal(plan.steps[0].action,'separate');
+ const before=git(copy,'rev-parse','HEAD');
+ const result=await f.manager.discardInherited(own.id);assert.deepEqual(result.separated,['doc']);assert.ok(result.targetUpdate);
+ // Line 3 sits next to the copied edit: only a separation onto the updated version keeps it without conflict.
+ assert.equal(readFileSync(join(copy,'doc'),'utf8'),document({2:'project edit',3:'conversation',6:'target later'}));
+ assert.equal(git(copy,'rev-list','--parents','-n','1','HEAD').split(' ').length,3);assert.equal(git(copy,'rev-parse','HEAD^1'),before);
+ assert.deepEqual(git(copy,'diff','--name-only','HEAD').split('\n'),['doc']);
+ const provenance=await sessionProvenance(f.db,f.id);
+ assert.doesNotMatch(provenance.warning,/incertaine/);assert.equal(provenance.changes.find(change=>change.path==='doc').certainty,'workspace');
+ git(copy,'commit','-qam','conversation');
+ own=await f.view();assert.equal(own.behind,0);assert.equal((await f.merge()).status,'succeeded');
+ assert.equal(readFileSync(join(f.repo,'doc'),'utf8'),document({2:'project edit',3:'conversation',6:'target later'}));
+},projectWithEditedDocument()));
+test('a file whose recent changes overlap the starting content is left for a manual review',async()=>fixture(async f=>{
+ writeFileSync(join(f.workspace.root,'doc'),document({2:'conversation over the project edit'}));
+ const own=await f.view();
+ // The inventory announces the same outcome as the action, before it is attempted.
+ assert.deepEqual(own.startingContent.map(file=>[file.path,file.origin?.kind,file.separable]),[['doc','target-worktree',false]]);
+ const plan=await f.manager.startingContentPlan(own.id);
+ assert.equal(plan.steps[0].action,'keep');assert.match(plan.steps[0].reason,/mêmes lignes/);
+ await assert.rejects(f.manager.discardInherited(own.id),/Aucun contenu de départ ne peut être retiré automatiquement/);
+ assert.equal(readFileSync(join(f.workspace.root,'doc'),'utf8'),document({2:'conversation over the project edit'}));
+},projectWithEditedDocument()));
+test('conflicts with the target are forecast, then resolved in the copy by updating it',async()=>fixture(async f=>{
+ const copy=f.workspace.root;f.commit('session work');
+ writeFileSync(join(f.repo,'file'),'project work\n');git(f.repo,'commit','-am','project work');
+ let own;
+ for(let i=0;i<200;i++){own=await f.view();if(own.integrationConflicts)break;await new Promise(r=>setTimeout(r,10));}
+ assert.deepEqual(own.integrationConflicts,['file']);
+ await f.manager.updateFromTarget(own.id);
+ own=await f.view();assert.equal(own.mergeInProgress,true);assert.deepEqual(own.conflicts,['file']);
+ await f.manager.abortTargetUpdate(own.id);own=await f.view();assert.equal(own.mergeInProgress,false);assert.equal(own.dirty,0);
+ await f.manager.updateFromTarget(own.id);
+ await assert.rejects(f.manager.finishTargetUpdate(own.id),/Marqueurs de conflit/);
+ writeFileSync(join(copy,'file'),'session and project work\n');
+ own=await f.manager.finishTargetUpdate(own.id);assert.equal(own.mergeInProgress,false);assert.equal(own.behind,0);assert.equal(own.dirty,0);
+ assert.doesNotMatch((await sessionProvenance(f.db,f.id)).warning,/incertaine/);
+ assert.equal((await f.merge()).status,'succeeded');assert.equal(readFileSync(join(f.repo,'file'),'utf8'),'session and project work\n');
+}));
+test('a copy without conflicts is updated with the target in one merge commit',async()=>fixture(async f=>{
+ const copy=f.workspace.root;f.commit('session work');
+ writeFileSync(join(f.repo,'other'),'project\n');git(f.repo,'add','other');git(f.repo,'commit','-m','other');
+ let own=await f.view();await assert.rejects((async()=>{writeFileSync(join(copy,'pending'),'x');try{await f.manager.updateFromTarget(own.id);}finally{rmSync(join(copy,'pending'));}})(),/non commité/);
+ own=await f.manager.updateFromTarget(own.id);assert.equal(own.behind,0);assert.equal(own.ahead,2);assert.equal(readFileSync(join(copy,'other'),'utf8'),'project\n');
+ assert.match(git(copy,'reflog','-1','--format=%gs'),/^commit \(merge\): /);
+ await assert.rejects(f.manager.updateFromTarget(own.id),/déjà tous les commits/);
 }));

@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { lstat, readdir, readFile, readlink, realpath, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { CerebroDatabase } from './db.ts';
@@ -13,9 +14,15 @@ import { assertWorktreeAvailable, canonicalWorktreePath, lockWorktrees } from '.
 import { workspaceFileSignature } from './workspace-files.ts';
 
 const exec = promisify(execFile);
-async function git(path: string, args: string[]): Promise<string> {
+async function git(path: string, args: string[], env: Record<string, string> = {}): Promise<string> {
   return (await exec('git', ['-C', path, ...args], {
-    maxBuffer: 8 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_MERGE_AUTOEDIT: 'no' },
+    maxBuffer: 8 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_MERGE_AUTOEDIT: 'no', ...env },
+  })).stdout;
+}
+const branchLabel = (branch: string | null): string => branch?.replace(/^refs\/heads\//, '') ?? 'la cible';
+async function gitBytes(path: string, args: string[]): Promise<Buffer> {
+  return (await exec('git', ['-C', path, ...args], {
+    encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
   })).stdout;
 }
 const hash = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
@@ -88,12 +95,53 @@ export interface WorktreeView extends WorktreeRecord {
   error: string | null;
   operation: WorktreeOperation | null;
   changesSinceCreation: {count:number;files:string[];inheritedCount:number;needsReviewCount:number} | null;
+  /** Dirty files still holding content copied from the project at creation (first 100). */
+  startingContent: StartingContent[] | null;
+  /** Number of files with uncommitted changes in the target worktree, when it is known. */
+  targetDirty: number | null;
+  /** Files that merging the copy's commits with the target would leave in conflict; null when not computed. */
+  integrationConflicts: string[] | null;
+  /** Files still in conflict while a merge is in progress in the copy. */
+  conflicts: string[];
 }
 /** A copy removed automatically: still listed so its branch and conversation can be found again. */
 export interface CleanedWorktree {
   id: string; path: string; projectId: string | null; projectName: string; sessionId: string | null; sessionTitle: string | null;
   session: { id: string; title: string; status: string } | null; branch: string | null; removedAt: number;
 }
+/** Where the content copied from the project at creation can still be found. */
+export type StartingOrigin = { kind: 'target-commit'; commit: string; subject: string } | { kind: 'target-worktree' } | { kind: 'snapshot' };
+/** A dirty file of the copy that still holds content copied from the project at creation. */
+export interface StartingContent {
+  path: string;
+  /** inherited: unchanged since the copy; mixed: copied content edited since, by the conversation or someone else. */
+  state: 'inherited' | 'mixed';
+  /** null: this content now only exists in the copy. */
+  origin: StartingOrigin | null;
+  /** A mixed file whose starting content can be removed automatically, unless its recent changes overlap it. */
+  separable: boolean;
+}
+/** What removing the starting content does to one file. */
+export interface StartingContentStep {
+  path: string;
+  state: StartingContent['state'];
+  origin: StartingOrigin | null;
+  /** restore: back to the copy's last commit; separate: keep only the changes made since the copy; keep: left for a manual review. */
+  action: 'restore' | 'separate' | 'keep';
+  reason: string | null;
+  /** Changes left to commit for this file once the action is applied. */
+  diff: string;
+}
+export interface StartingContentPlan {
+  /** The copy first receives the target's new commits, so the changes kept apply to its latest version. */
+  targetUpdate: { branch: string; commits: number } | null;
+  steps: StartingContentStep[];
+}
+/** One dirty file of the plan. `write` is its final content (null: absent); undefined leaves the file untouched. */
+interface PlannedFile { path: string; signature: string | undefined; current: Buffer | null; next: Buffer | null; write?: Buffer | null; step: StartingContentStep | null }
+interface TargetMerge { tree: string; commits: number; read: (file: string) => Promise<Buffer | null> }
+type SimulatedMerge = TargetMerge | { conflicts: string[] };
+interface PlannedStarting { files: PlannedFile[]; merge: TargetMerge | null }
 export interface WorktreeInventory { worktrees: WorktreeView[]; cleaned: CleanedWorktree[]; errors: string[] }
 
 function records(db: CerebroDatabase): WorktreeRecord[] {
@@ -195,6 +243,18 @@ async function disposableIgnored(root: string, source: string, name: string, bud
   const original = await workspaceFileSignature(join(source, name)).catch(() => undefined);
   return original !== undefined && original === await workspaceFileSignature(path);
 }
+/** Unified diff of one file between two contents, labelled with its repository path. */
+async function contentDiff(cwd: string, file: string, before: Buffer | null, after: Buffer | null, temporary: string): Promise<string> {
+  const left=join(temporary,'diff-before');const right=join(temporary,'diff-after');
+  await writeFile(left,before??'');await writeFile(right,after??'');
+  try{await git(cwd,['diff','--no-index','--no-color','--',left,right]);return '';}
+  catch(cause){
+    const failure=cause as {code?:unknown;stdout?:unknown};
+    if(failure.code!==1||typeof failure.stdout!=='string')throw cause;
+    const hunks=failure.stdout.slice(Math.max(0,failure.stdout.indexOf('\n@@')+1));
+    return `--- a/${file}\n+++ b/${file}\n${hunks}`;
+  }
+}
 function changedFiles(status: string): string[] {
   const entries = status.split('\0'); const files: string[] = [];
   for (let i = 0; i < entries.length; i++) {
@@ -209,6 +269,11 @@ export class WorktreeManager {
   private syncing: Promise<string[]> | null = null;
   private listings = new Map<string,Promise<WorktreeInventory>>();
   private plans = new Map<string, { id: string; kind: 'merge' | 'remove'; fingerprint: string; expires: number }>();
+  private startingCommits = new Map<string, {commit:string;subject:string} | null>();
+  private forecasts = new Map<string, string[] | null>();
+  private separations = new Map<string, boolean>();
+  private forecastQueue: Promise<void> = Promise.resolve();
+  private forecastQueued = new Set<string>();
   private pending = new Set<Promise<unknown>>();
   private closed = false;
   // Automatic cleanups run one at a time: two triggers for the same copy never inspect it concurrently.
@@ -342,7 +407,7 @@ export class WorktreeManager {
     const view: WorktreeView = {...record, projectName:(record.projectId?this.db.getProject(record.projectId)?.name:null)??record.projectName, projectExists: record.projectId !== null && this.db.getProject(record.projectId) !== null,
       session: session ? {id:session.id,title:session.title,status:session.status} : null,
       primary:false,branch:null,head:null,dirty:null,files:[],ignored:null,ignoredFiles:[],disposableIgnored:[],ahead:null,behind:null,targetPath:null,targetHead:null,targets:[],integration:'unknown',mergeInProgress:false,
-      activeSessions:[],mergeBlockers:[],removeBlockers:[],fingerprint:null,error:null,operation:this.operations().find(op => op.worktreeId === record.id) ?? null,changesSinceCreation:null};
+      activeSessions:[],mergeBlockers:[],removeBlockers:[],fingerprint:null,error:null,operation:this.operations().find(op => op.worktreeId === record.id) ?? null,changesSinceCreation:null,startingContent:null,targetDirty:null,integrationConflicts:null,conflicts:[]};
     try {
       const common = await commonDirectory(record.path);
       if (common !== record.commonDir) throw new WorktreeError('Le chemin désigne un autre dépôt : gestion refusée.');
@@ -370,16 +435,27 @@ export class WorktreeManager {
       view.files = files.slice(0,100); view.dirty = files.length; view.ignoredFiles = kept.slice(0,100); view.ignored = kept.length; view.disposableIgnored = disposable;
       if(record.sessionId){
         if(workspace?.mode==='isolated'&&canonicalWorktreePath(workspace.root)===record.path){
-          const changed:string[]=[];
-          for(const file of files)if(workspace.baseline[file]!==await workspaceFileSignature(join(record.path,file)))changed.push(file);
+          const changed:string[]=[];const starting:StartingContent[]=[];
+          for(const file of files){
+            const inherited=workspace.baseline[file]===await workspaceFileSignature(join(record.path,file));
+            if(!inherited)changed.push(file);
+            if((inherited||workspace.initialDirty.includes(file))&&starting.length<100){
+              const found=await this.findStarting(record.path,workspace,view.targetPath,view.targetHead,file).catch(()=>null);
+              const separable=!inherited&&!!found&&await this.separable(record.path,workspace,view.head!,file,found.content).catch(()=>false);
+              starting.push({path:file,state:inherited?'inherited':'mixed',origin:found?.origin??null,separable});
+            }
+          }
           view.changesSinceCreation={count:changed.length,files:changed.slice(0,100),inheritedCount:files.length-changed.length,needsReviewCount:changed.filter(file=>workspace.initialDirty.includes(file)).length};
+          view.startingContent=starting;
         }
       }
       const gitDir = (await git(record.path,['rev-parse','--absolute-git-dir'])).trim();
       view.mergeInProgress = existsSync(join(gitDir,'MERGE_HEAD')) || existsSync(join(gitDir,'rebase-merge')) || existsSync(join(gitDir,'rebase-apply')) || existsSync(join(gitDir,'CHERRY_PICK_HEAD')) || existsSync(join(gitDir,'REVERT_HEAD'));
+      if (view.mergeInProgress) view.conflicts = (await git(record.path,['diff','--name-only','-z','--diff-filter=U'])).split('\0').filter(Boolean);
       if (view.targetHead && record.targetBranch !== view.branch) {
         const counts = (await git(record.path,['rev-list','--left-right','--count',`${view.targetHead}...${view.head}`])).trim().split(/\s+/).map(Number);
         view.behind=counts[0]; view.ahead=counts[1]; view.integration = view.ahead === 0 && view.dirty === 0 ? 'integrated' : 'pending';
+        if (view.ahead && view.behind && !view.mergeInProgress) view.integrationConflicts = this.forecast(view);
       }
       const active = this.db.listSessions().filter(s => s.status !== 'exited' && this.activityForSession(s.id,record.path));
       view.activeSessions = active.map(s => ({id:s.id,title:s.title,status:s.status}));
@@ -388,8 +464,8 @@ export class WorktreeManager {
       if (!record.managed || view.primary) commonBlockers.push('Worktree principal ou géré hors de Cerebro : lecture seule.');
       if (view.branch !== record.expectedBranch || !view.branch) commonBlockers.push('Branche du worktree changée ou détachée : vérifier son identité.');
       if (!record.targetBranch || !view.targetHead || record.targetBranch === view.branch) commonBlockers.push('Choisissez une branche cible distincte et existante.');
-      if (view.mergeInProgress) commonBlockers.push('Une opération Git doit être résolue dans ce worktree.');
-      if (view.dirty) commonBlockers.push(`${view.dirty} fichier(s) modifié(s) ou non suivi(s) : commitez ou conservez-les avant cette action.`);
+      if (view.mergeInProgress) commonBlockers.push('Un merge est en cours dans la copie : terminez-le ou annulez-le avant cette action.');
+      if (view.dirty && !view.mergeInProgress) commonBlockers.push(`La copie contient ${view.dirty} fichier(s) modifié(s) non commité(s) : commitez-les, ou retirez le contenu de départ, avant cette action.`);
       if (entry.locked || existsSync(join(gitDir,'index.lock'))) commonBlockers.push('Worktree ou index verrouillé par Git.');
       if ((await currentPush(record.path))?.status === 'running') commonBlockers.push('Un push est en cours.');
       view.removeBlockers = [...commonBlockers,...this.activity(record.path,true)];
@@ -403,7 +479,9 @@ export class WorktreeManager {
         const dirty = await git(view.targetPath,['status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none']);
         const targetGitDir = (await git(view.targetPath,['rev-parse','--absolute-git-dir'])).trim();
         const pending = ['MERGE_HEAD','CHERRY_PICK_HEAD','REVERT_HEAD','rebase-merge','rebase-apply','index.lock'].filter(name => existsSync(join(targetGitDir,name)));
-        if (dirty || pending.length) view.mergeBlockers.push('Le worktree cible doit être propre et sans opération Git en cours.');
+        view.targetDirty = changedFiles(dirty).length;
+        if (view.targetDirty) view.mergeBlockers.push(`Le dossier cible doit être propre : ${view.targetPath} contient ${view.targetDirty} fichier(s) non commité(s). Commitez-les d’abord (« Commit / push du projet »).`);
+        if (pending.length) view.mergeBlockers.push(`Le dossier cible doit être propre : une opération Git est en cours dans ${view.targetPath}.`);
         view.mergeBlockers.push(...this.activity(view.targetPath,false));
         targetState = hash(dirty + '\0' + JSON.stringify(pending));
       }
@@ -432,8 +510,273 @@ export class WorktreeManager {
     assertWorktreeAvailable(view.path);
     const record=this.record(id); record.targetBranch=branch; store(this.db,record); return this.inspect(record);
   }
-  /** Restores the files that still hold exactly the content copied from the project when the copy was created. */
-  async discardInherited(id: string): Promise<{restored:string[];view:WorktreeView}> {
+  /**
+   * Finds the content copied from the project at creation: committed on the target since, still in the
+   * target worktree, or in the snapshot taken at creation. The commit search is cached per target tip.
+   */
+  private async findStarting(path: string, workspace: Workspace, targetPath: string | null, targetHead: string | null, file: string): Promise<{origin:StartingOrigin;content:()=>Promise<Buffer>}|null> {
+    const signature=workspace.baseline[file];
+    if(!signature||signature==='missing'||signature.startsWith('link:'))return null;
+    const digest=signature.slice(signature.indexOf(':')+1);
+    if(targetHead&&workspace.base){
+      const key=[path,file,signature,workspace.base,targetHead].join('\0');
+      let found=this.startingCommits.get(key);
+      if(found===undefined){
+        found=null;
+        const candidates=(await git(path,['rev-list','--max-count=50',`${workspace.base}..${targetHead}`,'--',`:(literal)${file}`]).catch(()=>'')).split('\n').filter(Boolean);
+        // The oldest match is the commit that brought this content to the target.
+        for(const candidate of candidates){
+          const content=await gitBytes(path,['cat-file','blob',`${candidate}:${file}`]).catch(()=>null);
+          if(content&&hash(content)===digest)found={commit:candidate,subject:''};
+        }
+        if(found)found.subject=(await git(path,['log','-1','--format=%s',found.commit])).trim();
+        if(this.startingCommits.size>=500)this.startingCommits.delete(this.startingCommits.keys().next().value!);
+        this.startingCommits.set(key,found);
+      }
+      if(found){const commit=found.commit;return {origin:{kind:'target-commit',commit,subject:found.subject},content:()=>gitBytes(path,['cat-file','blob',`${commit}:${file}`])};}
+    }
+    if(targetPath){
+      const content=await readFile(join(targetPath,file)).catch(()=>null);
+      if(content&&hash(content)===digest)return {origin:{kind:'target-worktree'},content:async()=>content};
+    }
+    if(workspace.startingSnapshot){
+      const content=await gitBytes(path,['cat-file','blob',`${workspace.startingSnapshot}:${file}`]).catch(()=>null);
+      if(content&&hash(content)===digest)return {origin:{kind:'snapshot'},content:async()=>content};
+    }
+    return null;
+  }
+  /**
+   * Whether removing the starting content of a mixed file succeeds against the copy's last commit: the file was
+   * not committed in the copy, and its recent changes do not touch the lines of the starting content.
+   */
+  private async separable(path: string, workspace: Workspace, head: string, file: string, starting: () => Promise<Buffer>): Promise<boolean> {
+    const target=join(path,file);
+    const key=[path,file,await workspaceFileSignature(target),workspace.baseline[file],head].join('\0');
+    const cached=this.separations.get(key);
+    if(cached!==undefined)return cached;
+    let result=false;
+    const committed=workspace.base?await git(path,['diff','--quiet',workspace.base,'HEAD','--',`:(literal)${file}`]).then(()=>false,()=>true):false;
+    const last=await gitBytes(path,['cat-file','blob',`${head}:${file}`]).catch(()=>null);
+    const current=await readFile(target).catch(()=>null);
+    if(!committed&&last&&current){
+      const temporary=await mkdtemp(join(tmpdir(),'cerebro-separable-'));
+      try{
+        const base=join(temporary,'base');const other=join(temporary,'head');
+        await writeFile(base,await starting());await writeFile(other,last);
+        result=await git(path,['merge-file','-p',target,base,other]).then(()=>true,()=>false);
+      }finally{await rm(temporary,{recursive:true,force:true});}
+    }
+    if(this.separations.size>=500)this.separations.delete(this.separations.keys().next().value!);
+    this.separations.set(key,result);
+    return result;
+  }
+  private startingWorkspace(view: WorktreeView): Workspace {
+    const row=view.sessionId?this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(view.sessionId) as {data:string}|undefined:undefined;
+    const workspace=row?JSON.parse(row.data) as Workspace:null;
+    if(workspace?.mode!=='isolated'||canonicalWorktreePath(workspace.root)!==view.path)throw new WorktreeError('Le contenu de départ de cette copie est inconnu : rien ne peut être retiré automatiquement.');
+    return workspace;
+  }
+  /**
+   * Files the integration would leave in conflict, cached per pair of commits. A simulation can take seconds on
+   * a copy far behind its target: it runs in the background, one at a time, and appears at a later refresh.
+   */
+  private forecast(view: WorktreeView): string[] | null {
+    const key=`${view.path}\0${view.head}\0${view.targetHead}`;
+    if(this.forecasts.has(key))return this.forecasts.get(key)!;
+    if(this.closed||this.forecastQueued.has(key))return null;
+    this.forecastQueued.add(key);
+    const task=this.forecastQueue.then(async()=>{
+      if(this.closed)return;
+      const temporary=await mkdtemp(join(tmpdir(),'cerebro-forecast-'));
+      let conflicts:string[]|null=null;
+      try{const simulated=await this.simulateTargetMerge(view,temporary);conflicts=simulated&&'conflicts' in simulated?simulated.conflicts:[];}
+      catch{conflicts=null;}
+      finally{await rm(temporary,{recursive:true,force:true});}
+      if(this.forecasts.size>=200)this.forecasts.delete(this.forecasts.keys().next().value!);
+      this.forecasts.set(key,conflicts);
+    }).catch(()=>{ /* A failed simulation leaves the forecast unknown. */ }).finally(()=>this.forecastQueued.delete(key));
+    this.forecastQueue=task;this.pending.add(task);void task.finally(()=>this.pending.delete(task));
+    return null;
+  }
+  private async assertEditable(view: WorktreeView): Promise<void> {
+    if(this.closed)throw new WorktreeError('Serveur en cours d’arrêt.');
+    if(view.error)throw new WorktreeError(view.error);
+    if(!view.managed||view.primary)throw new WorktreeError('Worktree principal ou géré hors de Cerebro : lecture seule.');
+    if(view.operation?.status==='running')throw new WorktreeError('Une opération utilise ce worktree.');
+    const busy=this.activity(view.path,false);if(busy.length)throw new WorktreeError(busy.join('\n'));
+    if((await currentPush(view.path))?.status==='running')throw new WorktreeError('Un push est en cours.');
+  }
+  /**
+   * Merges the target into the copy, so conflicts are resolved in the copy rather than in the target's folder.
+   * A clean merge is committed at once; otherwise the merge stays in progress in the copy.
+   */
+  async updateFromTarget(id: string): Promise<WorktreeView> {
+    const view=await this.get(id);
+    await this.assertEditable(view);
+    if(view.mergeInProgress)throw new WorktreeError('Une opération Git doit être résolue dans ce worktree.');
+    if(view.dirty)throw new WorktreeError(`La copie contient ${view.dirty} fichier(s) non commité(s) : enregistrez le travail avant de la mettre à jour.`);
+    if(!view.targetHead||!view.behind)throw new WorktreeError('La copie contient déjà tous les commits de la cible.');
+    const release=lockWorktrees([view.path]);
+    try{
+      const message=`Copie : intégrer ${branchLabel(view.targetBranch)}`;
+      const clean=await git(view.path,['merge','--no-ff','--no-commit','-m',message,view.targetHead]).then(()=>true,()=>false);
+      // Committed apart from the merge, so the branch history records a commit, as for the conversation's own commits.
+      if(clean)await git(view.path,['commit','--no-edit','--no-verify']);
+      else if(!existsSync(join((await git(view.path,['rev-parse','--absolute-git-dir'])).trim(),'MERGE_HEAD')))throw new WorktreeError('Git n’a pas pu commencer la mise à jour de la copie.');
+      return await this.inspect(this.record(id));
+    }finally{release();}
+  }
+  /** Abandons a merge in progress in the copy: the copy returns to its last commit. */
+  async abortTargetUpdate(id: string): Promise<WorktreeView> {
+    const view=await this.get(id);
+    await this.assertEditable(view);
+    if(!view.mergeInProgress)throw new WorktreeError('Aucune mise à jour en cours dans cette copie.');
+    const release=lockWorktrees([view.path]);
+    try{await git(view.path,['merge','--abort']);return await this.inspect(this.record(id));}
+    finally{release();}
+  }
+  /** Commits a merge whose conflicts were resolved in the copy. */
+  async finishTargetUpdate(id: string): Promise<WorktreeView> {
+    const view=await this.get(id);
+    await this.assertEditable(view);
+    if(!view.mergeInProgress)throw new WorktreeError('Aucune mise à jour en cours dans cette copie.');
+    const release=lockWorktrees([view.path]);
+    try{
+      const remaining:string[]=[];
+      for(const file of view.conflicts){
+        const content=await readFile(join(view.path,file),'utf8').catch(()=>null);
+        if(content!==null&&/^(<{7}|>{7})( |$)/m.test(content))remaining.push(file);
+      }
+      if(remaining.length)throw new WorktreeError(`Marqueurs de conflit encore présents : ${remaining.join(', ')}.`);
+      if(view.conflicts.length)await git(view.path,['add','-A','--',...view.conflicts.map(file=>`:(literal)${file}`)]);
+      await git(view.path,['commit','--no-edit','--no-verify']);
+      return await this.inspect(this.record(id));
+    }finally{release();}
+  }
+  /**
+   * Merges the target into the copy's last commit inside a temporary index, without touching the copy.
+   * Null when Git cannot resolve it without a person: the copy then stays on its own last commit.
+   */
+  private async simulateTargetMerge(view: WorktreeView, temporary: string): Promise<SimulatedMerge | null> {
+    if(!view.targetHead||!view.behind||!view.head)return null;
+    const env={GIT_INDEX_FILE:join(temporary,'merge-index')};
+    const base=(await git(view.path,['merge-base','HEAD',view.targetHead]).catch(()=>'')).trim();
+    if(!base)return null;
+    await git(view.path,['read-tree','-i','-m','--aggressive',base,'HEAD',view.targetHead],env);
+    const stages=new Map<string,Map<number,{mode:string;oid:string}>>();
+    for(const entry of (await git(view.path,['ls-files','-u','-z'],env)).split('\0').filter(Boolean)){
+      const [info,path]=[entry.slice(0,entry.indexOf('\t')),entry.slice(entry.indexOf('\t')+1)];
+      const [mode,oid,stage]=info.split(' ');
+      if(!stages.has(path))stages.set(path,new Map());
+      stages.get(path)!.set(Number(stage),{mode,oid});
+    }
+    const conflicts:string[]=[];
+    for(const [path,entry] of stages){
+      const ours=entry.get(2);const theirs=entry.get(3);const ancestor=entry.get(1);
+      if(!ours||!theirs||ours.mode!==theirs.mode||ours.mode==='120000'){conflicts.push(path);continue;}
+      const files=['ancestor','ours','theirs'].map(name=>join(temporary,`merge-${name}`));
+      await writeFile(files[0],ancestor?await gitBytes(view.path,['cat-file','blob',ancestor.oid]):'');
+      await writeFile(files[1],await gitBytes(view.path,['cat-file','blob',ours.oid]));
+      await writeFile(files[2],await gitBytes(view.path,['cat-file','blob',theirs.oid]));
+      const merged=await gitBytes(view.path,['merge-file','-p',files[1],files[0],files[2]]).catch(()=>null);
+      if(!merged){conflicts.push(path);continue;}
+      await writeFile(files[1],merged);
+      const oid=(await git(view.path,['hash-object','-w','--',files[1]])).trim();
+      await git(view.path,['update-index','--cacheinfo',`${ours.mode},${oid},${path}`],env);
+    }
+    if(conflicts.length)return {conflicts};
+    const tree=(await git(view.path,['write-tree'],env)).trim();
+    return {tree,commits:view.behind,read:file=>gitBytes(view.path,['cat-file','blob',`${tree}:${file}`]).catch(()=>null)};
+  }
+  /**
+   * Decides, file by file, how the starting content leaves the copy while the changes made since stay.
+   * With `merge`, every dirty file is carried onto the merged version; null when one of the conversation's
+   * files cannot be, since writing it unchanged would silently undo the target's changes.
+   */
+  private async planFiles(view: WorktreeView, workspace: Workspace, paths: string[], merge: TargetMerge | null, temporary: string): Promise<PlannedFile[] | null> {
+    const planned:PlannedFile[]=[];
+    const threeWay=async(current:Buffer,base:Buffer|null,other:Buffer|null):Promise<Buffer|null>=>{
+      const files=['current','base','other'].map(name=>join(temporary,`plan-${name}`));
+      await writeFile(files[0],current);await writeFile(files[1],base??'');await writeFile(files[2],other??'');
+      return gitBytes(view.path,['merge-file','-p','-L','copie','-L','départ','-L','cible',...files]).catch(()=>null);
+    };
+    for(const path of paths){
+      const target=join(view.path,path);
+      const signature=await workspaceFileSignature(target);
+      const regular=signature!==undefined&&!signature.startsWith('link:');
+      const current=regular?await readFile(target):null;
+      const head=await gitBytes(view.path,['cat-file','blob',`HEAD:${path}`]).catch(()=>null);
+      const next=merge?await merge.read(path):head;
+      const file:PlannedFile={path,signature,current,next,step:null};planned.push(file);
+      const changedByMerge=!!merge&&(next===null)!==(head===null)||!!next&&!!head&&!next.equals(head);
+      // Carries the local changes onto the merged version; undefined when they overlap the target's changes.
+      const carry=async():Promise<Buffer|null|undefined>=>{
+        if(!changedByMerge)return undefined;
+        if(!current)return signature===undefined&&!next?null:undefined;
+        return (await threeWay(current,head,next))??undefined;
+      };
+      const inherited=workspace.baseline[path]===signature;
+      if(!inherited&&!workspace.initialDirty.includes(path)){
+        if(!changedByMerge)continue;
+        const carried=await carry();
+        if(carried===undefined)return null;
+        file.write=carried;continue;
+      }
+      const found=await this.findStarting(view.path,workspace,view.targetPath,view.targetHead,path).catch(()=>null);
+      const step:StartingContentStep={path,state:inherited?'inherited':'mixed',origin:found?.origin??null,action:'keep',reason:null,diff:''};
+      file.step=step;
+      if(inherited){
+        step.action='restore';file.write=next;
+        if(!found)step.reason='Ce contenu n’existe plus que dans cette copie : il ne se trouve ni dans la cible, ni dans le dossier du projet.';
+        continue;
+      }
+      let reason:string;
+      if(!found)reason='Contenu de départ introuvable (ni dans la cible, ni conservé à la création).';
+      else if(!current)reason='Fichier supprimé ou remplacé par un lien depuis la création.';
+      else if(!next)reason='Fichier absent de la version à jour de la copie.';
+      else if(workspace.base&&await git(view.path,['diff','--quiet',workspace.base,'HEAD','--',`:(literal)${path}`]).then(()=>false,()=>true))reason='Fichier déjà modifié par un commit de la copie.';
+      else{
+        const separated=await threeWay(current,await found.content(),next);
+        if(separated){step.action='separate';file.write=separated;step.diff=await contentDiff(view.path,path,next,separated,temporary);continue;}
+        reason='Les changements faits depuis la création touchent les mêmes lignes que le contenu de départ.';
+      }
+      if(changedByMerge){
+        const carried=await carry();
+        if(carried!==undefined){file.write=carried;step.reason=`${reason} Le fichier est reporté tel quel sur la version à jour de la copie : examinez son diff.`;continue;}
+        if(signature!==undefined&&!regular)return null;
+        // Written unchanged: its diff against the merged version also shows the target's later changes, undone.
+        file.write=current;
+        step.reason=`${reason} Attention : la cible a aussi modifié ce fichier depuis la création de la copie. Son diff montre ces changements annulés : ne le commitez pas tel quel, reportez seulement le travail de la conversation.`;
+        continue;
+      }
+      step.reason=`${reason} Examinez ce fichier et cochez-le dans les diffs.`;
+    }
+    return planned;
+  }
+  private async planStartingContent(view: WorktreeView, workspace: Workspace, temporary: string): Promise<PlannedStarting> {
+    const shared=await sharedDependencyLinks(workspace,view.path);
+    const paths=changedFiles(await git(view.path,['status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none']))
+      .filter(path=>!shared.some(name=>path===name||path.startsWith(`${name}/`)));
+    const simulated=await this.simulateTargetMerge(view,temporary).catch(()=>null);
+    const merge=simulated&&'tree' in simulated?simulated:null;
+    const merged=merge?await this.planFiles(view,workspace,paths,merge,temporary):null;
+    if(merge&&merged)return {files:merged,merge};
+    return {files:(await this.planFiles(view,workspace,paths,null,temporary))!,merge:null};
+  }
+  private publicPlan(view: WorktreeView, plan: PlannedStarting): StartingContentPlan {
+    return {targetUpdate:plan.merge&&view.targetBranch?{branch:view.targetBranch,commits:plan.merge.commits}:null,steps:plan.files.flatMap(file=>file.step?[file.step]:[])};
+  }
+  /** Preview of « Retirer le contenu de départ », without touching the copy. */
+  async startingContentPlan(id: string): Promise<StartingContentPlan> {
+    const view=await this.get(id);
+    if(view.error)throw new WorktreeError(view.error);
+    const workspace=this.startingWorkspace(view);
+    const temporary=await mkdtemp(join(tmpdir(),'cerebro-starting-'));
+    try{return this.publicPlan(view,await this.planStartingContent(view,workspace,temporary));}
+    finally{await rm(temporary,{recursive:true,force:true});}
+  }
+  /** What a session needs to settle, in the copy, the files the automatic removal leaves for a manual review. */
+  async startingContentResolution(id: string): Promise<{view:WorktreeView;workspace:Workspace;plan:StartingContentPlan}> {
     if(this.closed)throw new WorktreeError('Serveur en cours d’arrêt.');
     const view=await this.get(id);
     if(view.error)throw new WorktreeError(view.error);
@@ -441,26 +784,81 @@ export class WorktreeManager {
     if(view.mergeInProgress)throw new WorktreeError('Une opération Git doit être résolue dans ce worktree.');
     if(view.operation?.status==='running')throw new WorktreeError('Une opération utilise ce worktree.');
     const busy=this.activity(view.path,false);if(busy.length)throw new WorktreeError(busy.join('\n'));
-    const row=view.sessionId?this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(view.sessionId) as {data:string}|undefined:undefined;
-    const workspace=row?JSON.parse(row.data) as Workspace:null;
-    if(workspace?.mode!=='isolated'||canonicalWorktreePath(workspace.root)!==view.path)throw new WorktreeError('Le contenu de départ de cette copie est inconnu : rien ne peut être abandonné automatiquement.');
-    const release=lockWorktrees([view.path]);
+    const workspace=this.startingWorkspace(view);
+    const temporary=await mkdtemp(join(tmpdir(),'cerebro-starting-'));
     try{
-      const shared=await sharedDependencyLinks(workspace,view.path);
-      const files=changedFiles(await git(view.path,['status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none']))
-        .filter(path=>!shared.some(name=>path===name||path.startsWith(`${name}/`)));
-      const restored:string[]=[];
-      // Each file is compared right before being restored: anything edited since the copy was made is kept.
-      for(const file of files){
-        if(workspace.baseline[file]!==await workspaceFileSignature(join(view.path,file)))continue;
-        const literal=`:(literal)${file}`;
-        if(await git(view.path,['cat-file','-e',`HEAD:${file}`]).then(()=>true,()=>false))await git(view.path,['restore','--source=HEAD','--staged','--worktree','--',literal]);
-        else{await git(view.path,['rm','--cached','--quiet','--ignore-unmatch','--',literal]);await rm(join(view.path,file),{force:true});}
-        restored.push(file);
+      const plan=this.publicPlan(view,await this.planStartingContent(view,workspace,temporary));
+      if(!plan.steps.some(step=>step.action==='keep'))throw new WorktreeError('Aucun fichier n’est laissé à examiner : « Retirer le contenu de départ » les traite tous.');
+      return {view,workspace,plan};
+    }finally{await rm(temporary,{recursive:true,force:true});}
+  }
+  /**
+   * Removes the content copied from the project at creation. When the target moved on, the copy first receives
+   * its commits (a merge commit), so the changes kept apply to its latest version. Files untouched since the copy
+   * take that version; files edited since keep only those edits when the starting content can be found.
+   */
+  async discardInherited(id: string): Promise<{restored:string[];separated:string[];kept:StartingContentStep[];targetUpdate:StartingContentPlan['targetUpdate'];view:WorktreeView}> {
+    if(this.closed)throw new WorktreeError('Serveur en cours d’arrêt.');
+    const view=await this.get(id);
+    if(view.error)throw new WorktreeError(view.error);
+    if(!view.managed||view.primary)throw new WorktreeError('Worktree principal ou géré hors de Cerebro : lecture seule.');
+    if(view.mergeInProgress)throw new WorktreeError('Une opération Git doit être résolue dans ce worktree.');
+    if(view.operation?.status==='running')throw new WorktreeError('Une opération utilise ce worktree.');
+    const busy=this.activity(view.path,false);if(busy.length)throw new WorktreeError(busy.join('\n'));
+    const workspace=this.startingWorkspace(view);
+    const release=lockWorktrees([view.path]);
+    const temporary=await mkdtemp(join(tmpdir(),'cerebro-starting-'));
+    try{
+      const plan=await this.planStartingContent(view,workspace,temporary);
+      const steps=plan.files.flatMap(file=>file.step?[file.step]:[]);
+      const kept=steps.filter(step=>step.action==='keep');
+      if(!steps.some(step=>step.action!=='keep'))throw new WorktreeError(kept.length
+        ?`Aucun contenu de départ ne peut être retiré automatiquement :\n${kept.map(step=>`${step.path} : ${step.reason}`).join('\n')}`
+        :'Aucun fichier n’a encore le contenu de départ.');
+      // Compared again right before writing: anything edited since the plan stops the action.
+      for(const file of plan.files)if(file.write!==undefined&&await workspaceFileSignature(join(view.path,file.path))!==file.signature)
+        throw new WorktreeError(`${file.path} a changé pendant la préparation : rien n’a été modifié, recommencez.`);
+      const written=plan.files.filter(file=>file.write!==undefined);
+      const putBack=async(files:PlannedFile[],content:(file:PlannedFile)=>Buffer|null):Promise<void>=>{
+        for(const file of files){
+          const target=join(view.path,file.path);const value=content(file);
+          if(value===null)await rm(target,{force:true});
+          else{await mkdir(dirname(target),{recursive:true});await writeFile(target,value);}
+        }
+      };
+      // The index of the rewritten files goes back to the copy's last commit; their content is written last.
+      const literals=written.map(file=>`:(literal)${file.path}`);
+      const inHead=written.length?(await git(view.path,['ls-tree','-r','-z','--name-only','HEAD','--',...written.map(file=>file.path)])).split('\0').filter(Boolean):[];
+      if(literals.length)await git(view.path,['rm','--cached','--quiet','--ignore-unmatch','-r','--',...literals]);
+      if(plan.merge){
+        const head=view.head!;
+        // The worktree too, so the tree can switch to the merge.
+        if(inHead.length)await git(view.path,['checkout','HEAD','--',...inHead.map(path=>`:(literal)${path}`)]);
+        for(const file of written)if(!inHead.includes(file.path))await rm(join(view.path,file.path),{force:true});
+        const message=`Copie : intégrer ${branchLabel(view.targetBranch)} avant de retirer le contenu de départ`;
+        try{
+          const commit=(await git(view.path,['commit-tree',plan.merge.tree,'-p',head,'-p',view.targetHead!,'-m',message])).trim();
+          await git(view.path,['read-tree','-m','-u',head,commit]);
+          try{await git(view.path,['update-ref','-m',`commit (merge): ${message}`,'HEAD',commit,head]);}
+          catch(cause){await git(view.path,['read-tree','-m','-u',commit,head]);throw cause;}
+        }catch(cause){
+          await putBack(written,file=>file.current);
+          throw new WorktreeError(`La copie n’a pas pu être mise à jour avec ${branchLabel(view.targetBranch)} : ${cause instanceof Error?cause.message:String(cause)}\nLes fichiers de la copie ont été remis dans leur état précédent.`);
+        }
+      }else if(inHead.length)await git(view.path,['reset','--quiet','HEAD','--',...inHead.map(path=>`:(literal)${path}`)]);
+      await putBack(written,file=>file.write!);
+      const restored=steps.filter(step=>step.action==='restore').map(step=>step.path);
+      const separated=steps.filter(step=>step.action==='separate').map(step=>step.path);
+      // These files now start from the copy's last commit: what changes in them next belongs to the copy.
+      const done=new Set([...restored,...separated]);
+      workspace.initialDirty=workspace.initialDirty.filter(file=>!done.has(file));
+      for(const file of plan.files)if(done.has(file.path)){
+        if(file.next===null)delete workspace.baseline[file.path];
+        else workspace.baseline[file.path]=`${(await lstat(join(view.path,file.path))).mode}:${hash(file.next)}`;
       }
-      if(!restored.length)throw new WorktreeError('Aucun fichier n’a encore le contenu de départ.');
-      return {restored,view:await this.inspect(this.record(id))};
-    }finally{release();}
+      this.db.connection.prepare('UPDATE session_workspaces SET data=? WHERE session_id=?').run(JSON.stringify(workspace),workspace.sessionId);
+      return {restored,separated,kept,targetUpdate:this.publicPlan(view,plan).targetUpdate,view:await this.inspect(this.record(id))};
+    }finally{release();await rm(temporary,{recursive:true,force:true});}
   }
   async prepare(id: string, kind: 'merge' | 'remove'): Promise<{token:string;view:WorktreeView}> {
     const view=await this.get(id); const blockers=kind==='merge'?view.mergeBlockers:view.removeBlockers;
@@ -521,6 +919,7 @@ export class WorktreeManager {
         for(const name of await sharedDependencyLinks(workspace??view,view.path))await rm(join(view.path,name));
         for(const raw of fresh.disposableIgnored)await rm(join(view.path,raw.replace(/\/$/,'')),{recursive:true,force:true});
         await git(view.targetPath??view.source,['worktree','remove','--',view.path]);
+        if(workspace?.startingSnapshot)await git(view.targetPath??view.source,['update-ref','-d',`refs/cerebro/starting/${workspace.sessionId}`]).catch(()=>'');
         const record=this.record(view.id);record.removedAt=Date.now();store(this.db,record);
         // Every epic step sharing this copy loses it, not only the session that created it.
         const changed:string[]=[];

@@ -28,6 +28,8 @@ export interface CommitSettings {
   effort: Effort | null;
   strategy: 'single' | 'atomic';
 }
+/** Session that separates the starting content of a copy from the conversation's work. */
+export type ResolutionSettings = Pick<LaunchSpec, 'agent' | 'mode' | 'model' | 'effort'>;
 
 export interface Llm {
   agent: Agent;
@@ -137,6 +139,7 @@ export interface Project {
   commitSettings: CommitSettings;
   // null : le projet suit les réglages globaux du council.
   councilSettings: CouncilSettings | null;
+  resolutionSettings: ResolutionSettings;
   workspaceMode: WorkspaceMode;
   createdAt: number;
 }
@@ -159,6 +162,13 @@ export interface Session {
   createdAt: number;
   updatedAt: number;
   worktree: SessionWorktree | null;
+  epic: SessionEpic | null;
+  pendingFindings: number;
+}
+
+export interface SessionEpic {
+  id: string;
+  title: string;
 }
 
 export interface SessionWorktree {
@@ -235,6 +245,7 @@ export type EventsMessage =
   | { type: 'epic-deleted'; id: string }
   | { type: 'projects'; projects: Project[] }
   | { type: 'alert'; session: Session }
+  | { type: 'findings-available'; session: Session }
   | { type: 'peers' };
 
 export type TermClientMessage =
@@ -426,9 +437,17 @@ export function parseProject(v: unknown): Project | null {
     effort: isEffort(commit.effort) ? commit.effort : null,
     strategy: commit.strategy === 'atomic' ? 'atomic' : 'single',
   };
+  // Absent des serveurs antérieurs à la résolution des fichiers par une session.
+  const resolution = isRecord(v.resolutionSettings) ? v.resolutionSettings : {};
+  const resolutionSettings: ResolutionSettings = {
+    agent: isAgent(resolution.agent) ? resolution.agent : 'claude',
+    mode: isMode(resolution.mode) ? resolution.mode : 'auto',
+    model: typeof resolution.model === 'string' ? resolution.model : null,
+    effort: isEffort(resolution.effort) ? resolution.effort : null,
+  };
   const workspaceMode:WorkspaceMode=v.workspaceMode==='shared'?'shared':'isolated';
   const councilSettings = parseCouncilSettings(v.councilSettings);
-  return { id, name, path, color, sessionDefaults, commitSettings, councilSettings, workspaceMode, createdAt };
+  return { id, name, path, color, sessionDefaults, commitSettings, resolutionSettings, councilSettings, workspaceMode, createdAt };
 }
 
 export function parseSession(v: unknown): Session | null {
@@ -481,6 +500,10 @@ export function parseSession(v: unknown): Session | null {
     createdAt,
     updatedAt,
     worktree,
+    // Serveurs antérieurs : le lien peut encore être retrouvé par les tâches.
+    epic: isRecord(v.epic) && typeof v.epic.id === 'string' && typeof v.epic.title === 'string'
+      ? { id: v.epic.id, title: v.epic.title } : null,
+    pendingFindings: typeof v.pendingFindings === 'number' && Number.isSafeInteger(v.pendingFindings) && v.pendingFindings >= 0 ? v.pendingFindings : 0,
   };
 }
 
@@ -677,9 +700,10 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
     }
     case 'projects':
       return { type: 'projects', projects: parseProjectList(v.projects) };
-    case 'alert': {
+    case 'alert':
+    case 'findings-available': {
       const session = parseSession(v.session);
-      return session ? { type: 'alert', session } : null;
+      return session ? { type: v.type, session } : null;
     }
     case 'peers':
       return { type: 'peers' };

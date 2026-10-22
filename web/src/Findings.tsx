@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import type { Finding, SavedReport } from '../../server/findings.ts';
 import { api } from './api.ts';
+import { href } from './route.ts';
+import { useStore } from './store.tsx';
+import type { Session } from './types.ts';
 import './findings.css';
 
 const SEVERITY: Record<Finding['severity'], string> = {
@@ -28,10 +31,13 @@ export function FindingsNotice({ reports, expanded, onToggle }: {
   </button>;
 }
 
-export function FindingsPanel({ sessionId, reports, refresh }: {
-  sessionId: string; reports: SavedReport[]; refresh: () => Promise<void>;
+export function FindingsPanel({ sessionId, epic, reports, refresh }: {
+  sessionId: string; epic: Session['epic']; reports: SavedReport[]; refresh: () => Promise<void>;
 }) {
+  const { epics } = useStore();
+  const sourceEpic = epics.find(item => item.id === epic?.id);
   const [chosen, setChosen] = useState<Set<string>>(new Set());
+  const [destinations, setDestinations] = useState<Record<string, string | null>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [raw, setRaw] = useState('');
@@ -44,13 +50,15 @@ export function FindingsPanel({ sessionId, reports, refresh }: {
   return <div className="findings-panel">
     <div className="findings-panel-heading">
       <h2>Résultats de la review</h2>
-      <p>Examinez les constats, puis sélectionnez ceux à enregistrer dans un epic du backlog.</p>
+      <p>Examinez les constats, puis sélectionnez ceux à transformer en tâches dans le backlog.</p>
     </div>
     {error ? <p className="form-error" role="alert">{error}</p> : null}
     {reports.map(report => {
       const available = report.findings.filter(f => !report.imported[f.id]);
       const selected = available.filter(f => chosen.has(`${report.id}:${f.id}`));
       const allSelected = available.length > 0 && selected.length === available.length;
+      const destination = report.epicId ?? (Object.hasOwn(destinations, report.id) ? destinations[report.id] : sourceEpic?.id ?? null);
+      const targetEpic = epics.find(item => item.id === destination);
       return <section className="finding-report" key={report.id} aria-labelledby={`report-${report.id}`}>
         <header className="finding-report-header">
           <div>
@@ -96,9 +104,27 @@ export function FindingsPanel({ sessionId, reports, refresh }: {
         </div>
         <footer className="finding-report-footer">
           <span role="status">{available.length ? `${selected.length} finding${selected.length > 1 ? 's' : ''} sélectionné${selected.length > 1 ? 's' : ''} sur ${available.length}` : 'Tous les findings de ce rapport sont dans le backlog.'}</span>
-          {available.length ? <button type="button" className="btn primary" disabled={busy || !selected.length} onClick={() => void run(async () => {
-            await api(`/api/sessions/${sessionId}/findings/${report.id}/import`, { method: 'POST', body: JSON.stringify({ selected: selected.map(f => f.id) }) });
-          })}>{busy ? 'Enregistrement…' : 'Enregistrer la sélection dans un epic'}</button> : null}
+          <div className="finding-import-actions">
+            <div className="finding-report-routing">
+              {report.epicId ? <p>Destination : {targetEpic ? <a href={href(`#/p/${targetEpic.projectId}`)}>Epic « {targetEpic.title} »</a> : 'epic supprimé'}</p> : <label>
+                Destination des tâches
+                <select value={destination ?? ''} disabled={busy} onChange={event => {
+                  const value = event.target.value || null;
+                  setDestinations(previous => ({ ...previous, [report.id]: value }));
+                }}>
+                  {sourceEpic ? <option value={sourceEpic.id}>À la suite de l’epic « {sourceEpic.title} »</option> : null}
+                  <option value="">Nouvel epic</option>
+                </select>
+              </label>}
+            </div>
+            {available.length ? <button type="button" className="btn primary" disabled={busy || !selected.length} onClick={() => void run(async () => {
+              await api(`/api/sessions/${sessionId}/findings/${report.id}/import`, { method: 'POST', body: JSON.stringify({ selected: selected.map(f => f.id), epicId: destination }) });
+            })}>{busy ? 'Enregistrement…' : destination ? 'Ajouter la sélection à cet epic' : 'Enregistrer la sélection dans un nouvel epic'}</button> : null}
+          </div>
+          {sourceEpic && targetEpic?.id === sourceEpic.id ? <p className="hint">
+            Les nouvelles tâches attendront les étapes déjà présentes. Traitez ensuite l’epic pour poursuivre dans son worktree ;
+            si une exécution est en cours, utilisez « Reprendre et recalculer ».
+          </p> : null}
         </footer>
       </section>;
     })}

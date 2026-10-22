@@ -2,7 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { CerebroDatabase, SessionDefaults, Task } from './db.ts';
 import type { CommandExecutor } from './commands.ts';
 import type { SessionManager } from './sessions.ts';
-import { workspaceFor } from './provenance.ts';
+import { workspaceFor, type WorkspaceContext } from './provenance.ts';
+import { assertEpicWorkspace, EpicWorkspaceConflict, epicWorkspace, rememberEpicWorkspace, selectEpicWorkspace, withEpicWorkspace } from './epic-workspace.ts';
+import { epicReviewInstructions, epicReviewScope, isReviewTask } from './epic-review.ts';
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { canonicalWorktreePath } from './worktree-gate.ts';
 export interface EpicRun {
   id:string;epicId:string;projectId:string;status:'running'|'waiting-validation'|'blocked'|'failed'|'stopped'|'succeeded';
   order:string[];members:string[];versions:Record<string,string>;results:Record<string,string>;
@@ -15,7 +20,12 @@ export interface EpicRun {
   autoValidate?:boolean;
   // Why a blocked run is blocked: 'session-waiting' clears by itself once the step's session stops waiting or its task is done; any other block needs an explicit resume.
   blockReason?:'session-waiting'|null;
+  // HEAD of the project folder when the run started: base of the epic review when work is not isolated in a worktree.
+  baseHead?:string|null;
+  workspace?:WorkspaceContext|null;
+  workspaceConflict?:boolean;
 }
+const headOf=(path:string):string|null=>{try{return execFileSync('git',['-C',path,'rev-parse','--verify','HEAD'],{stdio:['ignore','pipe','ignore'],timeout:5000}).toString().trim()||null;}catch{return null;}};
 const askedQuestion=(session:{status:string;attentionReason:string|null}):boolean=>session.status==='waiting'&&!!session.attentionReason?.startsWith('Question : ');
 const version=(t:Task):string=>createHash('sha256').update(JSON.stringify([t.text,t.dependsOn.slice().sort(),t.execution,t.epicId])).digest('hex');
 export function taskOrder(tasks:Task[],all:Task[]):Task[]{
@@ -34,7 +44,13 @@ export class EpicRunner {
   initialize():void{this.timer=setInterval(()=>this.poke(),1000);this.timer.unref();this.poke();}
   close():void{this.closed=true;if(this.timer)clearInterval(this.timer);}
   async shutdown():Promise<void>{this.close();await Promise.allSettled([...this.inFlight]);}
-  list(epicId?:string):EpicRun[]{return (this.db.connection.prepare(epicId?'SELECT data FROM epic_runs WHERE epic_id=? ORDER BY rowid DESC':'SELECT data FROM epic_runs ORDER BY rowid DESC').all(...(epicId?[epicId]:[])) as {data:string}[]).map(row=>JSON.parse(row.data));}
+  list(epicId?:string):EpicRun[]{const rows=(this.db.connection.prepare(epicId?'SELECT data FROM epic_runs WHERE epic_id=? ORDER BY rowid DESC':'SELECT data FROM epic_runs ORDER BY rowid DESC').all(...(epicId?[epicId]:[])) as {data:string}[]);const contexts=new Map<string,WorkspaceContext|null|undefined>();const conflicts=new Set<string>();return rows.map(row=>{
+    const run=JSON.parse(row.data) as EpicRun;
+    // An ambiguous legacy epic must remain inspectable; start/resume report the conflict explicitly.
+    if(!contexts.has(run.epicId)){let context:WorkspaceContext|null|undefined;try{context=epicWorkspace(this.db,run.epicId);}catch(cause){if(cause instanceof EpicWorkspaceConflict)conflicts.add(run.epicId);}contexts.set(run.epicId,context);}
+    const context=contexts.get(run.epicId);const workspace=context===undefined?run.workspace??null:context;
+    return {...run,workspace,contextRoot:workspace?.path??run.contextRoot,workspaceConflict:conflicts.has(run.epicId)};
+  });}
   reserved(taskId:string):boolean{return this.list().some(r=>['running','waiting-validation','blocked'].includes(r.status)&&r.order.includes(taskId));}
   private save(run:EpicRun,updateSettings=false):void{const previous=this.list(run.epicId).find(r=>r.id===run.id);
     // A setting can change while an asynchronous launch holds an older copy of the run.
@@ -48,9 +64,15 @@ export class EpicRunner {
     return {epic,members,order:taskOrder(open,all)};
   }
   start(epicId:string,options:SessionDefaults):EpicRun{
-    if(this.list(epicId).some(r=>['running','waiting-validation','blocked'].includes(r.status)))throw new Error('Epic déjà en cours : utilisez reprendre ou arrêter.');
+    const runs=this.list(epicId);
+    if(runs.some(r=>['running','waiting-validation','blocked'].includes(r.status)))throw new Error('Epic déjà en cours : utilisez reprendre ou arrêter.');
     const {epic,members,order}=this.plan(epicId);if(!order.length)throw new Error('Aucune tâche ouverte.');
-    const run:EpicRun={id:randomUUID(),epicId,projectId:epic.projectId,status:'running',order:order.map(t=>t.id),members:members.map(t=>t.id),versions:Object.fromEntries(order.map(t=>[t.id,version(t)])),results:{},currentTaskId:null,sessionId:null,commandRunId:null,stepStartedAt:0,contextRoot:this.db.getProject(epic.projectId)!.path,options,error:null,startedAt:Date.now(),updatedAt:Date.now()};
+    const project=this.db.getProject(epic.projectId)!;const previous=runs[0];
+    const workspace=epicWorkspace(this.db,epicId);if(workspace)assertEpicWorkspace(this.db,workspace);
+    const contextRoot=workspace?.path??project.path;
+    // A later run (for example review fixes) continues the work and keeps its original review base.
+    const baseHead=previous?.contextRoot===contextRoot?previous.baseHead??headOf(contextRoot):headOf(contextRoot);
+    const run:EpicRun={id:randomUUID(),epicId,projectId:epic.projectId,status:'running',order:order.map(t=>t.id),members:members.map(t=>t.id),versions:Object.fromEntries(order.map(t=>[t.id,version(t)])),results:{},currentTaskId:null,sessionId:null,commandRunId:null,stepStartedAt:0,contextRoot,workspace,baseHead,options,error:null,startedAt:Date.now(),updatedAt:Date.now()};
     this.save(run);this.poke();return run;
   }
   report(sessionId:string,taskId:string,status:'failed'|'blocked'|'waiting-validation',message:string):EpicRun{
@@ -68,17 +90,38 @@ export class EpicRunner {
     run.status='stopped';run.error='Arrêt demandé par l’utilisateur.';this.save(run);
     if(run.commandRunId)this.commands.stop(run.commandRunId);if(run.sessionId)this.sessions.kill(run.sessionId);return run;
   }
+  selectWorkspace(epicId:string,path:string):WorkspaceContext{
+    if(!this.db.getEpic(epicId))throw new Error('Epic introuvable.');
+    const runs=this.list(epicId);
+    if(runs.some(run=>this.busy.has(run.id)||run.status==='running'||run.status==='waiting-validation'||run.status==='blocked'&&run.blockReason==='session-waiting'))
+      throw new Error('Arrêtez l’epic avant de choisir son dossier de travail.');
+    const tasks=this.db.listTasks().filter(task=>task.epicId===epicId);
+    if(tasks.some(task=>this.commands.active(task.id)||task.status!=='done'&&task.sessionId&&this.db.getSession(task.sessionId)?.status!=='exited')
+      ||this.db.listSessions().some(session=>session.epic?.id===epicId&&['starting','running','waiting'].includes(session.status)))
+      throw new Error('Arrêtez les étapes encore actives avant de choisir le dossier de l’epic.');
+    const context=selectEpicWorkspace(this.db,epicId,path);
+    for(const run of runs)if(run.status==='blocked'&&run.error?.includes('Cet epic a utilisé plusieurs dossiers de travail')){
+      run.workspace=context;run.contextRoot=context.path;run.workspaceConflict=false;run.blockReason=null;
+      run.error='Dossier choisi. Reprenez l’epic pour poursuivre.';this.save(run);
+    }
+    return context;
+  }
   resume(id:string,replan=false):EpicRun{
     const run=this.list().find(r=>r.id===id);if(!run||run.status==='succeeded'||run.status==='running')throw new Error('Exécution non reprenable.');
     if(this.busy.has(id))throw new Error('Une étape est encore en cours de lancement.');
     const another=this.list(run.epicId).some(r=>r.id!==id&&['running','waiting-validation','blocked'].includes(r.status));if(another)throw new Error('Une autre exécution est active.');
+    const workspace=epicWorkspace(this.db,run.epicId);if(workspace){assertEpicWorkspace(this.db,workspace);run.workspace=workspace;run.contextRoot=workspace.path;}
     if(run.currentTaskId){
       const task=this.db.getTask(run.currentTaskId);const session=run.sessionId?this.db.getSession(run.sessionId):null;
       const command=run.commandRunId?this.commands.listRuns().find(r=>r.id===run.commandRunId):null;
       if(session?.status==='waiting')throw new Error('Répondez d’abord à la question de la session.');
-      if(task?.status!=='done'&&(!session||session.status==='exited')&&command?.status!=='running'&&command?.status!=='succeeded'){
-        if(session)run.contextRoot=workspaceFor(this.db,session.id)?.path??run.contextRoot;
-        if(task)this.changeTask(task.id,{status:'todo',sessionId:null});
+      const prior=session?workspaceFor(this.db,session.id):null;
+      const elsewhere=workspace&&((prior&&canonicalWorktreePath(prior.path)!==canonicalWorktreePath(workspace.path))
+        ||(command&&canonicalWorktreePath(command.cwd)!==canonicalWorktreePath(resolve(workspace.path,command.command.cwd))));
+      if(elsewhere&&(session&&session.status!=='exited'||command?.status==='running'))throw new Error('Arrêtez l’étape en cours dans l’ancien dossier avant de poursuivre.');
+      if(elsewhere||task?.status!=='done'&&(!session||session.status==='exited')&&command?.status!=='running'&&command?.status!=='succeeded'){
+        if(!workspace&&session)run.contextRoot=workspaceFor(this.db,session.id)?.path??run.contextRoot;
+        if(task?.status!=='done'&&task)this.changeTask(task.id,{status:'todo',sessionId:null});
         run.currentTaskId=null;run.sessionId=null;run.commandRunId=null;run.waitingSince=null;run.validationReason=null;
       }
     }
@@ -158,17 +201,29 @@ export class EpicRunner {
     if(this.commands.active(next.id)||next.sessionId&&this.db.getSession(next.sessionId)?.status!=='exited'){stop('blocked','La tâche suivante possède déjà une exécution active.');return;}
     run.currentTaskId=next.id;run.stepStartedAt=Date.now();this.save(run);
     if(next.execution.type==='command'){
-      const operation=await this.commands.start(next.id,run.contextRoot);run.commandRunId=operation.id;
+      const operation=await withEpicWorkspace(this.db,run.epicId,async()=>{
+        const workspace=epicWorkspace(this.db,run.epicId)??{path:run.contextRoot,mode:'shared' as const};
+        assertEpicWorkspace(this.db,workspace);
+        const operation=await this.commands.start(next.id,workspace.path);
+        run.workspace=rememberEpicWorkspace(this.db,run.epicId,workspace);run.contextRoot=workspace.path;
+        return operation;
+      });run.commandRunId=operation.id;
     }else{
       const project=this.db.getProject(run.projectId)!;
       const title=`Epic « ${epic.title} » · étape ${run.order.indexOf(next.id)+1}/${run.order.length} : ${next.text.split('\n')[0]}`.slice(0,120);
-      const prompt=`[CEREBRO_EPIC_STEP ${run.id} ${next.id}]\nTraite uniquement cette étape de l’epic « ${epic.title} ».\n${epic.description}\n\n${next.text}\n\nIdentifiant : ${next.id}\nRéalise et vérifie cette tâche, puis exécute cerebro-backlog --done ${next.id} uniquement si elle est terminée. En cas d’échec utilise cerebro-backlog --fail <id> "raison" ; en cas de blocage utilise --block ; pour une validation nécessaire utilise --await-validation. Explique le résultat et termine ton tour. Le serveur pilote l’enchaînement : ne traite aucune autre tâche.\n\nInstructions supplémentaires : ${run.options.prompt}`;
+      // The review step is told what the previous steps changed; a scope that cannot be prepared leaves the agent to find it.
+      const review=isReviewTask(next)?`\n\n${epicReviewInstructions(epic.title,await epicReviewScope(this.db,run).catch(()=>null))}`:'';
+      const prompt=`[CEREBRO_EPIC_STEP ${run.id} ${next.id}]\nTraite uniquement cette étape de l’epic « ${epic.title} ».\n${epic.description}\n\n${next.text}${review}\n\nIdentifiant : ${next.id}\nRéalise et vérifie cette tâche, puis exécute cerebro-backlog --done ${next.id} uniquement si elle est terminée. En cas d’échec utilise cerebro-backlog --fail <id> "raison" ; en cas de blocage utilise --block ; pour une validation nécessaire utilise --await-validation. Explique le résultat et termine ton tour. Le serveur pilote l’enchaînement : ne traite aucune autre tâche.\n\nInstructions supplémentaires : ${run.options.prompt}`;
       this.changeTask(next.id,{status:'started',sessionId:null});
       const session=await this.sessions.create(project,{...run.options,prompt},async()=>{
         if(this.closed||this.list().find(r=>r.id===run.id)?.status==='stopped')throw new Error('Epic arrêté avant le lancement du terminal.');
         const pending=this.db.listSessions().find(s=>s.prompt===prompt);
-        if(pending){run.sessionId=pending.id;this.changeTask(next.id,{sessionId:pending.id});this.save(run);}
-      },run.contextRoot,title,{rememberDefaults:false});
+        if(pending){
+          run.sessionId=pending.id;this.changeTask(next.id,{sessionId:pending.id});
+          const workspace=workspaceFor(this.db,pending.id);if(workspace){run.workspace=rememberEpicWorkspace(this.db,run.epicId,{path:workspace.path,mode:workspace.mode});run.contextRoot=workspace.path;}
+          this.save(run);
+        }
+      },run.contextRoot,title,{rememberDefaults:false,epicId:epic.id});
       run.sessionId=session.id;this.changeTask(next.id,{sessionId:session.id});
     }
     // A stop can arrive while the holder is starting. Preserve it and stop the new operation too.

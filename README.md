@@ -326,6 +326,40 @@ prérequis hors epic n'est pas terminé ou si une exécution traite déjà ses t
 Le panneau de suivi permet d'arrêter ou de reprendre l'enchaînement ; une fin de
 tour LLM ne marque jamais une tâche terminée.
 
+**Review du travail d'un epic.** Deux boutons de l'en-tête d'un epic :
+
+- **Review de l'epic**, disponible quand l'exécution est terminée, arrêtée ou en
+  échec (jamais pendant qu'elle tourne) : lance une session de review qui
+  **rejoint le worktree partagé des étapes** et relit tout ce qu'elles ont
+  modifié depuis le commit de base (commits, modifications non commitées et
+  fichiers non suivis). Le prompt contient la base, les commits et la liste des
+  fichiers ; l'agent lit le diff lui-même avec `git diff <base>`, sans rien
+  modifier. En mode « Dossier du projet », le périmètre part du HEAD relevé au
+  lancement de l'epic et peut inclure des changements d'autres conversations.
+  Seule la dernière exécution de l'epic est relue.
+- **Ajouter une étape de review** : ajoute à l'epic une dernière tâche
+  « Code review du travail de l'epic » qui dépend de toutes les autres. Elle
+  s'exécute comme une étape normale, dans le même worktree, et le serveur lui
+  ajoute le périmètre au lancement. Ajoutée pendant une exécution, elle bloque
+  l'epic jusqu'à « Reprendre » (recalcul), comme toute modification de sa
+  composition. Un epic n'en reçoit qu'une à la fois.
+
+Dans les deux cas, l'agent publie ses findings via `cerebro-findings`. Le panneau
+des findings propose par défaut **À la suite de l’epic** : les constats
+sélectionnés deviennent de nouvelles tâches du même epic, qui attendent les
+étapes déjà présentes. Le choix **Nouvel epic** reste disponible avant le
+premier import du rapport.
+
+Après une exécution terminée, **Poursuivre l’epic dans son worktree** traite les
+nouvelles tâches dans la copie et sur la branche existantes, avec le travail
+déjà réalisé. Si l'exécution est encore ouverte, utilisez **Reprendre et
+recalculer** ; les corrections attendent notamment la clôture de l'étape de
+review. Un worktree retiré ou introuvable empêche la poursuite. Un epic commencé
+dans le dossier du projet continue dans ce dossier. Ce choix est conservé même
+si le réglage du projet change ensuite, pour le traitement global, les reviews
+et le bouton **Traiter** de chaque tâche. Le formulaire rappelle le dossier
+d'origine utilisé.
+
 Un epic se crée avant ou après ses tâches, depuis l'interface (« Nouvel epic »,
 puis le sélecteur « Epic » d'une tâche ou du champ d'ajout) ou par l'agent :
 
@@ -501,11 +535,13 @@ copie. Le périmètre est annoncé avant lancement et rappelé dans le suivi.
 Dans l'en-tête du projet, les boutons **Un seul commit** et **Un commit par intention**
 lancent directement la création des commits selon le découpage choisi, sans push.
 Le bouton **Push** permet ensuite de les envoyer. Ce choix vaut pour l'opération lancée.
-**Réglages Git** mémorise l'agent, le modèle et l'effort. Ces réglages sont
-indépendants de ceux des sessions. La migration initialise les réglages de commits
-avec l'agent, le modèle et l'effort déjà enregistrés pour le projet, puis les
-conserve séparément. Un changement d'agent remet le modèle et l'effort au défaut
-pour ne pas transmettre ceux de l'ancien agent.
+**Réglages LLM** mémorise l'agent, le modèle et l'effort. Ces réglages sont
+indépendants de ceux des sessions et du choix du dossier de travail. La migration
+initialise les réglages de commits avec l'agent, le modèle et l'effort déjà
+enregistrés pour le projet, puis les conserve séparément. Un changement d'agent remet le modèle et l'effort au défaut
+pour ne pas transmettre ceux de l'ancien agent. La même fenêtre règle aussi l'agent,
+le modèle, l'effort et le mode de la session lancée par **Résoudre avec l'IA**
+(par défaut Claude en mode auto).
 
 Le serveur collecte HEAD, les diffs, l'index préexistant et les derniers messages.
 Les fichiers suspects, générés, binaires, contenant un secret reconnu ou dont
@@ -546,7 +582,7 @@ dans le worktree. Le push seul, sur un dépôt propre, ne lance aucune session.
 
 ## Choisir le dossier de travail par projet
 
-Dans **Réglages Git → Travail des conversations**, chaque projet choisit entre :
+Dans l'en-tête du projet, le réglage **Travail des conversations** permet à chaque projet de choisir entre :
 
 - **Copie isolée par conversation** (défaut) : un worktree et une branche par nouvelle conversation, puis intégration du travail au projet.
 - **Dossier du projet** : les nouvelles conversations utilisent le chemin du projet et la branche qui y est déjà sélectionnée, sans créer de worktree, de branche ou de copie des fichiers. Ce mode convient aux tests liés à un chemin précis et au développement séquentiel sur une branche de longue durée.
@@ -558,11 +594,22 @@ explicitement sur le projet entier ; les changements ne sont pas attribués
 individuellement aux conversations.
 
 Le choix est persistant et indépendant des réglages LLM. Il s'applique aux
-nouvelles conversations, y compris celles lancées par le backlog, Slack et les
-étapes d'epic. Une conversation existante conserve toujours son dossier lors
+nouveaux contextes de travail : conversations indépendantes et première étape
+d'un nouvel epic. Dès qu'un epic a commencé, son dossier est conservé pour
+toutes ses étapes et corrections, même lancées individuellement, ainsi que ses
+reviews. Une commande qui commence un epic établit son contexte dans le dossier
+du projet. Une conversation existante conserve aussi son dossier lors
 d'une reprise, même si le réglage du projet a changé depuis. Les copies isolées
 déjà présentes restent accessibles dans l'inventaire. Les anciens projets
 conservent l'isolation à la migration tant que ce choix n'est pas modifié.
+
+Si un ancien epic a utilisé plusieurs dossiers, sa reprise reste bloquée jusqu’au
+choix explicite d’un dossier dans sa fiche. Cerebro présente les branches, les
+fichiers modifiés et les sessions de chaque copie. Le choix conserve ce dossier
+pour les prochaines étapes ; il ne fusionne aucun fichier, ne valide aucune tâche
+et ne relance pas l’epic. Vérifiez les copies, choisissez le dossier, puis utilisez
+« Reprendre et recalculer ». Une étape interrompue dans une autre copie est
+relancée dans le dossier choisi.
 
 ## Provenance des sessions
 
@@ -640,7 +687,23 @@ bandeau **N finding(s) de review disponible(s)** au-dessus du terminal, via
 Chaque finding présente sa gravité, son emplacement, le problème, le scénario
 et le correctif attendu dans une carte distincte.
 
-Sélectionnez les findings et cliquez **Enregistrer la sélection dans un epic**.
+Dans les listes de sessions, un lien orange **N findings de review à traiter**
+ouvre directement ce panneau. Le total figure aussi dans l'en-tête de l'epic,
+même replié, et la review reste dans **À traiter**, y compris après l'arrêt de
+sa session. La simple consultation ne supprime pas ce signal : chaque import
+réduit le compteur et tous les indicateurs de findings disparaissent quand
+tous les rapports de la session sont exploités. Les reviews concernées sont
+exclues de la purge des sessions en sommeil tant qu'il reste des findings.
+La publication d'un nouveau rapport déclenche également une notification de
+bureau selon vos préférences ; un rapport renvoyé à l'identique ne la répète pas.
+
+Sélectionnez les findings, choisissez leur destination, puis cliquez **Ajouter
+la sélection à cet epic** ou **Enregistrer la sélection dans un nouvel epic**.
+Le sélecteur de destination et le bouton d'import sont regroupés au pied du
+rapport, côte à côte sur grand écran et l'un sous l'autre sur petit écran.
+Pour une session liée à un epic, la destination proposée est la suite de cet
+epic ; sinon, un nouvel epic est créé. La destination est conservée après le
+premier import, y compris pour les sélections partielles suivantes.
 Les tâches créées incluent le contexte autonome et la session source ; les
 prérequis doivent aussi être sélectionnés ou déjà importés. Le rapport est limité
 à 100 findings et 1 Mio. Les contenus incomplets/invalides restent dans le flux
@@ -741,6 +804,37 @@ du nouveau travail à intégrer. Ce compteur décrit des changements depuis la
 création, sans en déduire l'auteur. Un fichier déjà modifié au départ qui a encore
 changé est signalé comme nécessitant un examen.
 
+Chaque copie suit un parcours en quatre étapes, affiché avec « Étapes ». La
+prochaine action est aussi proposée directement sur la ligne de la copie.
+
+1. **Enregistrer le travail dans la copie.** Une copie reçoit, à sa création, les
+   fichiers alors non commités du dossier du projet : c'est le *contenu de départ*,
+   qui n'est pas le travail de la conversation. Le panneau le montre par groupe
+   (fichiers inchangés depuis la création, fichiers modifiés depuis) et indique où
+   ce contenu se trouve encore : déjà commité dans la cible, toujours dans le dossier
+   du projet, conservé par Cerebro à la création, ou seulement dans la copie.
+   **Retirer le contenu de départ** affiche d'abord, fichier par fichier, ce qui sera
+   fait : remise à l'état de la copie, ou conservation du seul travail fait depuis la
+   création (avec son diff). Si la cible a avancé sans conflit, la copie reçoit
+   d'abord ses commits, pour que ce travail s'applique à la version à jour. Les
+   fichiers qui ne peuvent pas être séparés restent à examiner dans les diffs, ou
+   peuvent être confiés à **Résoudre avec l'IA** : une session, lancée dans la copie
+   avec les réglages de résolution du projet (**Réglages LLM**), reçoit pour chacun
+   où lire son contenu de départ et le constat de Cerebro, et réécrit le fichier pour
+   ne garder que la version de la copie plus le travail de la conversation. Elle ne
+   touche pas aux autres fichiers et ne commite rien : relisez ses changements, puis
+   retirez le contenu de départ restant.
+   **Créer le commit** enregistre ensuite le travail de la conversation.
+2. **Régler les conflits avec la cible.** Cerebro prévoit les fichiers que
+   l'intégration laisserait en conflit. **Mettre à jour avec master** merge la cible
+   dans la copie : les conflits se résolvent dans la copie (soi-même ou en le
+   demandant à la conversation), puis **Terminer la mise à jour** crée le commit de
+   merge. **Annuler la mise à jour** remet la copie dans son état précédent.
+3. **Intégrer** : le bouton reste visible, désactivé tant qu'un blocage subsiste, et
+   la liste des blocages dit quoi faire.
+4. **Publier** : l'intégration reste locale ; **Push** dans l'en-tête du projet
+   envoie le travail vers les remotes.
+
 Le dossier principal et les copies sans métadonnées figurent dans une section
 repliée distincte. Le dossier principal n'a pas à être intégré dans lui-même. Les
 fichiers ignorés (dépendances, configuration, etc.) apparaissent dans les détails
@@ -753,7 +847,7 @@ ne la remplace pas silencieusement. Les références sont relues à chaque
 actualisation et avant une action. Un état indisponible est indiqué comme inconnu
 et bloque les mutations.
 
-**Intégrer au projet** prépare une confirmation avec les références source/cible et le chemin
+**Intégrer dans master** (ou la branche cible choisie) prépare une confirmation avec les références source/cible et le chemin
 exact du worktree cible. La cible doit être une branche ouverte dans un autre
 worktree, son index et ses fichiers doivent être propres et les agents qui
 l'utilisent doivent avoir fini leur tour. Aucun commit implicite, push, squash,

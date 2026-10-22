@@ -2,9 +2,10 @@ import { ActivityStatus } from './ActivityStatus.tsx';
 import { useState } from 'react';
 import { Modal } from './Dialog.tsx';
 import { useStore } from './store.tsx';
-import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { LlmSelector, type LlmSelection } from './LlmSelector.tsx';
-import type { Project, WorkspaceMode } from './types.ts';
+import { ChoiceGroup } from './ChoiceGroup.tsx';
+import { MODE_CHIP, MODE_DESCRIPTION } from './format.ts';
+import { MODES, type Project, type ResolutionSettings } from './types.ts';
 import './automatic-commits.css';
 
 export function CommitSettingsDialog({project,onClose}:{project:Project;onClose:()=>void}) {
@@ -13,26 +14,35 @@ export function CommitSettingsDialog({project,onClose}:{project:Project;onClose:
     const {agent,model,effort}=project.commitSettings;
     return {agent,model,effort};
   });
-  const [workspaceMode,setWorkspaceMode]=useState<WorkspaceMode>(project.workspaceMode);
+  const [resolution,setResolution]=useState<ResolutionSettings>(()=>({...project.resolutionSettings}));
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState<string|null>(null);
   const save=async():Promise<void>=>{
     setBusy(true);setError(null);
-    try{await updateProject(project.id,{commitSettings:settings,workspaceMode});onClose();}
+    try{await updateProject(project.id,{commitSettings:settings,resolutionSettings:resolution});onClose();}
     catch(cause){setError(cause instanceof Error?cause.message:String(cause));}
     finally{setBusy(false);}
   };
-  return <Modal title="Réglages Git" onClose={onClose}>
+  return <Modal title="Réglages LLM" onClose={onClose}>
     <form className="commit-settings" onSubmit={event=>{event.preventDefault();void save();}}>
-      <div className="tuning-row"><div className="tuning">
-        <span className="field-label">Travail des conversations</span>
-        <ChoiceGroup<WorkspaceMode> compact label="Travail des conversations" value={workspaceMode} disabled={busy}
-          options={[{value:'isolated',label:'Worktree Git par conversation'},{value:'shared',label:'Dossier du projet'}]}
-          onChange={setWorkspaceMode}/>
-      </div></div>
-      <p className="hint">{workspaceMode==='shared'?`Les nouvelles conversations utilisent directement ${project.path}, sur sa branche courante. Cerebro ne crée ni ne supprime de branche pour ces conversations.`:'Chaque nouvelle conversation utilise un worktree Git : un dossier de travail isolé avec sa propre branche. Son travail peut ensuite être intégré au projet.'} Les conversations existantes conservent leur dossier.</p>
-      <p>« Commit / push » utilise ces réglages pour préparer les messages, puis crée et pousse les commits automatiquement.</p>
-      <LlmSelector agents={agents} value={settings} defaults={project.commitSettings} disabled={busy} onChange={setSettings}/>
+      <section className="commit-settings-section" aria-labelledby="commit-settings-commits">
+        <h3 id="commit-settings-commits">Commits</h3>
+        <p>« Commit / push » utilise ces réglages pour préparer les messages, puis crée et pousse les commits automatiquement.</p>
+        <LlmSelector agents={agents} value={settings} defaults={project.commitSettings} disabled={busy} onChange={setSettings}/>
+      </section>
+      <section className="commit-settings-section" aria-labelledby="commit-settings-resolution">
+        <h3 id="commit-settings-resolution">Résolution des fichiers à examiner</h3>
+        <p>« Résoudre avec l’IA » lance une session dans la copie de travail pour séparer le contenu de départ du travail de la conversation, sur les fichiers que le retrait automatique laisse à examiner.</p>
+        <LlmSelector agents={agents} value={resolution} defaults={project.resolutionSettings} disabled={busy} onChange={selection=>setResolution(current=>({...current,...selection}))}>
+          <div className="tuning">
+            <span className="field-label">Mode</span>
+            <ChoiceGroup compact label="Mode de la session de résolution" value={resolution.mode} disabled={busy}
+              options={MODES.map(mode=>({value:mode,label:MODE_CHIP[mode],title:MODE_DESCRIPTION[mode],danger:mode==='bypass'}))}
+              onChange={mode=>setResolution(current=>({...current,mode}))}/>
+          </div>
+        </LlmSelector>
+        {resolution.mode==='plan'?<p className="commit-settings-warning">En mode plan, la session ne peut pas modifier les fichiers : elle proposera seulement la résolution.</p>:null}
+      </section>
       <p className="hint">Ces réglages sont propres à ce projet et indépendants de ceux des sessions.</p>
       {error?<p className="form-error" role="alert">{error}</p>:null}
       <div className="row-actions"><button type="submit" className="btn primary" disabled={busy}><ActivityStatus active={busy}>{busy?'Enregistrement…':'Enregistrer'}</ActivityStatus></button><button type="button" className="btn" disabled={busy} onClick={onClose}>Annuler</button></div>

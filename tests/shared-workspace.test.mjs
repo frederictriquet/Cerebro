@@ -56,3 +56,29 @@ test('migration preserves isolation by default and unrelated project settings ne
  f.db.updateProject(f.project.id,{workspaceMode:'shared'});f.db.updateProject(f.project.id,{name:'Renamed',commitSettings:{...f.project.commitSettings,effort:'low'}});f.restart();
  assert.equal(f.db.getProject(f.project.id).workspaceMode,'shared');assert.equal(f.db.createProject('Other',f.repo).workspaceMode,'isolated');
 }));
+
+test('new epic sessions keep their original cwd after a preference change and restart (fake CLI)',async()=>{
+ for(const mode of ['isolated','shared'])await fixture(async f=>{
+  f.db.updateProject(f.project.id,{workspaceMode:mode});
+  const epic=f.db.createEpic(f.project.id,'Livraison','',null);
+  f.db.createSession({id:'origin',projectId:f.project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'origine',title:'Origine',status:'exited',agentSessionId:'fake'},'token',epic.id);
+  const original=await createWorkspace(f.db,'origin',f.db.getProject(f.project.id));
+  writeFileSync(join(original.path,'feature.txt'),'travail à corriger\n');
+  f.db.updateProject(f.project.id,{workspaceMode:mode==='isolated'?'shared':'isolated'});f.restart();
+  const bin=join(f.directory,'bin');mkdirSync(bin);const capture=join(bin,'cwd');
+  writeFileSync(join(bin,'codex'),`#!/bin/sh\npwd > '${capture}'\nexec /bin/sleep 2\n`,{mode:0o755});
+  const previous=process.env.PATH;process.env.PATH=`${bin}:${previous}`;const manager=new SessionManager(f.db);
+  try{
+   const session=await manager.create(f.db.getProject(f.project.id),{agent:'codex',prompt:'Corriger'},undefined,undefined,'Correction',{epicId:epic.id});
+   assert.equal(readFileSync(capture,'utf8').trim(),original.path);
+   assert.equal(workspaceFor(f.db,session.id).path,original.path);assert.equal(workspaceFor(f.db,session.id).mode,mode);
+   assert.equal(readFileSync(join(workspaceFor(f.db,session.id).path,'feature.txt'),'utf8'),'travail à corriger\n');
+   await manager.terminate(session.id);
+   const independent=await manager.create(f.db.getProject(f.project.id),{agent:'codex',prompt:'Nouveau contexte'});
+   const independentWorkspace=workspaceFor(f.db,independent.id);
+   assert.equal(independentWorkspace.mode,mode==='isolated'?'shared':'isolated');
+   assert.notEqual(independentWorkspace.path,original.path);
+   await manager.terminate(independent.id);
+  }finally{process.env.PATH=previous;await manager.shutdown();}
+ });
+});

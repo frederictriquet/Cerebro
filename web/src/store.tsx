@@ -16,10 +16,12 @@ import {
   readDesktopNotif,
   readMuted,
   showAlertNotification,
+  showFindingsNotification,
   updateAttentionIndicators,
   writeDesktopNotif,
   writeMuted,
 } from './notify.ts';
+import { needsAttention } from './format.ts';
 import {
   parseAgentInfoList,
   parseEpic,
@@ -91,6 +93,7 @@ export interface ProjectPatch {
   color?: string | null;
   sessionDefaults?: Partial<LaunchSpec>;
   commitSettings?: Partial<import('./types.ts').CommitSettings>;
+  resolutionSettings?: Partial<import('./types.ts').ResolutionSettings>;
   workspaceMode?: import('./types.ts').WorkspaceMode;
   // null : le projet revient aux réglages globaux du council.
   councilSettings?: import('./types.ts').CouncilSettings | null;
@@ -157,9 +160,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    const awaiting = sessions.filter((s) => s.attention);
+    const awaiting = sessions.filter(needsAttention);
     const waiting = awaiting.filter((s) => s.status === 'waiting').length;
-    updateAttentionIndicators(waiting, awaiting.length - waiting);
+    updateAttentionIndicators(waiting, awaiting.length - waiting, sessions.reduce((total, session) => total + session.pendingFindings, 0));
   }, [sessions]);
 
   useEffect(() => {
@@ -236,6 +239,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             break;
           case 'epic':
             setEpics((list) => upsertEpic(list, msg.epic));
+            setSessions((list) => list.map((session) => session.epic?.id === msg.epic.id
+              ? { ...session, epic: { id: msg.epic.id, title: msg.epic.title } } : session));
             break;
           case 'epic-deleted':
             setEpics((list) => list.filter((e) => e.id !== msg.id));
@@ -250,6 +255,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             setSessions((list) => upsertSession(list, msg.session));
             showAlertNotification(msg.session);
             if (!mutedRef.current) playAlert(msg.session.status);
+            break;
+          case 'findings-available':
+            setSessions((list) => upsertSession(list, msg.session));
+            showFindingsNotification(msg.session);
+            if (!mutedRef.current) playAlert('idle');
             break;
         }
       });
@@ -457,6 +467,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const epic = parseEpic(raw);
     if (!epic) throw new Error('Réponse epic invalide');
     setEpics((list) => upsertEpic(list, epic));
+    setSessions((list) => list.map((session) => session.epic?.id === epic.id
+      ? { ...session, epic: { id: epic.id, title: epic.title } } : session));
     return epic;
   }, []);
 

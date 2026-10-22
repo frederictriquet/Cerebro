@@ -5,7 +5,7 @@ import { AttachmentStrip, insertToken, removeToken, restoredAttachment, useImage
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { LlmSelector, llmChoices } from './LlmSelector.tsx';
 import { readDraft, writeDraft } from './drafts.ts';
-import { MODE_CHIP, MODE_DESCRIPTION } from './format.ts';
+import { MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from './format.ts';
 import { useStore } from './store.tsx';
 import { DEFAULT_SESSION_DEFAULTS, MODES, type Agent, type Effort, type LaunchSpec, type Mode } from './types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
@@ -18,7 +18,7 @@ export function NewSessionForm({
   initialPrompt,
   promptFor,
   heading,
-  submitLabel = 'Lancer',
+  submitLabel,
   launchDisabled = false,
   autoFocus = false,
   className = '',
@@ -41,6 +41,7 @@ export function NewSessionForm({
 }) {
   const { agents, projects, updateProject } = useStore();
   const project=projects.find((p) => p.id === projectId);
+  const launchLabel = submitLabel ?? `Lancer ${WORKSPACE_TARGET[project?.workspaceMode ?? 'isolated']}`;
   const defaults = project?.sessionDefaults ?? DEFAULT_SESSION_DEFAULTS;
   const available = agents.filter((a) => a.available);
   const [agent, setAgent] = useState<Agent>(defaults.agent);
@@ -264,7 +265,7 @@ export function NewSessionForm({
       {defaultsError ? <p className="form-error">Réglages non sauvegardés : {defaultsError}</p> : null}
       <div className="row-actions">
         <button type="submit" className="btn primary" disabled={launchDisabled || busy || images.pending || available.length === 0}>
-          <ActivityStatus active={busy || images.pending}>{busy ? 'Lancement…' : images.pending ? 'Envoi des images…' : submitLabel}</ActivityStatus>
+          <ActivityStatus active={busy || images.pending}>{busy ? 'Lancement…' : images.pending ? 'Envoi des images…' : launchLabel}</ActivityStatus>
         </button>
         {onCancel ? (
           <button type="button" className="btn" onClick={onCancel}>

@@ -56,8 +56,9 @@ export function sessionIsOpenAndVisible(id: string, machineId?: string | null): 
   return parseMachine(window.location.hash) === machineId;
 }
 
-function sessionHash(sessionId: string, machineId: string | null): string {
-  return machineId === null ? `#/s/${sessionId}` : `#/m/${machineId}/s/${sessionId}`;
+function sessionHash(sessionId: string, machineId: string | null, panel?: 'findings'): string {
+  const path = machineId === null ? `#/s/${sessionId}` : `#/m/${machineId}/s/${sessionId}`;
+  return panel ? `${path}/${panel}` : path;
 }
 
 export function showAlertNotification(session: Session, machineId?: string | null): void {
@@ -89,6 +90,25 @@ export function showAlertNotification(session: Session, machineId?: string | nul
   } catch {
     /* Notifications indisponibles */
   }
+}
+
+export function showFindingsNotification(session: Session, machineId?: string | null): void {
+  const target = machineId === undefined ? parseMachine(window.location.hash) : machineId;
+  if (!session.pendingFindings || !readDesktopNotif() || sessionIsOpenAndVisible(session.id, target)) return;
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  const count = session.pendingFindings;
+  try {
+    const notification = new Notification(`Cerebro — ${count} finding${count > 1 ? 's' : ''} de review à traiter`, {
+      body: [session.epic ? `Epic « ${session.epic.title} »` : '', session.title].filter(Boolean).join(' — '),
+      tag: `findings:${target ?? 'local'}:${session.id}`,
+      silent: true,
+    });
+    notification.onclick = () => {
+      window.focus();
+      window.location.hash = sessionHash(session.id, target, 'findings');
+      notification.close();
+    };
+  } catch { /* Notifications indisponibles. */ }
 }
 
 let audioCtx: AudioContext | null = null;
@@ -176,9 +196,10 @@ function updateFavicon(kind: 'waiting' | 'idle' | 'none'): void {
 }
 
 // Titre et favicon de l'onglet : signal distinct selon le type d'attention (utile hors de l'app).
-export function updateAttentionIndicators(waiting: number, done: number): void {
+export function updateAttentionIndicators(waiting: number, done: number, findings = 0): void {
   const total = waiting + done;
-  const mark = waiting > 0 ? '❓ ' : done > 0 ? '✅ ' : '';
-  document.title = total > 0 ? `${mark}(${total}) Cerebro` : 'Cerebro';
+  const mark = waiting > 0 ? '❓ ' : findings > 0 ? '📋 ' : done > 0 ? '✅ ' : '';
+  const suffix = findings > 0 ? ` · ${findings} finding${findings > 1 ? 's' : ''} à traiter` : '';
+  document.title = total > 0 ? `${mark}(${total}) Cerebro${suffix}` : 'Cerebro';
   updateFavicon(waiting > 0 ? 'waiting' : done > 0 ? 'idle' : 'none');
 }

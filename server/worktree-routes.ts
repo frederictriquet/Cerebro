@@ -22,6 +22,10 @@ export function registerWorktreeRoutes(app: FastifyInstance, db: CerebroDatabase
     app.post<{Params:{id:string}}>(`/api/worktrees/:id/prepare-${kind}`,async(request,reply)=>attempt(reply,()=>manager.prepare(request.params.id,kind)));
     app.post<{Params:{id:string}}>(`/api/worktrees/:id/${kind}`,async(request,reply)=>attempt(reply,()=>manager.start(request.params.id,kind,(request.body as {token?:unknown})?.token),202));
   }
+  app.get<{Params:{id:string}}>('/api/worktrees/:id/starting-content',async(request,reply)=>attempt(reply,()=>manager.startingContentPlan(request.params.id)));
+  app.post<{Params:{id:string}}>('/api/worktrees/:id/update-from-target',async(request,reply)=>attempt(reply,()=>manager.updateFromTarget(request.params.id)));
+  app.post<{Params:{id:string}}>('/api/worktrees/:id/update-from-target/abort',async(request,reply)=>attempt(reply,()=>manager.abortTargetUpdate(request.params.id)));
+  app.post<{Params:{id:string}}>('/api/worktrees/:id/update-from-target/finish',async(request,reply)=>attempt(reply,()=>manager.finishTargetUpdate(request.params.id)));
   app.post<{Params:{id:string}}>('/api/worktrees/:id/discard-inherited',async(request,reply)=>attempt(reply,()=>manager.discardInherited(request.params.id)));
   app.get<{Params:{id:string}}>('/api/worktrees/:id/git/push',async(request,reply)=>attempt(reply,async()=>{
     const view=await manager.get(request.params.id);return currentPush(view.path);

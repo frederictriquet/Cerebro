@@ -5,7 +5,9 @@ import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from '
 import type { CommandRun, ProjectCommand } from '../../server/commands.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { LaunchSessionDialog } from './Dialog.tsx';
-import { STATUS_LABEL, sessionTitle } from './format.ts';
+import { EpicReviewActions, RUN_ACTIVE, useEpicRun } from './EpicReviewActions.tsx';
+import { EpicWorkspacePicker } from './EpicWorkspacePicker.tsx';
+import { STATUS_LABEL, WORKSPACE_TARGET, sessionTitle } from './format.ts';
 import { href } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
@@ -326,6 +328,7 @@ export function Backlog({ projectId }: { projectId: string }) {
         <LaunchSessionDialog
           title={`Traiter : ${taskTitle(starting.text).slice(0, 80)}`}
           projectId={projectId}
+          epicId={starting.epicId}
           initialPrompt={starting.text}
           onClose={() => setStarting(null)}
           onLaunch={async (spec) => {
@@ -338,6 +341,7 @@ export function Backlog({ projectId }: { projectId: string }) {
         <LaunchSessionDialog
           title={`Traiter l'epic : ${startingEpic.epic.title.slice(0, 80)}`}
           projectId={projectId}
+          epicId={startingEpic.epic.id}
           initialPrompt={startingEpic.prompt}
           onClose={() => setStartingEpic(null)}
           onLaunch={async (spec) => {
@@ -370,22 +374,7 @@ const RUN_RESULT_LABEL: Record<string, string> = {
 };
 // States in which the run waits for the user: its reason and actions stay visible without unfolding anything.
 const RUN_NEEDS_ACTION: EpicRun['status'][] = ['blocked', 'failed', 'waiting-validation'];
-const RUN_ACTIVE: EpicRun['status'][] = ['running', 'waiting-validation', 'blocked'];
 const RUN_RESUMABLE: EpicRun['status'][] = ['waiting-validation', 'blocked', 'failed', 'stopped'];
-
-function useEpicRun(epicId: string): { run: EpicRun | null; refresh: () => Promise<void> } {
-  const [run, setRun] = useState<EpicRun | null>(null);
-  const refresh = useCallback(async (): Promise<void> => {
-    const runs = await api<EpicRun[]>(`/api/epics/${epicId}/runs`);
-    setRun(runs[0] ?? null);
-  }, [epicId]);
-  useEffect(() => {
-    void refresh().catch(() => {});
-    const timer = window.setInterval(() => void refresh().catch(() => {}), 1000);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
-  return { run, refresh };
-}
 
 function runAction(run: EpicRun, name: 'stop' | 'resume'): Promise<unknown> {
   void api(`/api/operations/${encodeURIComponent(`epic:${run.id}:${run.status}`)}/seen`, { method: 'POST' }).catch(() => {});
@@ -446,12 +435,13 @@ function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (
       </details>
       {RUN_ACTIVE.includes(run.status) ? (
         <label className="epic-run-reason task-command-check">
-          <input type="checkbox" checked={run.autoValidate ?? false} disabled={pending}
+          <input type="checkbox" checked={run.autoValidate ?? false} disabled={pending || run.workspaceConflict}
             onChange={(event) => setAutoValidate(event.target.checked)} />
           <span>Valider automatiquement — clôt les étapes en attente de validation, y compris l’étape actuelle, et poursuit l’epic. Les échecs et les blocages restent à traiter.</span>
         </label>
       ) : null}
-      {needsAction && run.error ? <p className="epic-run-reason">{run.error}</p> : null}
+      {run.workspaceConflict ? <EpicWorkspacePicker epicId={run.epicId} onResolved={async () => { setError(null); await onChanged(); }} /> : null}
+      {needsAction && run.error && !run.workspaceConflict ? <p className="epic-run-reason">{run.error}</p> : null}
       {awaitingValidation ? (
         <p className="epic-run-reason">
           Étape à valider : {taskLabel(run.currentTaskId!)}. Vérifiez le résultat et les critères de la tâche,
@@ -470,7 +460,7 @@ function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (
             </button>
           ) : null}
           {RUN_RESUMABLE.includes(run.status) ? (
-            <button type="button" className={`btn ${needsAction && !awaitingValidation ? 'primary' : ''}`} disabled={pending} onClick={() => action('resume')}>
+            <button type="button" className={`btn ${needsAction && !awaitingValidation ? 'primary' : ''}`} disabled={pending || run.workspaceConflict} onClick={() => action('resume')}>
               Reprendre et recalculer
             </button>
           ) : null}
@@ -742,7 +732,9 @@ function EpicBlock({
   onStart: (prompt: string) => void;
   onError: (message: string) => void;
 }) {
-  const { updateEpic, deleteEpic } = useStore();
+  const { projects, updateEpic, deleteEpic } = useStore();
+  const project = projects.find((p) => p.id === epic.projectId);
+  const workspaceMode = project?.workspaceMode ?? 'isolated';
   const collapsedKey = `cerebro.epicCollapsed.${epic.id}`;
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -774,6 +766,8 @@ function EpicBlock({
     .map((t) => (t.status === 'started' ? sessions.find((s) => s.id === t.sessionId) : undefined))
     .find((s) => s !== undefined && s.status !== 'exited');
   const position = new Map(open.map((t, i) => [t.id, i + 1]));
+  const continuesEpic = run?.workspace != null;
+  const continuesWorktree = continuesEpic && run.workspace!.mode === 'isolated';
   // The server refuses a new run while one is active; a failed one is taken over by « Reprendre » in the run view.
   const runHoldsEpic = run !== null && (RUN_ACTIVE.includes(run.status) || run.status === 'failed');
   const taskLabel = (id: string): string => {
@@ -788,7 +782,7 @@ function EpicBlock({
       ? `Attend des tâches hors de l'epic : ${outsideBlockers.map((t) => taskTitle(t.text).slice(0, 60)).join(' · ')}`
       : activeSession !== undefined
         ? 'Une session traite déjà cet epic'
-        : `Le serveur ordonnance les ${open.length} tâche(s) selon leurs dépendances`;
+        : `Le serveur ordonnance les ${open.length} tâche(s) selon leurs dépendances${continuesEpic ? `, dans ${run.workspace!.path}` : ''}`;
 
   return (
     <div className="epic">
@@ -821,9 +815,18 @@ function EpicBlock({
               title={startHint}
               onClick={() => onStart(epicPrompt(epic, open))}
             >
-              {launching ? 'Lancement…' : "Traiter l'epic"}
+              {launching
+                ? 'Lancement…'
+                : continuesWorktree
+                  ? "Poursuivre l’epic dans son worktree"
+                  : continuesEpic
+                    ? "Poursuivre l’epic dans son dossier d’origine"
+                    : open.every((t) => t.execution?.type === 'command')
+                      ? "Traiter l'epic"
+                      : `Traiter l'epic ${WORKSPACE_TARGET[workspaceMode]}`}
             </button>
           )}
+          <EpicReviewActions epic={epic} run={run} onError={onError} />
           <button type="button" className="btn" onClick={() => setEditing((v) => !v)}>
             Éditer
           </button>

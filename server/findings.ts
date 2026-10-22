@@ -29,9 +29,11 @@ export function listReports(db:CerebroDatabase,sessionId:string):SavedReport[]{
   const rows=db.connection.prepare('SELECT * FROM review_reports WHERE session_id=? ORDER BY created_at').all(sessionId) as unknown as {id:string;session_id:string;data:string;created_at:number;epic_id:string|null}[];
   return rows.map(row=>({...JSON.parse(row.data),id:row.id,sessionId:row.session_id,createdAt:row.created_at,epicId:row.epic_id,imported:Object.fromEntries((db.connection.prepare('SELECT finding_id,task_id FROM finding_imports WHERE report_id=?').all(row.id) as {finding_id:string;task_id:string}[]).map(r=>[r.finding_id,r.task_id]))}));
 }
-export function importFindings(db:CerebroDatabase,sessionId:string,reportId:string,selection:unknown){
+export function importFindings(db:CerebroDatabase,sessionId:string,reportId:string,selection:unknown,epicId:unknown=undefined){
   if(!Array.isArray(selection)||!selection.length||!selection.every(s=>typeof s==='string'))throw new Error('Sélection de findings invalide.');
+  if(epicId!==undefined&&epicId!==null&&(typeof epicId!=='string'||!epicId.trim()))throw new Error('Destination des findings invalide.');
   const report=listReports(db,sessionId).find(r=>r.id===reportId);if(!report)throw new Error('Rapport introuvable.');
+  if(report.epicId&&typeof epicId==='string'&&epicId!==report.epicId)throw new Error('Ce rapport a déjà été importé dans un autre epic.');
   const session=db.getSession(sessionId)!;const selected=[...new Set(selection)].map(id=>{const f=report.findings.find(f=>f.id===id);if(!f)throw new Error('Finding inconnu.');return f;});
   const wanted=new Set(selected.map(f=>f.id));
   for(const f of selected){
@@ -41,9 +43,18 @@ export function importFindings(db:CerebroDatabase,sessionId:string,reportId:stri
   }
   db.connection.exec('BEGIN IMMEDIATE');
   try{
-    let epic=report.epicId?db.getEpic(report.epicId):null;
-    if(report.epicId&&!epic)throw new Error('L’epic importé a été supprimé : vérifiez les tâches avant de réimporter.');
-    if(!epic){epic=db.createEpic(session.projectId,report.title,`Findings structurés de la session ${sessionId}, rapport ${reportId}.`,sessionId);db.connection.prepare('UPDATE review_reports SET epic_id=? WHERE id=?').run(epic.id,reportId);}
+    // A report keeps its first destination across partial imports and retries. Without an
+    // explicit choice, findings from an epic session extend that same epic.
+    const targetId=report.epicId??(epicId===undefined?session.epic?.id:epicId) as string|null|undefined;
+    let epic=targetId?db.getEpic(targetId):null;
+    if(targetId&&!epic)throw new Error('L’epic de destination a été supprimé : vérifiez le backlog avant d’importer.');
+    if(epic&&epic.projectId!==session.projectId)throw new Error('L’epic de destination doit appartenir au même projet.');
+    // Imported findings from this report retain only their declared relationships to
+    // one another; all pre-existing steps must finish before the new findings run.
+    const reportTasks=new Set(Object.values(report.imported));
+    const predecessors=epic?db.listTasks().filter(t=>t.epicId===targetId&&!reportTasks.has(t.id)).map(t=>t.id):[];
+    if(!epic)epic=db.createEpic(session.projectId,report.title,`Findings structurés de la session ${sessionId}, rapport ${reportId}.`,sessionId);
+    db.connection.prepare('UPDATE review_reports SET epic_id=? WHERE id=?').run(epic.id,reportId);
     const imported={...report.imported};const created:Task[]=[];
     for(const f of selected){
       if(imported[f.id])continue;
@@ -52,7 +63,7 @@ export function importFindings(db:CerebroDatabase,sessionId:string,reportId:stri
       const task=db.createTask(session.projectId,text,sessionId,epic.id);created.push(task);imported[f.id]=task.id;
       db.connection.prepare('INSERT INTO finding_imports (report_id,finding_id,task_id) VALUES (?,?,?)').run(reportId,f.id,task.id);
     }
-    for(const f of selected.filter(f=>created.some(t=>t.id===imported[f.id])))for(const dep of [...f.dependsOn.map(id=>imported[id]),...f.taskDependencies])db.connection.prepare('INSERT OR IGNORE INTO task_dependencies (task_id,depends_on_id) VALUES (?,?)').run(imported[f.id],dep);
+    for(const f of selected.filter(f=>created.some(t=>t.id===imported[f.id])))for(const dep of [...predecessors,...f.dependsOn.map(id=>imported[id]),...f.taskDependencies])db.connection.prepare('INSERT OR IGNORE INTO task_dependencies (task_id,depends_on_id) VALUES (?,?)').run(imported[f.id],dep);
     db.connection.exec('COMMIT');return {epic,tasks:created.map(t=>db.getTask(t.id)!),imported};
   }catch(cause){db.connection.exec('ROLLBACK');throw cause;}
 }

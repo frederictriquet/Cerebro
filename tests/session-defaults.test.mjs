@@ -40,7 +40,7 @@ mock.method(PeerSync.prototype, 'sync', async function () {
 
 // Remplacer uniquement le démarrage du PTY : résolution, persistance et commandes restent réelles.
 const launches = [];
-mock.method(SessionManager.prototype, 'launch', async function (project, agent, mode, tuning, prompt, resumeId, existingId = null) {
+mock.method(SessionManager.prototype, 'launch', async function (project, agent, mode, tuning, prompt, resumeId, existingId = null, validate, joined, title, epicId) {
   const id = existingId ?? randomUUID();
   const command = buildAgentCommand(agent, mode, prompt, id, resumeId, tuning);
   launches.push({ agent, mode, ...tuning, prompt, command, id });
@@ -48,7 +48,7 @@ mock.method(SessionManager.prototype, 'launch', async function (project, agent, 
   return this.db.createSession({
     id, projectId: project.id, agent, mode, ...tuning, prompt, title: prompt,
     status: 'exited', agentSessionId: command.agentSessionId ?? id,
-  }, 'test-token');
+  }, 'test-token', epicId);
 });
 
 after(() => {
@@ -314,8 +314,31 @@ test('API epic scheduler persists the current step and remains compatible with b
     const response=await send('POST',`/api/epics/${epic.id}/start`,{});assert.equal(response.statusCode,202);assert.equal(response.json().session,undefined);
     assert.equal((await send('POST',`/api/epics/${epic.id}/start`,{})).statusCode,409);
     await new Promise(r=>setTimeout(r,1100));let tasks=(await send('GET','/api/tasks')).json();const current=tasks.find(t=>t.id===a.id);assert.equal(current.status,'started');assert.equal(tasks.find(t=>t.id===b.id).status,'todo');assert.equal(launches.length,before+1);
+    assert.deepEqual((await send('GET', '/api/sessions')).json().find(s => s.id === current.sessionId).epic, { id: epic.id, title: epic.title });
     await app.close();app=await buildServer();await new Promise(r=>setTimeout(r,50));assert.equal(launches.length,before+1);
     const done=await app.inject({method:'POST',url:`/api/backlog/${current.sessionId}/tasks/${a.id}/done`,headers:{'x-cerebro-token':'test-token'},payload:{}});assert.equal(done.statusCode,200);
     await new Promise(r=>setTimeout(r,1100));tasks=(await send('GET','/api/tasks')).json();assert.equal(tasks.find(t=>t.id===b.id).status,'started');assert.equal(launches.length,before+2);
   }finally{await app.close();}
+});
+
+test('API task launches retain their epic through retry and backlog cleanup', async () => {
+  const app = await buildServer();
+  const send = (method, url, payload) => app.inject({ method, url, ...(payload === undefined ? {} : { payload }) });
+  try {
+    const project = (await send('POST', '/api/projects', { name: 'Session epic', path: root })).json();
+    const epic = (await send('POST', `/api/projects/${project.id}/epics`, { title: 'Origine' })).json();
+    const task = (await send('POST', `/api/projects/${project.id}/tasks`, { text: 'Étape', epicId: epic.id })).json();
+    const first = await send('POST', `/api/tasks/${task.id}/start`, { prompt: task.text });
+    assert.equal(first.statusCode, 201);
+    assert.deepEqual(first.json().session.epic, { id: epic.id, title: 'Origine' });
+    const second = await send('POST', `/api/tasks/${task.id}/start`, { prompt: task.text });
+    assert.equal(second.statusCode, 201);
+    assert.notEqual(first.json().session.id, second.json().session.id);
+    await send('PATCH', `/api/epics/${epic.id}`, { title: 'Origine renommée' });
+    await send('PATCH', `/api/tasks/${task.id}`, { status: 'done' });
+    assert.equal((await send('DELETE', `/api/projects/${project.id}/backlog/completed`)).statusCode, 200);
+    const sessions = (await send('GET', '/api/sessions')).json().filter(s => s.projectId === project.id);
+    assert.equal(sessions.length, 2);
+    assert.ok(sessions.every(s => s.epic.id === epic.id && s.epic.title === 'Origine renommée'));
+  } finally { await app.close(); }
 });

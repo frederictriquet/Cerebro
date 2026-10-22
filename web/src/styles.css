@@ -1617,8 +1617,35 @@ label.block {
   flex: 1 1 240px;
 }
 
-.project-head .path {
+.project-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  min-width: 0;
+}
+
+.project-title-row .path {
+  margin: 0;
   overflow-wrap: anywhere;
+}
+
+.project-title-row .slack-lead,
+.project-title-row .workspace-mode {
+  margin: 0;
+  align-self: center;
+}
+
+.project-title-row .workspace-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 12px;
+}
+
+.project-title-row .peer-conflict {
+  flex: 0 0 100%;
 }
 
 .project-head > .row-actions {
@@ -1648,16 +1675,6 @@ label.block {
 .project-head-details .btn,
 .project-head-details .git-dirty {
   white-space: nowrap;
-}
-
-.project-head-details .slack-lead {
-  align-items: baseline;
-  gap: 4px 8px;
-}
-
-.project-head-details .slack-lead > .meta {
-  flex: 1 1 240px;
-  overflow-wrap: anywhere;
 }
 
 .project-head.colored {
@@ -2362,7 +2379,7 @@ a.btn:hover {
   background: rgba(226, 92, 106, 0.12);
 }
 
-/* Sélecteur LLM partagé : contrôles segmentés compacts des sessions et réglages Git. */
+/* Sélecteur LLM partagé : contrôles segmentés compacts des sessions et réglages LLM. */
 /* Une ligne par choix : colonne des libellés, puis colonne des contrôles alignés à gauche. */
 .tuning-row {
   display: grid;
@@ -2773,6 +2790,23 @@ a.btn:hover {
   overflow: hidden;
 }
 
+.session-epic-badge {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 7px;
+  border: 1px solid rgba(122, 162, 247, 0.3);
+  border-radius: 4px;
+  background: rgba(122, 162, 247, 0.08);
+  color: var(--accent);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attention-link > .session-epic-badge { grid-column: 2; justify-self: start; }
+
 .epic-progress > span {
   display: block;
   height: 100%;
@@ -2836,6 +2870,50 @@ a.btn:hover {
   color: var(--text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.epic-workspace-picker {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--waiting);
+  border-radius: 6px;
+  background: var(--bg-2);
+  overflow-wrap: anywhere;
+}
+
+.epic-workspace-picker p {
+  margin: 0;
+}
+
+.epic-workspace-picker > button {
+  justify-self: start;
+}
+
+.epic-workspace-choice {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.epic-workspace-choice label {
+  display: flex;
+  align-items: start;
+  gap: 8px;
+}
+
+.epic-workspace-choice label code {
+  display: block;
+  white-space: pre-wrap;
+}
+
+.epic-workspace-choice ul {
+  margin: 6px 0;
+  padding-left: 20px;
+  max-height: 200px;
+  overflow: auto;
 }
 
 .epic-description {
