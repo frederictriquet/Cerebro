@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -13,7 +14,9 @@ import {
 import { OperationResults } from './operation-results.ts';
 import { answerFactQuestion, FACT_HELP } from './facts.ts';
 import { answerQuestion } from './ask.ts';
-import type { Agent, CerebroDatabase, Session } from './db.ts';
+import type { CouncilRun } from './council.ts';
+import type { CouncilRuns } from './council-runner.ts';
+import type { Agent, CerebroDatabase, Project, Session } from './db.ts';
 import { normalizeProjectName, type PeerSync } from './peers.ts';
 import { formatQuestions, interpretAnswer } from './questions.ts';
 import type { AgentQuestion } from './questions.ts';
@@ -234,6 +237,57 @@ function parseDmCommand(text: string): DmCommand | null {
   };
 }
 
+export interface CouncilCommand {
+  // null : council hors projet.
+  projectName: string | null;
+  question: string;
+}
+
+// `council: question` ou `projet/council: question` ; le mot-clé prime sur un projet nommé « council ».
+export function parseCouncilCommand(text: string): CouncilCommand | null {
+  const match = text.trim().match(/^(?:([^\s:/+]+(?:[ \-_.][^\s:/+]+)*?)\s*\/\s*)?council\s*:\s*([\s\S]+)$/i);
+  if (match === null) return null;
+  const projectName = match[1]?.trim();
+  const question = match[2]?.trim() ?? '';
+  if (question === '' || projectName === '') return null;
+  return { projectName: projectName ?? null, question };
+}
+
+const COUNCIL_FAILURES: Record<CouncilRun['status'], string> = {
+  running: 'en cours',
+  succeeded: 'sans synthèse',
+  failed: 'en échec',
+  cancelled: 'annulé',
+  interrupted: 'interrompu',
+};
+
+// Réponse du fil Slack : l'essentiel de la synthèse, le détail reste sur la page du run.
+export function councilSlackText(run: CouncilRun, projectName: string | null): string {
+  const link = `<${PUBLIC_URL.replace(/\/+$/, '')}/#/c/${encodeURIComponent(run.id)}|Ouvrir le rapport dans Cerebro>`;
+  const scope = projectName === null ? 'hors projet' : `*${escapeMrkdwn(projectName)}*`;
+  const synthesis = run.synthesis;
+  if (run.status !== 'succeeded' || synthesis === null) {
+    return `:x: Council ${scope} ${COUNCIL_FAILURES[run.status]} : ${escapeMrkdwn(run.error ?? 'aucune synthèse produite.')}\n${link}`;
+  }
+  return [
+    `:busts_in_silhouette: Council ${scope}`,
+    '',
+    '*Recommandation*',
+    slackMarkdown(synthesis.recommendation),
+    '',
+    '*Première action*',
+    slackMarkdown(synthesis.firstAction),
+    '',
+    '*Accords*',
+    slackMarkdown(synthesis.agreements),
+    '',
+    '*Désaccords*',
+    slackMarkdown(synthesis.disagreements),
+    '',
+    link,
+  ].join('\n');
+}
+
 function slackTimestampNow(): string {
   return (Date.now() / 1_000).toFixed(6);
 }
@@ -364,6 +418,8 @@ export class SlackNotifier {
   private dmCursor = slackTimestampNow();
   private stateDirty = false;
   private settings: SlackSettings = loadSettings();
+  // Branché par le serveur ; absent, `council:` répond que le council est indisponible.
+  councils: CouncilRuns | null = null;
 
   constructor(sessions: SessionManager, db: CerebroDatabase, peers: PeerSync) {
     this.sessions = sessions;
@@ -375,10 +431,15 @@ export class SlackNotifier {
     this.operations.onError=cause=>this.logError(cause);
     this.operations.send=async result=>{
       await this.peers.ready;
-      if(this.stopped)return;
-      const project=this.db.getProject(result.projectId);
-      if(!project||!this.peers.owns(project.name))return;
-      const text=`${result.ok?':white_check_mark:':':x:'} *${escapeMrkdwn(project.name)}* — ${result.kind} : ${escapeMrkdwn(result.summary)}\nDurée : ${Math.max(0,Math.round((result.finishedAt-result.startedAt)/1000))} s\n<${PUBLIC_URL.replace(/\/+$/,'')}/#/p/${encodeURIComponent(project.id)}|Ouvrir dans Cerebro>`;
+      if(this.stopped)return false;
+      // Les résultats hors projet restent locaux : leur machine d’origine les notifie.
+      // L’élection du répondeur général ne déduplique que les commandes entrantes.
+      const project=result.projectId===null?null:this.db.getProject(result.projectId);
+      if(result.projectId!==null&&(!project||!this.peers.owns(project.name)))return false;
+      const councilId=result.kind==='council'?result.id.replace(/^council:/,''):null;
+      const link=councilId!==null?`#/c/${encodeURIComponent(councilId)}`:project?`#/p/${encodeURIComponent(project.id)}`:'#/';
+      const text=`${result.ok?':white_check_mark:':':x:'} *${escapeMrkdwn(project?.name??'Hors projet')}* — ${result.kind} : ${escapeMrkdwn(result.summary)}\nDurée : ${Math.max(0,Math.round((result.finishedAt-result.startedAt)/1000))} s\n<${PUBLIC_URL.replace(/\/+$/,'')}/${link}|Ouvrir dans Cerebro>`;
+      let sent=false;
       const send=async():Promise<void>=>{
         // Recheck after peer coordination and any pending send in this session.
         if(this.stopped)return;
@@ -386,8 +447,10 @@ export class SlackNotifier {
         const thread=result.sessionId?this.threads.get(result.sessionId):undefined;
         if(thread)await this.postThreadReply(thread.channel,thread.ts,text);
         else await this.slackApi('chat.postMessage',{channel:await this.openDm(),text,unfurl_links:false});
+        sent=true;
       };
       await this.serial(result.sessionId??`operation:${result.id}`,send);
+      return sent;
     };
     if (!SLACK_ENABLED) {
       this.unsubscribe = null;
@@ -714,43 +777,22 @@ export class SlackNotifier {
       void this.answerDmQuestion(channel, message.ts, question);
       return;
     }
+    const council = parseCouncilCommand(text);
+    if (council !== null) {
+      const project = council.projectName === null ? null : await this.dmProject(channel, message.ts, council.projectName, general);
+      if (council.projectName === null ? !general : project === null) return;
+      // Several minutes of headless calls: thread polling must not wait for them.
+      void this.answerDmCouncil(channel, message.ts, project, council.question);
+      return;
+    }
     const command = parseDmCommand(text);
     if (command === null) {
       if (!general) return;
       await this.postThreadReply(channel, message.ts, this.helpText('Message non reconnu.'));
       return;
     }
-    const projects = this.db.listProjects();
-    const normalizedName = normalizeProjectName(command.projectName);
-    const exact = projects.filter((project) => normalizeProjectName(project.name) === normalizedName);
-    // An exact name on another machine beats a prefix match here; that machine handles it.
-    if (exact.length === 0 && this.peers.knownRemotely(command.projectName, true)) return;
-    const matches = exact.length > 0
-      ? exact
-      : projects.filter((project) => normalizeProjectName(project.name).startsWith(normalizedName));
-    // Handled by the machine that has this project: no "unknown project" reply from this one.
-    if (matches.length === 0 && this.peers.knownRemotely(command.projectName, false)) return;
-    if (matches.length !== 1) {
-      // Unknown everywhere: a single machine says so. An ambiguous prefix is only ambiguous here.
-      if (matches.length === 0 && !general) return;
-      const error = matches.length === 0
-        ? `Projet introuvable : « ${command.projectName} ».`
-        : `Nom de projet ambigu : « ${command.projectName} ».`;
-      await this.postThreadReply(channel, message.ts, this.helpText(error));
-      return;
-    }
-    const project = matches[0];
-    if (project === undefined) return;
-    const conflicts = this.peers.conflictMachines(project);
-    if (conflicts.length > 0) {
-      // Same name, other repository: nothing runs until one project is renamed; a single machine says so.
-      if (this.peers.conflictResponder(project)) {
-        await this.postThreadReply(channel, message.ts, `:no_entry: « ${escapeMrkdwn(project.name)} » existe aussi sur ${escapeMrkdwn(conflicts.join(', '))} avec un autre dépôt git : commande bloquée. Renomme l'un des deux projets.`);
-      }
-      return;
-    }
-    // Another machine has the Slack lead on this shared project.
-    if (!this.peers.owns(project.name)) return;
+    const project = await this.dmProject(channel, message.ts, command.projectName, general);
+    if (project === null) return;
     let session = command.forceNew ? undefined : latestActive(this.db.listProjectSessions(project.id), command.agent);
     const created = session === undefined;
     const queued = session?.status === 'running';
@@ -804,6 +846,64 @@ export class SlackNotifier {
     } catch (error) {
       this.logError(error);
     }
+  }
+
+  /** Project targeted by a DM command; null when this machine does not handle it (any error reply is posted). */
+  private async dmProject(channel: string, threadTs: string, projectName: string, general: boolean): Promise<Project | null> {
+    const projects = this.db.listProjects();
+    const normalizedName = normalizeProjectName(projectName);
+    const exact = projects.filter((project) => normalizeProjectName(project.name) === normalizedName);
+    // An exact name on another machine beats a prefix match here; that machine handles it.
+    if (exact.length === 0 && this.peers.knownRemotely(projectName, true)) return null;
+    const matches = exact.length > 0
+      ? exact
+      : projects.filter((project) => normalizeProjectName(project.name).startsWith(normalizedName));
+    // Handled by the machine that has this project: no "unknown project" reply from this one.
+    if (matches.length === 0 && this.peers.knownRemotely(projectName, false)) return null;
+    if (matches.length !== 1) {
+      // Unknown everywhere: a single machine says so. An ambiguous prefix is only ambiguous here.
+      if (matches.length === 0 && !general) return null;
+      const error = matches.length === 0
+        ? `Projet introuvable : « ${projectName} ».`
+        : `Nom de projet ambigu : « ${projectName} ».`;
+      await this.postThreadReply(channel, threadTs, this.helpText(error));
+      return null;
+    }
+    const project = matches[0];
+    if (project === undefined) return null;
+    const conflicts = this.peers.conflictMachines(project);
+    if (conflicts.length > 0) {
+      // Same name, other repository: nothing runs until one project is renamed; a single machine says so.
+      if (this.peers.conflictResponder(project)) {
+        await this.postThreadReply(channel, threadTs, `:no_entry: « ${escapeMrkdwn(project.name)} » existe aussi sur ${escapeMrkdwn(conflicts.join(', '))} avec un autre dépôt git : commande bloquée. Renomme l'un des deux projets.`);
+      }
+      return null;
+    }
+    // Another machine has the Slack lead on this shared project.
+    return this.peers.owns(project.name) ? project : null;
+  }
+
+  /** `council: question`: headless council run, its synthesis posted in the request thread. */
+  private async answerDmCouncil(channel: string, threadTs: string, project: Project | null, question: string): Promise<void> {
+    await this.slackApi('reactions.add', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' })
+      .catch((error: unknown) => this.logError(error));
+    let text: string;
+    try {
+      if (this.councils === null) throw new Error('council indisponible sur cette machine.');
+      // readProject absent : valeur des réglages effectifs du projet.
+      const run = await this.councils.start({ projectId: project?.id ?? null, origin: 'slack', question }, randomUUID());
+      text = councilSlackText(await this.councils.finished(run.id) ?? run, project?.name ?? null);
+    } catch (error) {
+      this.logError(error);
+      text = `:x: Council impossible : ${escapeMrkdwn(error instanceof Error ? error.message : String(error))}`;
+    }
+    try {
+      for (const chunk of splitMessage(text)) await this.postThreadReply(channel, threadTs, chunk);
+    } catch (error) {
+      this.logError(error);
+    }
+    await this.slackApi('reactions.remove', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' })
+      .catch((error: unknown) => this.logError(error));
   }
 
   /** `? question`: free-form question answered by Claude from Cerebro's state. */
@@ -866,6 +966,8 @@ export class SlackNotifier {
       '`projet+: instruction` — toujours créer une nouvelle session',
       '`projet/agent: instruction` — choisir `claude`, `codex` ou `grok`',
       '`projet/agent+: instruction` — choisir l’agent et créer une nouvelle session',
+      '`council: question` — réunir le council de LLM hors projet (synthèse dans le fil)',
+      '`projet/council: question` — réunir le council sur un projet, avec ses réglages (lecture du dépôt comprise)',
       '`list` — lister les projets et leur session active',
       '`? question` — poser une question sur les projets, sessions et backlogs (ex. `? où en sont les tâches du projet ACME ?`)',
       '',

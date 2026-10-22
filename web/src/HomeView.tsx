@@ -1,6 +1,7 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { Worktrees } from './Worktrees.tsx';
 import { LlmUsageStats } from './LlmUsageStats.tsx';
+import { CouncilLaunch } from './CouncilLaunch.tsx';
 import { useState, type FormEvent } from 'react';
 import { go, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
@@ -84,6 +85,11 @@ export function HomeView() {
       <div className="home-panels">
         <Worktrees />
         <LlmUsageStats sessions={sessions} now={now} />
+        <section className="card home-council" aria-label="Council">
+          <h2>Council</h2>
+          <p className="hint">Soumettez une question à plusieurs conseillers, relus anonymement puis synthétisés.</p>
+          <CouncilLaunch />
+        </section>
       </div>
 
       <section className="session-table-wrap">

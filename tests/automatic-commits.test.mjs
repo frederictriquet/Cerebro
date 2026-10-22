@@ -11,6 +11,7 @@ const {CerebroDatabase}=await import('../server/db.ts');
 const {AutomaticCommits}=await import('../server/automatic-commits.ts');
 const {prepareSessionGit,executeSessionCommit}=await import('../server/session-git.ts');
 const {proposeCommits}=await import('../server/commit-proposal.ts');
+const {runHeadless}=await import('../server/headless.ts');
 const {prepareCommit}=await import('../server/git-plan.ts');
 const {createWorkspace}=await import('../server/provenance.ts');
 const git=(path,...args)=>execFileSync('git',['-C',path,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
@@ -164,6 +165,41 @@ test('headless adapters pass model/effort and parse Claude, Codex and Grok outpu
   }
  }finally{process.env.PATH=previous;}
 });
+
+test('headless read-only access lets each agent read the project and nothing else',async()=>{
+ const bin=mkdtempSync(join(root,'read-only-bin-'));const project=mkdtempSync(join(root,'read-only-project-'));const capture=join(bin,'capture.json');
+ const schema={type:'object',additionalProperties:false,required:['answer'],properties:{answer:{type:'string'}}};
+ const script=`#!/usr/bin/env node\nimport fs from 'node:fs';\nconst args=process.argv.slice(2);const input=fs.readFileSync(0,'utf8');const result=JSON.parse(process.env.FAKE_RESULT);fs.writeFileSync(${JSON.stringify(capture)},JSON.stringify({args,input,cwd:process.cwd(),leaked:Object.keys(process.env).filter(key=>/^(CEREBRO_(SESSION_ID|TOKEN|URL)|CLAUDECODE)$/.test(key))}));if(args[0]==='exec')fs.writeFileSync(args[args.indexOf('--output-last-message')+1],JSON.stringify(result));else if(args.includes('--prompt-file'))console.log(JSON.stringify({structuredOutput:result,stopReason:'end_turn'}));else console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,structured_output:result}));\n`;
+ for(const agent of ['claude','codex','grok'])writeFileSync(join(bin,agent),script,{mode:0o755});
+ const saved={PATH:process.env.PATH,CEREBRO_TOKEN:process.env.CEREBRO_TOKEN,CEREBRO_SESSION_ID:process.env.CEREBRO_SESSION_ID,CLAUDECODE:process.env.CLAUDECODE};
+ Object.assign(process.env,{PATH:`${bin}:${saved.PATH}`,CEREBRO_TOKEN:'secret',CEREBRO_SESSION_ID:'session',CLAUDECODE:'1'});
+ const value=(args,flag)=>args[args.indexOf(flag)+1];
+ try{
+  for(const agent of ['claude','codex','grok']){
+   process.env.FAKE_RESULT=JSON.stringify({answer:'lu'});
+   const run=access=>runHeadless({agent,model:'m',effort:'high',prompt:'Que fait ce dépôt ?',schema,cwd:project,access,timeoutMs:10_000,signal:new AbortController().signal});
+   assert.deepEqual(await run('read-only'),{answer:'lu'});
+   const {args,cwd,leaked}=JSON.parse(readFileSync(capture,'utf8'));
+   assert.equal(cwd,project);assert.deepEqual(leaked,[]);
+   if(agent==='claude'){
+    assert.equal(value(args,'--tools'),'Read,Glob,Grep');assert.equal(value(args,'--permission-mode'),'dontAsk');assert.equal(value(args,'--max-turns'),'30');
+    assert.equal(value(args,'--setting-sources'),'user');assert.equal(JSON.parse(value(args,'--settings')).disableAllHooks,true);
+   } else if(agent==='codex'){
+    assert.equal(value(args,'--sandbox'),'read-only');assert.ok(!args.includes('shell_tool'));assert.equal(sentInput(capture),'Que fait ce dépôt ?');
+   } else {
+    assert.equal(value(args,'--tools'),'Read,Glob,Grep');assert.ok(!args.includes('--deny'));assert.deepEqual(args.filter((_,i)=>args[i-1]==='--allow'),['Read','Glob','Grep']);
+    assert.equal(value(args,'--permission-mode'),'dontAsk');assert.equal(value(args,'--max-turns'),'30');
+   }
+   await run('none');const closed=JSON.parse(readFileSync(capture,'utf8')).args;
+   if(agent==='codex')assert.ok(closed.includes('shell_tool'));else assert.equal(value(closed,'--tools'),'');
+   if(agent==='claude'){assert.equal(value(closed,'--setting-sources'),'user');assert.equal(JSON.parse(value(closed,'--settings')).disableAllHooks,true);}
+   if(agent==='grok')assert.equal(value(closed,'--deny'),'*');
+   process.env.FAKE_RESULT=JSON.stringify({answer:42});
+   await assert.rejects(run('read-only'),/non conforme au schéma \(\$\.answer/);
+  }
+ }finally{for(const [key,previous] of Object.entries(saved)){if(previous===undefined)delete process.env[key];else process.env[key]=previous;}delete process.env.FAKE_RESULT;}
+});
+const sentInput=capture=>JSON.parse(readFileSync(capture,'utf8')).input;
 
 test('Grok structured output and text fallback still require a complete valid proposal',async()=>{
  const bin=mkdtempSync(join(root,'grok-output-'));const previous=process.env.PATH;

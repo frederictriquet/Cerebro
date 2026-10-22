@@ -14,8 +14,12 @@ import { EpicRunner } from './epic-runner.ts';
 import { CommandExecutor } from './commands.ts';
 import { registerWorktreeRoutes } from './worktree-routes.ts';
 import { registerAutomaticCommitRoutes } from './automatic-commit-routes.ts';
+import { registerPersonaRoutes } from './persona-routes.ts';
+import { registerCouncilRoutes } from './council-routes.ts';
+import { CouncilError } from './council-runner.ts';
 import { AGENTS, getAgentAvailability } from './agents.ts';
 import { getCatalog, parseTuning, refreshCatalog, startCatalogRefresh } from './catalog.ts';
+import { validateCouncilSettings } from './council.ts';
 import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
 import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError } from './db.ts';
 import type { Agent, CommitSettings, Epic, Mode, Project, Session, SessionDefaults, Task, TaskExecution, TaskStatus } from './db.ts';
@@ -63,7 +67,8 @@ async function orError<T>(reply: FastifyReply, run: () => Promise<T>): Promise<{
   try {
     return { ok: true, value: await run() };
   } catch (cause) {
-    return { ok: false, reply: error(reply, cause instanceof SessionProtectionError ? 409 : 500, cause instanceof Error ? cause.message : String(cause)) };
+    const status = cause instanceof SessionProtectionError ? 409 : cause instanceof CouncilError ? cause.statusCode : 500;
+    return { ok: false, reply: error(reply, status, cause instanceof Error ? cause.message : String(cause)) };
   }
 }
 
@@ -261,6 +266,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     unsubscribePush();
     vscode.stop();
     await automaticCommits.shutdown();
+    await councils.shutdown();
     await worktrees.shutdown();
     await epicRunner.shutdown();
     await commands.shutdown();
@@ -275,6 +281,16 @@ export async function buildServer(): Promise<FastifyInstance> {
   const worktrees=registerWorktreeRoutes(app,db);
   registerSessionTaskRoutes(app, db, (id, token) => sessions.tokenMatches(id, token));
   const automaticCommits=registerAutomaticCommitRoutes(app,db,worktrees);
+  registerPersonaRoutes(app, db);
+  const councils=registerCouncilRoutes(app,db);
+  sessions.withProjectDeletion=(id,remove)=>councils.withProjectDeletion(id,remove);
+  notifier.councils=councils;
+  councils.onComplete=run=>{
+    const id=`council:${run.id}`;
+    notifier.operations.record({id,projectId:run.projectId,sessionId:null,kind:'council',ok:run.status==='succeeded',summary:run.synthesis?.recommendation??`${run.status} : ${run.error??'aucune synthèse'}`,startedAt:run.startedAt,finishedAt:run.finishedAt??Date.now()});
+    // Slack receives the synthesis in the request thread: no separate notification.
+    if(run.origin==='slack')notifier.operations.seen(id);
+  };
   automaticCommits.onComplete=operation=>{
     if(operation.projectId)notifier.operations.record({id:`auto-commit:${operation.id}`,projectId:operation.projectId,sessionId:operation.sessionId,kind:'commit',ok:operation.status==='succeeded',summary:[...operation.commits.map(commit=>`${commit.hash} ${commit.title}`),operation.error??'',operation.pushOperation?`Push : ${operation.pushOperation.status}`:''].filter(Boolean).join(' ; ')||'Aucun changement à commiter.',startedAt:operation.startedAt,finishedAt:operation.finishedAt??Date.now()});
   };
@@ -363,7 +379,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     const body = bodyRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps de requête invalide');
 
-    const changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'workspaceMode'>> = {};
+    const changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'councilSettings' | 'workspaceMode'>> = {};
     if ('workspaceMode' in body) {
       if (body.workspaceMode !== 'isolated' && body.workspaceMode !== 'shared') return error(reply,400,'Mode de travail invalide');
       changes.workspaceMode=body.workspaceMode;
@@ -400,6 +416,15 @@ export async function buildServer(): Promise<FastifyInstance> {
       const tuning = parseTuning(agent, {...resolved});
       if (!tuning) return error(reply, 400, 'Modèle ou effort invalide pour cet agent');
       changes.commitSettings = {...resolved,...tuning};
+    }
+    if ('councilSettings' in body) {
+      // null : le projet revient aux réglages globaux.
+      if (body.councilSettings === null) changes.councilSettings = null;
+      else {
+        const result = validateCouncilSettings(body.councilSettings, db.listPersonas(), AGENTS);
+        if ('error' in result) return error(reply, 400, result.error);
+        changes.councilSettings = result.settings;
+      }
     }
     const updated = db.updateProject(project.id, changes);
     if (updated === null) return error(reply, 404, 'Projet introuvable');

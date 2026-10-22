@@ -92,6 +92,8 @@ export interface ProjectPatch {
   sessionDefaults?: Partial<LaunchSpec>;
   commitSettings?: Partial<import('./types.ts').CommitSettings>;
   workspaceMode?: import('./types.ts').WorkspaceMode;
+  // null : le projet revient aux réglages globaux du council.
+  councilSettings?: import('./types.ts').CouncilSettings | null;
 }
 
 const StoreContext = createContext<Store | null>(null);

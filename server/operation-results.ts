@@ -1,10 +1,12 @@
 import type { CerebroDatabase } from './db.ts';
-export interface OperationResult {id:string;projectId:string;sessionId:string|null;kind:'push'|'commit'|'command'|'epic';ok:boolean;summary:string;startedAt:number;finishedAt:number;seenAt:number|null;notifiedAt:number|null}
+// projectId null : opération lancée hors projet (council depuis l’accueil ou Slack).
+export interface OperationResult {id:string;projectId:string|null;sessionId:string|null;kind:'push'|'commit'|'command'|'epic'|'council';ok:boolean;summary:string;startedAt:number;finishedAt:number;seenAt:number|null;notifiedAt:number|null}
 export class OperationResults {
   private db:CerebroDatabase;private timers=new Map<string,NodeJS.Timeout>();private sending=new Set<string>();private closed=false;
   delay:()=>number=()=>30_000;
   wanted:(result:OperationResult)=>boolean=()=>false;
-  send:(result:OperationResult)=>Promise<void>=async()=>{};
+  // true uniquement après un envoi effectif ; false laisse le résultat en attente.
+  send:(result:OperationResult)=>Promise<boolean>=async()=>false;
   onError:(cause:unknown)=>void=()=>{};
   constructor(db:CerebroDatabase){this.db=db;}
   list(projectId?:string):OperationResult[]{return (this.db.connection.prepare('SELECT data FROM operation_results ORDER BY rowid DESC').all() as {data:string}[]).map(r=>JSON.parse(r.data)).filter(r=>!projectId||r.projectId===projectId);}
@@ -26,7 +28,7 @@ export class OperationResults {
   async deliver(id:string):Promise<void>{
     const result=this.get(id);if(this.closed||!result||result.seenAt||result.notifiedAt||!this.wanted(result)||this.sending.has(id))return;
     this.sending.add(id);
-    try{await this.send(result);if(this.closed)return;const latest=this.get(id);if(latest&&latest.finishedAt===result.finishedAt){latest.notifiedAt=Date.now();this.save(latest);}}
+    try{const sent=await this.send(result);if(!sent||this.closed)return;const latest=this.get(id);if(latest&&latest.finishedAt===result.finishedAt){latest.notifiedAt=Date.now();this.save(latest);}}
     finally{this.sending.delete(id);}
   }
   close():void{this.closed=true;for(const timer of this.timers.values())clearTimeout(timer);this.timers.clear();}

@@ -191,6 +191,8 @@ export class SessionManager {
   private shuttingDown = false;
   /** The session's process really stopped, or the session was deleted: its isolated copy may now be unused. */
   onSessionReleased: (id: string, workspaceRoot: string | null) => void = () => {};
+  /** Stop project-scoped background work and prevent new starts until removal finishes. */
+  withProjectDeletion: (id: string, remove: () => Promise<void>) => Promise<void> = async (_id, remove) => remove();
 
   constructor(db: CerebroDatabase) {
     this.db = db;
@@ -790,16 +792,18 @@ export class SessionManager {
     }
     projectSessions.forEach((session) => this.deleting.add(session.id));
     try {
-      await Promise.all(projectSessions.map((session) => this.stopProcesses(session.id)));
-      await Promise.all(projectSessions.map(session=>archiveSessionWorktree(this.db,session.id)));
-      const roots = projectSessions.map((session) => workspaceFor(this.db, session.id)?.root ?? null);
-      this.db.deleteProject(projectId);
-      projectSessions.forEach((session, index) => this.onSessionReleased(session.id, roots[index] ?? null));
-      rmSync(join(ATTACHMENTS_DIR, `project-${projectId}`), { recursive: true, force: true });
-      for (const session of projectSessions) {
-        this.cleanupAllArtifacts(session.id);
-        this.emit({ type: 'session-deleted', id: session.id });
-      }
+      await this.withProjectDeletion(projectId, async () => {
+        await Promise.all(projectSessions.map((session) => this.stopProcesses(session.id)));
+        await Promise.all(projectSessions.map(session=>archiveSessionWorktree(this.db,session.id)));
+        const roots = projectSessions.map((session) => workspaceFor(this.db, session.id)?.root ?? null);
+        this.db.deleteProject(projectId);
+        projectSessions.forEach((session, index) => this.onSessionReleased(session.id, roots[index] ?? null));
+        rmSync(join(ATTACHMENTS_DIR, `project-${projectId}`), { recursive: true, force: true });
+        for (const session of projectSessions) {
+          this.cleanupAllArtifacts(session.id);
+          this.emit({ type: 'session-deleted', id: session.id });
+        }
+      });
       return true;
     } finally {
       projectSessions.forEach((session) => this.deleting.delete(session.id));
