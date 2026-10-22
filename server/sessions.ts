@@ -240,16 +240,17 @@ export class SessionManager {
     for (const listener of this.eventListeners) listener(event);
   }
 
-  async create(project: Project, overrides: Partial<SessionDefaults> = {}, validate?: () => Promise<void>, contextPath?: string, title?: string, options: { rememberDefaults?: boolean; epicId?: string | null } = {}): Promise<Session> {
+  async create(project: Project, overrides: Partial<SessionDefaults> = {}, validate?: () => Promise<void>, contextPath?: string, title?: string, options: { rememberDefaults?: boolean; epicId?: string | null; workspace?: WorkspaceContext } = {}): Promise<Session> {
     const create = (): Promise<Session> => this.createInContext(project, overrides, validate, contextPath, title, options);
     return options.epicId ? withEpicWorkspace(this.db, options.epicId, create) : create();
   }
 
-  private async createInContext(project: Project, overrides: Partial<SessionDefaults>, validate: (() => Promise<void>) | undefined, contextPath: string | undefined, title: string | undefined, options: { rememberDefaults?: boolean; epicId?: string | null }): Promise<Session> {
+  private async createInContext(project: Project, overrides: Partial<SessionDefaults>, validate: (() => Promise<void>) | undefined, contextPath: string | undefined, title: string | undefined, options: { rememberDefaults?: boolean; epicId?: string | null; workspace?: WorkspaceContext }): Promise<Session> {
     const current = this.db.getProject(project.id);
     if (current === null) throw new Error('Projet introuvable');
-    const context = options.epicId ? epicWorkspace(this.db, options.epicId) : null;
-    if (context) assertEpicWorkspace(this.db, context);
+    // An explicit workspace (a copy to repair) is joined whatever the project's current preference.
+    const context = options.epicId ? epicWorkspace(this.db, options.epicId) : options.workspace ?? null;
+    if (options.epicId && context) assertEpicWorkspace(this.db, context);
     // Automated launches must not replace the user's form settings with generated instructions.
     const defaults = options.rememberDefaults === false
       ? resolveSessionDefaults(current.sessionDefaults, overrides)

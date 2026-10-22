@@ -28,6 +28,15 @@ export interface CommitSettings {
 }
 export const DEFAULT_COMMIT_SETTINGS: Readonly<CommitSettings> = { agent: 'claude', model: null, effort: null, strategy: 'single' };
 
+/** Session launched to separate the starting content of a copy from the conversation's work, file by file. */
+export interface ResolutionSettings {
+  agent: Agent;
+  mode: Mode;
+  model: string | null;
+  effort: Effort | null;
+}
+export const DEFAULT_RESOLUTION_SETTINGS: Readonly<ResolutionSettings> = { agent: 'claude', mode: 'auto', model: null, effort: null };
+
 export const DEFAULT_SESSION_DEFAULTS: Readonly<SessionDefaults> = {
   agent: 'claude', mode: 'auto', model: null, effort: null, prompt: '',
 };
@@ -52,6 +61,7 @@ export interface Project {
   color: string | null;
   sessionDefaults: SessionDefaults;
   commitSettings: CommitSettings;
+  resolutionSettings: ResolutionSettings;
   workspaceMode: WorkspaceMode;
   createdAt: number;
 }
@@ -128,6 +138,7 @@ interface ProjectRow {
   color: string | null;
   session_defaults: string | null;
   commit_settings: string | null;
+  resolution_settings: string | null;
   workspace_mode: WorkspaceMode;
   created_at: number;
 }
@@ -212,6 +223,7 @@ function projectFromRow(row: ProjectRow): Project {
     id: row.id, name: row.name, path: row.path, color: row.color ?? null, createdAt: row.created_at,
     sessionDefaults: row.session_defaults === null ? { ...DEFAULT_SESSION_DEFAULTS } : JSON.parse(row.session_defaults),
     commitSettings: row.commit_settings ? JSON.parse(row.commit_settings) : { ...DEFAULT_COMMIT_SETTINGS },
+    resolutionSettings: row.resolution_settings ? JSON.parse(row.resolution_settings) : { ...DEFAULT_RESOLUTION_SETTINGS },
     workspaceMode: row.workspace_mode ?? 'isolated',
   };
 }
@@ -409,6 +421,7 @@ export class CerebroDatabase {
           'model', json_extract(session_defaults, '$.model'),
           'effort', json_extract(session_defaults, '$.effort'), 'strategy', 'single');`);
     }
+    if (!commitColumns.some(column => column.name === 'resolution_settings')) this.connection.exec('ALTER TABLE projects ADD COLUMN resolution_settings TEXT');
     this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commits (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
     this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commit_requests (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, scope TEXT NOT NULL, push INTEGER NOT NULL)');
     this.allowAutoMode();
@@ -487,7 +500,7 @@ export class CerebroDatabase {
 
   createProject(name: string, path: string, workspaceMode: WorkspaceMode = 'isolated'): Project {
     const project: Project = {
-      id: randomUUID(), name, path, color: null, sessionDefaults: { ...DEFAULT_SESSION_DEFAULTS }, commitSettings: { ...DEFAULT_COMMIT_SETTINGS }, workspaceMode, createdAt: Date.now(),
+      id: randomUUID(), name, path, color: null, sessionDefaults: { ...DEFAULT_SESSION_DEFAULTS }, commitSettings: { ...DEFAULT_COMMIT_SETTINGS }, resolutionSettings: { ...DEFAULT_RESOLUTION_SETTINGS }, workspaceMode, createdAt: Date.now(),
     };
     this.connection.prepare(`INSERT INTO projects (id, name, path, created_at, workspace_mode, sort_order)
       VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM projects))`)
@@ -495,12 +508,12 @@ export class CerebroDatabase {
     return project;
   }
 
-  updateProject(id: string, changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'workspaceMode'>>): Project | null {
+  updateProject(id: string, changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'resolutionSettings' | 'workspaceMode'>>): Project | null {
     const current = this.getProject(id);
     if (current === null) return null;
     const next = { ...current, ...changes };
-    this.connection.prepare('UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, workspace_mode = ? WHERE id = ?')
-      .run(next.name, next.path, next.color, JSON.stringify(next.sessionDefaults), JSON.stringify(next.commitSettings), next.workspaceMode, id);
+    this.connection.prepare('UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, resolution_settings = ?, workspace_mode = ? WHERE id = ?')
+      .run(next.name, next.path, next.color, JSON.stringify(next.sessionDefaults), JSON.stringify(next.commitSettings), JSON.stringify(next.resolutionSettings), next.workspaceMode, id);
     return next;
   }
 

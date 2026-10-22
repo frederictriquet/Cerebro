@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import fastifyStatic from '@fastify/static';
@@ -15,12 +15,14 @@ import { assertEpicWorkspace, epicWorkspace, epicWorkspaceOptions, rememberEpicW
 import { epicReviewInstructions, epicReviewScope, isReviewTask, reviewTaskText } from './epic-review.ts';
 import { CommandExecutor } from './commands.ts';
 import { registerWorktreeRoutes } from './worktree-routes.ts';
+import { WorktreeError } from './worktrees.ts';
+import { startingResolutionPrompt } from './starting-resolution.ts';
 import { registerAutomaticCommitRoutes } from './automatic-commit-routes.ts';
 import { AGENTS, getAgentAvailability } from './agents.ts';
 import { getCatalog, parseTuning, refreshCatalog, startCatalogRefresh } from './catalog.ts';
 import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
 import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError } from './db.ts';
-import type { Agent, CommitSettings, Epic, Mode, Project, Session, SessionDefaults, Task, TaskExecution, TaskStatus } from './db.ts';
+import type { Agent, CommitSettings, Epic, Mode, Project, ResolutionSettings, Session, SessionDefaults, Task, TaskExecution, TaskStatus } from './db.ts';
 import { prepareCommit, executeCommitPlan } from './git-plan.ts';
 import { currentPush, startPush, onPushComplete } from './git-push.ts';
 import { gitSummary } from './git-summary.ts';
@@ -365,7 +367,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     const body = bodyRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps de requête invalide');
 
-    const changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'workspaceMode'>> = {};
+    const changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'resolutionSettings' | 'workspaceMode'>> = {};
     if ('workspaceMode' in body) {
       if (body.workspaceMode !== 'isolated' && body.workspaceMode !== 'shared') return error(reply,400,'Mode de travail invalide');
       changes.workspaceMode=body.workspaceMode;
@@ -402,6 +404,18 @@ export async function buildServer(): Promise<FastifyInstance> {
       const tuning = parseTuning(agent, {...resolved});
       if (!tuning) return error(reply, 400, 'Modèle ou effort invalide pour cet agent');
       changes.commitSettings = {...resolved,...tuning};
+    }
+    if ('resolutionSettings' in body) {
+      const patch = bodyRecord(body.resolutionSettings);
+      if (!patch || Object.keys(patch).some(key => !['agent','mode','model','effort'].includes(key))
+        || ('agent' in patch && !isAgent(patch.agent))
+        || ('mode' in patch && !isMode(patch.mode))) return error(reply, 400, 'Paramètres de résolution invalides');
+      const previous = project.resolutionSettings;
+      const agent = (patch.agent ?? previous.agent) as Agent;
+      const resolved = { ...previous, ...(agent !== previous.agent ? {model:null,effort:null} : {}), ...patch, agent } as ResolutionSettings;
+      const tuning = parseTuning(agent, {...resolved});
+      if (!tuning) return error(reply, 400, 'Modèle ou effort invalide pour cet agent');
+      changes.resolutionSettings = {...resolved,...tuning};
     }
     const updated = db.updateProject(project.id, changes);
     if (updated === null) return error(reply, 404, 'Projet introuvable');
@@ -903,6 +917,28 @@ export async function buildServer(): Promise<FastifyInstance> {
     const prompt = `${defaults.prompt}\n\n${epicReviewInstructions(epic.title, scope)}`.trim();
     try {
       const session = await sessions.create(project, {...defaults, prompt}, undefined, scope.path, `Review de l’epic « ${epic.title} »`.slice(0, 120), { rememberDefaults: false, epicId: epic.id });
+      return reply.code(201).send(session);
+    } catch (caught) {
+      return error(reply, 500, caught instanceof Error ? caught.message : 'Impossible de lancer la session');
+    }
+  });
+  // Les fichiers que le retrait automatique du contenu de départ laisse à examiner sont confiés à une session, dans la copie.
+  app.post<{ Params: { id: string } }>('/api/worktrees/:id/resolve-starting-content', async (request, reply) => {
+    let resolution;
+    try { resolution = await worktrees.startingContentResolution(request.params.id); }
+    catch (cause) { return error(reply, cause instanceof WorktreeError ? cause.statusCode : 409, cause instanceof Error ? cause.message : String(cause)); }
+    const {view, workspace, plan} = resolution;
+    const project = view.projectId ? db.getProject(view.projectId) : null;
+    if (!project) return error(reply, 409, 'Le projet de cette copie a été retiré : aucune session ne peut y être lancée.');
+    const settings = project.resolutionSettings;
+    const tuning = parseTuning(settings.agent, {...settings});
+    if (!tuning) return error(reply, 400, 'Le modèle ou l’effort de résolution n’est plus proposé par cet agent : modifiez-les dans « Réglages LLM ».');
+    const origin = view.sessionId ? db.getSession(view.sessionId) : null;
+    const conversation = origin ? {title: origin.title, prompt: origin.prompt} : view.sessionTitle ? {title: view.sessionTitle, prompt: ''} : null;
+    const prompt = startingResolutionPrompt(view, workspace, plan, conversation);
+    try {
+      const session = await sessions.create(project, {...settings, ...tuning, prompt}, undefined, view.path,
+        `Contenu de départ · ${conversation?.title ?? basename(view.path)}`.slice(0, 120), { rememberDefaults: false, workspace: {mode: 'isolated', path: view.path} });
       return reply.code(201).send(session);
     } catch (caught) {
       return error(reply, 500, caught instanceof Error ? caught.message : 'Impossible de lancer la session');

@@ -28,6 +28,8 @@ export interface CommitSettings {
   effort: Effort | null;
   strategy: 'single' | 'atomic';
 }
+/** Session that separates the starting content of a copy from the conversation's work. */
+export type ResolutionSettings = Pick<LaunchSpec, 'agent' | 'mode' | 'model' | 'effort'>;
 
 export const STATUSES: readonly Status[] = ['starting', 'running', 'waiting', 'idle', 'exited'];
 
@@ -38,6 +40,7 @@ export interface Project {
   color: string | null;
   sessionDefaults: LaunchSpec;
   commitSettings: CommitSettings;
+  resolutionSettings: ResolutionSettings;
   workspaceMode: WorkspaceMode;
   createdAt: number;
 }
@@ -221,8 +224,16 @@ export function parseProject(v: unknown): Project | null {
     effort: isEffort(commit.effort) ? commit.effort : null,
     strategy: commit.strategy === 'atomic' ? 'atomic' : 'single',
   };
+  // Absent des serveurs antérieurs à la résolution des fichiers par une session.
+  const resolution = isRecord(v.resolutionSettings) ? v.resolutionSettings : {};
+  const resolutionSettings: ResolutionSettings = {
+    agent: isAgent(resolution.agent) ? resolution.agent : 'claude',
+    mode: isMode(resolution.mode) ? resolution.mode : 'auto',
+    model: typeof resolution.model === 'string' ? resolution.model : null,
+    effort: isEffort(resolution.effort) ? resolution.effort : null,
+  };
   const workspaceMode:WorkspaceMode=v.workspaceMode==='shared'?'shared':'isolated';
-  return { id, name, path, color, sessionDefaults, commitSettings, workspaceMode, createdAt };
+  return { id, name, path, color, sessionDefaults, commitSettings, resolutionSettings, workspaceMode, createdAt };
 }
 
 export function parseSession(v: unknown): Session | null {

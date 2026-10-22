@@ -775,6 +775,23 @@ export class WorktreeManager {
     try{return this.publicPlan(view,await this.planStartingContent(view,workspace,temporary));}
     finally{await rm(temporary,{recursive:true,force:true});}
   }
+  /** What a session needs to settle, in the copy, the files the automatic removal leaves for a manual review. */
+  async startingContentResolution(id: string): Promise<{view:WorktreeView;workspace:Workspace;plan:StartingContentPlan}> {
+    if(this.closed)throw new WorktreeError('Serveur en cours d’arrêt.');
+    const view=await this.get(id);
+    if(view.error)throw new WorktreeError(view.error);
+    if(!view.managed||view.primary)throw new WorktreeError('Worktree principal ou géré hors de Cerebro : lecture seule.');
+    if(view.mergeInProgress)throw new WorktreeError('Une opération Git doit être résolue dans ce worktree.');
+    if(view.operation?.status==='running')throw new WorktreeError('Une opération utilise ce worktree.');
+    const busy=this.activity(view.path,false);if(busy.length)throw new WorktreeError(busy.join('\n'));
+    const workspace=this.startingWorkspace(view);
+    const temporary=await mkdtemp(join(tmpdir(),'cerebro-starting-'));
+    try{
+      const plan=this.publicPlan(view,await this.planStartingContent(view,workspace,temporary));
+      if(!plan.steps.some(step=>step.action==='keep'))throw new WorktreeError('Aucun fichier n’est laissé à examiner : « Retirer le contenu de départ » les traite tous.');
+      return {view,workspace,plan};
+    }finally{await rm(temporary,{recursive:true,force:true});}
+  }
   /**
    * Removes the content copied from the project at creation. When the target moved on, the copy first receives
    * its commits (a merge commit), so the changes kept apply to its latest version. Files untouched since the copy
