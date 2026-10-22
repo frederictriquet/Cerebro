@@ -6,6 +6,8 @@ import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { Worktrees } from './Worktrees.tsx';
 import { GitStatus } from './GitStatus.tsx';
 import { CommitSettingsDialog } from './CommitSettingsDialog.tsx';
+import { CouncilLaunch } from './CouncilLaunch.tsx';
+import { Modal } from './Dialog.tsx';
 import { isDormant } from './format.ts';
 import { SessionRow } from './SessionRow.tsx';
 import { NewSessionForm } from './NewSessionForm.tsx';
@@ -108,6 +110,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
   const [editBusy, setEditBusy] = useState(false);
   const [codeOpen, setCodeOpen] = useState(false);
   const [commitSettingsOpen,setCommitSettingsOpen]=useState(false);
+  const [councilOpen, setCouncilOpen] = useState(false);
 
   useEffect(() => {
     setEditing(false);
@@ -240,6 +243,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
         </div>
         <div className="row-actions">
           <button type="button" className="btn" onClick={()=>setCommitSettingsOpen(true)}>Réglages Git</button>
+          <button type="button" className="btn" onClick={() => setCouncilOpen(true)} title="Soumettre une question à un conseil de LLM">Council</button>
           <button type="button" className="btn" onClick={() => setCodeOpen(true)} title="Ouvrir le projet dans VS Code">
             VS Code
           </button>
@@ -258,6 +262,9 @@ export function ProjectView({ projectId }: { projectId: string }) {
         </div>
       </header>
       {commitSettingsOpen?<CommitSettingsDialog project={project} onClose={()=>setCommitSettingsOpen(false)}/>:null}
+      {councilOpen ? <Modal title={`Council · ${project.name}`} onClose={() => setCouncilOpen(false)}>
+        <CouncilLaunch projectId={project.id}/>
+      </Modal> : null}
 
       {error ? <p className="form-error">{error}</p> : null}
 

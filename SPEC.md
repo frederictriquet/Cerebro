@@ -349,3 +349,95 @@ du workspace peuvent fonctionner : tester si possible avec `CEREBRO_DATA_DIR=./.
 - En mode `shared`, une nouvelle session travaille dans le chemin du projet enregistré et sur sa branche courante. Pas de création, checkout ou suppression de branche, de worktree ni de copie des fichiers. Un ancien `contextPath` d'epic ne redirige pas une nouvelle session de ce mode vers un worktree.
 - `Workspace.mode=shared` persiste ce choix par session. Reprise et suppression de conversation conservent le dossier et la branche de travail. Une modification de la préférence du projet ne déplace aucune session existante.
 - Provenance partagée sans attribution individuelle ; les boutons Commit / push et Code review visent explicitement le périmètre du projet. Les anciens worktrees restent visibles même si le projet passe en mode partagé.
+
+## Council
+
+Fichiers : `server/headless.ts` (lanceur headless générique, aussi utilisé par `commit-proposal.ts`), `server/council.ts` (types, validation, prompts, anonymisation, agrégation, export ; fonctions pures), `server/council-runner.ts` (`CouncilRuns` : exécution par phases), `server/council-routes.ts`, `server/persona-routes.ts`, `server/slack.ts` (commandes) ; `web/src/CouncilLaunch.tsx`, `CouncilRunView.tsx`, `CouncilSettingsDialog.tsx`, `PersonasDialog.tsx`, `council.css`. Tests : `tests/council.test.mjs`, `tests/council-api.test.mjs`, `tests/council-slack.test.mjs`.
+
+### Types (`server/council.ts`, miroir dans `web/src/types.ts`)
+
+```ts
+interface Persona { id: string; name: string; description: string; prompt: string; builtin: boolean; createdAt: number; updatedAt: number }
+type PersonaInput = Pick<Persona, 'name' | 'description' | 'prompt'>;
+interface Llm { agent: Agent; model: string | null; effort: Effort | null }   // null : défaut de la CLI
+interface Participant extends Llm { personaId: string }
+interface Advisor extends Participant, PersonaInput {}                       // copie figée dans le run
+interface CouncilSettings {
+  assignments: Record<string, Llm>;   // personaId -> agent/modèle/effort par défaut
+  defaultPersonaIds: string[];        // participants cochés au lancement (2 à 8, sans doublon)
+  chairman: Llm;
+  readProject: boolean;               // valeur par défaut de « lire le projet »
+}
+type CouncilStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
+type CouncilPhase = 'answering' | 'reviewing' | 'synthesizing' | 'finished';
+interface CouncilAnswer { advisorId: string; text: string | null; error: string | null; startedAt: number; finishedAt: number | null }
+interface CouncilReview { advisorId: string; ranking: { letter: string; reason: string }[]; blindSpot: string | null; missed: string | null;
+  error: string | null; startedAt: number; finishedAt: number | null }
+interface CouncilSynthesis { agreements: string; disagreements: string; blindSpots: string; recommendation: string; firstAction: string }
+interface CouncilRun {
+  id: string; projectId: string | null; origin: 'web' | 'slack'; question: string; context: string;
+  readProject: boolean;               // toujours false hors projet
+  settings: CouncilSettings; advisors: Advisor[];   // copies figées au lancement
+  status: CouncilStatus; phase: CouncilPhase;
+  letters: Record<string, string>;    // advisorId (= personaId) -> 'A', 'B'… tirées au hasard par run
+  answers: CouncilAnswer[]; reviews: CouncilReview[]; synthesis: CouncilSynthesis | null;
+  error: string | null; startedAt: number; finishedAt: number | null;
+}
+```
+
+Limites : 2 à 8 conseillers (`MIN_ADVISORS`/`MAX_ADVISORS`), au moins 2 personas au catalogue, nom ≤ 80, description ≤ 300, prompt ≤ 4 000 caractères (valeurs trimées), question ≤ 10 000, contexte ≤ 100 000. `Project.councilSettings: CouncilSettings | null` (null : réglages globaux).
+
+### Persistance (`server/db.ts`)
+
+- `personas (id TEXT PRIMARY KEY, name, description DEFAULT '', prompt, builtin INTEGER DEFAULT 0, created_at, updated_at)`, triée par `created_at, rowid`. Les cinq personas de `DEFAULT_PERSONAS` (`contrarian`, `first-principles`, `expansionist`, `outsider`, `executor`, `builtin=1`) sont insérées une seule fois par base, marqueur `settings.personas_seeded` : une persona fournie supprimée n'est jamais réinsérée.
+- `settings (key TEXT PRIMARY KEY, data TEXT)` : réglages de la machine en JSON ; clé `council` pour les réglages globaux.
+- `projects.council_settings` (TEXT JSON nullable, ajoutée par migration) : surcharge du projet.
+- `council_runs (id TEXT PRIMARY KEY, project_id TEXT, data TEXT)` : `CouncilRun` complet en JSON, réécrit à chaque avancée ; liste triée par `startedAt` décroissant. Supprimer un projet supprime ses runs. L'upsert ignore toute sauvegarde visant un projet disparu, y compris une fin d'appel tardive.
+- Supprimer une persona la retire, dans une transaction, de `assignments` et `defaultPersonaIds` des réglages globaux et de chaque surcharge, en complétant les participants par défaut avec les premières personas du catalogue jusqu'à 2 ; les runs gardent leurs copies.
+- Migration : des réglages au format antérieur `advisors[]` (personas embarquées) sont convertis au démarrage ; chaque texte absent du catalogue y devient une persona non fournie.
+
+### Réglages effectifs
+
+`settingsFor(project)` = `project.councilSettings`, sinon `settings.council`, sinon défauts calculés : toutes les personas (8 au plus) cochées, réparties en tourniquet sur les agents disponibles, chairman `claude` (ou le premier agent disponible si `claude` ne l'est pas), `readProject: true`. Les réglages sont validés contre le catalogue et les agents connus (`AGENTS`, pas seulement disponibles) ; modèle et effort par `parseTuning`.
+
+### Routes
+
+| Méthode | Route | Corps / réponse |
+|---|---|---|
+| GET | /api/personas | `Persona[]` |
+| POST | /api/personas | `{name, description?, prompt}` → 201 `Persona` (`builtin:false`) ; 400 si invalide |
+| PATCH | /api/personas/:id | champs partiels de `PersonaInput` → `Persona` ; 400, 404 |
+| DELETE | /api/personas/:id | 204 ; 404 ; 409 si le catalogue tomberait sous 2 personas |
+| GET | /api/council/settings | réglages globaux effectifs (enregistrés ou calculés) |
+| PUT | /api/council/settings | `CouncilSettings` → réglages validés et enregistrés ; 400 si invalide |
+| GET | /api/council/settings/effective?projectId= | réglages appliqués au lancement : surcharge du projet, sinon globaux ; `projectId` absent ou `none` : globaux ; 404 projet inconnu |
+| PATCH | /api/projects/:id | `{councilSettings: CouncilSettings \| null}` : surcharge validée, `null` revient aux réglages globaux |
+| POST | /api/councils | `{requestId, projectId?, question, context?, readProject?, participants?}` → 202 `CouncilRun` |
+| GET | /api/councils?projectId= | `CouncilRun[]` récents d'abord ; sans `projectId` : tous ; `none` : hors projet |
+| GET | /api/councils/:id | `CouncilRun` ; 404 |
+| POST | /api/councils/:id/cancel | `CouncilRun` ; 404 inconnu, 409 déjà terminé |
+| DELETE | /api/councils/:id | 204 ; 404 ; 409 si en cours |
+| GET | /api/councils/:id/export | `text/markdown`, pièce jointe `council-<8 premiers caractères de l'id>.md` |
+
+`POST /api/councils` : `requestId` (UUID) devient l'id du run et rend le lancement idempotent (même projet et même question : run existant renvoyé ; sinon 409). `participants` : `[{personaId, agent?, model?, effort?}]`, absent = `defaultPersonaIds` des réglages effectifs ; un participant sans agent reprend l'assignation de sa persona, à défaut l'agent du chairman. `readProject` absent = valeur des réglages effectifs ; ignoré (false) hors projet. Erreurs : 400 validation, 404 projet inconnu, 409 serveur en cours d'arrêt.
+
+### Exécution (`CouncilRuns`)
+
+Chaque appel passe par `runHeadless({agent, model, effort, prompt, schema, cwd?, access, timeoutMs, signal})` : sortie JSON structurée (`--json-schema` pour Claude et Grok, `--output-schema` pour Codex) puis revalidée par `validateSchema`. `access:'none'` : aucun outil, `cwd` = dossier temporaire vide supprimé après l'appel. `access:'read-only'` : `cwd` = chemin du projet ; Claude `--tools Read,Glob,Grep --max-turns 30`, Codex `--sandbox read-only` sans `--disable shell_tool`, Grok `--tools Read,Glob,Grep --allow Read --allow Glob --allow Grep --max-turns 30`. Toujours : pas de MCP (Claude `--strict-mcp-config` ; Codex `--ignore-user-config --ignore-rules`, ce qui écarte aussi l'approbation des projets et donc leur `.codex/config.toml`, en ne reprenant du `config.toml` utilisateur que les clés de premier niveau `model`, `model_reasoning_effort`, `openai_base_url`, `cli_auth_credentials_store`, `forced_login_method`, `forced_chatgpt_workspace_id` ; l'authentification reste lue dans `CODEX_HOME`), `dontAsk` (Claude, Grok) ou `approval_policy="never"` (Codex), pas de recherche web, toutes les variables `CEREBRO_*` (dont `CEREBRO_SLACK_*` et `CEREBRO_BIND_TOKEN`) et `CLAUDECODE` retirées avant chaque spawn ; environnement et identifiants d'authentification des CLI conservés. L'environnement du serveur reste intact. Régression par exécutables factices et sentinelles : `tests/headless-env.test.mjs`, pour les trois agents et les deux modes d'accès ; avec les vraies CLI (opt-in `CEREBRO_TEST_CLAUDE=1`, `CEREBRO_TEST_CODEX=1`) : `tests/headless-claude.test.mjs` (hooks) et `tests/headless-codex.test.mjs` (aucun MCP démarré depuis un projet approuvé). Les prompts encadrent question, contexte et réponses citées dans des balises et les déclarent données, jamais instructions.
+
+Les appels Claude, dans les deux modes d'accès, passent `--setting-sources user --settings '{"disableAllHooks":true}'` : réglages projet et locaux exclus (hooks, commandes, variables d'environnement), hooks désactivés, réglages utilisateur conservés pour l'authentification. La liste d'outils seule ne limite pas les commandes des hooks. Vérification avec la vraie CLI et une API locale factice : `CEREBRO_TEST_CLAUDE=1 node --disable-warning=ExperimentalWarning --test tests/headless-claude.test.mjs` (hooks `SessionStart` et `UserPromptSubmit` utilisateur/projet/local, contrôle positif puis appels isolés, authentification utilisateur conservée).
+
+1. `answering` : tous les conseillers en parallèle (`ANSWER_SCHEMA {answer}`, 10 min), `access:'read-only'` si `projectId !== null && readProject`, sinon `none`. Un échec est noté dans `answers[i].error` et toléré. Moins de 2 réponses : `failed`.
+2. `reviewing` : chaque conseiller ayant répondu, en parallèle (`REVIEW_SCHEMA {ranking, blindSpot, missed}`, 5 min, `none`), reçoit les autres réponses dans un ordre mélangé, sous leur lettre. Le classement doit contenir chaque lettre attendue exactement une fois (lettres normalisées en majuscules) ; sinon la relecture est en erreur et ignorée par l'agrégation. Un échec de relecture est toléré, même s'il n'en reste aucune.
+3. `synthesizing` : chairman (`SYNTHESIS_SCHEMA`, 5 champs non vides, 10 min, `none`) avec identités révélées, rangs moyens (`aggregateRanks` : moyenne des positions sur les relectures valides, réponses jamais classées en dernier) et relectures valides. Un échec donne `failed` avec `error` « Synthèse impossible : … », réponses et relectures conservées.
+
+Fin : `phase='finished'`, `finishedAt` renseigné. Annulation (`cancel`) : `cancelled`. Arrêt du serveur (`shutdown`) : appels interrompus, `interrupted`. Au démarrage, un run resté `running` passe `interrupted` (étapes inachevées en erreur) et n'est jamais rejoué. Chaque avancée est persistée ; le client suit le run par sondage de `GET /api/councils/:id`.
+
+Suppression d'un projet : après vérification des protections de session, `SessionManager.withProjectDeletion` est relié à `CouncilRuns.withProjectDeletion`. Les nouveaux councils du projet sont refusés (409), ses councils actifs sont annulés et attendus jusqu'à la fin de leurs appels avant l'arrêt des sessions et l'effacement des données. Le verrou est relâché même si la suppression échoue. Un lancement en attente de ses réglages revérifie le projet et le verrou avant de s'enregistrer ; après suppression il est refusé (404). Les councils hors projet ou d'autres projets continuent.
+
+### Résultats, Slack et interface
+
+- À la fin d'un run : `OperationResult` `{id:'council:<runId>', projectId (null hors projet), sessionId:null, kind:'council', ok: status==='succeeded', summary: recommandation ou « statut : erreur »}`. `OperationResult.projectId` devient nullable : un résultat web hors projet est notifié une seule fois par la machine qui l'exécute et le conserve, avec un lien `#/c/<id>`, même si une autre machine traite les commandes générales. L'élection du répondeur général déduplique seulement les commandes entrantes. `OperationResults.send` confirme l'envoi effectif avant que `deliver` renseigne `notifiedAt` ; un envoi ignoré ou échoué reste en attente. Un run `origin:'slack'` est marqué vu immédiatement : sa réponse arrive dans le fil.
+- Slack : `parseCouncilCommand` reconnaît `council: question` et `projet/council: question` (insensible à la casse, le mot-clé prime sur un projet nommé « council »). Résolution du projet identique à `projet: instruction` (machines partagées, conflits). Run lancé avec les réglages effectifs, sans contexte ; sablier sur le message, puis recommandation, première action, accords, désaccords et lien du rapport dans le fil (`councilSlackText`), ou l'erreur.
+- UI : route `#/c/<id>` (`CouncilRunView`) ; lancement depuis le bouton **Council** de l'en-tête projet (modale) et la carte **Council** de l'accueil (`CouncilLaunch`, réglages, personas, runs précédents). Suites : tâche de backlog préremplie (`POST /api/projects/:id/tasks`), brouillon du formulaire « Nouvelle session » du projet, export Markdown.
+- Les appels headless ne sont pas comptés dans les statistiques d'usage.
