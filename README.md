@@ -318,6 +318,40 @@ prérequis hors epic n'est pas terminé ou si une exécution traite déjà ses t
 Le panneau de suivi permet d'arrêter ou de reprendre l'enchaînement ; une fin de
 tour LLM ne marque jamais une tâche terminée.
 
+**Review du travail d'un epic.** Deux boutons de l'en-tête d'un epic :
+
+- **Review de l'epic**, disponible quand l'exécution est terminée, arrêtée ou en
+  échec (jamais pendant qu'elle tourne) : lance une session de review qui
+  **rejoint le worktree partagé des étapes** et relit tout ce qu'elles ont
+  modifié depuis le commit de base (commits, modifications non commitées et
+  fichiers non suivis). Le prompt contient la base, les commits et la liste des
+  fichiers ; l'agent lit le diff lui-même avec `git diff <base>`, sans rien
+  modifier. En mode « Dossier du projet », le périmètre part du HEAD relevé au
+  lancement de l'epic et peut inclure des changements d'autres conversations.
+  Seule la dernière exécution de l'epic est relue.
+- **Ajouter une étape de review** : ajoute à l'epic une dernière tâche
+  « Code review du travail de l'epic » qui dépend de toutes les autres. Elle
+  s'exécute comme une étape normale, dans le même worktree, et le serveur lui
+  ajoute le périmètre au lancement. Ajoutée pendant une exécution, elle bloque
+  l'epic jusqu'à « Reprendre » (recalcul), comme toute modification de sa
+  composition. Un epic n'en reçoit qu'une à la fois.
+
+Dans les deux cas, l'agent publie ses findings via `cerebro-findings`. Le panneau
+des findings propose par défaut **À la suite de l’epic** : les constats
+sélectionnés deviennent de nouvelles tâches du même epic, qui attendent les
+étapes déjà présentes. Le choix **Nouvel epic** reste disponible avant le
+premier import du rapport.
+
+Après une exécution terminée, **Poursuivre l’epic dans son worktree** traite les
+nouvelles tâches dans la copie et sur la branche existantes, avec le travail
+déjà réalisé. Si l'exécution est encore ouverte, utilisez **Reprendre et
+recalculer** ; les corrections attendent notamment la clôture de l'étape de
+review. Un worktree retiré ou introuvable empêche la poursuite. Un epic commencé
+dans le dossier du projet continue dans ce dossier. Ce choix est conservé même
+si le réglage du projet change ensuite, pour le traitement global, les reviews
+et le bouton **Traiter** de chaque tâche. Le formulaire rappelle le dossier
+d'origine utilisé.
+
 Un epic se crée avant ou après ses tâches, depuis l'interface (« Nouvel epic »,
 puis le sélecteur « Epic » d'une tâche ou du champ d'ajout) ou par l'agent :
 
@@ -550,11 +584,22 @@ explicitement sur le projet entier ; les changements ne sont pas attribués
 individuellement aux conversations.
 
 Le choix est persistant et indépendant des réglages LLM. Il s'applique aux
-nouvelles conversations, y compris celles lancées par le backlog, Slack et les
-étapes d'epic. Une conversation existante conserve toujours son dossier lors
+nouveaux contextes de travail : conversations indépendantes et première étape
+d'un nouvel epic. Dès qu'un epic a commencé, son dossier est conservé pour
+toutes ses étapes et corrections, même lancées individuellement, ainsi que ses
+reviews. Une commande qui commence un epic établit son contexte dans le dossier
+du projet. Une conversation existante conserve aussi son dossier lors
 d'une reprise, même si le réglage du projet a changé depuis. Les copies isolées
 déjà présentes restent accessibles dans l'inventaire. Les anciens projets
 conservent l'isolation à la migration tant que ce choix n'est pas modifié.
+
+Si un ancien epic a utilisé plusieurs dossiers, sa reprise reste bloquée jusqu’au
+choix explicite d’un dossier dans sa fiche. Cerebro présente les branches, les
+fichiers modifiés et les sessions de chaque copie. Le choix conserve ce dossier
+pour les prochaines étapes ; il ne fusionne aucun fichier, ne valide aucune tâche
+et ne relance pas l’epic. Vérifiez les copies, choisissez le dossier, puis utilisez
+« Reprendre et recalculer ». Une étape interrompue dans une autre copie est
+relancée dans le dossier choisi.
 
 ## Provenance des sessions
 
@@ -632,7 +677,23 @@ bandeau **N finding(s) de review disponible(s)** au-dessus du terminal, via
 Chaque finding présente sa gravité, son emplacement, le problème, le scénario
 et le correctif attendu dans une carte distincte.
 
-Sélectionnez les findings et cliquez **Enregistrer la sélection dans un epic**.
+Dans les listes de sessions, un lien orange **N findings de review à traiter**
+ouvre directement ce panneau. Le total figure aussi dans l'en-tête de l'epic,
+même replié, et la review reste dans **À traiter**, y compris après l'arrêt de
+sa session. La simple consultation ne supprime pas ce signal : chaque import
+réduit le compteur et tous les indicateurs de findings disparaissent quand
+tous les rapports de la session sont exploités. Les reviews concernées sont
+exclues de la purge des sessions en sommeil tant qu'il reste des findings.
+La publication d'un nouveau rapport déclenche également une notification de
+bureau selon vos préférences ; un rapport renvoyé à l'identique ne la répète pas.
+
+Sélectionnez les findings, choisissez leur destination, puis cliquez **Ajouter
+la sélection à cet epic** ou **Enregistrer la sélection dans un nouvel epic**.
+Le sélecteur de destination et le bouton d'import sont regroupés au pied du
+rapport, côte à côte sur grand écran et l'un sous l'autre sur petit écran.
+Pour une session liée à un epic, la destination proposée est la suite de cet
+epic ; sinon, un nouvel epic est créé. La destination est conservée après le
+premier import, y compris pour les sélections partielles suivantes.
 Les tâches créées incluent le contexte autonome et la session source ; les
 prérequis doivent aussi être sélectionnés ou déjà importés. Le rapport est limité
 à 100 findings et 1 Mio. Les contenus incomplets/invalides restent dans le flux
