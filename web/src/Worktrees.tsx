@@ -58,7 +58,8 @@ function journey(view: WorktreeView): Journey {
   else if(view.mergeInProgress){status='Conflits à résoudre';next=view.conflicts.length?`Résolvez les conflits dans la copie (${fileCount(view.conflicts.length)}), puis terminez la mise à jour.`:'Les conflits sont résolus : terminez la mise à jour.';}
   else if(dirty&&!view.ahead&&!changes?.count){status='Copie de départ';next='Aucun travail de la conversation : la copie ne contient que le contenu copié du projet.';}
   else if(dirty&&(inherited.length||mixed.some(file=>file.separable))){status='Contenu de départ à retirer';next=`Retirez le contenu copié du projet à la création (${fileCount(inherited.length+mixed.filter(file=>file.separable).length)}), pour ne garder que le travail de la conversation.`;}
-  else if(dirty&&ownWork){status='Travail à enregistrer';next=mixed.length?`Créez le commit du travail de la conversation, puis examinez ${fileCount(mixed.length)} à part.`:'Créez le commit du travail de la conversation.';}
+  else if(dirty&&ownWork){status='Travail à enregistrer';next=mixed.length?`Créez le commit du travail de la conversation, puis commitez tel${mixed.length===1?'':'s'} quel${mixed.length===1?'':'s'} ${fileCount(mixed.length)} après lecture de ${mixed.length===1?'son':'leur'} diff.`:'Créez le commit du travail de la conversation.';}
+  else if(dirty&&mixed.length){status='Fichiers à commiter tels quels';next=`Lisez le diff de ${fileCount(mixed.length)} qui mêlent contenu de départ et travail récent, puis commitez-${mixed.length===1?'le tel quel':'les tels quels'}.`;}
   else if(dirty){status='Changements à examiner';next=`Examinez ${fileCount(view.dirty!)} : leur origine ne peut pas être vérifiée automatiquement.`;}
   else if(view.ahead&&conflicts?.length){status='Conflits prévus';next=`Mettez la copie à jour avec ${target} pour résoudre ${conflicts.length===1?'le conflit':'les conflits'} dans la copie.`;}
   else if(view.ahead&&otherBlockers.length){status='Intégration bloquée';next=otherBlockers[0];}
@@ -252,7 +253,8 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
         const showDetails=expanded.has(view.id);const changes=view.changesSinceCreation;
         const plan=journey(view);const target=branchName(view.targetBranch);
         const commitBlocked=disabled||!!view.error||view.mergeInProgress||view.activeSessions.some(session=>session.status!=='idle');
-        const removable=plan.inherited.length>0||plan.mixed.some(file=>file.separable);
+        const separable=plan.mixed.filter(file=>file.separable);const manual=plan.mixed.filter(file=>!file.separable);
+        const removable=plan.inherited.length>0||separable.length>0;
         const result=results.get(view.id);
         const startDiscard=():void=>setDiscarding(view);
         const integrateTitle=view.mergeBlockers.join('\n')||(view.integrationConflicts?.length?`Conflits prévus : ${view.integrationConflicts.join(', ')}`:`Intégrer dans ${target}`);
@@ -300,29 +302,33 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
               <Step number={1} title="Enregistrer le travail dans la copie" state={plan.save}>
                 {view.mergeInProgress?<p>Une mise à jour avec {target} est en cours : terminez-la ou annulez-la à l’étape 2 avant d’enregistrer d’autres changements.</p>
                 :!view.dirty?<p>Aucun changement non commité : tout le travail de la copie est dans ses commits.</p>:null}
-                {result?<p className="worktree-notice" role="status">
+                {result&&view.dirty?<p className="worktree-notice" role="status">
                   {result.targetUpdate?`Copie mise à jour avec ${branchName(result.targetUpdate.branch)}. `:''}
                   {result.restored.length?`${fileCount(result.restored.length)} remis à l’état de la copie. `:''}
-                  {result.separated.length?`${fileCount(result.separated.length)} ne contiennent plus que le travail fait depuis la création. `:''}
-                  {result.kept.length?`Restent à examiner : ${result.kept.map(step=>step.path).join(', ')}.`:''}
+                  {result.separated.length?`${fileCount(result.separated.length)} ${result.separated.length===1?'ne contient':'ne contiennent'} plus que le travail fait depuis la création. `:''}
+                  {result.kept.length?`Non séparé${result.kept.length===1?'':'s'} : ${result.kept.map(step=>step.path).join(', ')}, à commiter tel${result.kept.length===1?'':'s'} quel${result.kept.length===1?'':'s'} ci-dessous.`:''}
                 </p>:null}
                 {!view.mergeInProgress&&plan.inherited.length?<div className="worktree-group">
                   <p><strong>{fileCount(plan.inherited.length)} sans nouveau travail.</strong> {plan.inherited.length===1?'Ce fichier a':'Ces fichiers ont'} encore le contenu copié du dossier du projet à la création de la copie : ce n’est pas le travail de la conversation.</p>
                   <ul className="worktree-files">{(view.startingContent??[]).filter(file=>file.state==='inherited').map(file=><li key={file.path}><code>{file.path}</code> <span className={file.origin?'meta':'worktree-warning'}>— {originLabel(file.origin,target)}</span></li>)}</ul>
                 </div>:null}
-                {!view.mergeInProgress&&plan.mixed.length?<div className="worktree-group">
-                  <p><strong>{fileCount(plan.mixed.length)} mélangeant contenu de départ et travail récent.</strong> {plan.mixed.length===1?'Il était':'Ils étaient'} déjà modifié{plan.mixed.length===1?'':'s'} dans le dossier du projet à la création de la copie, puis {plan.mixed.length===1?'a été modifié':'ont été modifiés'} dans la copie.</p>
-                  <ul className="worktree-files">{plan.mixed.map(file=><li key={file.path}><code>{file.path}</code> <span className={file.separable?'meta':'worktree-warning'}>— {file.separable?`contenu de départ retrouvé (${originLabel(file.origin,target)}) : séparation automatique possible`:file.origin?'déjà modifié par un commit de la copie : examen manuel':'contenu de départ introuvable : examen manuel'}</span></li>)}</ul>
+                {!view.mergeInProgress&&separable.length?<div className="worktree-group">
+                  <p><strong>{fileCount(separable.length)} mêlant contenu de départ et travail récent, séparable{separable.length===1?'':'s'}.</strong> Le contenu de départ peut en être retiré automatiquement, en gardant le travail fait dans la copie.</p>
+                  <ul className="worktree-files">{separable.map(file=><li key={file.path}><code>{file.path}</code> <span className="meta">— contenu de départ {originLabel(file.origin,target)}</span></li>)}</ul>
                 </div>:null}
                 {!view.mergeInProgress&&removable&&view.dirty?<button type="button" className="btn primary" disabled={commitBlocked} onClick={startDiscard}>Retirer le contenu de départ…</button>:null}
                 {!view.mergeInProgress&&plan.ownWork&&view.dirty?<div className="worktree-group">
                   <p><strong>{fileCount(plan.ownWork)} modifié{plan.ownWork===1?'':'s'} par la conversation.</strong> Le commit automatique ne prend que les fichiers dont l’origine est vérifiable.</p>
                   <button type="button" className="btn" disabled={commitBlocked} onClick={()=>setCommitting(view)}>Créer le commit</button>
                 </div>:null}
-                {!view.mergeInProgress&&view.dirty&&(plan.mixed.length||!changes)?<details className="worktree-group" open={!removable&&!plan.ownWork}><summary>Examiner les diffs et commiter à la main</summary>
-                  <p className="meta">Pour un fichier qui mélange contenu de départ et travail récent, le commit emporte les deux. Si son contenu de départ est déjà dans {target}, les écarts éventuels se règlent à l’étape 2.</p>
+                {!view.mergeInProgress&&view.dirty&&(manual.length||!changes)?<div className="worktree-group">
+                  {manual.length?<>
+                    <p><strong>{fileCount(manual.length)} à commiter tel{manual.length===1?'':'s'} quel{manual.length===1?'':'s'}.</strong> {manual.length===1?'Il mêle':'Ils mêlent'} contenu de départ et travail récent, sans séparation automatique possible :</p>
+                    <ul className="worktree-files">{manual.map(file=><li key={file.path}><code>{file.path}</code> <span className="worktree-warning">— {file.origin?`contenu de départ ${originLabel(file.origin,target)}, mais le travail récent touche les mêmes lignes ou a déjà été commité`:'contenu de départ introuvable'}</span></li>)}</ul>
+                    <p className="meta">Pour terminer cette étape, {manual.length===1?'lisez son diff puis cochez-le : le commit emportera aussi son':'lisez leur diff puis cochez-les : le commit emportera aussi leur'} contenu de départ. S’il diffère de {target}, l’écart apparaîtra comme conflit à l’étape 2 et se résoudra dans la copie. Si un fichier ne doit pas partir ainsi, demandez d’abord à la conversation de le corriger.</p>
+                  </>:<p className="meta">L’origine de ces changements ne peut pas être vérifiée : lisez leur diff puis cochez ceux à commiter.</p>}
                   {showDetails?<WorktreeDiffs view={view} onCommitReviewed={commitBlocked?undefined:value=>{setReviewed(value);setCommitting(view);}}/>:null}
-                </details>:null}
+                </div>:null}
               </Step>
               <Step number={2} title={`Régler les conflits avec ${target}`} state={plan.update}>
                 {view.mergeInProgress?<>

@@ -271,6 +271,7 @@ export class WorktreeManager {
   private plans = new Map<string, { id: string; kind: 'merge' | 'remove'; fingerprint: string; expires: number }>();
   private startingCommits = new Map<string, {commit:string;subject:string} | null>();
   private forecasts = new Map<string, string[] | null>();
+  private separations = new Map<string, boolean>();
   private forecastQueue: Promise<void> = Promise.resolve();
   private forecastQueued = new Set<string>();
   private pending = new Set<Promise<unknown>>();
@@ -439,9 +440,9 @@ export class WorktreeManager {
             const inherited=workspace.baseline[file]===await workspaceFileSignature(join(record.path,file));
             if(!inherited)changed.push(file);
             if((inherited||workspace.initialDirty.includes(file))&&starting.length<100){
-              const origin=await this.startingOrigin(record.path,workspace,view.targetPath,view.targetHead,file);
-              const separable=!inherited&&!!origin&&(!workspace.base||await git(record.path,['diff','--quiet',workspace.base,'HEAD','--',`:(literal)${file}`]).then(()=>true,()=>false));
-              starting.push({path:file,state:inherited?'inherited':'mixed',origin,separable});
+              const found=await this.findStarting(record.path,workspace,view.targetPath,view.targetHead,file).catch(()=>null);
+              const separable=!inherited&&!!found&&await this.separable(record.path,workspace,view.head!,file,found.content).catch(()=>false);
+              starting.push({path:file,state:inherited?'inherited':'mixed',origin:found?.origin??null,separable});
             }
           }
           view.changesSinceCreation={count:changed.length,files:changed.slice(0,100),inheritedCount:files.length-changed.length,needsReviewCount:changed.filter(file=>workspace.initialDirty.includes(file)).length};
@@ -544,8 +545,30 @@ export class WorktreeManager {
     }
     return null;
   }
-  private async startingOrigin(path: string, workspace: Workspace, targetPath: string | null, targetHead: string | null, file: string): Promise<StartingOrigin | null> {
-    return (await this.findStarting(path,workspace,targetPath,targetHead,file).catch(()=>null))?.origin??null;
+  /**
+   * Whether removing the starting content of a mixed file succeeds against the copy's last commit: the file was
+   * not committed in the copy, and its recent changes do not touch the lines of the starting content.
+   */
+  private async separable(path: string, workspace: Workspace, head: string, file: string, starting: () => Promise<Buffer>): Promise<boolean> {
+    const target=join(path,file);
+    const key=[path,file,await workspaceFileSignature(target),workspace.baseline[file],head].join('\0');
+    const cached=this.separations.get(key);
+    if(cached!==undefined)return cached;
+    let result=false;
+    const committed=workspace.base?await git(path,['diff','--quiet',workspace.base,'HEAD','--',`:(literal)${file}`]).then(()=>false,()=>true):false;
+    const last=await gitBytes(path,['cat-file','blob',`${head}:${file}`]).catch(()=>null);
+    const current=await readFile(target).catch(()=>null);
+    if(!committed&&last&&current){
+      const temporary=await mkdtemp(join(tmpdir(),'cerebro-separable-'));
+      try{
+        const base=join(temporary,'base');const other=join(temporary,'head');
+        await writeFile(base,await starting());await writeFile(other,last);
+        result=await git(path,['merge-file','-p',target,base,other]).then(()=>true,()=>false);
+      }finally{await rm(temporary,{recursive:true,force:true});}
+    }
+    if(this.separations.size>=500)this.separations.delete(this.separations.keys().next().value!);
+    this.separations.set(key,result);
+    return result;
   }
   private startingWorkspace(view: WorktreeView): Workspace {
     const row=view.sessionId?this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(view.sessionId) as {data:string}|undefined:undefined;

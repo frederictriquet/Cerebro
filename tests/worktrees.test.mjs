@@ -384,7 +384,7 @@ test('removing the starting content keeps only the work done since the copy, fou
  // The project folder moves on: the copied content now only exists in the snapshot.
  writeFileSync(join(f.repo,'doc'),document({2:'other project edit'}));rmSync(join(f.repo,'extra'));
  let own=await f.view();
- assert.deepEqual(own.startingContent.map(file=>[file.path,file.state,file.origin?.kind]),[['doc','mixed','snapshot'],['extra','inherited','snapshot']]);
+ assert.deepEqual(own.startingContent.map(file=>[file.path,file.state,file.origin?.kind,file.separable]),[['doc','mixed','snapshot',true],['extra','inherited','snapshot',false]]);
  const plan=await f.manager.startingContentPlan(own.id);
  assert.equal(plan.targetUpdate,null);
  assert.deepEqual(plan.steps.map(step=>[step.path,step.action]),[['doc','separate'],['extra','restore']]);
@@ -419,6 +419,8 @@ test('when the target received the starting content, the copy is first updated w
 test('a file whose recent changes overlap the starting content is left for a manual review',async()=>fixture(async f=>{
  writeFileSync(join(f.workspace.root,'doc'),document({2:'conversation over the project edit'}));
  const own=await f.view();
+ // The inventory announces the same outcome as the action, before it is attempted.
+ assert.deepEqual(own.startingContent.map(file=>[file.path,file.origin?.kind,file.separable]),[['doc','target-worktree',false]]);
  const plan=await f.manager.startingContentPlan(own.id);
  assert.equal(plan.steps[0].action,'keep');assert.match(plan.steps[0].reason,/mêmes lignes/);
  await assert.rejects(f.manager.discardInherited(own.id),/Aucun contenu de départ ne peut être retiré automatiquement/);
