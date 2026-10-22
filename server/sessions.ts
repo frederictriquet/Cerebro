@@ -697,7 +697,8 @@ export class SessionManager {
     const session = this.db.getSession(id);
     if (session === null || session.status === 'exited') return null;
     if (session.status === 'running') return session;
-    const updated = this.db.updateSession(id, { status: 'running' });
+    // The previous end-of-turn reason ("Tour terminé", a question…) no longer applies once work resumes.
+    const updated = this.db.updateSession(id, { status: 'running', attention: false, attentionReason: null });
     if (updated !== null) this.emit({ type: 'session', session: updated });
     this.scheduleIdleCheck(id);
     return updated;

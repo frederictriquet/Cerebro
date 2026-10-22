@@ -75,3 +75,6 @@ test('an operation seen during peer coordination is not acknowledged as sent',as
   assert.equal(posted.length,n);assert.ok(notifier.operations.get(id).seenAt);assert.equal(notifier.operations.get(id).notifiedAt,null);
  }finally{ready.resolve();peers.ready=previous;}
 });
+test('a resumed turn drops the previous end-of-turn reason',()=>{
+ session('resumed');manager.setReliableState('resumed','idle','Tour terminé');manager.setRunning('resumed');const s=db.getSession('resumed');assert.equal(s.status,'running');assert.equal(s.attentionReason,null);assert.equal(s.attention,false);
+});
