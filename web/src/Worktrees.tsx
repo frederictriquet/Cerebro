@@ -7,8 +7,9 @@ import { Modal } from './Dialog.tsx';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { href } from './route.ts';
-import { sessionTitle } from './format.ts';
-import type { WorkspaceMode } from './types.ts';
+import { AGENT_LABEL, MODE_CHIP, sessionTitle } from './format.ts';
+import { useStore } from './store.tsx';
+import type { Session, WorkspaceMode } from './types.ts';
 import './worktrees.css';
 
 const branchName = (branch: string | null): string => branch?.replace(/^refs\/heads\//,'') ?? 'branche inconnue';
@@ -106,11 +107,14 @@ function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReview
 
 const ACTION_LABEL: Record<StartingContentStep['action'],string> = {restore:'remis à l’état de la copie',separate:'seul le travail fait depuis la création est gardé',keep:'laissé tel quel, à examiner'};
 interface DiscardResult { restored:string[];separated:string[];kept:StartingContentStep[];targetUpdate:StartingContentPlan['targetUpdate'] }
+type Resolver = Pick<Session,'id'|'title'>;
 /** Preview, then removal of the content copied from the project when the copy was created. */
-function StartingContentDialog({view,onClose,onDone}:{view:WorktreeView;onClose:()=>void;onDone:(result:DiscardResult)=>void}) {
+function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeView;onClose:()=>void;onDone:(result:DiscardResult)=>void;onResolving:(session:Resolver)=>void}) {
   const [machineBase]=useState(apiBase);
+  const {projects}=useStore();
+  const settings=projects.find(project=>project.id===view.projectId)?.resolutionSettings;
   const [plan,setPlan]=useState<StartingContentPlan|null>(null);
-  const [busy,setBusy]=useState<'loading'|'running'|null>('loading');
+  const [busy,setBusy]=useState<'loading'|'running'|'resolving'|null>('loading');
   const [error,setError]=useState<string|null>(null);
   const target=branchName(view.targetBranch);
   useEffect(()=>{
@@ -127,7 +131,15 @@ function StartingContentDialog({view,onClose,onDone}:{view:WorktreeView;onClose:
     catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
     finally{if(apiBase()===machineBase)setBusy(null);}
   };
+  // The files left for a manual review go to a session working in the copy, with the project's LLM settings.
+  const resolve=async():Promise<void>=>{
+    setBusy('resolving');setError(null);
+    try{const session=await api<Session>(`/api/worktrees/${view.id}/resolve-starting-content`,{method:'POST'});if(apiBase()===machineBase)onResolving(session);}
+    catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
+    finally{if(apiBase()===machineBase)setBusy(null);}
+  };
   const actionable=plan?.steps.some(step=>step.action!=='keep');
+  const toReview=plan?.steps.filter(step=>step.action==='keep').length??0;
   return <Modal title="Retirer le contenu de départ" onClose={onClose}>
     <p>{copyTitle(view)}</p>
     <p className="meta">À sa création, la copie a reçu les fichiers alors non commités du dossier du projet. Ce contenu n’est pas le travail de la conversation : le retirer laisse dans la copie uniquement ce qu’elle a changé. Le dossier du projet n’est pas modifié.</p>
@@ -139,11 +151,13 @@ function StartingContentDialog({view,onClose,onDone}:{view:WorktreeView;onClose:
       {step.reason?<div className={step.action==='keep'?'worktree-warning':'meta'}>{step.reason}</div>:null}
       {step.diff?<details><summary>Travail gardé</summary><pre>{step.diff}</pre></details>:null}
     </li>)}</ul>:null}
-    {plan&&!actionable?<p className="worktree-warning">Aucun fichier ne peut être traité automatiquement : examinez-les dans les diffs.</p>:null}
+    {plan&&!actionable?<p className="worktree-warning">Aucun fichier ne peut être traité automatiquement : examinez-les dans les diffs{toReview?', ou confiez-les à l’IA':''}.</p>:null}
+    {toReview?<p className="meta">« Résoudre avec l’IA » lance une session dans la copie pour séparer le contenu de départ du travail de la conversation dans {toReview===1?'le fichier laissé':`les ${toReview} fichiers laissés`} à examiner. Elle ne commite rien : relisez ensuite ses changements, puis retirez le contenu de départ restant.{settings?` Session : ${AGENT_LABEL[settings.agent]} · ${settings.model??'modèle par défaut'} · ${settings.effort??'effort par défaut'} · ${MODE_CHIP[settings.mode]} (« Réglages LLM » du projet).`:''}</p>:null}
     {error?<p className="form-error" role="alert">{error}</p>:null}
     <div className="row-actions">
       <button type="button" className="btn primary" disabled={busy!==null||!actionable} onClick={()=>void run()}><ActivityStatus active={busy==='running'}>{busy==='running'?'Retrait du contenu de départ…':'Retirer le contenu de départ'}</ActivityStatus></button>
-      <button type="button" className="btn" disabled={busy==='running'} onClick={onClose}>Annuler</button>
+      {toReview?<button type="button" className="btn" disabled={busy!==null} onClick={()=>void resolve()}><ActivityStatus active={busy==='resolving'}>{busy==='resolving'?'Lancement de la session…':'Résoudre avec l’IA'}</ActivityStatus></button>:null}
+      <button type="button" className="btn" disabled={busy==='running'||busy==='resolving'} onClick={onClose}>Annuler</button>
     </div>
   </Modal>;
 }
@@ -161,6 +175,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   const [confirmation,setConfirmation]=useState<Confirmation|null>(null);
   const [discarding,setDiscarding]=useState<WorktreeView|null>(null);
   const [results,setResults]=useState<Map<string,DiscardResult>>(()=>new Map());
+  const [resolvers,setResolvers]=useState<Map<string,Resolver>>(()=>new Map());
   const [committing,setCommitting]=useState<WorktreeView|null>(null);
   const [reviewed,setReviewed]=useState<Reviewed|null>(null);
   const [expanded,setExpanded]=useState<Set<string>>(()=>new Set());
@@ -170,7 +185,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   },[path,machineBase]);
   useEffect(()=>{
     const cached=inventoryCache.get(cacheKey(machineBase,path))??null;
-    setInventory(cached);setLoadedBase(cached?machineBase:null);setConfirmation(null);setDiscarding(null);setResults(new Map());setCommitting(null);setReviewed(null);setError(null);setLoadError(null);setBusy(null);setHistoryBusy(new Set());setExpanded(new Set());
+    setInventory(cached);setLoadedBase(cached?machineBase:null);setConfirmation(null);setDiscarding(null);setResults(new Map());setResolvers(new Map());setCommitting(null);setReviewed(null);setError(null);setLoadError(null);setBusy(null);setHistoryBusy(new Set());setExpanded(new Set());
     let disposed=false;let loading=false;let timer:number|undefined;
     const load=async():Promise<void>=>{
       if(disposed||loading)return;
@@ -253,7 +268,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
         const plan=journey(view);const target=branchName(view.targetBranch);
         const commitBlocked=disabled||!!view.error||view.mergeInProgress||view.activeSessions.some(session=>session.status!=='idle');
         const removable=plan.inherited.length>0||plan.mixed.some(file=>file.separable);
-        const result=results.get(view.id);
+        const result=results.get(view.id);const resolver=resolvers.get(view.id);
         const startDiscard=():void=>setDiscarding(view);
         const integrateTitle=view.mergeBlockers.join('\n')||(view.integrationConflicts?.length?`Conflits prévus : ${view.integrationConflicts.join(', ')}`:`Intégrer dans ${target}`);
         // The next action, also offered in the overview so the usual path needs no expansion.
@@ -306,6 +321,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
                   {result.separated.length?`${fileCount(result.separated.length)} ne contiennent plus que le travail fait depuis la création. `:''}
                   {result.kept.length?`Restent à examiner : ${result.kept.map(step=>step.path).join(', ')}.`:''}
                 </p>:null}
+                {resolver?<p className="worktree-notice" role="status">Session de résolution lancée dans la copie : <a href={href(`#/s/${resolver.id}`)}>{sessionTitle(resolver.title)}</a>. Une fois son tour terminé, relisez ses changements dans les diffs, puis retirez le contenu de départ restant.</p>:null}
                 {!view.mergeInProgress&&plan.inherited.length?<div className="worktree-group">
                   <p><strong>{fileCount(plan.inherited.length)} sans nouveau travail.</strong> {plan.inherited.length===1?'Ce fichier a':'Ces fichiers ont'} encore le contenu copié du dossier du projet à la création de la copie : ce n’est pas le travail de la conversation.</p>
                   <ul className="worktree-files">{(view.startingContent??[]).filter(file=>file.state==='inherited').map(file=><li key={file.path}><code>{file.path}</code> <span className={file.origin?'meta':'worktree-warning'}>— {originLabel(file.origin,target)}</span></li>)}</ul>
@@ -410,6 +426,8 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
     </Modal>:null}
     {discarding&&loadedBase===machineBase?<StartingContentDialog view={discarding} onClose={()=>setDiscarding(null)} onDone={result=>{
       setResults(current=>new Map(current).set(discarding.id,result));setDiscarding(null);open(discarding.id);void refresh();
+    }} onResolving={session=>{
+      setResolvers(current=>new Map(current).set(discarding.id,session));setDiscarding(null);open(discarding.id);void refresh();
     }}/>:null}
     {committing&&loadedBase===machineBase?<AutomaticCommitDialog projectId={committing.projectId??''} reviewed={reviewed??undefined} endpoint={committing.primary?undefined:`/api/worktrees/${committing.id}/git`} push={committing.primary} scopeLabel={committing.primary?'Tous les changements du dossier partagé du projet':`Fichiers vérifiables de la copie · ${copyTitle(committing)}`} onClose={()=>{setCommitting(null);setReviewed(null);void refresh();}}/>:null}
   </section>;

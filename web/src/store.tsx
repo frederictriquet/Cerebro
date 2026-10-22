@@ -93,6 +93,7 @@ export interface ProjectPatch {
   color?: string | null;
   sessionDefaults?: Partial<LaunchSpec>;
   commitSettings?: Partial<import('./types.ts').CommitSettings>;
+  resolutionSettings?: Partial<import('./types.ts').ResolutionSettings>;
   workspaceMode?: import('./types.ts').WorkspaceMode;
 }
 

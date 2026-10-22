@@ -531,7 +531,9 @@ Le bouton **Push** permet ensuite de les envoyer. Ce choix vaut pour l'opératio
 indépendants de ceux des sessions et du choix du dossier de travail. La migration
 initialise les réglages de commits avec l'agent, le modèle et l'effort déjà
 enregistrés pour le projet, puis les conserve séparément. Un changement d'agent remet le modèle et l'effort au défaut
-pour ne pas transmettre ceux de l'ancien agent.
+pour ne pas transmettre ceux de l'ancien agent. La même fenêtre règle aussi l'agent,
+le modèle, l'effort et le mode de la session lancée par **Résoudre avec l'IA**
+(par défaut Claude en mode auto).
 
 Le serveur collecte HEAD, les diffs, l'index préexistant et les derniers messages.
 Les fichiers suspects, générés, binaires, contenant un secret reconnu ou dont
@@ -803,7 +805,13 @@ prochaine action est aussi proposée directement sur la ligne de la copie.
    fait : remise à l'état de la copie, ou conservation du seul travail fait depuis la
    création (avec son diff). Si la cible a avancé sans conflit, la copie reçoit
    d'abord ses commits, pour que ce travail s'applique à la version à jour. Les
-   fichiers qui ne peuvent pas être séparés restent à examiner dans les diffs.
+   fichiers qui ne peuvent pas être séparés restent à examiner dans les diffs, ou
+   peuvent être confiés à **Résoudre avec l'IA** : une session, lancée dans la copie
+   avec les réglages de résolution du projet (**Réglages LLM**), reçoit pour chacun
+   où lire son contenu de départ et le constat de Cerebro, et réécrit le fichier pour
+   ne garder que la version de la copie plus le travail de la conversation. Elle ne
+   touche pas aux autres fichiers et ne commite rien : relisez ses changements, puis
+   retirez le contenu de départ restant.
    **Créer le commit** enregistre ensuite le travail de la conversation.
 2. **Régler les conflits avec la cible.** Cerebro prévoit les fichiers que
    l'intégration laisserait en conflit. **Mettre à jour avec master** merge la cible
