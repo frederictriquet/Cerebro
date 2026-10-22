@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { getCouncilSettings, getEffectiveCouncilSettings, listPersonas, putCouncilSettings } from './api.ts';
+import { CouncilAdvisorList } from './CouncilAdvisorList.tsx';
 import { Modal } from './Dialog.tsx';
 import { LlmSelector } from './LlmSelector.tsx';
 import { PersonasDialog } from './PersonasDialog.tsx';
@@ -132,21 +133,7 @@ export function CouncilSettingsDialog({ scope, onClose, onChange }: {
               <button type="button" className="btn" disabled={disabled} onClick={() => setPersonasOpen(true)}>Gérer les personas</button>
             </div>
             <p className="hint">Les personas cochées participent par défaut ; chacune est jouée par l’agent choisi ici, modifiable au lancement.</p>
-            <ul className="council-advisors">
-              {personas.map(persona => {
-                const checked = settings.defaultPersonaIds.includes(persona.id);
-                return <li key={persona.id} className={`council-advisor${checked ? ' checked' : ''}`}>
-                  <label className="council-advisor-head">
-                    <input type="checkbox" checked={checked} disabled={disabled} title="Participe par défaut" aria-label={`${persona.name} participe par défaut`} onChange={event => toggle(persona.id, event.target.checked)}/>
-                    <span className="council-advisor-name">
-                      <strong>{persona.name}</strong>
-                      {persona.description ? <span className="persona-description">{persona.description}</span> : null}
-                    </span>
-                  </label>
-                  <LlmSelector agents={agents} value={assignmentOf(settings, persona.id)} defaults={saved === null ? undefined : assignmentOf(saved, persona.id)} disabled={disabled} onChange={llm => assign(persona.id, llm)}/>
-                </li>;
-              })}
-            </ul>
+            <CouncilAdvisorList personas={personas} checkedIds={settings.defaultPersonaIds} llmOf={id => assignmentOf(settings, id)} defaultsOf={id => saved === null ? undefined : assignmentOf(saved, id)} disabled={disabled} byDefault onToggle={toggle} onAssign={assign}/>
             <p className={countError ? 'form-error' : 'hint'} role={countError ? 'alert' : undefined}>
               {countError ?? `${selected} participant${selected > 1 ? 's' : ''} par défaut.`}
             </p>

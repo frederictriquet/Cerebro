@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import * as jsx from 'react/jsx-runtime';
 import { moduleRunnerTransform, transformWithOxc } from 'vite';
+import * as format from '../web/src/format.ts';
 import * as types from '../web/src/types.ts';
 import { withoutPersona } from '../server/council.ts';
 
@@ -26,7 +27,9 @@ async function compile(name) {
   };
 }
 
-const [loadLaunch, loadSettings] = await Promise.all([compile('CouncilLaunch'), compile('CouncilSettingsDialog')]);
+const [loadLaunch, loadSettings, loadAdvisorList] = await Promise.all([compile('CouncilLaunch'), compile('CouncilSettingsDialog'), compile('CouncilAdvisorList')]);
+// Composants dont le rendu est déplié dans l'arbre, pour inspecter leurs éléments.
+const inlined = new Map();
 const CLAUDE = { agent: 'claude', model: null, effort: null };
 const CODEX = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh' };
 const SONNET = { agent: 'claude', model: 'sonnet', effort: 'low' };
@@ -40,6 +43,7 @@ const defaults = () => ({
 function nodes(tree) {
   if (Array.isArray(tree)) return tree.flatMap(nodes);
   if (tree === null || typeof tree !== 'object' || !tree.props) return [];
+  if (inlined.has(tree.type)) return [tree, ...nodes(inlined.get(tree.type)(tree.props))];
   return [tree, ...nodes(tree.props.children)];
 }
 
@@ -101,6 +105,7 @@ async function fixture(t, projectId, setup = () => {}) {
       if (index === slots.length) slots.push(typeof initial === 'function' ? initial() : initial);
       return [slots[index], next => { slots[index] = typeof next === 'function' ? next(slots[index]) : next; }];
     },
+    useId: () => 'id',
     useEffect(effect, deps) {
       const { slots, effects } = current;
       const index = current.index++;
@@ -129,9 +134,9 @@ async function fixture(t, projectId, setup = () => {}) {
   const modules = {
     react: hooks, 'react/jsx-runtime': jsx, './types.ts': types, './council.css': {},
     './ActivityStatus.tsx': { ActivityStatus() {} },
+    './AgentLabel.tsx': { AgentLogo() {} }, './format.ts': { relativeTime: () => '', AGENT_LABEL: format.AGENT_LABEL },
     './DelayedActionButton.tsx': { DelayedActionButton() {} },
     './LlmSelector.tsx': { LlmSelector }, './PersonasDialog.tsx': { PersonasDialog }, './Dialog.tsx': { Modal },
-    './format.ts': { relativeTime: () => '' },
     './route.ts': { useNow: () => 0, go: target => f.navigations.push(target), href: value => value },
     './store.tsx': { useStore: () => store },
     './api.ts': {
@@ -155,6 +160,14 @@ async function fixture(t, projectId, setup = () => {}) {
       },
     },
   };
+  modules['./CouncilAdvisorList.tsx'] = await loadAdvisorList(modules);
+  const { CouncilAdvisorList } = modules['./CouncilAdvisorList.tsx'];
+  // Rendu hors montage : l'onglet actif est sans incidence, tous les panneaux sont dans l'arbre.
+  inlined.set(CouncilAdvisorList, props => {
+    const outer = current;
+    current = { slots: [], effects: [], index: 0 };
+    try { return CouncilAdvisorList(props); } finally { current = outer; }
+  });
   modules['./CouncilSettingsDialog.tsx'] = await loadSettings(modules);
   const { CouncilLaunch } = await loadLaunch(modules);
   const form = CouncilLaunch({ projectId });
@@ -163,7 +176,7 @@ async function fixture(t, projectId, setup = () => {}) {
   find(f.launch, node => node.type === 'textarea' && node.props.required).props.onChange({ target: { value: 'Quelle priorité ?' } });
   f.launch.render();
   f.selector = (view, id) => {
-    const advisor = find(view, node => node.type === 'li' && node.key === id);
+    const advisor = find(view, node => node.props.role === 'tabpanel' && node.key === id);
     return find({ tree: advisor }, node => node.type === LlmSelector);
   };
   f.choose = (id, value) => { f.selector(f.launch, id).props.onChange(value); f.launch.render(); };
@@ -390,4 +403,22 @@ test('supprimer une persona depuis les réglages rafraîchit aussi le formulaire
   find(dialog, node => node.type === f.PersonasDialog).props.onChange();
   await f.launch.settle();
   assert.deepEqual(f.checked(), ['two', 'three']);
+});
+
+test('les onglets distinguent les conseillers qui ne participent pas', async t => {
+  const f = await fixture(t, undefined);
+  const tab = id => find(f.launch, node => node.props.role === 'tab' && node.key === id);
+  assert.match(tab('two').props.className, /\bchecked\b/);
+  find(f.launch, node => node.props['aria-label'] === 'two participe').props.onChange({ target: { checked: false } });
+  f.launch.render();
+  assert.doesNotMatch(tab('two').props.className, /\bchecked\b/);
+  assert.equal(tab('two').props.title, 'Ne participe pas');
+  assert.equal(tab('one').props.title, 'Joué par claude');
+  f.personas[0].description = 'Cherche la faille.';
+  await f.refreshPersonas();
+  assert.equal(tab('one').props.title, 'Cherche la faille.\nJoué par claude');
+  assert.deepEqual(f.checked(), ['one', 'three']);
+  // Un seul panneau visible : celui du premier onglet tant qu'aucun autre n'est choisi.
+  const panels = nodes(f.launch.tree).filter(node => node.props.role === 'tabpanel');
+  assert.deepEqual(panels.filter(panel => !panel.props.hidden).map(panel => panel.key), ['one']);
 });

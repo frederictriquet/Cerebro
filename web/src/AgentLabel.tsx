@@ -6,14 +6,20 @@ import type { Agent } from './types.ts';
 
 const logos: Record<Agent, string> = { claude, codex, grok };
 
+export function AgentLogo({ agent }: { agent: Agent }) {
+  return (
+    <span
+      className={`agent-logo agent-logo-${agent}`}
+      style={{ maskImage: `url("${logos[agent]}")`, WebkitMaskImage: `url("${logos[agent]}")` }}
+      aria-hidden="true"
+    />
+  );
+}
+
 export function AgentLabel({ agent }: { agent: Agent }) {
   return (
     <span className="agent-label">
-      <span
-        className={`agent-logo agent-logo-${agent}`}
-        style={{ maskImage: `url("${logos[agent]}")`, WebkitMaskImage: `url("${logos[agent]}")` }}
-        aria-hidden="true"
-      />
+      <AgentLogo agent={agent} />
       {AGENT_LABEL[agent]}
     </span>
   );

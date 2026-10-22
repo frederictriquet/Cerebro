@@ -1,13 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { ApiError, deleteCouncil, getCouncil, getEffectiveCouncilSettings, listCouncils, listPersonas, startCouncil, type CouncilStartInput } from './api.ts';
+import { CouncilAdvisorList } from './CouncilAdvisorList.tsx';
 import { assignmentOf, CouncilSettingsDialog } from './CouncilSettingsDialog.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { relativeTime } from './format.ts';
-import { LlmSelector } from './LlmSelector.tsx';
 import { PersonasDialog } from './PersonasDialog.tsx';
 import { go, href, useNow } from './route.ts';
-import { useStore } from './store.tsx';
 import { MAX_ADVISORS, MIN_ADVISORS, type CouncilRun, type CouncilSettings, type CouncilStatus, type Llm, type Persona } from './types.ts';
 import './council.css';
 
@@ -103,7 +102,6 @@ export function CouncilLaunch({ projectId }: { projectId?: string }) {
 }
 
 function CouncilLaunchForm({ projectId }: { projectId?: string }) {
-  const { agents } = useStore();
   const scope = projectId ?? null;
   const draftKey = projectId ?? 'home';
   const now = useNow();
@@ -269,22 +267,7 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
         </div>
         {loadError ? <p className="form-error" role="alert">Chargement impossible : {loadError}</p> : null}
         {!ready && loadError === null ? <ActivityStatus>Chargement…</ActivityStatus> : null}
-        {ready ? <ul className="council-advisors">
-          {personas.map(persona => {
-            const checked = checkedIds.includes(persona.id);
-            const llm = llmOf(persona.id)!;
-            return <li key={persona.id} className={`council-advisor${checked ? ' checked' : ''}`}>
-              <label className="council-advisor-head">
-                <input type="checkbox" checked={checked} disabled={busy} aria-label={`${persona.name} participe`} onChange={event => toggle(persona.id, event.target.checked)}/>
-                <span className="council-advisor-name">
-                  <strong>{persona.name}</strong>
-                  {persona.description ? <span className="persona-description">{persona.description}</span> : null}
-                </span>
-              </label>
-              {checked ? <LlmSelector agents={agents} value={llm} defaults={assignmentOf(settings, persona.id)} disabled={busy} onChange={next => setOverrides({ ...overrides, [persona.id]: next })}/> : null}
-            </li>;
-          })}
-        </ul> : null}
+        {ready ? <CouncilAdvisorList personas={personas} checkedIds={checkedIds} llmOf={id => llmOf(id)!} defaultsOf={id => assignmentOf(settings, id)} disabled={busy} onToggle={toggle} onAssign={(id, llm) => setOverrides({ ...overrides, [id]: llm })}/> : null}
       </section>
 
       {error ? <p className="form-error" role="alert">{error}</p> : null}

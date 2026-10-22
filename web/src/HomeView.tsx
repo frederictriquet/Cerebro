@@ -90,16 +90,15 @@ export function HomeView() {
           <p className="hint">Soumettez une question à plusieurs conseillers, relus anonymement puis synthétisés.</p>
           <CouncilLaunch />
         </section>
+        <section className="session-table-wrap">
+          <h2>Sessions vivantes et reviews à traiter</h2>
+          {live.length === 0 ? (
+            <p className="empty-hint">Aucune session en cours.</p>
+          ) : (
+            <SessionList sessions={live} now={now} showProject onError={setError} />
+          )}
+        </section>
       </div>
-
-      <section className="session-table-wrap">
-        <h2>Sessions vivantes et reviews à traiter</h2>
-        {live.length === 0 ? (
-          <p className="empty-hint">Aucune session en cours.</p>
-        ) : (
-          <SessionList sessions={live} now={now} showProject onError={setError} />
-        )}
-      </section>
     </div>
   );
 }

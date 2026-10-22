@@ -22,12 +22,21 @@
 .council-settings-section { display: grid; gap: .5rem; }
 .council-settings-section h3 { margin: 0; font-size: 14px; }
 .council-settings-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
-.council-advisors { display: grid; gap: .5rem; margin: 0; padding: 0; list-style: none; max-height: 50vh; overflow: auto; }
+.council-advisors { display: grid; gap: .5rem; }
+.council-advisor-tabs { display: flex; flex-wrap: wrap; gap: .35rem; }
+.council-advisor-tab { display: inline-flex; align-items: center; gap: .4rem; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg-2); color: var(--faint); font-size: 12px; line-height: 18px; cursor: pointer; }
+.council-advisor-tab:hover { color: var(--muted); }
+.council-advisor-tab:not(.checked) { border-style: dashed; text-decoration: line-through; }
+.council-advisor-tab.checked { color: var(--text); }
+.council-advisor-tab[aria-selected='true'] { border-color: var(--accent); background: rgba(122, 162, 247, 0.16); color: var(--accent); }
+.council-advisor-tab:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.45); }
+.council-advisor-dot { flex: none; width: 8px; height: 8px; margin: 0 4px; border: 1.5px solid currentColor; border-radius: 50%; }
+.council-advisor-tab .agent-logo { width: 14px; height: 14px; flex-basis: 14px; }
 .council-advisor { display: grid; gap: .5rem; padding: .6rem .75rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); }
-.council-advisor:not(.checked) { opacity: .75; }
+.council-advisor[hidden] { display: none; }
 .council-advisor .tuning-row { margin-bottom: 0; }
-.council-advisor-head, .council-read-project { display: flex; align-items: flex-start; gap: .6rem; cursor: pointer; }
-.council-advisor-head input, .council-read-project input { margin-top: .2rem; }
+.council-advisor-head, .council-read-project { display: flex; flex-direction: row; align-items: flex-start; gap: .6rem; cursor: pointer; }
+.council-advisor-head input, .council-read-project input { width: auto; flex: none; margin-top: .2rem; }
 .council-advisor-name { min-width: 0; display: grid; gap: .15rem; overflow-wrap: anywhere; }
 
 .council-launch, .council-launch-form { display: grid; gap: .9rem; }
