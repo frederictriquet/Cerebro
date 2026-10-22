@@ -1617,8 +1617,35 @@ label.block {
   flex: 1 1 240px;
 }
 
-.project-head .path {
+.project-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  min-width: 0;
+}
+
+.project-title-row .path {
+  margin: 0;
   overflow-wrap: anywhere;
+}
+
+.project-title-row .slack-lead,
+.project-title-row .workspace-mode {
+  margin: 0;
+  align-self: center;
+}
+
+.project-title-row .workspace-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 12px;
+}
+
+.project-title-row .peer-conflict {
+  flex: 0 0 100%;
 }
 
 .project-head > .row-actions {
@@ -1648,16 +1675,6 @@ label.block {
 .project-head-details .btn,
 .project-head-details .git-dirty {
   white-space: nowrap;
-}
-
-.project-head-details .slack-lead {
-  align-items: baseline;
-  gap: 4px 8px;
-}
-
-.project-head-details .slack-lead > .meta {
-  flex: 1 1 240px;
-  overflow-wrap: anywhere;
 }
 
 .project-head.colored {
@@ -2362,7 +2379,7 @@ a.btn:hover {
   background: rgba(226, 92, 106, 0.12);
 }
 
-/* Sélecteur LLM partagé : contrôles segmentés compacts des sessions et réglages Git. */
+/* Sélecteur LLM partagé : contrôles segmentés compacts des sessions et réglages LLM. */
 /* Une ligne par choix : colonne des libellés, puis colonne des contrôles alignés à gauche. */
 .tuning-row {
   display: grid;

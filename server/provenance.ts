@@ -103,7 +103,7 @@ export async function createWorkspace(db: CerebroDatabase, sessionId: string, pr
     const root=await git(registeredProject.path,['rev-parse','--show-toplevel']).catch(()=>registeredProject.path);
     return save(db,{sessionId,projectId:registeredProject.id,projectName:registeredProject.name,projectRoot:root,
       mode:'shared',path:registeredProject.path,root,source:root,base:null,branch:null,initialDirty:[],baseline:{},
-      reason:'Dossier du projet choisi dans les réglages Git : les conversations utilisent la branche courante, sans création de copie ni attribution individuelle des changements.',createdAt:Date.now()});
+      reason:'Dossier du projet choisi dans l’en-tête du projet : les conversations utilisent la branche courante, sans création de copie ni attribution individuelle des changements.',createdAt:Date.now()});
   }
   const common: Workspace = {sessionId,projectId:project.id,projectName:project.name,mode:'unknown',path:project.path,root:project.path,source:project.path,base:null,branch:null,initialDirty:[],baseline:{},reason:'Projet sans historique Git : sélection explicite nécessaire.',createdAt:Date.now()};
   let root: string;

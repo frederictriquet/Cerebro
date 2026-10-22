@@ -1,4 +1,4 @@
-import type { Agent, Mode, Session, Status } from './types.ts';
+import type { Agent, Mode, Session, Status, WorkspaceMode } from './types.ts';
 
 // Statut affiché : une session inactive ou terminée depuis plus d'une heure passe « en sommeil »,
 // signe qu'on n'en aura sans doute plus besoin ; ce sont celles que la purge supprime.
@@ -55,6 +55,12 @@ export const AGENT_LABEL: Record<Agent, string> = {
   claude: 'claude',
   codex: 'codex',
   grok: 'grok',
+};
+
+// Suffixe des boutons de lancement : rappelle où travailleront les nouvelles conversations du projet.
+export const WORKSPACE_TARGET: Record<WorkspaceMode, string> = {
+  isolated: 'dans un worktree',
+  shared: 'dans le dossier du projet',
 };
 
 export function relativeTime(ts: number, now: number): string {

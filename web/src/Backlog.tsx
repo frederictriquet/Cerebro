@@ -5,7 +5,7 @@ import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from '
 import type { CommandRun, ProjectCommand } from '../../server/commands.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { LaunchSessionDialog } from './Dialog.tsx';
-import { STATUS_LABEL, sessionTitle } from './format.ts';
+import { STATUS_LABEL, WORKSPACE_TARGET, sessionTitle } from './format.ts';
 import { href } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
@@ -742,7 +742,8 @@ function EpicBlock({
   onStart: (prompt: string) => void;
   onError: (message: string) => void;
 }) {
-  const { updateEpic, deleteEpic } = useStore();
+  const { projects, updateEpic, deleteEpic } = useStore();
+  const workspaceMode = projects.find((p) => p.id === epic.projectId)?.workspaceMode ?? 'isolated';
   const collapsedKey = `cerebro.epicCollapsed.${epic.id}`;
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -821,7 +822,11 @@ function EpicBlock({
               title={startHint}
               onClick={() => onStart(epicPrompt(epic, open))}
             >
-              {launching ? 'Lancement…' : "Traiter l'epic"}
+              {launching
+                ? 'Lancement…'
+                : open.every((t) => t.execution?.type === 'command')
+                  ? "Traiter l'epic"
+                  : `Traiter l'epic ${WORKSPACE_TARGET[workspaceMode]}`}
             </button>
           )}
           <button type="button" className="btn" onClick={() => setEditing((v) => !v)}>

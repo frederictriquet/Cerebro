@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
 import { acquireProjectSlack, getProjectSlack, type ProjectSlackStatus } from './api.ts';
 import { Backlog } from './Backlog.tsx';
+import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { CodeEditor } from './CodeEditor.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { Worktrees } from './Worktrees.tsx';
@@ -12,6 +13,7 @@ import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { useStore } from './store.tsx';
+import type { Project, WorkspaceMode } from './types.ts';
 
 const PROJECT_COLORS = ['#e5484d', '#f76b15', '#ffc53d', '#46a758', '#12a594', '#0090ff', '#6e56cf', '#d6409f'];
 
@@ -64,23 +66,63 @@ function SlackLead({ projectId }: { projectId: string }) {
     }
   };
 
+  const state = local
+    ? `Cette machine traite les commandes Slack (projet aussi présent sur ${status.peerMachine ?? 'une autre machine'}). On ne rend pas la main : prends-la depuis l'autre machine.`
+    : status.owner === 'remote'
+      ? `Traité par ${status.ownerMachine ?? status.peerMachine ?? 'une autre machine'}. Cocher pour traiter ici les commandes Slack de ce projet.`
+      : 'Attribution en cours… Cocher pour traiter ici les commandes Slack de ce projet.';
   return (
     <div className="slack-lead">
-      <label
-        className="slack-toggle"
-        title={local ? "On ne rend pas la main : prends-la depuis l'autre machine." : 'Traiter ici les commandes Slack de ce projet'}
-      >
-        <input type="checkbox" checked={local} disabled={local || busy} onChange={() => void acquire()} />
+      <label className="slack-toggle" title={state}>
+        <input type="checkbox" checked={local} disabled={local || busy} onChange={() => void acquire()} aria-label={state} />
         Slack
       </label>
-      <span className="meta">
-        {local
-          ? `Cette machine traite les commandes Slack (projet aussi présent sur ${status.peerMachine ?? 'une autre machine'})`
-          : status.owner === 'remote'
-            ? `Traité par ${status.ownerMachine ?? status.peerMachine ?? 'une autre machine'}`
-            : 'Attribution en cours…'}
-      </span>
       {error ? <span className="form-error">{error}</span> : null}
+    </div>
+  );
+}
+
+// Choix du dossier de travail des nouvelles conversations : enregistré dès le clic, comme la case Slack.
+function WorkspaceModeControl({ project }: { project: Project }) {
+  const { updateProject } = useStore();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const change = async (workspaceMode: WorkspaceMode): Promise<void> => {
+    if (workspaceMode === project.workspaceMode) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await updateProject(project.id, { workspaceMode });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Modification impossible');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="workspace-mode" title="Travail des conversations : dossier utilisé par les nouvelles conversations de ce projet">
+      <ChoiceGroup<WorkspaceMode>
+        compact
+        label="Travail des conversations"
+        value={project.workspaceMode}
+        disabled={busy}
+        options={[
+          {
+            value: 'isolated',
+            label: 'Worktree Git par conversation',
+            title: 'Chaque nouvelle conversation utilise un worktree Git : un dossier isolé avec sa propre branche, dont le travail peut ensuite être intégré au projet',
+          },
+          {
+            value: 'shared',
+            label: 'Dossier du projet',
+            title: `Les nouvelles conversations travaillent directement dans ${project.path}, sur sa branche courante, sans création ni suppression de branche`,
+          },
+        ]}
+        onChange={(mode) => void change(mode)}
+      />
+      {error ? <span className="form-error" role="alert">{error}</span> : null}
     </div>
   );
 }
@@ -229,17 +271,19 @@ export function ProjectView({ projectId }: { projectId: string }) {
               </div>
             </form>
           ) : (
-            <>
+            <div className="project-title-row">
               <h1>
                 {project.color ? <span className="project-color-dot" title="Couleur du projet" aria-hidden="true" /> : null}
                 {project.name}
               </h1>
-              <p className="path">{project.path}</p>
-            </>
+              <span className="path">{project.path}</span>
+              <SlackLead key={`slack-${project.id}`} projectId={project.id} />
+              <WorkspaceModeControl key={`workspace-${project.id}`} project={project} />
+            </div>
           )}
         </div>
         <div className="row-actions">
-          <button type="button" className="btn" onClick={()=>setCommitSettingsOpen(true)}>Réglages Git</button>
+          <button type="button" className="btn" onClick={()=>setCommitSettingsOpen(true)}>Réglages LLM</button>
           <button type="button" className="btn" onClick={() => setCodeOpen(true)} title="Ouvrir le projet dans VS Code">
             VS Code
           </button>
@@ -254,7 +298,6 @@ export function ProjectView({ projectId }: { projectId: string }) {
         </div>
         <div className="project-head-details">
           <GitStatus key={project.id} projectId={project.id} />
-          <SlackLead key={`slack-${project.id}`} projectId={project.id} />
         </div>
       </header>
       {commitSettingsOpen?<CommitSettingsDialog project={project} onClose={()=>setCommitSettingsOpen(false)}/>:null}
