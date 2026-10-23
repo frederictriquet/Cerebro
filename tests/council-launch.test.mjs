@@ -199,9 +199,10 @@ async function fixture(t, projectId, setup = () => {}) {
     f.globalSettings = withoutPersona(f.globalSettings, id, f.personas);
     if (f.projectSettings) f.projectSettings = withoutPersona(f.projectSettings, id, f.personas);
   };
+  f.toggle = id => find({ tree: find(f.launch, node => node.props.role === 'tabpanel' && node.key === id) }, node => node.type === 'button' && node.props.className?.startsWith('council-advisor-toggle'));
   f.checked = () => nodes(f.launch.tree)
-    .filter(node => node.type === 'input' && node.props.type === 'checkbox' && node.props['aria-label']?.endsWith(' participe') && node.props.checked)
-    .map(node => node.props['aria-label'].replace(/ participe$/, ''));
+    .filter(node => node.props.role === 'tabpanel' && f.toggle(node.key).props.className.endsWith(' on'))
+    .map(node => node.key);
   f.convoke = async () => {
     submit(f.launch);
     await f.launch.settle();
@@ -387,7 +388,7 @@ for (const projectId of [undefined, 'project']) {
 
 test('une sélection explicite ne suit pas le remplaçant choisi par le serveur', async t => {
   const f = await fixture(t, undefined, fourPersonas);
-  find(f.launch, node => node.type === 'input' && node.props['aria-label'] === 'four participe').props.onChange({ target: { checked: true } });
+  f.toggle('four').props.onClick();
   f.launch.render();
   f.deletePersona('one');
   await f.refreshPersonas();
@@ -409,8 +410,12 @@ test('les onglets distinguent les conseillers qui ne participent pas', async t =
   const f = await fixture(t, undefined);
   const tab = id => find(f.launch, node => node.props.role === 'tab' && node.key === id);
   assert.match(tab('two').props.className, /\bchecked\b/);
-  find(f.launch, node => node.props['aria-label'] === 'two participe').props.onChange({ target: { checked: false } });
+  assert.equal(f.toggle('two').props.children, 'Participe');
+  f.toggle('two').props.onClick();
   f.launch.render();
+  assert.equal(f.toggle('two').props.children, 'Ne participe pas');
+  // La configuration reste visible, désactivée, et réapparaît intacte une fois la persona recochée.
+  assert.equal(f.selector(f.launch, 'two').props.disabled, true);
   assert.doesNotMatch(tab('two').props.className, /\bchecked\b/);
   assert.equal(tab('two').props.title, 'Ne participe pas');
   assert.equal(tab('one').props.title, 'Joué par claude');

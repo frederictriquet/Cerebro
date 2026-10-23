@@ -30,14 +30,23 @@
 .council-advisor-tab.checked { color: var(--text); }
 .council-advisor-tab[aria-selected='true'] { border-color: var(--accent); background: rgba(122, 162, 247, 0.16); color: var(--accent); }
 .council-advisor-tab:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.45); }
-.council-advisor-dot { flex: none; width: 8px; height: 8px; margin: 0 4px; border: 1.5px solid currentColor; border-radius: 50%; }
-.council-advisor-tab .agent-logo { width: 14px; height: 14px; flex-basis: 14px; }
+/* Même boîte que le logo de l'agent, pour qu'un onglet garde sa largeur quand on (dé)coche. */
+.council-advisor-tab .agent-logo, .council-advisor-dot { width: 14px; height: 14px; flex: 0 0 14px; }
+.council-advisor-dot { display: grid; place-items: center; }
+.council-advisor-dot::before { content: ''; box-sizing: border-box; width: 8px; height: 8px; border: 1.5px solid currentColor; border-radius: 50%; }
 .council-advisor { display: grid; gap: .5rem; padding: .6rem .75rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); }
 .council-advisor[hidden] { display: none; }
 .council-advisor .tuning-row { margin-bottom: 0; }
-.council-advisor-head, .council-read-project { display: flex; flex-direction: row; align-items: flex-start; gap: .6rem; cursor: pointer; }
-.council-advisor-head input, .council-read-project input { width: auto; flex: none; margin-top: .2rem; }
-.council-advisor-name { min-width: 0; display: grid; gap: .15rem; overflow-wrap: anywhere; }
+.council-advisor-llm.inactive { opacity: .45; filter: grayscale(1); }
+.council-read-project { display: flex; flex-direction: row; align-items: flex-start; gap: .6rem; cursor: pointer; }
+.council-read-project input { width: auto; flex: none; margin-top: .2rem; }
+.council-advisor-head { display: flex; align-items: flex-start; gap: .75rem; }
+.council-advisor-head .persona-description { flex: 1; min-width: 0; }
+/* Même code couleur que les boutons Son et Notif : vert actif, rouge barré inactif. */
+.council-advisor-toggle { flex: none; margin-left: auto; padding: 2px 10px; border: 1px solid #4a2a32; border-radius: 999px; background: var(--bg); color: var(--danger); font-size: 12px; text-decoration: line-through; white-space: nowrap; cursor: pointer; }
+.council-advisor-toggle.on { border-color: #1f4a37; color: var(--running); text-decoration: none; }
+.council-advisor-toggle:disabled { opacity: .6; cursor: default; }
+.council-advisor-toggle:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.45); }
 
 .council-launch, .council-launch-form { display: grid; gap: .9rem; }
 .council-launch p { margin: 0; }

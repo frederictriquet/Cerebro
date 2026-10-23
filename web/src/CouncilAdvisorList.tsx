@@ -57,14 +57,20 @@ export function CouncilAdvisorList({ personas, checkedIds, llmOf, defaultsOf, di
       const checked = checkedIds.includes(persona.id);
       return <div key={persona.id} role="tabpanel" id={panelId(persona.id)} aria-labelledby={tabId(persona.id)} hidden={persona !== active}
         className={`council-advisor${checked ? ' checked' : ''}`}>
-        <label className="council-advisor-head">
-          <input type="checkbox" checked={checked} disabled={disabled} aria-label={`${persona.name} participe${byDefault ? ' par défaut' : ''}`} onChange={event => onToggle(persona.id, event.target.checked)}/>
-          <span className="council-advisor-name">
-            <strong>{byDefault ? 'Participe par défaut' : 'Participe'}</strong>
-            {persona.description ? <span className="persona-description">{persona.description}</span> : null}
-          </span>
-        </label>
-        {checked || byDefault ? <LlmSelector agents={agents} value={llmOf(persona.id)} defaults={defaultsOf(persona.id)} disabled={disabled} onChange={llm => onAssign(persona.id, llm)}/> : null}
+        <div className="council-advisor-head">
+          {persona.description ? <p className="persona-description">{persona.description}</p> : null}
+          {/* Le libellé porte l'état, comme les boutons Son et Notif de la barre latérale. */}
+          <button type="button" className={`council-advisor-toggle${checked ? ' on' : ''}`} disabled={disabled}
+            title={checked ? `Retirer ${persona.name} ${byDefault ? 'des participants par défaut' : 'du council'}` : `Ajouter ${persona.name} ${byDefault ? 'aux participants par défaut' : 'au council'}`}
+            onClick={() => onToggle(persona.id, !checked)}>
+            {checked ? 'Participe' : 'Ne participe pas'}
+          </button>
+        </div>
+        {/* Au lancement, l'agent d'une persona écartée reste visible mais figé ; dans les réglages
+            il reste modifiable, car il s'applique si la persona est cochée au lancement. */}
+        <div className={`council-advisor-llm${checked || byDefault ? '' : ' inactive'}`}>
+          <LlmSelector agents={agents} value={llmOf(persona.id)} defaults={defaultsOf(persona.id)} disabled={disabled || (!checked && !byDefault)} onChange={llm => onAssign(persona.id, llm)}/>
+        </div>
       </div>;
     })}
   </div>;
