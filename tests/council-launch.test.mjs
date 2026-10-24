@@ -27,7 +27,7 @@ async function compile(name) {
   };
 }
 
-const [loadLaunch, loadSettings, loadAdvisorList] = await Promise.all([compile('CouncilLaunch'), compile('CouncilSettingsDialog'), compile('CouncilAdvisorList')]);
+const [loadLaunch, loadSettings, loadAdvisorList, loadAttachments] = await Promise.all([compile('CouncilLaunch'), compile('CouncilSettingsDialog'), compile('CouncilAdvisorList'), compile('attachments')]);
 // Composants dont le rendu est déplié dans l'arbre, pour inspecter leurs éléments.
 const inlined = new Map();
 const CLAUDE = { agent: 'claude', model: null, effort: null };
@@ -106,6 +106,12 @@ async function fixture(t, projectId, setup = () => {}) {
       return [slots[index], next => { slots[index] = typeof next === 'function' ? next(slots[index]) : next; }];
     },
     useId: () => 'id',
+    useRef(initial) {
+      const { slots } = current;
+      const index = current.index++;
+      if (index === slots.length) slots.push({ current: initial });
+      return slots[index];
+    },
     useEffect(effect, deps) {
       const { slots, effects } = current;
       const index = current.index++;
@@ -139,7 +145,10 @@ async function fixture(t, projectId, setup = () => {}) {
     './LlmSelector.tsx': { LlmSelector }, './PersonasDialog.tsx': { PersonasDialog }, './Dialog.tsx': { Modal },
     './route.ts': { useNow: () => 0, go: target => f.navigations.push(target), href: value => value },
     './store.tsx': { useStore: () => store },
+    './drafts.ts': {},
     './api.ts': {
+      clipboardImage: () => null,
+      async uploadCouncilImage() { throw new Error('aucun envoi d’image attendu'); },
       async listPersonas() { return structuredClone(f.personas); },
       async getCouncilSettings() { f.settingsReads++; return structuredClone(f.globalSettings); },
       async getEffectiveCouncilSettings() { f.settingsReads++; return structuredClone(effective()); },
@@ -160,6 +169,7 @@ async function fixture(t, projectId, setup = () => {}) {
       },
     },
   };
+  modules['./attachments.tsx'] = await loadAttachments(modules);
   modules['./CouncilAdvisorList.tsx'] = await loadAdvisorList(modules);
   const { CouncilAdvisorList } = modules['./CouncilAdvisorList.tsx'];
   // Rendu hors montage : l'onglet actif est sans incidence, tous les panneaux sont dans l'arbre.

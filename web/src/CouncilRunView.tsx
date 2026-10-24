@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { api, ApiError, apiBase, cancelCouncil, councilExportUrl, getCouncil } from './api.ts';
-import { readDraft, writeDraft } from './drafts.ts';
+import { api, ApiError, apiBase, cancelCouncil, councilExportUrl, councilImageUrl, getCouncil } from './api.ts';
+import { readDraft, writeDraft, type DraftImage } from './drafts.ts';
 import { Markdown } from './Markdown.tsx';
 import { go, href } from './route.ts';
 import { useStore } from './store.tsx';
@@ -149,6 +149,21 @@ function sessionPrompt(run: CouncilRun, synthesis: CouncilSynthesis): string {
 }
 
 // Projet cible des suites : celui du council, sinon un projet à choisir.
+// Les images du council rejoignent le brouillon de session sous de nouveaux numéros, après celles
+// qu'il contient déjà ; les jetons du prompt sont renumérotés en conséquence.
+function withCouncilImages(prompt: string, previous: DraftImage[], run: CouncilRun): { prompt: string; images: DraftImage[] } {
+  let next = previous.reduce((max, image) => Math.max(max, image.n), 0);
+  const images = [...previous];
+  let text = prompt;
+  for (const image of [...run.images].sort((a, b) => a.n - b.n)) {
+    next += 1;
+    const token = `[Image #${next}]`;
+    text = text.split(`[Image #${image.n}]`).join(`\u0000${next}\u0000`);
+    images.push({ n: next, token, path: image.path });
+  }
+  return { prompt: text.replace(/\u0000(\d+)\u0000/g, '[Image #$1]'), images };
+}
+
 function ProjectPicker({ run, value, onChange }: { run: CouncilRun; value: string; onChange: (id: string) => void }) {
   const { projects } = useStore();
   const own = run.projectId === null ? undefined : projects.find((project) => project.id === run.projectId);
@@ -236,7 +251,7 @@ function SessionFollowUp({ run, synthesis, onClose }: { run: CouncilRun; synthes
   };
 
   return <form className="council-follow-up" onSubmit={open}>
-    <p className="meta">La synthèse devient le prompt de la prochaine session du projet ; vous pourrez le modifier et choisir l’agent avant de lancer.</p>
+    <p className="meta">La synthèse devient le prompt de la prochaine session du projet{run.images.length > 0 ? ', avec les images jointes' : ''} ; vous pourrez le modifier et choisir l’agent avant de lancer.</p>
     <ProjectPicker run={run} value={projectId} onChange={setProjectId}/>
     {error ? <p className="form-error" role="alert">{error}</p> : null}
     <div className="council-follow-up-foot">
@@ -495,6 +510,14 @@ export function CouncilRunView({ councilId }: { councilId: string }) {
         <summary>Contexte fourni</summary>
         <Markdown text={run.context}/>
       </details> : null}
+      {run.images.length > 0 ? <ul className="council-images" aria-label="Images jointes">
+        {[...run.images].sort((a, b) => a.n - b.n).map((image) => <li key={image.n}>
+          <a href={councilImageUrl(run.id, image.n)} target="_blank" rel="noreferrer" title={`Ouvrir [Image #${image.n}]`}>
+            <img src={councilImageUrl(run.id, image.n)} alt={`[Image #${image.n}]`} loading="lazy"/>
+            <span>#{image.n}</span>
+          </a>
+        </li>)}
+      </ul> : null}
     </section>
     {error ? <p className="form-error" role="alert">{error}</p> : null}
     {running ? <Progress run={run} now={now} cancelling={cancelling} onCancel={() => void cancel()}/> : <>

@@ -25,7 +25,7 @@ import { AGENTS, getAgentAvailability } from './agents.ts';
 import { getCatalog, parseTuning, refreshCatalog, startCatalogRefresh } from './catalog.ts';
 import { validateCouncilSettings } from './council.ts';
 import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
-import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError } from './db.ts';
+import { CerebroDatabase, normalizeMode, resolveSessionDefaults, SessionProtectionError } from './db.ts';
 import type { Agent, CommitSettings, Epic, Mode, Project, ResolutionSettings, Session, SessionDefaults, Task, TaskExecution, TaskStatus } from './db.ts';
 import { prepareCommit, executeCommitPlan } from './git-plan.ts';
 import { currentPush, startPush, onPushComplete } from './git-push.ts';
@@ -440,7 +440,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       const resolved = { ...previous, ...(agent !== previous.agent ? {model:null,effort:null} : {}), ...patch, agent } as ResolutionSettings;
       const tuning = parseTuning(agent, {...resolved});
       if (!tuning) return error(reply, 400, 'Modèle ou effort invalide pour cet agent');
-      changes.resolutionSettings = {...resolved,...tuning};
+      changes.resolutionSettings = {...resolved, mode: normalizeMode(resolved.mode), ...tuning};
     }
     const updated = db.updateProject(project.id, changes);
     if (updated === null) return error(reply, 404, 'Projet introuvable');
@@ -665,7 +665,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     return session === null ? error(reply, 404, 'Session introuvable') : reply.send(session);
   });
 
-  // Les champs omis héritent des derniers choix du projet ; null rétablit le défaut de la CLI.
+  // Omitted fields inherit the project's last choices; null resets to the Cerebro default (parseTuning).
   const launchSession = async (
     reply: FastifyReply,
     project: Project,
@@ -955,7 +955,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     const {view, workspace, plan} = resolution;
     const project = view.projectId ? db.getProject(view.projectId) : null;
     if (!project) return error(reply, 409, 'Le projet de cette copie a été retiré : aucune session ne peut y être lancée.');
-    const settings = project.resolutionSettings;
+    const settings = {...project.resolutionSettings, mode: normalizeMode(project.resolutionSettings.mode)};
     const tuning = parseTuning(settings.agent, {...settings});
     if (!tuning) return error(reply, 400, 'Le modèle ou l’effort de résolution n’est plus proposé par cet agent : modifiez-les dans « Réglages LLM ».');
     const origin = view.sessionId ? db.getSession(view.sessionId) : null;
@@ -1060,6 +1060,9 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (project === null) return error(reply, 404, 'Projet introuvable');
     return saveImage(`project-${project.id}`, request, reply);
   });
+
+  // Images pasted into a council launched outside any project (a project council uses the project route).
+  app.post('/api/council/attachments', async (request, reply) => saveImage('council', request, reply));
 
   app.get<{ Params: { id: string } }>('/api/sessions/:id/screen', async (request, reply) => {
     if (sessions.db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');

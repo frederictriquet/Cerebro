@@ -5,6 +5,7 @@ import {
   parsePersona,
   parsePersonaList,
   type Agent,
+  type CouncilImage,
   type CouncilRun,
   type CouncilSettings,
   type Participant,
@@ -145,6 +146,11 @@ export async function uploadImage(sessionId: string, image: Blob): Promise<strin
 // Variante pour le prompt d'une nouvelle session : la session n'existe pas encore.
 export async function uploadProjectImage(projectId: string, image: Blob): Promise<string> {
   return postImage(`/api/projects/${projectId}/attachments`, image);
+}
+
+// Image collée dans un council : dossier du projet, ou dossier commun des councils hors projet.
+export async function uploadCouncilImage(projectId: string | null, image: Blob): Promise<string> {
+  return projectId === null ? postImage('/api/council/attachments', image) : uploadProjectImage(projectId, image);
 }
 
 export interface SlackSettings {
@@ -341,6 +347,8 @@ export interface CouncilStartInput {
   readProject?: boolean;
   // Absent : participants par défaut des réglages effectifs.
   participants?: Participant[];
+  // Images jointes, désignées par « [Image #n] » dans la question ou le contexte.
+  images?: CouncilImage[];
 }
 
 export async function startCouncil(input: CouncilStartInput): Promise<CouncilRun> {
@@ -363,6 +371,10 @@ export async function cancelCouncil(id: string): Promise<CouncilRun> {
 
 export function deleteCouncil(id: string): Promise<void> {
   return api<void>(`/api/councils/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function councilImageUrl(id: string, n: number): string {
+  return `${base}/api/councils/${encodeURIComponent(id)}/images/${n}`;
 }
 
 export function councilExportUrl(id: string): string {

@@ -1,9 +1,11 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { ApiError, deleteCouncil, getCouncil, getEffectiveCouncilSettings, listCouncils, listPersonas, startCouncil, type CouncilStartInput } from './api.ts';
+import { ApiError, clipboardImage, deleteCouncil, getCouncil, getEffectiveCouncilSettings, listCouncils, listPersonas, startCouncil, uploadCouncilImage, type CouncilStartInput } from './api.ts';
+import { AttachmentStrip, insertToken, removeToken, restoredAttachment, useImageAttachments } from './attachments.tsx';
 import { CouncilAdvisorList } from './CouncilAdvisorList.tsx';
 import { assignmentOf, CouncilSettingsDialog } from './CouncilSettingsDialog.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
+import type { DraftImage } from './drafts.ts';
 import { relativeTime } from './format.ts';
 import { PersonasDialog } from './PersonasDialog.tsx';
 import { go, href, useNow } from './route.ts';
@@ -11,15 +13,22 @@ import { MAX_ADVISORS, MIN_ADVISORS, type CouncilRun, type CouncilSettings, type
 import './council.css';
 
 // Brouillon d'un council non lancé, par périmètre (projet ou accueil), comme les brouillons de prompt.
+// Les images déjà envoyées au serveur sont conservées avec leur jeton « [Image #n] ».
 interface CouncilDraft {
   question: string;
   context: string;
   // null : participants par défaut des réglages effectifs.
   personaIds: string[] | null;
+  images: DraftImage[];
 }
 
 const DRAFT_PREFIX = 'cerebro.council-draft.';
-const EMPTY_DRAFT: CouncilDraft = { question: '', context: '', personaIds: null };
+const EMPTY_DRAFT: CouncilDraft = { question: '', context: '', personaIds: null, images: [] };
+
+function isDraftImage(value: unknown): value is DraftImage {
+  return typeof value === 'object' && value !== null
+    && typeof (value as DraftImage).n === 'number' && typeof (value as DraftImage).token === 'string' && typeof (value as DraftImage).path === 'string';
+}
 
 function readCouncilDraft(key: string): CouncilDraft {
   try {
@@ -30,6 +39,7 @@ function readCouncilDraft(key: string): CouncilDraft {
       question: typeof draft.question === 'string' ? draft.question : '',
       context: typeof draft.context === 'string' ? draft.context : '',
       personaIds: Array.isArray(draft.personaIds) ? draft.personaIds.filter((id): id is string => typeof id === 'string') : null,
+      images: Array.isArray(draft.images) ? draft.images.filter(isDraftImage) : [],
     };
   } catch (err) {
     console.warn('Brouillon de council illisible', key, err);
@@ -39,12 +49,15 @@ function readCouncilDraft(key: string): CouncilDraft {
 
 function writeCouncilDraft(key: string, draft: CouncilDraft): void {
   try {
-    if (draft.question.trim() === '' && draft.context.trim() === '' && draft.personaIds === null) localStorage.removeItem(DRAFT_PREFIX + key);
+    if (draft.question.trim() === '' && draft.context.trim() === '' && draft.personaIds === null && draft.images.length === 0) localStorage.removeItem(DRAFT_PREFIX + key);
     else localStorage.setItem(DRAFT_PREFIX + key, JSON.stringify(draft));
   } catch (err) {
     console.warn('Brouillon de council non enregistré', key, err);
   }
 }
+
+// Les images sont attachées au message de chaque appel : conseillers et chairman doivent les accepter.
+const IMAGE_AGENTS: readonly string[] = ['claude', 'codex'];
 
 const STATUS_LABELS: Record<CouncilStatus, string> = {
   running: 'en cours',
@@ -119,6 +132,13 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
   const [pending, setPending] = useState<PendingLaunch | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [personasOpen, setPersonasOpen] = useState(false);
+  const questionRef = useRef<HTMLTextAreaElement>(null);
+  const contextRef = useRef<HTMLTextAreaElement>(null);
+  // Une seule numérotation pour la question et le contexte.
+  const images = useImageAttachments(
+    (image) => uploadCouncilImage(scope, image),
+    draft.images.map((image) => restoredAttachment(image.n, image.token, image.path)),
+  );
 
   const loadPersonas = async (): Promise<void> => {
     try {
@@ -163,7 +183,8 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
     void loadSettings();
     void loadRuns();
   }, []);
-  useEffect(() => writeCouncilDraft(draftKey, draft), [draft]);
+  const uploadedImages = images.items.flatMap((item) => (item.path === null ? [] : [{ n: item.n, token: item.token, path: item.path }]));
+  useEffect(() => writeCouncilDraft(draftKey, { ...draft, images: uploadedImages }), [draft, images.items]);
   // Suit l'avancement des councils en cours, sans événement temps réel.
   const running = runs?.some(run => run.status === 'running') ?? false;
   useEffect(() => {
@@ -183,11 +204,52 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
     ? `Cochez au moins ${MIN_ADVISORS} conseillers.`
     : count > MAX_ADVISORS ? `Un council compte au plus ${MAX_ADVISORS} conseillers.` : null;
   const ready = personas !== null && settings !== null;
-  const canLaunch = ready && !busy && countError === null && draft.question.trim() !== '';
+  // Avec des images, chaque agent sollicité doit savoir les recevoir.
+  const unableNames = images.items.length === 0 || !ready ? [] : [
+    ...personas.filter(persona => checkedIds.includes(persona.id) && !IMAGE_AGENTS.includes(llmOf(persona.id)!.agent)).map(persona => `${persona.name} (${llmOf(persona.id)!.agent})`),
+    ...IMAGE_AGENTS.includes(settings.chairman.agent) ? [] : [`chairman (${settings.chairman.agent})`],
+  ];
+  const imageError = unableNames.length === 0 ? null : `Images jointes : ${unableNames.join(', ')} ne ${unableNames.length > 1 ? 'prennent' : 'prend'} pas en charge les images. Choisissez claude ou codex.`;
+  const canLaunch = ready && !busy && !images.pending && countError === null && imageError === null && draft.question.trim() !== '';
 
   const toggle = (personaId: string, checked: boolean): void => {
     const others = checkedIds.filter(id => id !== personaId);
     setDraft({ ...draft, personaIds: checked ? [...others, personaId] : others });
+  };
+
+  // Image collée ou déposée dans un champ : « [Image #N] » est inséré au curseur ; le serveur attache
+  // les fichiers au message de chaque appel, les jetons restent dans le texte pour les désigner.
+  const attachImage = (field: 'question' | 'context', image: File): void => {
+    const el = (field === 'question' ? questionRef : contextRef).current;
+    const text = draft[field];
+    const start = el?.selectionStart ?? text.length;
+    const end = el?.selectionEnd ?? text.length;
+    const token = images.add(image, (failed, message) => {
+      setDraft(current => ({ ...current, question: removeToken(current.question, failed), context: removeToken(current.context, failed) }));
+      setError(`Image non envoyée : ${message}`);
+    });
+    setDraft(current => ({ ...current, [field]: insertToken(current[field], start, end, token) }));
+  };
+  const onPaste = (field: 'question' | 'context') => (event: ClipboardEvent<HTMLTextAreaElement>): void => {
+    const image = clipboardImage(event.clipboardData);
+    if (image === null) return;
+    event.preventDefault();
+    attachImage(field, image);
+  };
+  const onDrop = (field: 'question' | 'context') => (event: DragEvent<HTMLTextAreaElement>): void => {
+    const image = clipboardImage(event.dataTransfer);
+    if (image === null) return;
+    event.preventDefault();
+    attachImage(field, image);
+  };
+  const edit = (field: 'question' | 'context', value: string): void => {
+    const next = { ...draft, [field]: value };
+    images.prune(`${next.question}\n${next.context}`);
+    setDraft(next);
+  };
+  const removeImage = (n: number, token: string): void => {
+    images.remove(n);
+    setDraft(current => ({ ...current, question: removeToken(current.question, token), context: removeToken(current.context, token) }));
   };
 
   const launch = async (): Promise<void> => {
@@ -198,6 +260,7 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
     const opened = (id: string): void => {
       setPending(null);
       setDraft(EMPTY_DRAFT);
+      images.reset();
       go(`#/c/${id}`);
     };
     try {
@@ -210,6 +273,7 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
         context: draft.context.trim() || undefined,
         readProject: scope !== null && readProject === true,
         participants,
+        ...uploadedImages.length === 0 ? {} : { images: uploadedImages.map(image => ({ n: image.n, path: image.path })) },
       };
       const key = JSON.stringify(input);
       // Toute modification des paramètres ouvre une nouvelle soumission, avec un nouvel identifiant.
@@ -246,12 +310,16 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
     <form className="council-launch-form" onSubmit={(event: FormEvent) => { event.preventDefault(); void launch(); }}>
       <label className="council-field">
         <span>Question</span>
-        <textarea required rows={3} value={draft.question} disabled={busy} placeholder="La décision ou la question à soumettre au council" onChange={event => setDraft({ ...draft, question: event.target.value })}/>
+        <textarea required rows={3} value={draft.question} disabled={busy} ref={questionRef} placeholder="La décision ou la question à soumettre au council · Ctrl+V ou glisser-déposer pour joindre une image"
+          onChange={event => edit('question', event.target.value)} onPaste={onPaste('question')} onDrop={onDrop('question')}/>
       </label>
       <label className="council-field">
         <span>Contexte <span className="hint">(facultatif)</span></span>
-        <textarea rows={4} value={draft.context} disabled={busy} placeholder="Contraintes, options envisagées, éléments utiles aux conseillers" onChange={event => setDraft({ ...draft, context: event.target.value })}/>
+        <textarea rows={4} value={draft.context} disabled={busy} ref={contextRef} placeholder="Contraintes, options envisagées, éléments utiles aux conseillers · Ctrl+V ou glisser-déposer pour joindre une image"
+          onChange={event => edit('context', event.target.value)} onPaste={onPaste('context')} onDrop={onDrop('context')}/>
       </label>
+      <AttachmentStrip items={images.items} onRemove={item => removeImage(item.n, item.token)}/>
+      {imageError ? <p className="form-error" role="alert">{imageError}</p> : null}
       {scope !== null ? <label className="council-read-project">
         <input type="checkbox" checked={readProject === true} disabled={busy || readProject === null} onChange={event => setReadProject(event.target.checked)}/>
         <span>Laisser les conseillers lire le projet<span className="hint"> : accès en lecture seule au dépôt.</span></span>
@@ -276,7 +344,7 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
           {countError ?? `${count} conseillers · ${2 * count + 1} appels LLM`}
         </span> : null}
         <button type="submit" className="btn primary" disabled={!canLaunch}>
-          <ActivityStatus active={busy}>{busy ? 'Convocation…' : 'Convoquer'}</ActivityStatus>
+          <ActivityStatus active={busy || images.pending}>{busy ? 'Convocation…' : images.pending ? 'Envoi des images…' : 'Convoquer'}</ActivityStatus>
         </button>
       </div>
     </form>

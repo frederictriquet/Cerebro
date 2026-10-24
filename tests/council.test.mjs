@@ -18,7 +18,7 @@ const { CerebroDatabase } = await import('../server/db.ts');
 const {
   defaultCouncilSettings, validateCouncilSettings, resolveParticipants, convertLegacyCouncilSettings, DEFAULT_PERSONAS, MAX_ADVISORS,
   assignLetters, answerPrompt, parseAnswer, reviewLetters, reviewPrompt, parseReview, aggregateRanks, synthesisPrompt, parseSynthesis,
-  exportMarkdown, ANSWER_SCHEMA, REVIEW_SCHEMA, SYNTHESIS_SCHEMA,
+  exportMarkdown, ANSWER_SCHEMA, REVIEW_SCHEMA, SYNTHESIS_SCHEMA, parseCouncilImages, imagePaths, imageToken, MAX_COUNCIL_IMAGES,
 } = await import('../server/council.ts');
 const { CouncilRuns, ANSWER_TIMEOUT_MS, REVIEW_TIMEOUT_MS, SYNTHESIS_TIMEOUT_MS } = await import('../server/council-runner.ts');
 const { SessionManager } = await import('../server/sessions.ts');
@@ -42,10 +42,10 @@ const AGENTS = ['claude', 'codex', 'grok'];
 const settings = {
   assignments: {
     contrarian: { agent: 'claude', model: 'opus', effort: 'high' },
-    outsider: { agent: 'codex', model: null, effort: null },
+    outsider: { agent: 'codex', model: null, effort: 'high' },
   },
   defaultPersonaIds: ['contrarian', 'outsider'],
-  chairman: { agent: 'claude', model: null, effort: null },
+  chairman: { agent: 'claude', model: 'opus', effort: 'high' },
   readProject: false,
 };
 const BUILTIN_IDS = ['contrarian', 'first-principles', 'expansionist', 'outsider', 'executor'];
@@ -218,6 +218,36 @@ test('prompt de synthèse : réponses dé-anonymisées, rangs agrégés et relec
   assert.throws(() => parseSynthesis('texte'), /Synthèse invalide/);
 });
 
+test('images jointes : forme, ordre des jetons, mention dans chaque prompt et dans l’export', () => {
+  assert.deepEqual(parseCouncilImages(undefined), { images: [] });
+  assert.deepEqual(parseCouncilImages([{ n: 3, path: '/a/3.png' }, { n: 1, path: '/a/1.png' }]), { images: [{ n: 1, path: '/a/1.png' }, { n: 3, path: '/a/3.png' }] });
+  for (const invalid of ['x', [null], [{ n: 0, path: '/a.png' }], [{ n: 1.5, path: '/a.png' }], [{ n: 1, path: '' }], [{ n: 1 }]]) {
+    assert.match(parseCouncilImages(invalid).error, /Images jointes invalides/, JSON.stringify(invalid));
+  }
+  assert.match(parseCouncilImages([{ n: 2, path: '/a.png' }, { n: 2, path: '/b.png' }]).error, /en double : \[Image #2\]/);
+  assert.match(parseCouncilImages(Array.from({ length: MAX_COUNCIL_IMAGES + 1 }, (_, index) => ({ n: index + 1, path: '/a.png' }))).error, /10 images jointes au plus/);
+  assert.equal(imageToken(4), '[Image #4]');
+
+  const images = [{ n: 2, path: '/data/attachments/council/b.png' }, { n: 1, path: '/data/attachments/council/a.png' }];
+  const full = finishedRun({ question: 'Que montre [Image #1] ?', context: 'Voir aussi [Image #2].', images });
+  assert.deepEqual(imagePaths(full), ['/data/attachments/council/a.png', '/data/attachments/council/b.png']);
+  // Les runs antérieurs n'ont pas de champ images.
+  assert.deepEqual(imagePaths(finishedRun()), []);
+  const [contrarian] = full.advisors;
+  for (const prompt of [answerPrompt(full, contrarian), reviewPrompt(full, contrarian, seeded(1)), synthesisPrompt(full)]) {
+    assert.match(prompt, /Les images jointes à ce message sont désignées dans la question et le contexte par \[Image #1\], \[Image #2\], dans l’ordre d’attachement/);
+    assert.ok(prompt.indexOf('images jointes') < prompt.indexOf('<question>'));
+  }
+  const single = answerPrompt(finishedRun({ images: [images[1]] }), contrarian);
+  assert.match(single, /L’image jointe à ce message est désignée .* par \[Image #1\], dans l’ordre d’attachement\. Examine-la/);
+  assert.ok(!answerPrompt(finishedRun(), contrarian).includes('jointe'));
+
+  const markdown = exportMarkdown(full);
+  const section = markdown.indexOf('## Images jointes\n\n- [Image #1] : /data/attachments/council/a.png\n- [Image #2] : /data/attachments/council/b.png');
+  assert.ok(section > markdown.indexOf('## Contexte') && section < markdown.indexOf('## Synthèse'));
+  assert.ok(!exportMarkdown(finishedRun()).includes('## Images jointes'));
+});
+
 test('export Markdown : synthèse, avis, relectures puis classement', () => {
   const markdown = exportMarkdown(finishedRun());
   const position = (text) => {
@@ -226,7 +256,7 @@ test('export Markdown : synthèse, avis, relectures puis classement', () => {
     return index;
   };
   assert.ok(markdown.startsWith('# Council : Faut-il réécrire le serveur en Rust ?\n'));
-  assert.ok(markdown.includes('2026-10-22T08:00:00.000Z · statut : succeeded · chairman : claude · modèle par défaut · lecture du projet'));
+  assert.ok(markdown.includes('2026-10-22T08:00:00.000Z · statut : succeeded · chairman : claude · opus · effort high · lecture du projet'));
   const order = ['## Question', '## Contexte', '## Synthèse', '### Points d’accord', 'Ne pas tout réécrire.', '### Première action', 'Mesurer les performances.',
     '## Avis', '### A — Outsider (codex · modèle par défaut)', '### B — Contrarien', '### C — Exécutant (grok · modèle par défaut)', '_Aucune réponse : Délai dépassé._',
     '### D — Expansionniste', '## Relectures', '### Relecture par B — Contrarien', '1. D : Ambitieux.', '### Relecture par A — Outsider',
@@ -249,16 +279,20 @@ test('réglages par défaut : toutes les personas cochées, agents en tourniquet
   const defaults = defaultCouncilSettings(personas, ['codex', 'grok']);
   assert.deepEqual(defaults.defaultPersonaIds, BUILTIN_IDS);
   assert.deepEqual(BUILTIN_IDS.map((id) => defaults.assignments[id].agent), ['codex', 'grok', 'codex', 'grok', 'codex']);
-  assert.ok(Object.values(defaults.assignments).every((llm) => llm.model === null && llm.effort === null));
+  // Défauts calculés : effort explicite (high), modèle sans défaut catalogué pour codex et grok.
+  assert.ok(Object.values(defaults.assignments).every((llm) => llm.model === null && llm.effort === 'high'));
   assert.equal(defaults.readProject, true);
   assert.equal(defaults.chairman.agent, 'codex');
-  assert.deepEqual(defaultCouncilSettings(personas, AGENTS).chairman, { agent: 'claude', model: null, effort: null });
+  assert.deepEqual(defaultCouncilSettings(personas, AGENTS).chairman, { agent: 'claude', model: 'opus', effort: 'high' });
   assert.ok(Object.values(defaultCouncilSettings(personas, []).assignments).every((llm) => llm.agent === 'claude'));
   // Au-delà de 8 personas, seules les 8 premières sont cochées.
   const many = Array.from({ length: MAX_ADVISORS + 2 }, (_, i) => persona(`p${i}`));
   assert.equal(defaultCouncilSettings(many, AGENTS).defaultPersonaIds.length, MAX_ADVISORS);
   // Les réglages par défaut passent leur propre validation.
-  assert.deepEqual(validateCouncilSettings(defaults, personas, ['codex', 'grok']), { settings: defaults });
+  // Validation : l'effort absent devient explicite (high, proposé par codex et grok).
+  const validated = validateCouncilSettings(defaults, personas, ['codex', 'grok']);
+  assert.equal(validated.error, undefined);
+  assert.ok(Object.values(validated.settings.assignments).every((llm) => llm.effort === 'high'));
 });
 
 test('personas par défaut semées une seule fois, jamais réinsérées après suppression', () => {
@@ -363,20 +397,20 @@ test('conversion des réglages au format advisors[] (global et projet)', () => {
 
     assert.deepEqual(db.getSetting('council'), {
       assignments: {
-        contrarian: { agent: 'codex', model: null, effort: null },
+        contrarian: { agent: 'codex', model: null, effort: 'high' },
         [jurist.id]: { agent: 'claude', model: 'opus', effort: 'high' },
       },
       defaultPersonaIds: ['contrarian', jurist.id],
-      chairman: { agent: 'codex', model: null, effort: null },
+      chairman: { agent: 'codex', model: null, effort: 'high' },
       readProject: false,
     });
     assert.deepEqual(db.getProject(project.id).councilSettings, {
       assignments: {
-        [jurist.id]: { agent: 'grok', model: null, effort: null },
-        [unknown.id]: { agent: 'claude', model: null, effort: null },
+        [jurist.id]: { agent: 'grok', model: null, effort: 'high' },
+        [unknown.id]: { agent: 'claude', model: 'opus', effort: 'high' },
       },
       defaultPersonaIds: [jurist.id, unknown.id],
-      chairman: { agent: 'claude', model: null, effort: null },
+      chairman: { agent: 'claude', model: 'opus', effort: 'high' },
       readProject: true,
     });
     assert.equal(db.getProject(untouched.id).councilSettings, null);
@@ -512,8 +546,8 @@ test('validation des réglages du council', () => {
     assignments: { contrarian: { agent: 'codex', extra: 1 } }, defaultPersonaIds: ['contrarian', 'executor'], chairman: { agent: 'codex' },
   }, personas, AGENTS), {
     settings: {
-      assignments: { contrarian: { agent: 'codex', model: null, effort: null } }, defaultPersonaIds: ['contrarian', 'executor'],
-      chairman: { agent: 'codex', model: null, effort: null }, readProject: true,
+      assignments: { contrarian: { agent: 'codex', model: null, effort: 'high' } }, defaultPersonaIds: ['contrarian', 'executor'],
+      chairman: { agent: 'codex', model: null, effort: 'high' }, readProject: true,
     },
   });
   assert.deepEqual(validateCouncilSettings(settings, personas, AGENTS), { settings });
@@ -555,9 +589,9 @@ test('résolution des participants d’un run', () => {
     { personaId: 'executor', agent: null },
   ]), {
     advisors: [
-      advisor('outsider', { agent: 'grok', model: null, effort: null }),
+      advisor('outsider', { agent: 'grok', model: null, effort: 'high' }),
       advisor('contrarian', settings.assignments.contrarian),
-      advisor('executor', { agent: 'claude', model: null, effort: null }),
+      advisor('executor', { agent: 'claude', model: 'opus', effort: 'high' }),
     ],
   });
   assert.match(resolve([{ personaId: 'contrarian' }]).error, /2 à 8/);

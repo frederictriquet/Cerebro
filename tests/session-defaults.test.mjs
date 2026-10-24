@@ -271,7 +271,8 @@ test('API : réglages avant lancement, rechargement, backlog et validation des c
       assert.equal(response.statusCode, 400);
     }
     response = await send('GET', '/api/projects');
-    assert.deepEqual(response.json().find((p) => p.id === id).sessionDefaults, { ...saved, model: null, effort: null, prompt: '' });
+    // Effort absent : valeur explicite du défaut Cerebro (high pour codex), modèle sans défaut catalogué.
+    assert.deepEqual(response.json().find((p) => p.id === id).sessionDefaults, { ...saved, model: null, effort: 'high', prompt: '' });
   } finally {
     await app.close();
   }

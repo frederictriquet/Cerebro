@@ -207,8 +207,10 @@ session en cours, sans effacer une alerte tant que la session n'a pas été ouve
 Chaque projet mémorise côté serveur les derniers agent, modèle, effort, mode et
 prompt choisis dans le formulaire. Les choix sont enregistrés automatiquement,
 même avant de lancer une session, et restent disponibles après un rechargement
-ou un redémarrage. Le choix « défaut » remet le modèle ou l'effort à celui de la
-configuration de la CLI.
+ou un redémarrage. Il n'y a pas de choix « défaut » : le modèle et l'effort affichés
+sont toujours explicites. Sans réglage enregistré, Cerebro lance le modèle par défaut
+de l'agent (celui de sa CLI) et l'effort `high` s'il est proposé, sinon le premier
+niveau proposé.
 
 Les nouvelles sessions lancées depuis le web, le backlog ou Slack reprennent ces
 réglages. Un prompt fourni explicitement (instruction Slack, tâche du backlog,
@@ -378,10 +380,13 @@ fixe l'epic d'une tâche. `--epics`, `--epic-remove`, `--epic-edit` et
 
 | Mode | Claude | Codex | Grok |
 |---|---|---|---|
-| `default` | Configuration de Claude | Configuration de Codex | Configuration de Grok |
+| `auto` | `--permission-mode auto` | `-a on-request -s workspace-write` | `--permission-mode auto` |
 | `acceptEdits` | `--permission-mode acceptEdits` | `-a never -s workspace-write` | `--permission-mode acceptEdits` |
 | `plan` | `--permission-mode plan` | `-s read-only` | `--permission-mode plan` |
 | `bypass` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--permission-mode bypassPermissions` |
+
+Le mode `default` (configuration de l'agent) n'est plus proposé : une valeur enregistrée
+avec ce mode se lit et se lance comme `auto`.
 
 Le mode `bypass` désactive des protections importantes de l'agent. Il ne doit être
 utilisé que dans un environnement maîtrisé.
@@ -956,6 +961,18 @@ proposées, et l'agent, le modèle et l'effort de chacune peuvent être changés
 ce lancement seulement, sans modifier les réglages. **Convoquer** lance le council
 et ouvre son rapport ; la liste des councils précédents du projet (ou de l'accueil)
 figure sous le formulaire, avec suppression des runs terminés.
+
+Une image collée (Ctrl+V) ou déposée dans la question ou le contexte est envoyée
+aussitôt et désignée dans le texte par `[Image #n]` ; une miniature retirable
+apparaît sous les champs, et effacer le jeton retire l'image. Au plus dix images
+(PNG, JPEG, GIF, WebP, 20 Mo chacune), conservées dans
+`$CEREBRO_DATA_DIR/attachments/project-<id>/` (projet) ou `attachments/council/`
+(hors projet) et supprimées avec le council. Elles sont jointes au message de
+chaque appel, réponses, relectures et synthèse comprises, sans outil : Claude les
+reçoit dans son message (entrée `stream-json`), Codex par `--image`. Grok ne
+prend pas en charge les images : le lancement est refusé tant qu'un participant
+coché ou le chairman l'utilise. Le rapport affiche les images jointes et l'export
+Markdown les liste ; la suite **Ouvrir une session** les reprend dans le prompt.
 
 Depuis un projet, la case **Laisser les conseillers lire le projet** (valeur par
 défaut issue des réglages) donne aux conseillers, pendant la phase de réponse

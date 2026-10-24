@@ -8,6 +8,13 @@ export type WorkspaceMode = 'isolated' | 'shared';
 
 export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
 export const MODES: readonly Mode[] = ['auto', 'default', 'acceptEdits', 'plan', 'bypass'];
+// Modes offered by the widgets: « default » is not a choice any more (see normalizeMode).
+export const MODE_CHOICES: readonly Mode[] = MODES.filter((mode) => mode !== 'default');
+
+// Mirror of normalizeMode (server/db.ts): a stored « default » is shown and launched as « auto ».
+export function normalizeMode(mode: Mode): Mode {
+  return mode === 'default' ? 'auto' : mode;
+}
 const EFFORTS: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 // Ce que le formulaire de nouvelle session envoie au serveur.
@@ -107,12 +114,19 @@ export interface CouncilSynthesis {
   firstAction: string;
 }
 
+// Image jointe : `n` est le numéro du jeton « [Image #n] » dans la question ou le contexte.
+export interface CouncilImage {
+  n: number;
+  path: string;
+}
+
 export interface CouncilRun {
   id: string;
   projectId: string | null;
   origin: 'web' | 'slack';
   question: string;
   context: string;
+  images: CouncilImage[];
   readProject: boolean;
   settings: CouncilSettings;
   advisors: Advisor[];
@@ -219,6 +233,8 @@ export interface AgentInfo {
   available: boolean;
   models: ModelChoice[];
   efforts: Effort[];
+  // Model used when none is chosen; null when the server does not send one (older remote machines).
+  defaultModel: string | null;
 }
 
 export interface GitInfo {
@@ -374,6 +390,13 @@ function parseCouncilReview(v: unknown): CouncilReview | null {
   };
 }
 
+function parseCouncilImage(v: unknown): CouncilImage | null {
+  if (!isRecord(v)) return null;
+  const n = asNumber(v.n);
+  const path = asString(v.path);
+  return n === null || path === null ? null : { n, path };
+}
+
 function parseCouncilSynthesis(v: unknown): CouncilSynthesis | null {
   if (!isRecord(v)) return null;
   return {
@@ -402,7 +425,7 @@ export function parseCouncilRun(v: unknown): CouncilRun | null {
   }
   return {
     id, projectId: asString(v.projectId), origin: v.origin === 'slack' ? 'slack' : 'web', question,
-    context: asText(v.context) ?? '', readProject: v.readProject === true, settings,
+    context: asText(v.context) ?? '', images: parseItems(v.images, parseCouncilImage), readProject: v.readProject === true, settings,
     advisors: parseItems(v.advisors, parseAdvisor), status, phase, letters,
     answers: parseItems(v.answers, parseCouncilAnswer), reviews: parseItems(v.reviews, parseCouncilReview),
     synthesis: parseCouncilSynthesis(v.synthesis), error: asText(v.error), startedAt, finishedAt: asNumber(v.finishedAt),
@@ -657,8 +680,13 @@ export function parseAgentInfoList(v: unknown): AgentInfo[] {
   const out: AgentInfo[] = [];
   for (const item of v) {
     if (!isRecord(item) || !isAgent(item.agent) || typeof item.available !== 'boolean') continue;
-    // Serveur antérieur au catalogue (machine distante) : seulement « défaut ».
-    out.push({ agent: item.agent, available: item.available, models: parseModelChoices(item.models), efforts: parseEfforts(item.efforts) });
+    out.push({
+      agent: item.agent,
+      available: item.available,
+      models: parseModelChoices(item.models),
+      efforts: parseEfforts(item.efforts),
+      defaultModel: typeof item.defaultModel === 'string' ? item.defaultModel : null,
+    });
   }
   return out;
 }

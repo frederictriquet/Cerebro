@@ -1,8 +1,11 @@
+import { createReadStream } from 'node:fs';
+import { basename } from 'node:path';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { AGENTS } from './agents.ts';
 import { CouncilError, CouncilRuns } from './council-runner.ts';
 import { exportMarkdown, validateCouncilSettings } from './council.ts';
 import type { CerebroDatabase } from './db.ts';
+import { imageMediaType } from './headless.ts';
 
 // Réglages globaux, lancement, suivi et export des councils ; le gestionnaire est renvoyé pour câblage.
 export function registerCouncilRoutes(app: FastifyInstance, db: CerebroDatabase): CouncilRuns {
@@ -37,7 +40,7 @@ export function registerCouncilRoutes(app: FastifyInstance, db: CerebroDatabase)
     if (projectId !== null && typeof projectId !== 'string') throw new CouncilError('Projet invalide.');
     return councils.start({
       projectId, origin: 'web', question: body.question as string, context: body.context as string | undefined,
-      readProject: body.readProject as boolean | undefined, participants: body.participants,
+      readProject: body.readProject as boolean | undefined, participants: body.participants, images: body.images,
     }, body.requestId);
   }, 202));
   // projectId absent : tous les councils ; `none` : ceux lancés hors projet.
@@ -47,6 +50,16 @@ export function registerCouncilRoutes(app: FastifyInstance, db: CerebroDatabase)
   });
   app.get<{ Params: { id: string } }>('/api/councils/:id', async (request, reply) => {
     return councils.get(request.params.id) ?? reply.code(404).send({ error: 'Council introuvable.' });
+  });
+  // Image jointe `[Image #n]` d'un run, pour l'afficher dans le rapport.
+  app.get<{ Params: { id: string; n: string } }>('/api/councils/:id/images/:n', async (request, reply) => {
+    const run = councils.get(request.params.id);
+    const image = run?.images.find((entry) => String(entry.n) === request.params.n);
+    const type = image === undefined ? null : imageMediaType(image.path);
+    if (run === null || image === undefined || type === null) return reply.code(404).send({ error: 'Image introuvable.' });
+    const stream = createReadStream(image.path);
+    stream.on('error', (cause) => { request.log.warn({ err: cause, path: image.path }, 'image du council illisible'); });
+    return reply.header('content-type', type).header('content-disposition', `inline; filename="${basename(image.path)}"`).send(stream);
   });
   app.post<{ Params: { id: string } }>('/api/councils/:id/cancel', async (request, reply) => attempt(reply, async () => councils.cancel(request.params.id)));
   app.delete<{ Params: { id: string } }>('/api/councils/:id', async (request, reply) => attempt(reply, async () => {

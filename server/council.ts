@@ -17,7 +17,7 @@ export interface Persona {
 
 export type PersonaInput = Pick<Persona, 'name' | 'description' | 'prompt'>;
 
-// Agent, modèle et effort (null : défaut de la CLI).
+// Agent, model and effort (null: Cerebro default, resolved by parseTuning).
 export interface Llm {
   agent: Agent;
   model: string | null;
@@ -77,6 +77,13 @@ export interface CouncilSynthesis {
   firstAction: string;
 }
 
+// Image jointe au lancement : `n` est le numéro du jeton « [Image #n] » placé dans la question ou le contexte,
+// `path` le fichier enregistré sous le dossier des pièces jointes du serveur.
+export interface CouncilImage {
+  n: number;
+  path: string;
+}
+
 export interface CouncilRun {
   id: string;
   projectId: string | null;
@@ -84,6 +91,8 @@ export interface CouncilRun {
   question: string;
   // Contexte collé par l'utilisateur.
   context: string;
+  // Images jointes, transmises à chaque appel (réponses, relectures, synthèse).
+  images: CouncilImage[];
   readProject: boolean;
   // Copies figées au lancement.
   settings: CouncilSettings;
@@ -102,6 +111,7 @@ export interface CouncilRun {
 
 export const MIN_ADVISORS = 2;
 export const MAX_ADVISORS = 8;
+export const MAX_COUNCIL_IMAGES = 10;
 export const MIN_PERSONAS = 2;
 export const MAX_PERSONA_NAME_LENGTH = 80;
 export const MAX_PERSONA_DESCRIPTION_LENGTH = 300;
@@ -156,8 +166,14 @@ function parseLlm(raw: Record<string, unknown>, agents: readonly Agent[], label:
   return { agent, ...tuning };
 }
 
+// Agent without an explicit choice: its Cerebro default model and effort, as parseTuning resolves them.
+function defaultLlm(agent: Agent): Llm {
+  const tuning = parseTuning(agent, {});
+  return { agent, model: tuning?.model ?? null, effort: tuning?.effort ?? null };
+}
+
 function defaultChairman(agents: readonly Agent[]): Llm {
-  return { agent: agents.length === 0 || agents.includes('claude') ? 'claude' : agents[0]!, model: null, effort: null };
+  return defaultLlm(agents.length === 0 || agents.includes('claude') ? 'claude' : agents[0]!);
 }
 
 // Complète les participants par défaut avec les premières personas du catalogue jusqu'au minimum.
@@ -175,7 +191,7 @@ export function defaultCouncilSettings(personas: readonly Persona[], availableAg
   const agents: readonly Agent[] = availableAgents.length > 0 ? availableAgents : ['claude'];
   const selected = personas.slice(0, MAX_ADVISORS);
   return {
-    assignments: Object.fromEntries(personas.map((persona, index) => [persona.id, { agent: agents[index % agents.length]!, model: null, effort: null }])),
+    assignments: Object.fromEntries(personas.map((persona, index) => [persona.id, defaultLlm(agents[index % agents.length]!)])),
     defaultPersonaIds: selected.map((persona) => persona.id),
     chairman: defaultChairman(agents),
     readProject: true,
@@ -231,11 +247,37 @@ export function resolveParticipants(
     if (advisors.some((advisor) => advisor.personaId === persona.id)) return { error: `${label} : persona en double` };
     let llm: Llm | string;
     if ((entry.agent ?? null) !== null) llm = parseLlm(entry, agents, label);
-    else llm = settings.assignments[persona.id] ?? { agent: settings.chairman.agent, model: null, effort: null };
+    else llm = settings.assignments[persona.id] ?? defaultLlm(settings.chairman.agent);
     if (typeof llm === 'string') return { error: llm };
     advisors.push({ personaId: persona.id, ...llm, name: persona.name, description: persona.description, prompt: persona.prompt });
   }
   return { advisors };
+}
+
+export function imageToken(n: number): string {
+  return `[Image #${n}]`;
+}
+
+// Forme des images reçues du client : numéros entiers positifs distincts, chemins non vides, triées par numéro.
+// L'existence des fichiers et leur emplacement sont vérifiés par le lanceur.
+export function parseCouncilImages(raw: unknown): { images: CouncilImage[] } | { error: string } {
+  if (raw === undefined || raw === null) return { images: [] };
+  if (!Array.isArray(raw)) return { error: 'Images jointes invalides' };
+  if (raw.length > MAX_COUNCIL_IMAGES) return { error: `${MAX_COUNCIL_IMAGES} images jointes au plus` };
+  const images: CouncilImage[] = [];
+  for (const entry of raw) {
+    if (!isRecord(entry) || !Number.isInteger(entry.n) || (entry.n as number) < 1 || typeof entry.path !== 'string' || entry.path.trim() === '') {
+      return { error: 'Images jointes invalides' };
+    }
+    if (images.some((image) => image.n === entry.n)) return { error: `Image jointe en double : ${imageToken(entry.n as number)}` };
+    images.push({ n: entry.n as number, path: entry.path });
+  }
+  return { images: images.sort((a, b) => a.n - b.n) };
+}
+
+// Chemins des images d'un run, dans l'ordre des jetons : c'est l'ordre d'attachement au message.
+export function imagePaths(run: Pick<CouncilRun, 'images'>): string[] {
+  return [...run.images ?? []].sort((a, b) => a.n - b.n).map((image) => image.path);
 }
 
 // Retire une persona supprimée des réglages, en gardant au moins deux participants par défaut.
@@ -291,7 +333,7 @@ export function convertLegacyCouncilSettings(
       created.push(persona);
     }
     const llm = parseLlm(entry, AGENTS, '');
-    assignments[persona.id] = typeof llm === 'string' ? { agent: 'claude', model: null, effort: null } : llm;
+    assignments[persona.id] = typeof llm === 'string' ? defaultLlm('claude') : llm;
     if (!defaultPersonaIds.includes(persona.id) && defaultPersonaIds.length < MAX_ADVISORS) defaultPersonaIds.push(persona.id);
   }
   const chairman = isRecord(raw.chairman) ? parseLlm(raw.chairman, AGENTS, '') : '';
@@ -379,8 +421,12 @@ function block(tag: string, text: string, attributes = ''): string {
   return `<${tag}${attributes}>\n${text.trim()}\n</${tag}>`;
 }
 
-function questionBlocks(run: Pick<CouncilRun, 'question' | 'context'>): string[] {
-  return [block('question', run.question), ...run.context.trim() === '' ? [] : [block('contexte', run.context)]];
+function questionBlocks(run: Pick<CouncilRun, 'question' | 'context' | 'images'>): string[] {
+  const images = [...run.images ?? []].sort((a, b) => a.n - b.n);
+  const attached = images.length === 0 ? [] : [
+    `${images.length > 1 ? 'Les images jointes à ce message sont' : 'L’image jointe à ce message est'} désignée${images.length > 1 ? 's' : ''} dans la question et le contexte par ${images.map((image) => imageToken(image.n)).join(', ')}, dans l’ordre d’attachement. Examine-${images.length > 1 ? 'les' : 'la'} avant de répondre.`,
+  ];
+  return [...attached, block('question', run.question), ...run.context.trim() === '' ? [] : [block('contexte', run.context)]];
 }
 
 function answeredLetters(run: CouncilRun): { advisorId: string; letter: string; text: string }[] {
@@ -538,6 +584,7 @@ export function exportMarkdown(run: CouncilRun): string {
     '## Question',
     run.question.trim(),
     ...run.context.trim() === '' ? [] : ['## Contexte', run.context.trim()],
+    ...(run.images ?? []).length === 0 ? [] : ['## Images jointes', [...run.images].sort((a, b) => a.n - b.n).map((image) => `- ${imageToken(image.n)} : ${image.path}`).join('\n')],
     '## Synthèse',
   ];
   if (run.synthesis === null) sections.push(run.error === null ? '_Aucune synthèse._' : `_Aucune synthèse : ${run.error}_`);

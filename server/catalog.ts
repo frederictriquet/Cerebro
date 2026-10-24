@@ -22,6 +22,8 @@ export interface ModelChoice {
 export interface AgentCatalog {
   models: ModelChoice[];
   efforts: Effort[];
+  // Model used when none is chosen: the CLI default, always one of `models`; null when no model is listed.
+  defaultModel: string | null;
 }
 
 const CLAUDE_EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -36,9 +38,10 @@ const FALLBACK: Record<Agent, AgentCatalog> = {
       { value: 'haiku', label: 'Haiku', description: '', efforts: CLAUDE_EFFORTS },
     ],
     efforts: CLAUDE_EFFORTS,
+    defaultModel: 'opus',
   },
-  codex: { models: [], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  grok: { models: [], efforts: ['low', 'medium', 'high', 'xhigh'] },
+  codex: { models: [], efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultModel: null },
+  grok: { models: [], efforts: ['low', 'medium', 'high', 'xhigh'], defaultModel: null },
 };
 
 const catalogs: Record<Agent, AgentCatalog> = { ...FALLBACK };
@@ -54,6 +57,11 @@ function sortEfforts(efforts: Effort[]): Effort[] {
 
 function modelEfforts(info: ModelInfo): Effort[] {
   return info.supportsEffort === false ? [] : [...(info.supportedEffortLevels ?? [])];
+}
+
+// Effort used when none is chosen: `high` when offered, otherwise the first level. Mirrored in web/src/LlmSelector.tsx.
+export function defaultEffort(efforts: Effort[]): Effort | null {
+  return efforts.includes('high') ? 'high' : (efforts[0] ?? null);
 }
 
 // Interroge la CLI `claude` installée (celle que lancent les sessions) via le SDK : une requête de
@@ -83,14 +91,18 @@ async function discoverClaude(): Promise<AgentCatalog> {
     ]);
     const fallbackDefault = infos.find((info) => info.value === 'default');
     // Seulement les alias (opus, sonnet…), qui suivent la dernière version, pas les ids datés.
-    const models = infos.filter((info) => info.value !== 'default' && !info.value.startsWith('claude-')).map((info) => ({
+    const aliases = infos.filter((info) => info.value !== 'default' && !info.value.startsWith('claude-'));
+    const models = aliases.map((info) => ({
       value: info.value,
       label: info.displayName,
       description: info.description,
       efforts: modelEfforts(info),
     }));
     if (models.length === 0) throw new Error('aucun modèle');
-    return { models, efforts: fallbackDefault === undefined ? CLAUDE_EFFORTS : modelEfforts(fallbackDefault) };
+    // The alias resolving to the same model id as the CLI default row (e.g. `fable` for `default`).
+    const defaultId = fallbackDefault?.resolvedModel;
+    const defaultModel = aliases.find((info) => defaultId !== undefined && info.resolvedModel === defaultId)?.value ?? models[0]!.value;
+    return { models, efforts: fallbackDefault === undefined ? CLAUDE_EFFORTS : modelEfforts(fallbackDefault), defaultModel };
   } finally {
     clearTimeout(timer);
     session.close();
@@ -132,7 +144,7 @@ async function discoverGrok(): Promise<AgentCatalog> {
   const models = entries.sort((a, b) => rank(a.value) - rank(b.value));
   if (models.length === 0) throw new Error('aucun modèle');
   const fallbackDefault = models.find((m) => m.value === defaultModel) ?? models[0]!;
-  return { models, efforts: fallbackDefault.efforts };
+  return { models, efforts: fallbackDefault.efforts, defaultModel: fallbackDefault.value };
 }
 
 // `model = "…"` de premier niveau dans ~/.codex/config.toml, modèle lancé par défaut par codex.
@@ -170,7 +182,7 @@ async function discoverCodex(): Promise<AgentCatalog> {
     }));
   if (models.length === 0) throw new Error('aucun modèle');
   const fallbackDefault = models.find((m) => m.value === configured) ?? models[0]!;
-  return { models, efforts: fallbackDefault.efforts };
+  return { models, efforts: fallbackDefault.efforts, defaultModel: fallbackDefault.value };
 }
 
 const DISCOVERERS: Partial<Record<Agent, () => Promise<AgentCatalog>>> = {
@@ -209,18 +221,19 @@ export function catalogFor(agent: Agent): AgentCatalog {
   return catalogs[agent];
 }
 
-// model / effort facultatifs (null ou absents = défaut de l'agent), restreints au catalogue de l'agent.
+// model / effort facultatifs (null ou absents = défaut Cerebro), restreints au catalogue de l'agent.
+// The result is always explicit: null resolves to the catalog default model, then to `defaultEffort`.
 export function parseTuning(agent: Agent, body: Record<string, unknown>): Tuning | null {
-  const model = body.model ?? null;
-  const effort = body.effort ?? null;
   const catalog = catalogFor(agent);
+  const model = (body.model ?? catalog.defaultModel) as string | null;
   let efforts = catalog.efforts;
   if (model !== null) {
     const choice = catalog.models.find((m) => m.value === model);
     if (choice === undefined) return null;
     efforts = choice.efforts;
   }
+  const effort = body.effort ?? null;
   const level = efforts.find((e) => e === effort);
   if (effort !== null && level === undefined) return null;
-  return { model: model as string | null, effort: level ?? null };
+  return { model, effort: level ?? defaultEffort(efforts) };
 }

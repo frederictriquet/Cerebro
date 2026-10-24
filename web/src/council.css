@@ -72,6 +72,11 @@
 .council-view h1 .council-run-status { margin-left: .5rem; font-size: 13px; vertical-align: middle; }
 .council-question-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
 .council-question details { margin-top: .6rem; }
+.council-images { display: flex; flex-wrap: wrap; gap: 8px; margin: .6rem 0 0; padding: 0; list-style: none; }
+.council-images a { display: block; width: 120px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); overflow: hidden; color: var(--muted); text-decoration: none; }
+.council-images a:hover { border-color: var(--accent); color: var(--accent); }
+.council-images img { display: block; width: 100%; height: 84px; object-fit: cover; }
+.council-images span { display: block; padding: 2px 6px; font: 11px var(--mono); }
 .council-steps { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 .75rem; padding: 0; list-style: none; counter-reset: council-step; }
 .council-steps li { counter-increment: council-step; padding: .25rem .7rem; border: 1px solid var(--line); border-radius: 999px; color: var(--faint); }
 .council-steps li::before { content: counter(council-step) ". "; }

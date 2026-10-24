@@ -5,7 +5,7 @@ import { useStore } from './store.tsx';
 import { LlmSelector, type LlmSelection } from './LlmSelector.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { MODE_CHIP, MODE_DESCRIPTION } from './format.ts';
-import { MODES, type Project, type ResolutionSettings } from './types.ts';
+import { MODE_CHOICES, normalizeMode, type Project, type ResolutionSettings } from './types.ts';
 import './automatic-commits.css';
 
 export function CommitSettingsDialog({project,onClose}:{project:Project;onClose:()=>void}) {
@@ -14,7 +14,7 @@ export function CommitSettingsDialog({project,onClose}:{project:Project;onClose:
     const {agent,model,effort}=project.commitSettings;
     return {agent,model,effort};
   });
-  const [resolution,setResolution]=useState<ResolutionSettings>(()=>({...project.resolutionSettings}));
+  const [resolution,setResolution]=useState<ResolutionSettings>(()=>({...project.resolutionSettings,mode:normalizeMode(project.resolutionSettings.mode)}));
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState<string|null>(null);
   const save=async():Promise<void>=>{
@@ -37,7 +37,7 @@ export function CommitSettingsDialog({project,onClose}:{project:Project;onClose:
           <div className="tuning">
             <span className="field-label">Mode</span>
             <ChoiceGroup compact label="Mode de la session de résolution" value={resolution.mode} disabled={busy}
-              options={MODES.map(mode=>({value:mode,label:MODE_CHIP[mode],title:MODE_DESCRIPTION[mode],danger:mode==='bypass'}))}
+              options={MODE_CHOICES.map(mode=>({value:mode,label:MODE_CHIP[mode],title:MODE_DESCRIPTION[mode],danger:mode==='bypass'}))}
               onChange={mode=>setResolution(current=>({...current,mode}))}/>
           </div>
         </LlmSelector>

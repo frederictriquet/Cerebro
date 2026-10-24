@@ -1,11 +1,14 @@
+import { statSync, unlinkSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
 import { getAgentAvailability } from './agents.ts';
+import { ATTACHMENTS_DIR } from './config.ts';
 import {
-  ANSWER_SCHEMA, MIN_ADVISORS, REVIEW_SCHEMA, SYNTHESIS_SCHEMA, answerPrompt, assignLetters, defaultCouncilSettings, parseAnswer, parseReview,
-  parseSynthesis, readsProject, resolveParticipants, reviewLetters, reviewPrompt, synthesisPrompt,
-  type Advisor, type CouncilPhase, type CouncilRun, type CouncilSettings,
+  ANSWER_SCHEMA, MIN_ADVISORS, REVIEW_SCHEMA, SYNTHESIS_SCHEMA, answerPrompt, assignLetters, defaultCouncilSettings, imagePaths, imageToken, parseAnswer,
+  parseCouncilImages, parseReview, parseSynthesis, readsProject, resolveParticipants, reviewLetters, reviewPrompt, synthesisPrompt,
+  type Advisor, type CouncilImage, type CouncilPhase, type CouncilRun, type CouncilSettings,
 } from './council.ts';
 import type { Agent, CerebroDatabase, Project } from './db.ts';
-import { runHeadless, type HeadlessOptions } from './headless.ts';
+import { imageMediaType, runHeadless, supportsImages, type HeadlessOptions } from './headless.ts';
 
 export const ANSWER_TIMEOUT_MS = 10 * 60_000;
 export const REVIEW_TIMEOUT_MS = 5 * 60_000;
@@ -22,6 +25,8 @@ export interface CouncilStart {
   readProject?: boolean;
   // Absent : participants par défaut des réglages effectifs.
   participants?: unknown;
+  // Images jointes `[{n, path}]`, enregistrées au préalable sous le dossier des pièces jointes.
+  images?: unknown;
 }
 
 // Erreur de lancement ou d'annulation, avec le code HTTP à renvoyer.
@@ -34,6 +39,34 @@ export class CouncilError extends Error {
 }
 
 const message = (cause: unknown): string => cause instanceof Error ? cause.message : String(cause);
+
+// Un chemin d'image accepté est un fichier image existant sous le dossier des pièces jointes du serveur.
+function attachedImage(path: string): string | null {
+  const absolute = resolve(path);
+  if (!absolute.startsWith(resolve(ATTACHMENTS_DIR) + sep)) return 'hors du dossier des pièces jointes';
+  if (imageMediaType(absolute) === null) return 'format non pris en charge';
+  try {
+    if (!statSync(absolute).isFile()) return 'fichier introuvable';
+  } catch {
+    return 'fichier introuvable';
+  }
+  return null;
+}
+
+// Vérifie forme, emplacement et existence des images, puis la compatibilité de chaque agent sollicité.
+export function checkImages(raw: unknown, llms: readonly { agent: Agent; label: string }[]): CouncilImage[] {
+  const parsed = parseCouncilImages(raw);
+  if ('error' in parsed) throw new CouncilError(parsed.error);
+  for (const image of parsed.images) {
+    const problem = attachedImage(image.path);
+    if (problem !== null) throw new CouncilError(`${imageToken(image.n)} : ${problem}.`);
+  }
+  if (parsed.images.length > 0) {
+    const unable = llms.filter((llm) => !supportsImages(llm.agent));
+    if (unable.length > 0) throw new CouncilError(`Images jointes : ${unable.map((llm) => `${llm.label} (${llm.agent})`).join(', ')} ne ${unable.length > 1 ? 'prennent' : 'prend'} pas en charge les images. Choisissez claude ou codex.`);
+  }
+  return parsed.images;
+}
 
 export class CouncilRuns {
   private db: CerebroDatabase;
@@ -122,6 +155,8 @@ export class CouncilRuns {
     const settings = structuredClone(await this.settingsFor(project));
     const resolved = resolveParticipants(settings, this.db.listPersonas(), input.participants);
     if ('error' in resolved) throw new CouncilError(resolved.error);
+    // Relectures et synthèse reçoivent aussi les images : le chairman doit les accepter comme les conseillers.
+    const images = checkImages(input.images, [...resolved.advisors.map((advisor) => ({ agent: advisor.agent, label: advisor.name })), { agent: settings.chairman.agent, label: 'chairman' }]);
     if (this.closed) throw new CouncilError('Serveur en cours d’arrêt.', 409);
     // La suppression a pu commencer ou se terminer pendant la résolution des réglages.
     project = this.projectForStart(input.projectId);
@@ -131,7 +166,7 @@ export class CouncilRuns {
     const now = Date.now();
     const advisors = resolved.advisors;
     const run: CouncilRun = {
-      id: requestId, projectId: input.projectId, origin: input.origin, question, context,
+      id: requestId, projectId: input.projectId, origin: input.origin, question, context, images,
       readProject: project !== null && (input.readProject ?? settings.readProject),
       settings, advisors, status: 'running', phase: 'answering', letters: assignLetters(advisors),
       answers: advisors.map((advisor) => ({ advisorId: advisor.personaId, text: null, error: null, startedAt: now, finishedAt: null })),
@@ -161,9 +196,19 @@ export class CouncilRuns {
     return active.run;
   }
 
+  // Les images jointes appartiennent au run : elles disparaissent avec lui.
   delete(id: string): void {
     if (this.active.has(id)) throw new CouncilError('Ce council est en cours : annulez-le avant de le supprimer.', 409);
-    if (!this.db.deleteCouncilRun(id)) throw new CouncilError('Council introuvable.', 404);
+    const run = this.get(id);
+    if (run === null || !this.db.deleteCouncilRun(id)) throw new CouncilError('Council introuvable.', 404);
+    for (const path of imagePaths(run)) {
+      if (attachedImage(path) !== null) continue;
+      try {
+        unlinkSync(path);
+      } catch (cause) {
+        console.warn(`Image du council ${id} non supprimée (${path}) :`, message(cause));
+      }
+    }
   }
 
   // Run tel qu'enregistré à la fin de son exécution (immédiatement s'il n'est plus en cours).
@@ -181,8 +226,9 @@ export class CouncilRuns {
     // Seuls les conseillers lisent le dépôt ; relectures et synthèse portent sur les réponses.
     const reading = readsProject(run);
     const cwd = reading ? project?.path : undefined;
+    const images = imagePaths(run);
     const call = (advisor: Advisor | CouncilSettings['chairman'], prompt: string, schema: object, timeoutMs: number, access: HeadlessOptions['access'] = 'none'): Promise<unknown> =>
-      this.invoke({ agent: advisor.agent, model: advisor.model, effort: advisor.effort, prompt, schema, ...access === 'none' ? {} : { cwd }, access, timeoutMs, signal });
+      this.invoke({ agent: advisor.agent, model: advisor.model, effort: advisor.effort, prompt, schema, ...access === 'none' ? {} : { cwd }, access, timeoutMs, signal, ...images.length === 0 ? {} : { images } });
     try {
       signal.throwIfAborted();
       if (reading && cwd === undefined) throw new Error('Projet introuvable.');

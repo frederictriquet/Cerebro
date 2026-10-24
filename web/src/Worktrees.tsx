@@ -9,7 +9,7 @@ import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { href } from './route.ts';
 import { AGENT_LABEL, MODE_CHIP, sessionTitle } from './format.ts';
 import { useStore } from './store.tsx';
-import type { Session, WorkspaceMode } from './types.ts';
+import { normalizeMode, type Session, type WorkspaceMode } from './types.ts';
 import './worktrees.css';
 
 const branchName = (branch: string | null): string => branch?.replace(/^refs\/heads\//,'') ?? 'branche inconnue';
@@ -162,7 +162,7 @@ function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeV
       {step.action==='keep'&&step.state==='mixed'&&step.version?<label className="worktree-reviewed"><input type="checkbox" checked={confirmed.has(step.path)} disabled={busy!==null} onChange={event=>confirm(step,event.target.checked)}/> Vérifié : ne contient que le travail de la conversation</label>:null}
     </li>)}</ul>:null}
     {plan&&!actionable?<p className="worktree-warning">Aucun fichier ne peut être traité automatiquement : examinez leurs changements, puis cochez ceux qui ne contiennent que le travail de la conversation{toReview?', ou confiez-les à l’IA':''}.</p>:null}
-    {toReview?<p className="meta">« Résoudre avec l’IA » lance une session dans la copie pour séparer le contenu de départ du travail de la conversation dans {toReview===1?'le fichier laissé':`les ${toReview} fichiers laissés`} à examiner. Elle ne commite rien : relisez ensuite ses changements, puis retirez le contenu de départ restant.{settings?` Session : ${AGENT_LABEL[settings.agent]} · ${settings.model??'modèle par défaut'} · ${settings.effort??'effort par défaut'} · ${MODE_CHIP[settings.mode]} (« Réglages LLM » du projet).`:''}</p>:null}
+    {toReview?<p className="meta">« Résoudre avec l’IA » lance une session dans la copie pour séparer le contenu de départ du travail de la conversation dans {toReview===1?'le fichier laissé':`les ${toReview} fichiers laissés`} à examiner. Elle ne commite rien : relisez ensuite ses changements, puis retirez le contenu de départ restant.{settings?` Session : ${AGENT_LABEL[settings.agent]} · ${settings.model??'modèle par défaut'} · ${settings.effort??'effort par défaut'} · ${MODE_CHIP[normalizeMode(settings.mode)]} (« Réglages LLM » du projet).`:''}</p>:null}
     {error?<p className="form-error" role="alert">{error}</p>:null}
     <div className="row-actions">
       <button type="button" className="btn primary" disabled={busy!==null||!actionable} onClick={()=>void run()}><ActivityStatus active={busy==='running'}>{busy==='running'?'Retrait du contenu de départ…':'Retirer le contenu de départ'}</ActivityStatus></button>

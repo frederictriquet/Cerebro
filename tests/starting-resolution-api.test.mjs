@@ -41,9 +41,9 @@ test('resolution settings are stored per project and validated like the other LL
   assert.deepEqual((await send('GET','/api/projects')).json().find(item=>item.id===project.id).resolutionSettings,{agent:'claude',mode:'auto',model:null,effort:null});
   for(const invalid of [null,{agent:'unknown'},{mode:'nope'},{model:'unknown-model'},{strategy:'single'}])assert.equal((await send('PATCH',url,{resolutionSettings:invalid})).statusCode,400);
   const response=await send('PATCH',url,{resolutionSettings:{agent:'codex',mode:'acceptEdits'}});assert.equal(response.statusCode,200,response.body);
-  assert.deepEqual(response.json().resolutionSettings,{agent:'codex',mode:'acceptEdits',model:null,effort:null});
+  assert.deepEqual(response.json().resolutionSettings,{agent:'codex',mode:'acceptEdits',model:null,effort:'high'});
   assert.equal(response.json().commitSettings.agent,'claude');
-  const reopened=new CerebroDatabase();try{assert.deepEqual(reopened.getProject(project.id).resolutionSettings,{agent:'codex',mode:'acceptEdits',model:null,effort:null});}finally{reopened.close();}
+  const reopened=new CerebroDatabase();try{assert.deepEqual(reopened.getProject(project.id).resolutionSettings,{agent:'codex',mode:'acceptEdits',model:null,effort:'high'});}finally{reopened.close();}
  }finally{await app.close();}
 });
 

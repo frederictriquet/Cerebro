@@ -6,11 +6,19 @@ import type { AgentInfo, Effort, LaunchSpec } from './types.ts';
 
 export type LlmSelection = Pick<LaunchSpec, 'agent' | 'model' | 'effort'>;
 
+// Effort used when none is chosen: `high` when offered, otherwise the first level. Mirror of `defaultEffort` (server/catalog.ts).
+export function defaultEffort(efforts: Effort[]): Effort | null {
+  return efforts.includes('high') ? 'high' : (efforts[0] ?? null);
+}
+
+// Model and effort actually shown and launched: null resolves like `parseTuning` on the server.
 export function llmChoices(agents: AgentInfo[], value: LlmSelection) {
   const info = agents.find(item => item.agent === value.agent);
   const models = info?.models ?? [];
-  const efforts = (value.model === null ? info?.efforts : models.find(model => model.value === value.model)?.efforts) ?? [];
-  return { info, models, efforts };
+  const model = value.model ?? info?.defaultModel ?? null;
+  const efforts = (model === null ? info?.efforts : models.find(item => item.value === model)?.efforts) ?? [];
+  const effort = value.effort ?? defaultEffort(efforts);
+  return { info, models, efforts, model, effort };
 }
 
 /** Shared layout and model/effort transitions; each form owns its persistence. */
@@ -42,8 +50,9 @@ export function LlmSelector({ agents, value, defaults, onChange, disabled = fals
     const timer = window.setTimeout(() => void refresh(), 5000);
     return () => window.clearTimeout(timer);
   }, [available.length, refreshing, refresh]);
-  const { info, models, efforts } = llmChoices(agents, value);
-  const missingModel = value.model !== null && !models.some(model => model.value === value.model);
+  // [SPEC UI web › Vue projet] No default choice: the shown model and effort are always explicit.
+  const { info, models, efforts, model, effort } = llmChoices(agents, value);
+  const missingModel = value.model !== null && !models.some(item => item.value === value.model);
   const missingEffort = value.effort !== null && !efforts.includes(value.effort);
   return <div className="tuning-row">
     <div className="tuning">
@@ -72,17 +81,15 @@ export function LlmSelector({ agents, value, defaults, onChange, disabled = fals
       <ChoiceGroup
         compact
         label="Modèle"
-        value={value.model ?? ''}
+        value={model ?? ''}
         disabled={disabled}
         options={[
-          { value: '', label: 'défaut', title: "Modèle configuré pour l'agent" },
           ...(missingModel ? [{ value: value.model!, label: value.model!, title: 'Modèle hors catalogue', disabled: true }] : []),
-          ...models.map(model => ({ value: model.value, label: model.label, title: model.description || undefined })),
+          ...models.map(item => ({ value: item.value, label: item.label, title: item.description || undefined })),
         ]}
         onChange={selected => {
-          const model = selected || null;
-          const supported = (model === null ? info?.efforts : models.find(item => item.value === model)?.efforts) ?? [];
-          onChange({ ...value, model, effort: value.effort !== null && supported.includes(value.effort) ? value.effort : null });
+          const supported = models.find(item => item.value === selected)?.efforts ?? [];
+          onChange({ ...value, model: selected, effort: effort !== null && supported.includes(effort) ? effort : defaultEffort(supported) });
         }}
       />
     </div> : null}
@@ -91,14 +98,13 @@ export function LlmSelector({ agents, value, defaults, onChange, disabled = fals
       <ChoiceGroup<Effort | ''>
         compact
         label="Effort"
-        value={value.effort ?? ''}
+        value={effort ?? ''}
         disabled={disabled}
         options={[
-          { value: '', label: 'défaut', title: "Effort configuré pour l'agent" },
           ...(missingEffort ? [{ value: value.effort!, label: value.effort!, title: 'Effort hors catalogue', disabled: true }] : []),
-          ...efforts.map(effort => ({ value: effort, label: effort })),
+          ...efforts.map(item => ({ value: item, label: item })),
         ]}
-        onChange={effort => onChange({ ...value, effort: effort || null })}
+        onChange={selected => onChange({ ...value, model, effort: selected || null })}
       />
     </div> : null}
     {children}

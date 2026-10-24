@@ -43,13 +43,18 @@ export const DEFAULT_SESSION_DEFAULTS: Readonly<SessionDefaults> = {
   agent: 'claude', mode: 'auto', model: null, effort: null, prompt: '',
 };
 
+// No widget offers « default » (agent configuration) any more: it is read as the default mode, « auto ».
+export function normalizeMode(mode: Mode): Mode {
+  return mode === 'default' ? 'auto' : mode;
+}
+
 // Un autre agent ne doit pas recevoir le modèle ou l'effort mémorisé pour le précédent.
-// undefined hérite du choix enregistré ; null rétablit explicitement le défaut de la CLI.
+// undefined inherits the saved choice; null explicitly resets to the Cerebro default (see parseTuning).
 export function resolveSessionDefaults(defaults: SessionDefaults, overrides: Partial<SessionDefaults>): SessionDefaults {
   const agent = overrides.agent ?? defaults.agent;
   return {
     agent,
-    mode: overrides.mode ?? defaults.mode,
+    mode: normalizeMode(overrides.mode ?? defaults.mode),
     model: overrides.model !== undefined ? overrides.model : agent === defaults.agent ? defaults.model : null,
     effort: overrides.effort !== undefined ? overrides.effort : agent === defaults.agent ? defaults.effort : null,
     prompt: overrides.prompt ?? defaults.prompt,
@@ -75,7 +80,7 @@ export interface Session {
   projectId: string;
   agent: Agent;
   mode: Mode;
-  // null : modèle / effort par défaut de la configuration de l'agent.
+  // null: model / effort Cerebro default, resolved by parseTuning.
   model: string | null;
   effort: Effort | null;
   prompt: string;
@@ -642,9 +647,16 @@ export class CerebroDatabase {
       .run(run.id, run.projectId, JSON.stringify(run), run.projectId, run.projectId).changes) > 0;
   }
 
+  // Les runs enregistrés avant les images jointes n'en ont pas.
+  private readCouncilRun(data: string): CouncilRun {
+    const run = JSON.parse(data) as CouncilRun;
+    run.images ??= [];
+    return run;
+  }
+
   getCouncilRun(id: string): CouncilRun | null {
     const row = this.connection.prepare('SELECT data FROM council_runs WHERE id = ?').get(id) as { data: string } | undefined;
-    return row === undefined ? null : JSON.parse(row.data) as CouncilRun;
+    return row === undefined ? null : this.readCouncilRun(row.data);
   }
 
   // undefined : tous les runs ; null : ceux lancés hors projet. Les plus récents d'abord.
@@ -655,7 +667,7 @@ export class CerebroDatabase {
       : projectId === null
         ? this.connection.prepare(`SELECT data FROM council_runs WHERE project_id IS NULL ${order}`).all()
         : this.connection.prepare(`SELECT data FROM council_runs WHERE project_id = ? ${order}`).all(projectId);
-    return (rows as { data: string }[]).map((row) => JSON.parse(row.data) as CouncilRun);
+    return (rows as { data: string }[]).map((row) => this.readCouncilRun(row.data));
   }
 
   deleteCouncilRun(id: string): boolean {

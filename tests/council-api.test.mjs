@@ -32,9 +32,9 @@ test('council API: settings, project override, runs, cancel, export and persiste
   let response=await send('GET','/api/council/settings');assert.equal(response.statusCode,200);
   const defaults=response.json();const personas=(await send('GET','/api/personas')).json();
   assert.deepEqual(Object.keys(defaults.assignments),personas.map(persona=>persona.id));
-  assert.deepEqual(defaults.assignments[personas[1].id],{agent:'codex',model:null,effort:null});
-  assert.deepEqual(defaults.defaultPersonaIds,personas.map(persona=>persona.id));assert.deepEqual(defaults.chairman,{agent:'claude',model:null,effort:null});assert.equal(defaults.readProject,true);
-  const global={assignments:{contrarian:{agent:'codex',model:null,effort:null},outsider:{agent:'grok',model:null,effort:null}},defaultPersonaIds:['contrarian','outsider'],chairman:{agent:'claude',model:'sonnet',effort:'low'},readProject:false};
+  assert.deepEqual(defaults.assignments[personas[1].id],{agent:'codex',model:null,effort:'high'});
+  assert.deepEqual(defaults.defaultPersonaIds,personas.map(persona=>persona.id));assert.deepEqual(defaults.chairman,{agent:'claude',model:'opus',effort:'high'});assert.equal(defaults.readProject,true);
+  const global={assignments:{contrarian:{agent:'codex',model:null,effort:'high'},outsider:{agent:'grok',model:null,effort:'high'}},defaultPersonaIds:['contrarian','outsider'],chairman:{agent:'claude',model:'sonnet',effort:'low'},readProject:false};
   response=await send('PUT','/api/council/settings',global);assert.equal(response.statusCode,200,response.body);assert.deepEqual(response.json(),global);
   for(const invalid of [null,{...global,defaultPersonaIds:['contrarian']},{...global,defaultPersonaIds:['contrarian','unknown']},{...global,assignments:{unknown:{agent:'claude'}}},{...global,chairman:{agent:'unknown'}},{...global,readProject:'yes'}]){
    response=await send('PUT','/api/council/settings',invalid);assert.equal(response.statusCode,400);assert.equal(typeof response.json().error,'string');
@@ -126,6 +126,68 @@ test('council API: settings, project override, runs, cancel, export and persiste
   const operations=(await send('GET','/api/operations')).json().filter(operation=>operation.kind==='council');
   assert.deepEqual(new Set(operations.map(operation=>operation.id)),new Set([`council:${projectRequest}`,`council:${homeRequest}`,`council:${cancelRequest}`]));
  }finally{hold=false;await app.close();}
+});
+
+test('council API: attached images are uploaded, validated, passed to every call, served and deleted with the run', async () => {
+ const {existsSync}=await import('node:fs');
+ const app=await buildServer();const send=(method,url,payload)=>app.inject({method,url,...(payload===undefined?{}:{payload})});
+ const png=Buffer.from('89504e470d0a1a0a0000000d49484452','hex');
+ try{
+  // Dépôt hors projet, puis dans un projet.
+  let response=await app.inject({method:'POST',url:'/api/council/attachments',payload:png,headers:{'content-type':'image/png'}});
+  assert.equal(response.statusCode,201,response.body);const {path}=response.json();assert.match(path,/\/attachments\/council\/[^/]+\.png$/);assert.ok(existsSync(path));
+  assert.equal((await app.inject({method:'POST',url:'/api/council/attachments',payload:Buffer.from('x'),headers:{'content-type':'text/plain'}})).statusCode,400);
+  const project=(await send('POST','/api/projects',{name:'Images',path:join(root,'repo')})).json();
+  response=await app.inject({method:'POST',url:`/api/projects/${project.id}/attachments`,payload:png,headers:{'content-type':'image/png'}});
+  assert.equal(response.statusCode,201);const projectPath=response.json().path;assert.match(projectPath,new RegExp(`/attachments/project-${project.id}/`));
+
+  // Refus : chemin hors du dossier des pièces jointes, fichier absent, forme, agent incompatible (conseiller puis chairman).
+  const participants=[{personaId:'contrarian',agent:'claude'},{personaId:'executor',agent:'codex'}];
+  const outside=join(root,'outside.png');const {writeFileSync}=await import('node:fs');writeFileSync(outside,png);
+  const refused=[
+   [{images:[{n:1,path:outside}]},/\[Image #1\] : hors du dossier des pièces jointes/],
+   [{images:[{n:1,path:`${path}.missing.png`}]},/\[Image #1\] : fichier introuvable/],
+   [{images:[{n:1,path:path.replace(/\.png$/,'.txt')}]},/\[Image #1\] : format non pris en charge/],
+   [{images:{n:1,path}},/Images jointes invalides/],
+   [{images:[{n:1,path},{n:1,path}]},/en double/],
+   [{images:[{n:1,path}],participants:[{personaId:'contrarian',agent:'claude'},{personaId:'outsider',agent:'grok'}]},/Outsider \(grok\) ne prend pas en charge les images/],
+  ];
+  calls.length=0;
+  for(const [patch,message] of refused){
+   response=await send('POST','/api/councils',{requestId:randomUUID(),question:'Que montre [Image #1] ?',participants,...patch});
+   assert.equal(response.statusCode,400,JSON.stringify(patch));assert.match(response.json().error,message);
+  }
+  await send('PUT','/api/council/settings',{assignments:{},defaultPersonaIds:['contrarian','executor'],chairman:{agent:'grok',model:null,effort:null},readProject:false});
+  response=await send('POST','/api/councils',{requestId:randomUUID(),question:'Que montre [Image #1] ?',participants,images:[{n:1,path}]});
+  assert.equal(response.statusCode,400);assert.match(response.json().error,/chairman \(grok\) ne prend pas en charge/);
+  await send('PUT','/api/council/settings',{assignments:{},defaultPersonaIds:['contrarian','executor'],chairman:{agent:'claude',model:null,effort:null},readProject:false});
+  assert.equal(calls.length,0);
+
+  // Run avec deux images : chaque appel (réponses, relectures, synthèse) les reçoit dans l'ordre des jetons.
+  const requestId=randomUUID();
+  response=await send('POST','/api/councils',{requestId,projectId:project.id,question:'Que montre [Image #2] ?',context:'Comparer avec [Image #1].',readProject:false,participants,images:[{n:2,path:projectPath},{n:1,path}]});
+  assert.equal(response.statusCode,202,response.body);
+  let run=await settled(send,requestId);assert.equal(run.status,'succeeded',run.error);
+  assert.deepEqual(run.images,[{n:1,path},{n:2,path:projectPath}]);
+  assert.equal(calls.length,5);
+  for(const call of calls){assert.deepEqual(call.images,[path,projectPath]);assert.match(call.prompt,/\[Image #1\], \[Image #2\]/);}
+  // Sans image, l'option n'est pas transmise.
+  calls.length=0;const plain=randomUUID();
+  assert.equal((await send('POST','/api/councils',{requestId:plain,question:'Sans image ?',participants})).statusCode,202);
+  run=await settled(send,plain);assert.equal(run.status,'succeeded',run.error);assert.deepEqual(run.images,[]);
+  for(const call of calls)assert.equal(call.images,undefined);
+
+  // Lecture des images du rapport et export.
+  response=await send('GET',`/api/councils/${requestId}/images/1`);assert.equal(response.statusCode,200);assert.equal(response.headers['content-type'],'image/png');assert.deepEqual(response.rawPayload,png);
+  assert.equal((await send('GET',`/api/councils/${requestId}/images/3`)).statusCode,404);
+  assert.equal((await send('GET',`/api/councils/${randomUUID()}/images/1`)).statusCode,404);
+  assert.match((await send('GET',`/api/councils/${requestId}/export`)).body,new RegExp(`## Images jointes\\n\\n- \\[Image #1\\] : ${path}\\n- \\[Image #2\\] : ${projectPath}`));
+
+  // La suppression du run efface ses images.
+  assert.equal((await send('DELETE',`/api/councils/${requestId}`)).statusCode,204);
+  assert.ok(!existsSync(path)&&!existsSync(projectPath));
+  assert.ok(existsSync(outside));
+ }finally{await app.close();}
 });
 
 test('project deletion cancels and awaits all its councils before removing their reports', async (t) => {
