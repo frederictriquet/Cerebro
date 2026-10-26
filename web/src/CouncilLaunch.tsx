@@ -261,6 +261,8 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
       setPending(null);
       setDraft(EMPTY_DRAFT);
       images.reset();
+      // Navigation may unmount the form before the draft effect runs: clear the stored draft now.
+      writeCouncilDraft(draftKey, EMPTY_DRAFT);
       go(`#/c/${id}`);
     };
     try {

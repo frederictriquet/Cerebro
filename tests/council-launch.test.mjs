@@ -86,6 +86,7 @@ async function fixture(t, projectId, setup = () => {}) {
   };
   const storageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
   const storage = new Map();
+  f.storage = storage;
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
     getItem: key => storage.get(key) ?? null,
     setItem: (key, value) => storage.set(key, value),
@@ -300,6 +301,19 @@ test('un rafraîchissement du catalogue retire seulement les choix des personas 
     { personaId: 'one', ...CLAUDE }, { personaId: 'two', ...SONNET }, { personaId: 'three', ...CLAUDE },
   ]);
 });
+
+for (const projectId of [undefined, 'project']) {
+  test(`un lancement réussi efface le brouillon enregistré avant la navigation (${projectId ?? 'accueil'})`, async t => {
+    const f = await fixture(t, projectId);
+    const key = `cerebro.council-draft.${projectId ?? 'home'}`;
+    assert.ok(f.storage.has(key));
+    submit(f.launch);
+    // La navigation démonte le formulaire : aucun rendu ni effet ne suit le lancement.
+    await setImmediate();
+    assert.equal(f.navigations.length, 1);
+    assert.equal(f.storage.has(key), false);
+  });
+}
 
 test('une réponse perdue retrouve le council déjà créé sans le relancer', async t => {
   const f = await fixture(t, 'project');
