@@ -392,6 +392,8 @@ export class CerebroDatabase {
       CREATE TABLE IF NOT EXISTS epic_workspaces (epic_id TEXT PRIMARY KEY REFERENCES epics(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS command_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, data TEXT NOT NULL);
     `);
+    const notificationTurnColumns = this.connection.prepare('PRAGMA table_info(notification_turns)').all() as unknown as { name: string }[];
+    if (!notificationTurnColumns.some((column) => column.name === 'automatic_status')) this.connection.exec('ALTER TABLE notification_turns ADD COLUMN automatic_status TEXT');
     // Contextes mémorisés avant la vérification complète des historiques : ils seront recontrôlés.
     const epicWorkspaceColumns = this.connection.prepare('PRAGMA table_info(epic_workspaces)').all() as unknown as { name: string }[];
     if (!epicWorkspaceColumns.some((column) => column.name === 'verified')) this.connection.exec('ALTER TABLE epic_workspaces ADD COLUMN verified INTEGER NOT NULL DEFAULT 0');

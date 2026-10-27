@@ -78,3 +78,10 @@ test('an operation seen during peer coordination is not acknowledged as sent',as
 test('a resumed turn drops the previous end-of-turn reason',()=>{
  session('resumed');manager.setReliableState('resumed','idle','Tour terminé');manager.setRunning('resumed');const s=db.getSession('resumed');assert.equal(s.status,'running');assert.equal(s.attentionReason,null);assert.equal(s.attention,false);
 });
+test('each new attention state of a turn is notified, a repeated signal is not',async()=>{
+ session('permissions');const n=posted.length;
+ manager.setReliableState('permissions','waiting','Autoriser la commande ?');await wait();assert.equal(posted.length,n+1);
+ manager.seen('permissions');manager.setReliableState('permissions','waiting','Autoriser la commande ?');await wait();assert.equal(posted.length,n+1);
+ manager.setRunning('permissions');manager.setReliableState('permissions','waiting','Autoriser la commande ?');await wait();assert.equal(posted.length,n+2);assert.match(posted.at(-1).text,/En attente/);
+ manager.setRunning('permissions');manager.setReliableState('permissions','idle','Tour terminé');await wait();assert.equal(posted.length,n+3);assert.match(posted.at(-1).text,/Tour terminé/);
+});

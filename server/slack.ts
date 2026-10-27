@@ -387,7 +387,7 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-interface NotificationTurn {started_at:number;ended_at:number|null;custom_at:number|null;relayed_at:number|null;automatic_at:number|null}
+interface NotificationTurn {started_at:number;ended_at:number|null;custom_at:number|null;relayed_at:number|null;automatic_at:number|null;automatic_status:string|null}
 
 export class SlackNotifier {
   readonly operations:OperationResults;
@@ -397,6 +397,8 @@ export class SlackNotifier {
     const session=this.db.getSession(sessionId);if(!session)return;
     this.db.connection.prepare('INSERT OR IGNORE INTO notification_turns (session_id,started_at) VALUES (?,?)').run(sessionId,session.createdAt);
     this.db.connection.prepare(`UPDATE notification_turns SET ${column}=? WHERE session_id=?`).run(Date.now(),sessionId);
+    // Remembers which state was alerted: a repeated signal is skipped, a new one stays notifiable.
+    if(column==='automatic_at')this.db.connection.prepare('UPDATE notification_turns SET automatic_status=? WHERE session_id=?').run(session.status,sessionId);
   }
   private serial(id:string,send:()=>Promise<void>):Promise<void>{
     const previous=this.outgoing.get(id)??Promise.resolve();const next=previous.catch(()=>{}).then(send);this.outgoing.set(id,next);
@@ -521,7 +523,9 @@ export class SlackNotifier {
   private onSessionEvent(event: SessionEvent): void {
     if(event.type==='session'){
       const session=event.session;const turn=this.turn(session.id);
-      if(session.status==='running'&&(!turn||turn.ended_at!==null))this.db.connection.prepare('INSERT INTO notification_turns (session_id,started_at) VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET started_at=excluded.started_at,ended_at=NULL,custom_at=NULL,relayed_at=NULL,automatic_at=NULL').run(session.id,session.updatedAt);
+      if(session.status==='running'&&(!turn||turn.ended_at!==null))this.db.connection.prepare('INSERT INTO notification_turns (session_id,started_at) VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET started_at=excluded.started_at,ended_at=NULL,custom_at=NULL,relayed_at=NULL,automatic_at=NULL,automatic_status=NULL').run(session.id,session.updatedAt);
+      // Work resumed within the turn (permission answered…): the next waiting or the final idle is a new alert.
+      else if(session.status==='running'&&turn?.automatic_status!=null)this.db.connection.prepare('UPDATE notification_turns SET automatic_status=NULL WHERE session_id=?').run(session.id);
       if(session.status==='idle'&&turn&&turn.ended_at===null)this.db.connection.prepare('UPDATE notification_turns SET ended_at=? WHERE session_id=?').run(Date.now(),session.id);
     }
     if (event.type === 'session-deleted') {
@@ -580,7 +584,7 @@ export class SlackNotifier {
     if (session === null || !session.attention || (session.status !== 'waiting' && session.status !== 'idle')) return;
     if (!this.alertWanted(session.status)) return;
     const turn=this.turn(sessionId);
-    if(turn&&(turn.automatic_at!==null||session.status==='idle'&&(turn.custom_at!==null||turn.relayed_at!==null)))return;
+    if(turn&&(turn.automatic_status===session.status||session.status==='idle'&&(turn.custom_at!==null||turn.relayed_at!==null)))return;
     // The agent just asked a question and ended its turn: keep its thread as the one to answer.
     const thread = this.threads.get(sessionId);
     if (thread?.kind === 'ask' && !thread.answered) return;
