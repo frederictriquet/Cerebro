@@ -258,10 +258,8 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
 
   const known = new Set(personas?.map((persona) => persona.id) ?? []);
   const checkedIds = (draft.personaIds ?? settings?.defaultPersonaIds ?? []).filter((id) => known.has(id));
-  const llmOf = (personaId: string): Llm | null => {
-    if (settings === null) return null;
-    return overrides[personaId] ?? assignmentOf(settings, personaId);
-  };
+  const llmOf = (loaded: CouncilSettings, personaId: string): Llm =>
+    overrides[personaId] ?? assignmentOf(loaded, personaId);
   const count = checkedIds.length;
   const countError =
     count < MIN_ADVISORS
@@ -276,8 +274,10 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
       ? []
       : [
           ...personas
-            .filter((persona) => checkedIds.includes(persona.id) && !IMAGE_AGENTS.includes(llmOf(persona.id)!.agent))
-            .map((persona) => `${persona.name} (${llmOf(persona.id)!.agent})`),
+            .filter(
+              (persona) => checkedIds.includes(persona.id) && !IMAGE_AGENTS.includes(llmOf(settings, persona.id).agent),
+            )
+            .map((persona) => `${persona.name} (${llmOf(settings, persona.id).agent})`),
           ...(IMAGE_AGENTS.includes(settings.chairman.agent) ? [] : [`chairman (${settings.chairman.agent})`]),
         ];
   const imageError =
@@ -340,7 +340,7 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
   };
 
   const launch = async (): Promise<void> => {
-    if (!canLaunch || personas === null) return;
+    if (!canLaunch || personas === null || settings === null) return;
     setBusy(true);
     setError(null);
     let attempt: PendingLaunch | null = null;
@@ -356,7 +356,7 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
       // Ordre du catalogue, indépendant de l'ordre des clics.
       const participants = personas
         .filter((persona) => checkedIds.includes(persona.id))
-        .map((persona) => ({ personaId: persona.id, ...llmOf(persona.id)! }));
+        .map((persona) => ({ personaId: persona.id, ...llmOf(settings, persona.id) }));
       const input: Omit<CouncilStartInput, 'requestId'> = {
         projectId: scope,
         question: draft.question.trim(),
@@ -486,7 +486,7 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
             <CouncilAdvisorList
               personas={personas}
               checkedIds={checkedIds}
-              llmOf={(id) => llmOf(id)!}
+              llmOf={(id) => llmOf(settings, id)}
               defaultsOf={(id) => assignmentOf(settings, id)}
               disabled={busy}
               onToggle={toggle}

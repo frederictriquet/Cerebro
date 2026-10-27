@@ -237,10 +237,19 @@ function run(configPath: string): void {
       while (newline >= 0) {
         const line = input.slice(0, newline);
         input = input.slice(newline + 1);
+        let message: ClientMessage | undefined;
         try {
-          handleMessage(JSON.parse(line) as ClientMessage);
+          message = JSON.parse(line) as ClientMessage;
         } catch {
-          // Ignore malformed or incomplete client messages.
+          // Skip the malformed message; its content may hold terminal input, so only its size is logged.
+          report(`Message client illisible ignoré (${line.length} caractères)`);
+        }
+        if (message !== undefined) {
+          try {
+            handleMessage(message);
+          } catch (error) {
+            report(error);
+          }
         }
         newline = input.indexOf('\n');
       }

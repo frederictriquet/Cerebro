@@ -51,13 +51,18 @@ const headOf = (path: string): string | null => {
   try {
     return (
       execFileSync('git', ['-C', path, 'rev-parse', '--verify', 'HEAD'], {
-        stdio: ['ignore', 'pipe', 'ignore'],
+        stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 5000,
+        env: { ...process.env, LC_ALL: 'C' },
       })
         .toString()
         .trim() || null
     );
-  } catch {
+  } catch (error) {
+    const detail = String((error as { stderr?: unknown }).stderr ?? '').trim() || (error as Error).message;
+    // No repository or no commit yet: no base to record, as expected.
+    if (!/not a git repository|Needed a single revision|cannot change to .*No such file or directory/.test(detail))
+      console.warn(`[epic-runner] HEAD illisible pour ${path} :`, detail);
     return null;
   }
 };

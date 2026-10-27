@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { AGENTS } from './agents.ts';
 import type { Catalog } from './catalog.ts';
 import type { Agent, Effort } from './db.ts';
+import type { JsonSchema } from './headless.ts';
 
 // Une persona du catalogue de la machine : un angle de réflexion, indépendant de l'agent qui la joue.
 export interface Persona {
@@ -409,14 +410,14 @@ export function convertLegacyCouncilSettings(
 
 // --- Déroulement d'un council : prompts, anonymisation, relecture et rapport (fonctions pures) ---
 
-export const ANSWER_SCHEMA = {
+export const ANSWER_SCHEMA: JsonSchema = {
   type: 'object',
   additionalProperties: false,
   required: ['answer'],
   properties: { answer: { type: 'string' } },
 };
 
-export const REVIEW_SCHEMA = {
+export const REVIEW_SCHEMA: JsonSchema = {
   type: 'object',
   additionalProperties: false,
   required: ['ranking', 'blindSpot', 'missed'],
@@ -437,7 +438,7 @@ export const REVIEW_SCHEMA = {
 
 const SYNTHESIS_FIELDS = ['agreements', 'disagreements', 'blindSpots', 'recommendation', 'firstAction'] as const;
 
-export const SYNTHESIS_SCHEMA = {
+export const SYNTHESIS_SCHEMA: JsonSchema = {
   type: 'object',
   additionalProperties: false,
   required: [...SYNTHESIS_FIELDS],

@@ -49,7 +49,15 @@ export class CommandExecutor {
             readFileSync(`/proc/${run.pid}/environ`).toString().split('\0').includes(`CEREBRO_COMMAND_RUN=${run.id}`)
           )
             process.kill(-run.pid, 'SIGKILL');
-        } catch {}
+        } catch (error) {
+          // ENOENT/ESRCH: the process is already gone, which is the usual case after a restart.
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'ENOENT' && code !== 'ESRCH')
+            console.warn(
+              `[commands] arrêt impossible de la commande ${run.id} (pid ${run.pid}) :`,
+              error instanceof Error ? error.message : error,
+            );
+        }
         run.status = 'interrupted';
         run.error = 'Serveur redémarré : résultat inconnu, commande non relancée.';
         run.finishedAt = Date.now();

@@ -29,13 +29,19 @@ function codexRolloutExists(threadId: string): boolean {
     );
     try {
       if (readdirSync(dir).some((name) => name.endsWith(`${threadId}.jsonl`))) return true;
-    } catch {
+    } catch (error) {
       // Directory missing: keep looking.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+        console.warn(`[hooks] rollouts Codex illisibles dans ${dir} :`, error instanceof Error ? error.message : error);
     }
   }
   return false;
 }
 
+/**
+ * Rewritten at each server start and never removed: the hook is a no-op outside Cerebro sessions.
+ * To uninstall, stop Cerebro then delete the file (see README, « Désinstallation »).
+ */
 export function installGrokHook(path = join(homedir(), '.grok', 'hooks', 'cerebro.json')): void {
   const contents = `${JSON.stringify(getGrokHookSettings(), null, 2)}\n`;
   let current: string | null = null;

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CommitSettings } from './db.ts';
 import type { GitCandidate } from './git-plan.ts';
-import { runHeadless } from './headless.ts';
+import { runHeadless, type JsonSchema } from './headless.ts';
 
 export interface CommitProposal {
   commits: { message: string; paths: string[] }[];
@@ -13,7 +13,7 @@ export interface ProposalContext {
   log: string;
   settings: CommitSettings;
 }
-const SCHEMA = {
+const SCHEMA: JsonSchema = {
   type: 'object',
   additionalProperties: false,
   required: ['commits'],

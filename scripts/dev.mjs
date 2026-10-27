@@ -81,7 +81,8 @@ function scheduleRestart(file) {
 }
 
 for (const dir of WATCH_DIRS) {
-  watch(join(root, dir), (_event, file) => {
+  // Recursive so that a future subdirectory also triggers a restart (supported on Linux since Node 20).
+  watch(join(root, dir), { recursive: true }, (_event, file) => {
     if (file && WATCH_EXT.test(file)) scheduleRestart(`${dir}/${file}`);
   });
 }
@@ -89,11 +90,13 @@ for (const dir of WATCH_DIRS) {
 start('server');
 start('web');
 
-function stop(code = 0) {
+async function stop(code = 0) {
   if (stopping) return;
   stopping = true;
-  for (const child of Object.values(children)) if (child.exitCode === null) child.kill('SIGTERM');
-  setTimeout(() => process.exit(code), 1500).unref();
+  clearTimeout(restartTimer);
+  // kill() escalates to SIGKILL after 3 s, so this always settles.
+  await Promise.all(Object.values(children).map(kill));
+  process.exit(code);
 }
 process.on('SIGINT', () => stop(0));
 process.on('SIGTERM', () => stop(0));

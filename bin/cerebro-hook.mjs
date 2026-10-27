@@ -4,15 +4,14 @@ const sessionId = process.env.CEREBRO_SESSION_ID;
 const baseUrl = process.env.CEREBRO_URL;
 
 if (sessionId && baseUrl) {
-  const agent = process.argv[2] ?? '';
-  const event = process.argv[3] ?? '';
+  const [, , agent = '', event = '', ...args] = process.argv;
   let payload = {};
 
   try {
     let raw = '';
     if (agent === 'codex') {
-      raw = process.argv.at(-1) ?? '';
-      if (process.argv.length <= 4) raw = '';
+      // Codex appends the JSON payload as the last argument.
+      raw = args.at(-1) ?? '';
     } else {
       for await (const chunk of process.stdin) raw += chunk;
     }

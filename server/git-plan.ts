@@ -1,7 +1,18 @@
 import { canonicalWorktreePath, type WorktreeGate } from './worktree-gate.ts';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdtemp, open, readFile, readlink, rename, rm, utimes, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdtemp,
+  open,
+  readFile,
+  readlink,
+  rename,
+  rm,
+  utimes,
+  writeFile,
+  type FileHandle,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { GitPushes } from './git-push.ts';
@@ -288,6 +299,130 @@ async function mergedIndex(
   }
 }
 
+/** The real index of a repository and, while a plan runs, the handle of its lock file. */
+interface IndexLock {
+  index: string;
+  handle: FileHandle | null;
+}
+/** One commit of a plan, built in temporary indexes before anything is written. */
+interface PreparedCommit {
+  tree: string;
+  /** Index holding exactly the commit's tree. */
+  index: string;
+  /** The preexisting index with this commit's changes merged in: the real index once it is committed. */
+  merged: string;
+  message: string;
+}
+/** Whether the branch, HEAD, worktree and index are still those of the snapshot. */
+async function matchesSnapshot(saved: Saved, path: string): Promise<boolean> {
+  return (
+    saved.branch === (await branch(path)) &&
+    saved.snapshot.head === (await head(path)) &&
+    saved.work === (await workHash(path)) &&
+    saved.index === (await indexHash(path))
+  );
+}
+/** Files, or hunks, of the snapshot that no commit of the plan selects. */
+function exclusions(plan: CommitPlan, snapshot: GitSnapshot): string[] {
+  const selectedPaths = new Set(plan.commits.flatMap((step) => step.selection.map((s) => s.path)));
+  return snapshot.files.flatMap((f) => {
+    if (!selectedPaths.has(f.path)) return [f.path];
+    const selections = plan.commits.flatMap((c) => c.selection).filter((s) => s.path === f.path);
+    if (selections.some((s) => s.all)) return [];
+    const selectedHunks = new Set(selections.flatMap((s) => s.hunks ?? []));
+    return f.hunks.filter((h) => !selectedHunks.has(h.id)).map((h) => `${f.path} (hunk ${h.id})`);
+  });
+}
+/** Tree of the preexisting index, read from a copy of it so the real one stays untouched. */
+async function stagedTree(path: string, index: string, dir: string): Promise<string> {
+  const original = join(dir, 'original');
+  const bytes = await readFile(index).catch((cause) => {
+    if (cause.code === 'ENOENT') return null;
+    throw cause;
+  });
+  if (bytes) await writeFile(original, bytes);
+  else await git(path, ['read-tree', '--empty'], original);
+  return (await git(path, ['write-tree'], original)).trim();
+}
+/** Patch of a selection: the whole file, or its selected hunks in their original order. */
+function selectionPatch(plan: CommitPlan, snapshot: GitSnapshot, selection: CommitSelection): string {
+  const file = snapshot.files.find((f) => f.path === selection.path);
+  if (!file) throw new Error(`Fichier absent de la sélection collectée : ${selection.path}`);
+  if (file.blocked) throw new Error(`Secret détecté, fichier exclu : ${file.path}`);
+  if (file.warnings.length && !plan.acknowledged.includes(file.path))
+    throw new Error(`Vérification explicite requise : ${file.path}`);
+  if (selection.all) return file.diff;
+  const hunks = selection.hunks!.map((id) => file.hunks.find((h) => h.id === id));
+  if (hunks.some((h) => !h)) throw new Error(`Hunk inconnu : ${file.path}`);
+  // Reuse one header and keep the original hunk order.
+  const wanted = new Set(selection.hunks);
+  return file.hunks
+    .filter((h) => wanted.has(h.id))
+    .map((h) => h.patch)
+    .join('');
+}
+/**
+ * Builds every commit of the plan in temporary indexes, each on top of the previous one, and checks that the
+ * preexisting index can be kept around them. Nothing in the repository changes.
+ */
+async function prepareCommits(
+  path: string,
+  plan: CommitPlan,
+  snapshot: GitSnapshot,
+  index: string,
+  dir: string,
+): Promise<PreparedCommit[]> {
+  let base = snapshot.head ?? EMPTY;
+  let staged = await stagedTree(path, index, dir);
+  const prepared: PreparedCommit[] = [];
+  for (const [n, step] of plan.commits.entries()) {
+    const temporary = join(dir, `commit-${n}`);
+    await git(path, ['read-tree', base], temporary);
+    for (const selection of step.selection)
+      // --3way rebases later hunks on the commits already prepared from this snapshot.
+      await git(
+        path,
+        ['apply', '--cached', '--3way', '--whitespace=nowarn'],
+        temporary,
+        selectionPatch(plan, snapshot, selection),
+      );
+    const tree = (await git(path, ['write-tree'], temporary)).trim();
+    const baseTree = (await git(path, ['rev-parse', `${base}^{tree}`])).trim();
+    if (tree === baseTree) throw new Error('Commit vide dans le plan.');
+    const merged = join(dir, `merged-${n}`);
+    await mergedIndex(path, base, tree, staged, merged, dir);
+    prepared.push({ tree, index: temporary, merged, message: step.message });
+    staged = (await git(path, ['write-tree'], merged)).trim();
+    base = tree;
+  }
+  return prepared;
+}
+/**
+ * Commits one prepared step and records it in `result`, then refuses a commit whose parent or tree is not the
+ * expected one (a concurrent reference change, or a hook that edited the selection). Returns its hash.
+ */
+async function commitStep(
+  path: string,
+  step: PreparedCommit,
+  expectedHead: string | null,
+  result: CommitResult,
+): Promise<string> {
+  await git(path, ['commit', '--file=-'], step.index, step.message);
+  const oid = (await head(path))!;
+  const actualTree = (await git(path, ['rev-parse', 'HEAD^{tree}'])).trim();
+  const parents = (await git(path, ['rev-list', '--parents', '-n', '1', oid])).trim().split(' ').slice(1);
+  if (parents.join(' ') !== (expectedHead ?? ''))
+    throw new Error(
+      `Parent inattendu pour ${oid} : modification concurrente des références, vérification manuelle requise.`,
+    );
+  result.commits.push({ hash: oid, title: (await git(path, ['log', '-1', '--format=%s'])).trim() });
+  if (actualTree !== step.tree)
+    throw new Error(
+      `Le hook a modifié la sélection du commit ${oid} ; index préexistant conservé, vérification manuelle requise.`,
+    );
+  return oid;
+}
+
 export function selectionDiff(snapshot: GitSnapshot, selections: CommitSelection[]): string {
   const validated = parseCommitPlan({
     snapshotId: snapshot.id,
@@ -432,122 +567,24 @@ export class GitPlanner {
     const index = await indexPath(path);
     if (this.locks.has(index)) throw new Error('Un commit est déjà en cours dans ce dépôt.');
     this.locks.add(index);
-    let lock: Awaited<ReturnType<typeof open>> | null = null;
+    const lock: IndexLock = { index, handle: null };
     const dir = await mkdtemp(join(tmpdir(), 'cerebro-execute-'));
     const result: CommitResult = { commits: [], exclusions: [], error: null, pushId: null };
     try {
-      lock = await open(`${index}.lock`, 'wx');
+      lock.handle = await open(`${index}.lock`, 'wx');
       this.gate.assertAvailable(path);
-      if (
-        saved.branch !== (await branch(path)) ||
-        saved.snapshot.head !== (await head(path)) ||
-        saved.work !== (await workHash(path)) ||
-        saved.index !== (await indexHash(path))
-      )
-        throw new Error('État Git obsolète : préparez un nouveau plan.');
-      const selectedPaths = new Set(plan.commits.flatMap((step) => step.selection.map((s) => s.path)));
-      result.exclusions = saved.snapshot.files.flatMap((f) => {
-        if (!selectedPaths.has(f.path)) return [f.path];
-        const selections = plan.commits.flatMap((c) => c.selection).filter((s) => s.path === f.path);
-        if (selections.some((s) => s.all)) return [];
-        const selectedHunks = new Set(selections.flatMap((s) => s.hunks ?? []));
-        return f.hunks.filter((h) => !selectedHunks.has(h.id)).map((h) => `${f.path} (hunk ${h.id})`);
-      });
-      let base = saved.snapshot.head ?? EMPTY;
-      const original = join(dir, 'original');
-      const bytes = await readFile(index).catch((cause) => {
-        if (cause.code === 'ENOENT') return null;
-        throw cause;
-      });
-      if (bytes) await writeFile(original, bytes);
-      else await git(path, ['read-tree', '--empty'], original);
-      let staged = (await git(path, ['write-tree'], original)).trim();
-      const prepared: { tree: string; index: string; merged: string; message: string }[] = [];
-      for (const [n, step] of plan.commits.entries()) {
-        const temporary = join(dir, `commit-${n}`);
-        await git(path, ['read-tree', base], temporary);
-        for (const selection of step.selection) {
-          const file = saved.snapshot.files.find((f) => f.path === selection.path);
-          if (!file) throw new Error(`Fichier absent de la sélection collectée : ${selection.path}`);
-          if (file.blocked) throw new Error(`Secret détecté, fichier exclu : ${file.path}`);
-          if (file.warnings.length && !plan.acknowledged.includes(file.path))
-            throw new Error(`Vérification explicite requise : ${file.path}`);
-          let patch = file.diff;
-          if (!selection.all) {
-            const hunks = selection.hunks!.map((id) => file.hunks.find((h) => h.id === id));
-            if (hunks.some((h) => !h)) throw new Error(`Hunk inconnu : ${file.path}`);
-            // Reuse one header and keep the original hunk order.
-            const wanted = new Set(selection.hunks);
-            patch = file.hunks
-              .filter((h) => wanted.has(h.id))
-              .map((h) => h.patch)
-              .join('');
-          }
-          // --3way rebases later hunks on the commits already prepared from this snapshot.
-          await git(path, ['apply', '--cached', '--3way', '--whitespace=nowarn'], temporary, patch);
-        }
-        const tree = (await git(path, ['write-tree'], temporary)).trim();
-        const baseTree = (await git(path, ['rev-parse', `${base}^{tree}`])).trim();
-        if (tree === baseTree) throw new Error('Commit vide dans le plan.');
-        const merged = join(dir, `merged-${n}`);
-        await mergedIndex(path, base, tree, staged, merged, dir);
-        prepared.push({ tree, index: temporary, merged, message: step.message });
-        staged = (await git(path, ['write-tree'], merged)).trim();
-        base = tree;
-      }
+      if (!(await matchesSnapshot(saved, path))) throw new Error('État Git obsolète : préparez un nouveau plan.');
+      result.exclusions = exclusions(plan, saved.snapshot);
+      const prepared = await prepareCommits(path, plan, saved.snapshot, index, dir);
       // Everything, including index preservation, is checked before the first mutation.
-      if (
-        saved.branch !== (await branch(path)) ||
-        saved.snapshot.head !== (await head(path)) ||
-        saved.work !== (await workHash(path)) ||
-        saved.index !== (await indexHash(path))
-      )
-        throw new Error('État Git obsolète avant exécution.');
+      if (!(await matchesSnapshot(saved, path))) throw new Error('État Git obsolète avant exécution.');
       saved.used = true;
-      let expectedHead = saved.snapshot.head;
-      let expectedIndex = saved.index;
-      for (const step of prepared) {
-        this.gate.assertAvailable(path);
-        if (
-          saved.branch !== (await branch(path)) ||
-          (await head(path)) !== expectedHead ||
-          saved.work !== (await workHash(path)) ||
-          expectedIndex !== (await indexHash(path))
-        )
-          throw new Error('Modifications concurrentes : exécution interrompue.');
-        await git(path, ['commit', '--file=-'], step.index, step.message);
-        const oid = (await head(path))!;
-        const actualTree = (await git(path, ['rev-parse', 'HEAD^{tree}'])).trim();
-        const parents = (await git(path, ['rev-list', '--parents', '-n', '1', oid])).trim().split(' ').slice(1);
-        if (parents.join(' ') !== (expectedHead ?? ''))
-          throw new Error(
-            `Parent inattendu pour ${oid} : modification concurrente des références, vérification manuelle requise.`,
-          );
-        result.commits.push({ hash: oid, title: (await git(path, ['log', '-1', '--format=%s'])).trim() });
-        if (actualTree !== step.tree)
-          throw new Error(
-            `Le hook a modifié la sélection du commit ${oid} ; index préexistant conservé, vérification manuelle requise.`,
-          );
-        // Atomic replacement under the real index lock, never a git add/reset on unrelated paths.
-        const mergedBytes = await readFile(step.merged);
-        expectedIndex = hash(mergedBytes);
-        await writeFile(`${index}.lock`, mergedBytes);
-        await rename(`${index}.lock`, index);
-        await lock.close();
-        lock = null;
-        lock = await open(`${index}.lock`, 'wx');
-        this.gate.assertAvailable(path);
-        if (expectedIndex !== (await indexHash(path)))
-          throw new Error('L’index a changé entre deux commits : exécution interrompue.');
-        expectedHead = oid;
-        if (saved.work !== (await workHash(path)))
-          throw new Error('Le worktree a changé pendant le commit (hook ou édition externe) : vérification requise.');
-      }
+      await this.commitPrepared(path, saved, prepared, lock, result);
     } catch (cause) {
       result.error = cause instanceof Error ? cause.message : String(cause);
     } finally {
-      if (lock) {
-        await lock.close();
+      if (lock.handle) {
+        await lock.handle.close();
         await rm(`${index}.lock`, { force: true });
       }
       await rm(dir, { recursive: true, force: true });
@@ -557,17 +594,51 @@ export class GitPlanner {
     return result;
   }
 
+  /**
+   * Commits the prepared steps one at a time while holding the real index lock. Before each commit, the branch,
+   * the worktree and the index must be exactly as the previous step left them.
+   */
+  private async commitPrepared(
+    path: string,
+    saved: Saved,
+    prepared: PreparedCommit[],
+    lock: IndexLock,
+    result: CommitResult,
+  ): Promise<void> {
+    let expectedHead = saved.snapshot.head;
+    let expectedIndex = saved.index;
+    for (const step of prepared) {
+      this.gate.assertAvailable(path);
+      if (
+        saved.branch !== (await branch(path)) ||
+        (await head(path)) !== expectedHead ||
+        saved.work !== (await workHash(path)) ||
+        expectedIndex !== (await indexHash(path))
+      )
+        throw new Error('Modifications concurrentes : exécution interrompue.');
+      const oid = await commitStep(path, step, expectedHead, result);
+      // Atomic replacement under the real index lock, never a git add/reset on unrelated paths.
+      const mergedBytes = await readFile(step.merged);
+      expectedIndex = hash(mergedBytes);
+      await writeFile(`${lock.index}.lock`, mergedBytes);
+      await rename(`${lock.index}.lock`, lock.index);
+      await lock.handle!.close();
+      lock.handle = null;
+      lock.handle = await open(`${lock.index}.lock`, 'wx');
+      this.gate.assertAvailable(path);
+      if (expectedIndex !== (await indexHash(path)))
+        throw new Error('L’index a changé entre deux commits : exécution interrompue.');
+      expectedHead = oid;
+      if (saved.work !== (await workHash(path)))
+        throw new Error('Le worktree a changé pendant le commit (hook ou édition externe) : vérification requise.');
+    }
+  }
+
   async verifySnapshot(path: string, id: string): Promise<GitSnapshot> {
     const saved = this.snapshots.get(id);
     const top = (await git(path, ['rev-parse', '--show-toplevel'])).trim();
     if (!saved || saved.path !== top) throw new Error('Sélection absente ou expirée.');
-    if (
-      saved.branch !== (await branch(top)) ||
-      saved.snapshot.head !== (await head(top)) ||
-      saved.work !== (await workHash(top)) ||
-      saved.index !== (await indexHash(top))
-    )
-      throw new Error('Sélection obsolète : HEAD, index ou worktree a changé.');
+    if (!(await matchesSnapshot(saved, top))) throw new Error('Sélection obsolète : HEAD, index ou worktree a changé.');
     return saved.snapshot;
   }
   /** Diffs shown to the user by a still-retained snapshot of `root`, so a later plan can prove a file was reviewed as is. */

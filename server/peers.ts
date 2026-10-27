@@ -225,7 +225,17 @@ function stateFrom(value: unknown): PeerState {
   return state;
 }
 
-// Dernier écrit gagne ; à date égale, le plus grand identifiant, pour que tout le monde tranche pareil.
+/**
+ * Convention d'élection entre machines : à égalité, le plus petit identifiant d'instance l'emporte (machine qui
+ * répond pendant un conflit de nom, commandes Slack générales, attribution automatique d'un projet commun).
+ */
+function elected(ids: string[]): string | undefined {
+  return [...ids].sort()[0];
+}
+
+// Fusion des claims : dernier écrit gagne ; à date égale, le plus grand propriétaire, pour que toutes les machines
+// gardent le même claim. Ce n'est pas une élection (voir `elected`) : changer ce départage ferait diverger des
+// machines de versions différentes qui tiennent chacune un claim concurrent.
 function newer(candidate: Claim, current: Claim | undefined): boolean {
   if (current === undefined) return true;
   if (candidate.at !== current.at) return candidate.at > current.at;
@@ -268,6 +278,8 @@ export class PeerSync {
   private readonly remoteVersions = new Map<string, RemoteVersionStatus>();
   private readonly timer: NodeJS.Timeout;
   private state: PeerState;
+  /** Dernier état écrit (ou chargé) : `save` n'écrit que ce qui a changé depuis. */
+  private saved: string;
   private syncing: Promise<void> | null = null;
   private slackPoster: ((text: string) => Promise<void>) | null = null;
   private markReady: () => void = () => {};
@@ -285,6 +297,7 @@ export class PeerSync {
     this.db = db;
     this.onChange = onChange;
     this.state = existsSync(STATE_FILE) ? this.loadState() : stateFrom(null);
+    this.saved = JSON.stringify(this.state, null, 2);
     this.timer = setInterval(() => void this.sync(), SYNC_INTERVAL_MS);
     this.timer.unref();
     void this.sync();
@@ -378,7 +391,7 @@ export class PeerSync {
   conflictResponder(project: Project): boolean {
     return this.matches(normalizeProjectName(project.name), this.origins.get(project.id))
       .filter((match) => !match.sameRepository)
-      .every((match) => this.instanceId < match.id);
+      .every((match) => elected([this.instanceId, match.id]) === this.instanceId);
   }
 
   /** Un pair connaît-il un projet désigné par ce nom (exact, ou aussi par préfixe comme les commandes Slack) ? */
@@ -581,14 +594,14 @@ export class PeerSync {
     if (claim !== undefined && (claim.owner === this.instanceId || active.includes(claim.owner))) {
       return { id: claim.owner, manual: true };
     }
-    return { id: [this.instanceId, ...active].sort()[0] ?? this.instanceId, manual: false };
+    return { id: elected([this.instanceId, ...active]) ?? this.instanceId, manual: false };
   }
 
   /** Propriétaire effectif : un claim ne compte que si son détenteur a toujours le même projet. */
-  private ownerOf(name: string): string | null {
+  private ownerOf(name: string, projects = this.db.listProjects()): string | null {
     const claim = this.state.claims[name];
     if (claim === undefined) return null;
-    const project = this.db.listProjects().find((candidate) => normalizeProjectName(candidate.name) === name);
+    const project = projects.find((candidate) => normalizeProjectName(candidate.name) === name);
     if (project === undefined) return null;
     const matches = this.matches(name, this.origins.get(project.id));
     if (matches.some((match) => !match.sameRepository)) return null;
@@ -598,8 +611,8 @@ export class PeerSync {
 
   // Le projet apparu le plus récemment prend la main : connexion de deux machines qui l'avaient déjà
   // (choix automatique), ou création / renommage pendant qu'elles sont connectées.
-  private applyAutoClaims(): void {
-    for (const project of this.db.listProjects()) {
+  private applyAutoClaims(projects: Project[]): void {
+    for (const project of projects) {
       const name = normalizeProjectName(project.name);
       const origin = this.origins.get(project.id);
       if (origin == null) continue;
@@ -608,7 +621,8 @@ export class PeerSync {
         const remote = peer.projects.find((candidate) => normalizeProjectName(candidate.name) === name);
         if (remote === undefined || remote.origin !== origin) continue;
         const local = this.appearedAt(project);
-        const localWins = local !== remote.appearedAt ? local > remote.appearedAt : this.instanceId > id;
+        const localWins =
+          local !== remote.appearedAt ? local > remote.appearedAt : elected([this.instanceId, id]) === this.instanceId;
         const claim: Claim = {
           owner: localWins ? this.instanceId : id,
           ownerName: localWins ? MACHINE_NAME : peer.machine,
@@ -621,26 +635,23 @@ export class PeerSync {
   }
 
   private mutate(change: () => void): void {
+    // `change` ne touche pas aux projets : une seule lecture sert à tout le tour.
     const projects = this.db.listProjects();
-    const before = new Map(projects.map((project) => [project.id, this.ownerOf(normalizeProjectName(project.name))]));
-    const serialized = JSON.stringify(this.state);
+    const before = projects.map((project) => this.ownerOf(normalizeProjectName(project.name), projects));
     change();
     for (const [id, peer] of Object.entries(this.state.peers)) {
       if (Date.now() - peer.lastSeen > PEER_MAX_AGE_MS) delete this.state.peers[id];
     }
-    this.applyAutoClaims();
-    for (const project of this.db.listProjects()) {
-      if (before.has(project.id)) this.announceOwnership(project, before.get(project.id) ?? null);
-    }
-    this.announceConflicts();
-    if (JSON.stringify(this.state) === serialized) return;
-    this.save();
+    this.applyAutoClaims(projects);
+    projects.forEach((project, index) => this.announceOwnership(project, before[index], projects));
+    this.announceConflicts(projects);
+    if (!this.save()) return;
     this.onChange();
   }
 
-  private announceOwnership(project: Project, previous: string | null): void {
+  private announceOwnership(project: Project, previous: string | null, projects: Project[]): void {
     const name = normalizeProjectName(project.name);
-    const owner = this.ownerOf(name);
+    const owner = this.ownerOf(name, projects);
     if (owner === previous || owner === null) return;
     const claim = this.state.claims[name];
     if (claim === undefined) return;
@@ -662,9 +673,9 @@ export class PeerSync {
     );
   }
 
-  private announceConflicts(): void {
+  private announceConflicts(projects: Project[]): void {
     const active = new Set<string>();
-    for (const project of this.db.listProjects()) {
+    for (const project of projects) {
       for (const match of this.matches(normalizeProjectName(project.name), this.origins.get(project.id))) {
         if (match.sameRepository) continue;
         const key = `${project.id}:${match.id}`;
@@ -672,7 +683,7 @@ export class PeerSync {
         if (this.state.announced.includes(key)) continue;
         const text = `« ${project.name} » existe aussi sur ${match.machine} mais pointe vers un autre dépôt git : ses commandes Slack sont bloquées sur les deux machines tant que l'un des projets n'est pas renommé.`;
         this.addNotice(project.name, text);
-        if (this.instanceId < match.id) {
+        if (elected([this.instanceId, match.id]) === this.instanceId) {
           void this.slackPoster?.(`:no_entry: ${text}`).catch((error: unknown) => this.logError(error));
         }
       }
@@ -696,12 +707,17 @@ export class PeerSync {
     }
   }
 
-  private save(): void {
+  /** Écrit l'état s'il diffère de la dernière version écrite ; false quand rien n'a changé. */
+  private save(): boolean {
+    const serialized = JSON.stringify(this.state, null, 2);
+    if (serialized === this.saved) return false;
+    this.saved = serialized;
     try {
-      writeFileSync(STATE_FILE, `${JSON.stringify(this.state, null, 2)}\n`);
+      writeFileSync(STATE_FILE, `${serialized}\n`);
     } catch (error) {
       this.logError(error);
     }
+    return true;
   }
 
   private logError(error: unknown): void {

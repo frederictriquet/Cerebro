@@ -513,6 +513,23 @@ utilisez `systemctl --user restart cerebro.service`. Pour conserver les services
 utilisateur sans session ouverte, l'administrateur peut activer le linger avec
 `loginctl enable-linger "$USER"`.
 
+## Désinstallation
+
+Hors de son dossier de données et de l'éventuelle unité systemd, Cerebro n'écrit
+que le hook Grok `~/.grok/hooks/cerebro.json`, réécrit à chaque démarrage du serveur et jamais
+retiré automatiquement. Arrêtez d'abord Cerebro (et le service systemd s'il est
+installé), puis supprimez ce hook et, si vous ne conservez rien, les données :
+
+```sh
+systemctl --user disable --now cerebro.service   # si le service est installé
+rm -f ~/.config/systemd/user/cerebro.service
+rm -f ~/.grok/hooks/cerebro.json
+rm -rf ~/.cerebro                                # $CEREBRO_DATA_DIR : données, logs, worktrees (irréversible)
+```
+
+Après suppression des worktrees, `git worktree prune` nettoie leurs références
+dans chaque dépôt concerné.
+
 ## Limites connues
 
 - Les TUI évoluent : la détection visuelle peut manquer un nouveau dialogue ou

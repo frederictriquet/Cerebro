@@ -107,6 +107,10 @@ test('preview is bounded while the full count remains available', async () => {
 test('missing repository, unborn branch and missing upstream never invent commits to push', async () => {
   const directory = mkdtempSync(join(root, 'plain-'));
   assert.equal((await gitSummary(directory, true)).hasCommits, false);
+  assert.equal((await gitSummary(join(root, 'missing'), true)).branch, null);
+  // A failure is not "not a repository": it must not pass for a clean tree.
+  writeFileSync(join(directory, 'file'), 'not a folder\n');
+  await assert.rejects(gitSummary(join(directory, 'file')), /Lecture Git impossible/);
   const repo = fixture();
   assert.deepEqual(await gitSummary(repo, true), {
     branch: 'main',

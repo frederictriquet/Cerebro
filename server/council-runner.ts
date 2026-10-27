@@ -29,7 +29,7 @@ import {
   type CouncilSettings,
 } from './council.ts';
 import type { Agent, CerebroDatabase, Project } from './db.ts';
-import { imageMediaType, runHeadless, supportsImages, type HeadlessOptions } from './headless.ts';
+import { imageMediaType, runHeadless, supportsImages, type HeadlessOptions, type JsonSchema } from './headless.ts';
 
 export const ANSWER_TIMEOUT_MS = 10 * 60_000;
 export const REVIEW_TIMEOUT_MS = 5 * 60_000;
@@ -291,7 +291,7 @@ export class CouncilRuns {
     const call = (
       advisor: Advisor | CouncilSettings['chairman'],
       prompt: string,
-      schema: object,
+      schema: JsonSchema,
       timeoutMs: number,
       access: HeadlessOptions['access'] = 'none',
     ): Promise<unknown> =>

@@ -54,13 +54,17 @@ export function EpicRunPanel({
     perform(() => setEpicRunAutoValidation(run.id, enabled));
   };
   const action = (name: 'stop' | 'resume' | 'validate'): void => {
-    if (pending || (name === 'validate' && !run.currentTaskId)) return;
-    perform(() =>
-      name === 'validate' ? updateTask(run.currentTaskId!, { status: 'done' }) : controlEpicRun(run, name),
-    );
+    if (pending) return;
+    if (name !== 'validate') {
+      perform(() => controlEpicRun(run, name));
+      return;
+    }
+    const taskId = run.currentTaskId;
+    if (taskId) perform(() => updateTask(taskId, { status: 'done' }));
   };
   const needsAction = RUN_NEEDS_ACTION.includes(run.status);
-  const awaitingValidation = run.status === 'waiting-validation' && run.currentTaskId !== null;
+  const awaitingTaskId = run.status === 'waiting-validation' ? run.currentTaskId : null;
+  const awaitingValidation = awaitingTaskId !== null;
   const results = Object.entries(run.results);
   return (
     <div className="epic-run">
@@ -110,11 +114,11 @@ export function EpicRunPanel({
         />
       ) : null}
       {needsAction && run.error && !run.workspaceConflict ? <p className="epic-run-reason">{run.error}</p> : null}
-      {awaitingValidation ? (
+      {awaitingTaskId !== null ? (
         <p className="epic-run-reason">
-          Étape à valider : {taskLabel(run.currentTaskId!)}. Vérifiez le résultat et les critères de la tâche, puis
-          marquez cette étape terminée pour poursuivre l’epic. Reprendre et recalculer actualise le plan, sans valider
-          le travail.
+          Étape à valider : {taskLabel(awaitingTaskId)}. Vérifiez le résultat et les critères de la tâche, puis marquez
+          cette étape terminée pour poursuivre l’epic. Reprendre et recalculer actualise le plan, sans valider le
+          travail.
         </p>
       ) : null}
       {RUN_ACTIVE.includes(run.status) || RUN_RESUMABLE.includes(run.status) ? (

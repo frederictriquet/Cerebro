@@ -440,6 +440,384 @@ function changedFiles(status: string): string[] {
   }
   return files;
 }
+/** Every change Git reports in a worktree, untracked files and submodules included. */
+const STATUS = ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'];
+const underShared = (path: string, shared: Iterable<string>): boolean =>
+  [...shared].some((name) => path === name || path.startsWith(`${name}/`));
+/**
+ * Checks that the record still designates the same Git worktree, then reads its branch, its head and the
+ * worktrees its commits can be merged into. Returns its entry in Git's inventory.
+ */
+async function inspectIdentity(record: WorktreeRecord, view: WorktreeView): Promise<RegisteredWorktree> {
+  const common = await commonDirectory(record.path);
+  if (common !== record.commonDir) throw new WorktreeError('Le chemin désigne un autre dépôt : gestion refusée.');
+  const listing = await registered(record.path);
+  const entry = listing.find((w) => resolve(w.path) === record.path);
+  if (!entry) throw new WorktreeError('Ce chemin n’est plus enregistré comme worktree Git.');
+  view.primary =
+    (await realpath((await git(record.path, ['rev-parse', '--absolute-git-dir'])).trim())) === record.commonDir;
+  view.branch = entry.branch;
+  view.head = (await git(record.path, ['rev-parse', '--verify', 'HEAD'])).trim();
+  view.targets = listing
+    .filter((w) => w.branch !== null && resolve(w.path) !== record.path && !w.prunable)
+    .map((w) => ({ branch: w.branch!, path: resolve(w.path) }));
+  const target = listing.find(
+    (w) => w.branch === record.targetBranch && resolve(w.path) !== record.path && !w.prunable,
+  );
+  view.targetPath = target ? resolve(target.path) : null;
+  view.targetHead = await targetHead(record);
+  return entry;
+}
+async function targetHead(record: WorktreeRecord): Promise<string | null> {
+  return record.targetBranch
+    ? git(record.path, ['rev-parse', '--verify', record.targetBranch]).then(
+        (text) => text.trim(),
+        () => null,
+      )
+    : null;
+}
+/**
+ * Uncommitted and ignored files of the copy, outside the dependency directories shared with the project. Ignored
+ * entries with nothing to lose are set apart: a removal deletes them.
+ */
+async function inspectStatus(
+  record: WorktreeRecord,
+  workspace: Workspace | null,
+  view: WorktreeView,
+): Promise<{ files: string[]; ignored: string[] }> {
+  const sharedIgnored = new Set(await sharedDependencyLinks(workspace ?? record, record.path));
+  const files = changedFiles(await git(record.path, STATUS)).filter((path) => !underShared(path, sharedIgnored));
+  // The inventory only needs removable ignored entries, not every file below them.
+  // Expanding node_modules here made each UI refresh walk thousands of files.
+  const ignored = (
+    await git(record.path, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])
+  )
+    .split('\0')
+    .filter(Boolean)
+    .filter((path) => !underShared(path, sharedIgnored));
+  const disposable: string[] = [];
+  if (record.managed)
+    for (const name of ignored)
+      if (await disposableIgnored(record.path, record.source, name.replace(/\/$/, ''))) disposable.push(name);
+  const kept = ignored.filter((name) => !disposable.includes(name));
+  view.files = files.slice(0, 100);
+  view.dirty = files.length;
+  view.ignoredFiles = kept.slice(0, 100);
+  view.ignored = kept.length;
+  view.disposableIgnored = disposable;
+  return { files, ignored };
+}
+/** Whether a merge, rebase, cherry-pick or revert is in progress in the copy, and its files still in conflict. */
+async function inspectMergeInProgress(path: string, gitDir: string, view: WorktreeView): Promise<void> {
+  view.mergeInProgress = ['MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'].some(
+    (name) => existsSync(join(gitDir, name)),
+  );
+  if (view.mergeInProgress)
+    view.conflicts = (await git(path, ['diff', '--name-only', '-z', '--diff-filter=U'])).split('\0').filter(Boolean);
+}
+/** Whether the integrated commits are in the target's upstream branch, when it has one. */
+async function inspectPublication(record: WorktreeRecord, view: WorktreeView): Promise<void> {
+  const upstream = (await git(record.path, ['for-each-ref', '--format=%(upstream)', record.targetBranch!])).trim();
+  if (
+    upstream &&
+    (await git(record.path, ['rev-parse', '--verify', '--quiet', `${upstream}^{commit}`]).then(
+      () => true,
+      () => false,
+    ))
+  )
+    view.published = await git(record.path, ['merge-base', '--is-ancestor', view.head!, upstream]).then(
+      () => true,
+      () => false,
+    );
+}
+/** Digest of everything a merge or removal relies on: an action prepared on it runs only if it is unchanged. */
+async function inspectFingerprint(
+  record: WorktreeRecord,
+  view: WorktreeView,
+  entry: RegisteredWorktree,
+  gitDir: string,
+  files: string[],
+  ignored: string[],
+  targetState: string,
+): Promise<string> {
+  const index = await readFile(join(gitDir, 'index')).catch((cause) => {
+    if (cause.code === 'ENOENT') return Buffer.alloc(0);
+    throw cause;
+  });
+  return hash(
+    JSON.stringify([
+      record.path,
+      record.targetBranch,
+      view.branch,
+      view.head,
+      view.targetHead,
+      view.targetPath,
+      files,
+      ignored,
+      targetState,
+      hash(index),
+      entry.locked,
+    ]),
+  );
+}
+/** A reference that changed during collection cannot produce an actionable snapshot. */
+async function assertStableReferences(record: WorktreeRecord, view: WorktreeView): Promise<void> {
+  if (
+    view.head !== (await git(record.path, ['rev-parse', 'HEAD'])).trim() ||
+    view.branch !==
+      (await git(record.path, ['symbolic-ref', '--quiet', 'HEAD']).then(
+        (text) => text.trim(),
+        () => null,
+      )) ||
+    view.targetHead !== (await targetHead(record))
+  )
+    throw new WorktreeError('Les références ont changé pendant la collecte : actualisez.');
+}
+/** One dirty file being planned, with the versions its plan is made from. */
+interface FileVersions {
+  file: PlannedFile;
+  signature: string | undefined;
+  /** Content of a regular file; null for a missing file or a link. */
+  current: Buffer | null;
+  regular: boolean;
+  /** Version in the copy's last commit. */
+  head: Buffer | null;
+  changedByMerge: boolean;
+  /** Carries the local changes onto the merged version; undefined when they overlap the target's changes. */
+  carry: () => Promise<Buffer | null | undefined>;
+  threeWay: (current: Buffer, base: Buffer | null, other: Buffer | null) => Promise<Buffer | null>;
+}
+async function fileVersions(
+  root: string,
+  path: string,
+  merge: TargetMerge | null,
+  temporary: string,
+): Promise<FileVersions> {
+  const target = join(root, path);
+  const signature = await workspaceFileSignature(target);
+  const regular = signature !== undefined && !signature.startsWith('link:');
+  const current = regular ? await readFile(target) : null;
+  const head = await gitBytes(root, ['cat-file', 'blob', `HEAD:${path}`]).catch(() => null);
+  const next = merge ? await merge.read(path) : head;
+  // Without a merge `next` is `head`: only a merge can change the file.
+  const changedByMerge = merge !== null && (next === null || head === null ? next !== head : !next.equals(head));
+  const threeWay = async (current: Buffer, base: Buffer | null, other: Buffer | null): Promise<Buffer | null> => {
+    const files = ['current', 'base', 'other'].map((name) => join(temporary, `plan-${name}`));
+    await writeFile(files[0], current);
+    await writeFile(files[1], base ?? '');
+    await writeFile(files[2], other ?? '');
+    return gitBytes(root, ['merge-file', '-p', '-L', 'copie', '-L', 'départ', '-L', 'cible', ...files]).catch(
+      () => null,
+    );
+  };
+  return {
+    file: { path, signature, current, next, step: null },
+    signature,
+    current,
+    regular,
+    head,
+    changedByMerge,
+    carry: async () => {
+      if (!changedByMerge) return undefined;
+      if (!current) return signature === undefined && !next ? null : undefined;
+      return (await threeWay(current, head, next)) ?? undefined;
+    },
+    threeWay,
+  };
+}
+/**
+ * A file without starting content left, or confirmed as such: it stays as is, carried onto the merged version, and
+ * becomes the conversation's work. False when it cannot be carried.
+ */
+async function planSettled(
+  root: string,
+  versions: FileVersions,
+  step: StartingContentStep,
+  settled: boolean,
+  temporary: string,
+): Promise<boolean> {
+  const { file } = versions;
+  step.state = settled ? 'settled' : 'mixed';
+  step.action = 'settle';
+  step.reason = settled
+    ? 'Le contenu de départ n’apparaît plus dans ses changements non commités.'
+    : 'Vérifié par vous : ne contient que le travail de la conversation.';
+  if (versions.changedByMerge) {
+    const carried = await versions.carry();
+    if (carried === undefined) return false;
+    file.write = carried;
+  }
+  step.diff = await contentDiff(
+    root,
+    file.path,
+    file.next,
+    file.write !== undefined ? file.write : versions.current,
+    temporary,
+  );
+  return true;
+}
+/**
+ * The mixed file with its starting content removed and the changes made since kept; otherwise the reason it cannot
+ * be separated automatically.
+ */
+async function separation(
+  root: string,
+  workspace: Workspace,
+  versions: FileVersions,
+  found: { content: () => Promise<Buffer> } | null,
+): Promise<Buffer | string> {
+  const { file, current } = versions;
+  if (!found) return 'Contenu de départ introuvable (ni dans la cible, ni conservé à la création).';
+  if (!current) return 'Fichier supprimé ou remplacé par un lien depuis la création.';
+  if (!file.next) return 'Fichier absent de la version à jour de la copie.';
+  if (
+    workspace.base &&
+    (await git(root, ['diff', '--quiet', workspace.base, 'HEAD', '--', `:(literal)${file.path}`]).then(
+      () => false,
+      () => true,
+    ))
+  )
+    return 'Fichier déjà modifié par un commit de la copie.';
+  return (
+    (await versions.threeWay(current, await found.content(), file.next)) ??
+    'Les changements faits depuis la création touchent les mêmes lignes que le contenu de départ.'
+  );
+}
+/**
+ * A mixed file left for a manual review. Carried onto the merged version when it can be; otherwise written unchanged,
+ * which undoes the target's changes, and false when even that is impossible.
+ */
+async function planReview(
+  root: string,
+  versions: FileVersions,
+  step: StartingContentStep,
+  reason: string,
+  temporary: string,
+): Promise<boolean> {
+  const { file, current } = versions;
+  step.diff = await contentDiff(root, file.path, versions.head, current, temporary);
+  if (!versions.changedByMerge) {
+    step.reason = `${reason} Examinez ce fichier et cochez-le dans les diffs.`;
+    return true;
+  }
+  const carried = await versions.carry();
+  if (carried !== undefined) {
+    file.write = carried;
+    step.reason = `${reason} Le fichier est reporté tel quel sur la version à jour de la copie : examinez son diff.`;
+    return true;
+  }
+  if (versions.signature !== undefined && !versions.regular) return false;
+  // Written unchanged: its diff against the merged version also shows the target's later changes, undone.
+  file.write = current;
+  step.reason = `${reason} Attention : la cible a aussi modifié ce fichier depuis la création de la copie. Son diff montre ces changements annulés : ne le commitez pas tel quel, reportez seulement le travail de la conversation.`;
+  return true;
+}
+function parseConfirmations(confirmations: unknown): StartingConfirmation[] {
+  if (
+    !Array.isArray(confirmations) ||
+    !confirmations.every((entry) => typeof entry?.path === 'string' && typeof entry?.version === 'string')
+  )
+    throw new WorktreeError('Confirmations invalides.', 400);
+  return confirmations as StartingConfirmation[];
+}
+/**
+ * Refuses a plan made on stale confirmations, one that removes nothing, or one whose files changed since it was made.
+ * Returns its steps.
+ */
+async function assertPlanApplicable(
+  root: string,
+  plan: PlannedStarting,
+  confirmed: StartingConfirmation[],
+): Promise<StartingContentStep[]> {
+  const steps = plan.files.flatMap((file) => (file.step ? [file.step] : []));
+  const stale = confirmed.filter((entry) => steps.find((step) => step.path === entry.path)?.action === 'keep');
+  if (stale.length)
+    throw new WorktreeError(
+      `${stale.map((entry) => entry.path).join(', ')} : contenu modifié depuis votre vérification. Rien n’a été modifié : relisez-le et recommencez.`,
+    );
+  const kept = steps.filter((step) => step.action === 'keep');
+  if (!steps.some((step) => step.action !== 'keep'))
+    throw new WorktreeError(
+      kept.length
+        ? `Aucun contenu de départ ne peut être retiré automatiquement :\n${kept.map((step) => `${step.path} : ${step.reason}`).join('\n')}`
+        : 'Aucun fichier n’a encore le contenu de départ.',
+    );
+  // Compared again right before writing: anything edited since the plan stops the action.
+  for (const file of plan.files)
+    if (
+      (file.write !== undefined || file.step?.action === 'settle') &&
+      (await workspaceFileSignature(join(root, file.path))) !== file.signature
+    )
+      throw new WorktreeError(`${file.path} a changé pendant la préparation : rien n’a été modifié, recommencez.`);
+  return steps;
+}
+/** Writes each file's content given by `content`; null deletes it. */
+async function writePlannedFiles(
+  root: string,
+  files: PlannedFile[],
+  content: (file: PlannedFile) => Buffer | null,
+): Promise<void> {
+  for (const file of files) {
+    const target = join(root, file.path);
+    const value = content(file);
+    if (value === null) await rm(target, { force: true });
+    else {
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, value);
+    }
+  }
+}
+/**
+ * Applies a starting content plan: the index of the rewritten files goes back to the copy's last commit, the copy
+ * receives the target's commits when the plan merges them, and the planned contents are written last.
+ */
+async function applyStartingPlan(view: WorktreeView, plan: PlannedStarting): Promise<void> {
+  const written = plan.files.filter((file) => file.write !== undefined);
+  const literals = written.map((file) => `:(literal)${file.path}`);
+  const inHead = written.length
+    ? (await git(view.path, ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', ...written.map((file) => file.path)]))
+        .split('\0')
+        .filter(Boolean)
+    : [];
+  if (literals.length) await git(view.path, ['rm', '--cached', '--quiet', '--ignore-unmatch', '-r', '--', ...literals]);
+  if (plan.merge) await commitTargetMerge(view, plan.merge, written, inHead);
+  else if (inHead.length)
+    await git(view.path, ['reset', '--quiet', 'HEAD', '--', ...inHead.map((path) => `:(literal)${path}`)]);
+  await writePlannedFiles(view.path, written, (file) => file.write!);
+}
+/**
+ * Moves the copy onto the simulated merge with its target, a merge commit. On failure, the rewritten files get their
+ * previous content back.
+ */
+async function commitTargetMerge(
+  view: WorktreeView,
+  merge: TargetMerge,
+  written: PlannedFile[],
+  inHead: string[],
+): Promise<void> {
+  const head = view.head!;
+  // The worktree too, so the tree can switch to the merge.
+  if (inHead.length) await git(view.path, ['checkout', 'HEAD', '--', ...inHead.map((path) => `:(literal)${path}`)]);
+  for (const file of written) if (!inHead.includes(file.path)) await rm(join(view.path, file.path), { force: true });
+  const message = `Copie : intégrer ${branchLabel(view.targetBranch)} avant de retirer le contenu de départ`;
+  try {
+    const commit = (
+      await git(view.path, ['commit-tree', merge.tree, '-p', head, '-p', view.targetHead!, '-m', message])
+    ).trim();
+    await git(view.path, ['read-tree', '-m', '-u', head, commit]);
+    try {
+      await git(view.path, ['update-ref', '-m', mergeCommitReflog(message), 'HEAD', commit, head]);
+    } catch (cause) {
+      await git(view.path, ['read-tree', '-m', '-u', commit, head]);
+      throw cause;
+    }
+  } catch (cause) {
+    await writePlannedFiles(view.path, written, (file) => file.current);
+    throw new WorktreeError(
+      `La copie n’a pas pu être mise à jour avec ${branchLabel(view.targetBranch)} : ${cause instanceof Error ? cause.message : String(cause)}\nLes fichiers de la copie ont été remis dans leur état précédent.`,
+    );
+  }
+}
 
 export class WorktreeManager {
   private db: CerebroDatabase;
@@ -489,14 +867,20 @@ export class WorktreeManager {
   }
   private async discover(): Promise<string[]> {
     const errors: string[] = [];
-    const registeredSessions = new Set(
-      records(this.db)
-        .filter((r) => r.managed)
-        .map((r) => r.sessionId),
-    );
+    const managed = records(this.db).filter((r) => r.managed);
+    const registeredSessions = new Set(managed.map((r) => r.sessionId));
+    // Later epic steps share the first step's copy, whose record already identifies it: rememberWorktree would only
+    // ask Git again to find that record, on every listing.
+    const registeredPaths = new Set(managed.filter((r) => !r.removedAt).map((r) => r.path));
     for (const row of this.db.connection.prepare('SELECT data FROM session_workspaces').all() as { data: string }[]) {
       const workspace = JSON.parse(row.data) as Workspace;
-      if (workspace.mode !== 'isolated' || workspace.removedAt || registeredSessions.has(workspace.sessionId)) continue;
+      if (
+        workspace.mode !== 'isolated' ||
+        workspace.removedAt ||
+        registeredSessions.has(workspace.sessionId) ||
+        registeredPaths.has(canonicalWorktreePath(workspace.root))
+      )
+        continue;
       try {
         await rememberWorktree(this.db, workspace);
       } catch (cause) {
@@ -676,8 +1060,33 @@ export class WorktreeManager {
     return this.inspect(this.record(id));
   }
   private async inspect(record: WorktreeRecord, ownOperation?: string): Promise<WorktreeView> {
+    const view = this.blankView(record);
+    try {
+      const entry = await inspectIdentity(record, view);
+      const workspace = record.sessionId ? this.workspaceOf(record.sessionId) : null;
+      const { files, ignored } = await inspectStatus(record, workspace, view);
+      if (workspace?.mode === 'isolated' && canonicalWorktreePath(workspace.root) === record.path)
+        await this.inspectStartingContent(record, workspace, files, view);
+      const gitDir = (await git(record.path, ['rev-parse', '--absolute-git-dir'])).trim();
+      await inspectMergeInProgress(record.path, gitDir, view);
+      await this.inspectIntegration(record, view);
+      await this.inspectBlockers(record, view, entry, gitDir, ownOperation);
+      const targetState = await this.inspectTarget(view);
+      view.fingerprint = await inspectFingerprint(record, view, entry, gitDir, files, ignored, targetState);
+      await assertStableReferences(record, view);
+    } catch (cause) {
+      view.error = cause instanceof Error ? cause.message : String(cause);
+      view.integration = 'unknown';
+      view.fingerprint = null;
+      view.mergeBlockers = [view.error];
+      view.removeBlockers = [view.error];
+    }
+    return view;
+  }
+  /** The view of a record before anything is read from Git: every collected field is unknown or empty. */
+  private blankView(record: WorktreeRecord): WorktreeView {
     const session = record.sessionId ? this.db.getSession(record.sessionId) : null;
-    const view: WorktreeView = {
+    return {
       ...record,
       projectName: (record.projectId ? this.db.getProject(record.projectId)?.name : null) ?? record.projectName,
       projectExists: record.projectId !== null && this.db.getProject(record.projectId) !== null,
@@ -710,239 +1119,132 @@ export class WorktreeManager {
       integrationConflicts: null,
       conflicts: [],
     };
-    try {
-      const common = await commonDirectory(record.path);
-      if (common !== record.commonDir) throw new WorktreeError('Le chemin désigne un autre dépôt : gestion refusée.');
-      const listing = await registered(record.path);
-      const entry = listing.find((w) => resolve(w.path) === record.path);
-      if (!entry) throw new WorktreeError('Ce chemin n’est plus enregistré comme worktree Git.');
-      view.primary =
-        (await realpath((await git(record.path, ['rev-parse', '--absolute-git-dir'])).trim())) === record.commonDir;
-      view.branch = entry.branch;
-      view.head = (await git(record.path, ['rev-parse', '--verify', 'HEAD'])).trim();
-      view.targets = listing
-        .filter((w) => w.branch !== null && resolve(w.path) !== record.path && !w.prunable)
-        .map((w) => ({ branch: w.branch!, path: resolve(w.path) }));
-      const target = listing.find(
-        (w) => w.branch === record.targetBranch && resolve(w.path) !== record.path && !w.prunable,
-      );
-      view.targetPath = target ? resolve(target.path) : null;
-      view.targetHead = record.targetBranch
-        ? await git(record.path, ['rev-parse', '--verify', record.targetBranch]).then(
-            (text) => text.trim(),
-            () => null,
-          )
-        : null;
-      const workspaceRow = record.sessionId
-        ? (this.db.connection
-            .prepare('SELECT data FROM session_workspaces WHERE session_id=?')
-            .get(record.sessionId) as { data: string } | undefined)
-        : undefined;
-      const workspace = workspaceRow ? (JSON.parse(workspaceRow.data) as Workspace) : null;
-      const sharedIgnored = new Set(await sharedDependencyLinks(workspace ?? record, record.path));
-      const files = changedFiles(
-        await git(record.path, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none']),
-      ).filter((path) => ![...sharedIgnored].some((shared) => path === shared || path.startsWith(`${shared}/`)));
-      // The inventory only needs removable ignored entries, not every file below them.
-      // Expanding node_modules here made each UI refresh walk thousands of files.
-      const ignored = (
-        await git(record.path, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])
-      )
-        .split('\0')
-        .filter(Boolean)
-        .filter((path) => ![...sharedIgnored].some((shared) => path === shared || path.startsWith(`${shared}/`)));
-      const disposable: string[] = [];
-      if (record.managed)
-        for (const name of ignored)
-          if (await disposableIgnored(record.path, record.source, name.replace(/\/$/, ''))) disposable.push(name);
-      const kept = ignored.filter((name) => !disposable.includes(name));
-      view.files = files.slice(0, 100);
-      view.dirty = files.length;
-      view.ignoredFiles = kept.slice(0, 100);
-      view.ignored = kept.length;
-      view.disposableIgnored = disposable;
-      if (record.sessionId) {
-        if (workspace?.mode === 'isolated' && canonicalWorktreePath(workspace.root) === record.path) {
-          const changed: string[] = [];
-          const starting: StartingContent[] = [];
-          for (const file of files) {
-            const inherited = workspace.baseline[file] === (await workspaceFileSignature(join(record.path, file)));
-            if (!inherited) changed.push(file);
-            if ((inherited || workspace.initialDirty.includes(file)) && starting.length < 100) {
-              const found = await this.findStarting(
-                record.path,
-                workspace,
-                view.targetPath,
-                view.targetHead,
-                file,
-              ).catch(() => null);
-              const state =
-                !inherited && found
-                  ? await this.mixedStartingState(record.path, workspace, view.head!, file, found.content).catch(
-                      (): MixedStartingState => 'manual',
-                    )
-                  : 'manual';
-              starting.push({
-                path: file,
-                state: inherited ? 'inherited' : state === 'settled' ? 'settled' : 'mixed',
-                origin: found?.origin ?? null,
-                separable: state === 'separable',
-              });
-            }
-          }
-          view.changesSinceCreation = {
-            count: changed.length,
-            files: changed.slice(0, 100),
-            inheritedCount: files.length - changed.length,
-            needsReviewCount: changed.filter((file) => workspace.initialDirty.includes(file)).length,
-          };
-          view.startingContent = starting;
-        }
-      }
-      const gitDir = (await git(record.path, ['rev-parse', '--absolute-git-dir'])).trim();
-      view.mergeInProgress =
-        existsSync(join(gitDir, 'MERGE_HEAD')) ||
-        existsSync(join(gitDir, 'rebase-merge')) ||
-        existsSync(join(gitDir, 'rebase-apply')) ||
-        existsSync(join(gitDir, 'CHERRY_PICK_HEAD')) ||
-        existsSync(join(gitDir, 'REVERT_HEAD'));
-      if (view.mergeInProgress)
-        view.conflicts = (await git(record.path, ['diff', '--name-only', '-z', '--diff-filter=U']))
-          .split('\0')
-          .filter(Boolean);
-      if (view.targetHead && record.targetBranch !== view.branch) {
-        const counts = (
-          await git(record.path, ['rev-list', '--left-right', '--count', `${view.targetHead}...${view.head}`])
-        )
-          .trim()
-          .split(/\s+/)
-          .map(Number);
-        view.behind = counts[0];
-        view.ahead = counts[1];
-        view.integration = view.ahead === 0 && view.dirty === 0 ? 'integrated' : 'pending';
-        if (view.ahead && view.behind && !view.mergeInProgress) view.integrationConflicts = this.forecast(view);
-        if (view.integration === 'integrated') {
-          const upstream = (
-            await git(record.path, ['for-each-ref', '--format=%(upstream)', record.targetBranch!])
-          ).trim();
-          if (
-            upstream &&
-            (await git(record.path, ['rev-parse', '--verify', '--quiet', `${upstream}^{commit}`]).then(
-              () => true,
-              () => false,
-            ))
-          )
-            view.published = await git(record.path, ['merge-base', '--is-ancestor', view.head!, upstream]).then(
-              () => true,
-              () => false,
-            );
-        }
-      }
-      const active = this.db
-        .listSessions()
-        .filter((s) => s.status !== 'exited' && this.activityForSession(s.id, record.path));
-      view.activeSessions = active.map((s) => ({ id: s.id, title: s.title, status: s.status }));
-      const commonBlockers: string[] = [];
-      if (view.operation?.status === 'running' && view.operation.id !== ownOperation)
-        commonBlockers.push('Une opération Git utilise ce worktree.');
-      if (!record.managed || view.primary)
-        commonBlockers.push('Worktree principal ou géré hors de Cerebro : lecture seule.');
-      if (view.branch !== record.expectedBranch || !view.branch)
-        commonBlockers.push('Branche du worktree changée ou détachée : vérifier son identité.');
-      if (!record.targetBranch || !view.targetHead || record.targetBranch === view.branch)
-        commonBlockers.push('Choisissez une branche cible distincte et existante.');
-      if (view.mergeInProgress)
-        commonBlockers.push('Un merge est en cours dans la copie : terminez-le ou annulez-le avant cette action.');
-      if (view.dirty && !view.mergeInProgress)
-        commonBlockers.push(
-          `La copie contient ${view.dirty} fichier(s) modifié(s) non commité(s) : commitez-les, ou retirez le contenu de départ, avant cette action.`,
+  }
+  private workspaceOf(sessionId: string): Workspace | null {
+    const row = this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(sessionId) as
+      { data: string } | undefined;
+    return row ? (JSON.parse(row.data) as Workspace) : null;
+  }
+  /** Files changed since the copy was created, and those still holding the content copied from the project. */
+  private async inspectStartingContent(
+    record: WorktreeRecord,
+    workspace: Workspace,
+    files: string[],
+    view: WorktreeView,
+  ): Promise<void> {
+    const changed: string[] = [];
+    const starting: StartingContent[] = [];
+    for (const file of files) {
+      const inherited = workspace.baseline[file] === (await workspaceFileSignature(join(record.path, file)));
+      if (!inherited) changed.push(file);
+      if ((inherited || workspace.initialDirty.includes(file)) && starting.length < 100) {
+        const found = await this.findStarting(record.path, workspace, view.targetPath, view.targetHead, file).catch(
+          () => null,
         );
-      if (entry.locked || existsSync(join(gitDir, 'index.lock')))
-        commonBlockers.push('Worktree ou index verrouillé par Git.');
-      if ((await this.services.pushes.current(record.path))?.status === 'running')
-        commonBlockers.push('Un push est en cours.');
-      view.removeBlockers = [...commonBlockers, ...this.activity(record.path, true)];
-      if (view.ahead === null || view.ahead > 0)
-        view.removeBlockers.push('Des commits restent à intégrer, ou leur intégration ne peut pas être vérifiée.');
-      if (view.ignored)
-        view.removeBlockers.push(`${view.ignored} fichier(s) ignoré(s) conservé(s) : déplacez-les avant suppression.`);
-      view.mergeBlockers = [...commonBlockers, ...this.activity(record.path, false)];
-      if (!view.targetPath) view.mergeBlockers.push('La branche cible doit être ouverte dans un worktree Git.');
-      if (view.ahead === 0) view.mergeBlockers.push('Aucun nouveau commit à intégrer.');
-      let targetState = '';
-      if (view.targetPath) {
-        const dirty = await git(view.targetPath, [
-          'status',
-          '--porcelain=v1',
-          '-z',
-          '--untracked-files=all',
-          '--ignore-submodules=none',
-        ]);
-        const targetGitDir = (await git(view.targetPath, ['rev-parse', '--absolute-git-dir'])).trim();
-        const pending = [
-          'MERGE_HEAD',
-          'CHERRY_PICK_HEAD',
-          'REVERT_HEAD',
-          'rebase-merge',
-          'rebase-apply',
-          'index.lock',
-        ].filter((name) => existsSync(join(targetGitDir, name)));
-        view.targetDirty = changedFiles(dirty).length;
-        if (view.targetDirty)
-          view.mergeBlockers.push(
-            `Le dossier cible doit être propre : ${view.targetPath} contient ${view.targetDirty} fichier(s) non commité(s). Commitez-les d’abord (« Commit / push du projet »).`,
-          );
-        if (pending.length)
-          view.mergeBlockers.push(
-            `Le dossier cible doit être propre : une opération Git est en cours dans ${view.targetPath}.`,
-          );
-        view.mergeBlockers.push(...this.activity(view.targetPath, false));
-        targetState = hash(dirty + '\0' + JSON.stringify(pending));
-      }
-      const index = await readFile(join(gitDir, 'index')).catch((cause) => {
-        if (cause.code === 'ENOENT') return Buffer.alloc(0);
-        throw cause;
-      });
-      view.fingerprint = hash(
-        JSON.stringify([
-          record.path,
-          record.targetBranch,
-          view.branch,
-          view.head,
-          view.targetHead,
-          view.targetPath,
-          files,
-          ignored,
-          targetState,
-          hash(index),
-          entry.locked,
-        ]),
-      );
-      // A reference that changed during collection cannot produce an actionable snapshot.
-      if (
-        view.head !== (await git(record.path, ['rev-parse', 'HEAD'])).trim() ||
-        view.branch !==
-          (await git(record.path, ['symbolic-ref', '--quiet', 'HEAD']).then(
-            (text) => text.trim(),
-            () => null,
-          )) ||
-        view.targetHead !==
-          (record.targetBranch
-            ? await git(record.path, ['rev-parse', '--verify', record.targetBranch]).then(
-                (text) => text.trim(),
-                () => null,
+        const state =
+          !inherited && found
+            ? await this.mixedStartingState(record.path, workspace, view.head!, file, found.content).catch(
+                (): MixedStartingState => 'manual',
               )
-            : null)
-      )
-        throw new WorktreeError('Les références ont changé pendant la collecte : actualisez.');
-    } catch (cause) {
-      view.error = cause instanceof Error ? cause.message : String(cause);
-      view.integration = 'unknown';
-      view.fingerprint = null;
-      view.mergeBlockers = [view.error];
-      view.removeBlockers = [view.error];
+            : 'manual';
+        starting.push({
+          path: file,
+          state: inherited ? 'inherited' : state === 'settled' ? 'settled' : 'mixed',
+          origin: found?.origin ?? null,
+          separable: state === 'separable',
+        });
+      }
     }
-    return view;
+    view.changesSinceCreation = {
+      count: changed.length,
+      files: changed.slice(0, 100),
+      inheritedCount: files.length - changed.length,
+      needsReviewCount: changed.filter((file) => workspace.initialDirty.includes(file)).length,
+    };
+    view.startingContent = starting;
+  }
+  /** Commits ahead of and behind the target, the conflicts their integration would leave, and its publication. */
+  private async inspectIntegration(record: WorktreeRecord, view: WorktreeView): Promise<void> {
+    if (!view.targetHead || record.targetBranch === view.branch) return;
+    const counts = (
+      await git(record.path, ['rev-list', '--left-right', '--count', `${view.targetHead}...${view.head}`])
+    )
+      .trim()
+      .split(/\s+/)
+      .map(Number);
+    view.behind = counts[0];
+    view.ahead = counts[1];
+    view.integration = view.ahead === 0 && view.dirty === 0 ? 'integrated' : 'pending';
+    if (view.ahead && view.behind && !view.mergeInProgress) view.integrationConflicts = this.forecast(view);
+    if (view.integration === 'integrated') await inspectPublication(record, view);
+  }
+  /** What prevents a removal or a merge of the copy itself; the target worktree is checked by `inspectTarget`. */
+  private async inspectBlockers(
+    record: WorktreeRecord,
+    view: WorktreeView,
+    entry: RegisteredWorktree,
+    gitDir: string,
+    ownOperation: string | undefined,
+  ): Promise<void> {
+    const active = this.db
+      .listSessions()
+      .filter((s) => s.status !== 'exited' && this.activityForSession(s.id, record.path));
+    view.activeSessions = active.map((s) => ({ id: s.id, title: s.title, status: s.status }));
+    const commonBlockers: string[] = [];
+    if (view.operation?.status === 'running' && view.operation.id !== ownOperation)
+      commonBlockers.push('Une opération Git utilise ce worktree.');
+    if (!record.managed || view.primary)
+      commonBlockers.push('Worktree principal ou géré hors de Cerebro : lecture seule.');
+    if (view.branch !== record.expectedBranch || !view.branch)
+      commonBlockers.push('Branche du worktree changée ou détachée : vérifier son identité.');
+    if (!record.targetBranch || !view.targetHead || record.targetBranch === view.branch)
+      commonBlockers.push('Choisissez une branche cible distincte et existante.');
+    if (view.mergeInProgress)
+      commonBlockers.push('Un merge est en cours dans la copie : terminez-le ou annulez-le avant cette action.');
+    if (view.dirty && !view.mergeInProgress)
+      commonBlockers.push(
+        `La copie contient ${view.dirty} fichier(s) modifié(s) non commité(s) : commitez-les, ou retirez le contenu de départ, avant cette action.`,
+      );
+    if (entry.locked || existsSync(join(gitDir, 'index.lock')))
+      commonBlockers.push('Worktree ou index verrouillé par Git.');
+    if ((await this.services.pushes.current(record.path))?.status === 'running')
+      commonBlockers.push('Un push est en cours.');
+    view.removeBlockers = [...commonBlockers, ...this.activity(record.path, true)];
+    if (view.ahead === null || view.ahead > 0)
+      view.removeBlockers.push('Des commits restent à intégrer, ou leur intégration ne peut pas être vérifiée.');
+    if (view.ignored)
+      view.removeBlockers.push(`${view.ignored} fichier(s) ignoré(s) conservé(s) : déplacez-les avant suppression.`);
+    view.mergeBlockers = [...commonBlockers, ...this.activity(record.path, false)];
+    if (!view.targetPath) view.mergeBlockers.push('La branche cible doit être ouverte dans un worktree Git.');
+    if (view.ahead === 0) view.mergeBlockers.push('Aucun nouveau commit à intégrer.');
+  }
+  /**
+   * What prevents a merge into the target worktree: uncommitted files, an operation in progress or a session at
+   * work there. Returns the target's state for the fingerprint, empty without a target worktree.
+   */
+  private async inspectTarget(view: WorktreeView): Promise<string> {
+    if (!view.targetPath) return '';
+    const dirty = await git(view.targetPath, STATUS);
+    const targetGitDir = (await git(view.targetPath, ['rev-parse', '--absolute-git-dir'])).trim();
+    const pending = [
+      'MERGE_HEAD',
+      'CHERRY_PICK_HEAD',
+      'REVERT_HEAD',
+      'rebase-merge',
+      'rebase-apply',
+      'index.lock',
+    ].filter((name) => existsSync(join(targetGitDir, name)));
+    view.targetDirty = changedFiles(dirty).length;
+    if (view.targetDirty)
+      view.mergeBlockers.push(
+        `Le dossier cible doit être propre : ${view.targetPath} contient ${view.targetDirty} fichier(s) non commité(s). Commitez-les d’abord (« Commit / push du projet »).`,
+      );
+    if (pending.length)
+      view.mergeBlockers.push(
+        `Le dossier cible doit être propre : une opération Git est en cours dans ${view.targetPath}.`,
+      );
+    view.mergeBlockers.push(...this.activity(view.targetPath, false));
+    return hash(dirty + '\0' + JSON.stringify(pending));
   }
   private activityForSession(id: string, path: string): boolean {
     const row = this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(id) as
@@ -1105,11 +1407,7 @@ export class WorktreeManager {
     );
   }
   private startingWorkspace(view: WorktreeView): Workspace {
-    const row = view.sessionId
-      ? (this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(view.sessionId) as
-          { data: string } | undefined)
-      : undefined;
-    const workspace = row ? (JSON.parse(row.data) as Workspace) : null;
+    const workspace = view.sessionId ? this.workspaceOf(view.sessionId) : null;
     if (workspace?.mode !== 'isolated' || canonicalWorktreePath(workspace.root) !== view.path)
       throw new WorktreeError(
         'Le contenu de départ de cette copie est inconnu : rien ne peut être retiré automatiquement.',
@@ -1287,127 +1585,70 @@ export class WorktreeManager {
     confirmed: StartingConfirmation[],
   ): Promise<PlannedFile[] | null> {
     const planned: PlannedFile[] = [];
-    const threeWay = async (current: Buffer, base: Buffer | null, other: Buffer | null): Promise<Buffer | null> => {
-      const files = ['current', 'base', 'other'].map((name) => join(temporary, `plan-${name}`));
-      await writeFile(files[0], current);
-      await writeFile(files[1], base ?? '');
-      await writeFile(files[2], other ?? '');
-      return gitBytes(view.path, ['merge-file', '-p', '-L', 'copie', '-L', 'départ', '-L', 'cible', ...files]).catch(
-        () => null,
-      );
-    };
     for (const path of paths) {
-      const target = join(view.path, path);
-      const signature = await workspaceFileSignature(target);
-      const regular = signature !== undefined && !signature.startsWith('link:');
-      const current = regular ? await readFile(target) : null;
-      const head = await gitBytes(view.path, ['cat-file', 'blob', `HEAD:${path}`]).catch(() => null);
-      const next = merge ? await merge.read(path) : head;
-      const file: PlannedFile = { path, signature, current, next, step: null };
+      const file = await this.planFile(view, workspace, path, merge, temporary, confirmed);
+      if (!file) return null;
       planned.push(file);
-      const changedByMerge =
-        (!!merge && (next === null) !== (head === null)) || (!!next && !!head && !next.equals(head));
-      // Carries the local changes onto the merged version; undefined when they overlap the target's changes.
-      const carry = async (): Promise<Buffer | null | undefined> => {
-        if (!changedByMerge) return undefined;
-        if (!current) return signature === undefined && !next ? null : undefined;
-        return (await threeWay(current, head, next)) ?? undefined;
-      };
-      const inherited = workspace.baseline[path] === signature;
-      if (!inherited && !workspace.initialDirty.includes(path)) {
-        if (!changedByMerge) continue;
-        const carried = await carry();
-        if (carried === undefined) return null;
-        file.write = carried;
-        continue;
-      }
-      const found = await this.findStarting(view.path, workspace, view.targetPath, view.targetHead, path).catch(
-        () => null,
-      );
-      const step: StartingContentStep = {
-        path,
-        state: inherited ? 'inherited' : 'mixed',
-        origin: found?.origin ?? null,
-        action: 'keep',
-        reason: null,
-        diff: '',
-        version: signature ?? null,
-      };
-      file.step = step;
-      const settled =
-        !inherited &&
-        !!found &&
-        !!current &&
-        (await this.mixedStartingState(view.path, workspace, view.head!, path, found.content).catch(
-          (): MixedStartingState => 'manual',
-        )) === 'settled';
-      if (settled || (!inherited && confirmed.some((entry) => entry.path === path && entry.version === signature))) {
-        step.state = settled ? 'settled' : 'mixed';
-        step.action = 'settle';
-        step.reason = settled
-          ? 'Le contenu de départ n’apparaît plus dans ses changements non commités.'
-          : 'Vérifié par vous : ne contient que le travail de la conversation.';
-        if (changedByMerge) {
-          const carried = await carry();
-          if (carried === undefined) return null;
-          file.write = carried;
-        }
-        step.diff = await contentDiff(
-          view.path,
-          path,
-          next,
-          file.write !== undefined ? file.write : current,
-          temporary,
-        );
-        continue;
-      }
-      if (inherited) {
-        step.action = 'restore';
-        file.write = next;
-        if (!found)
-          step.reason =
-            'Ce contenu n’existe plus que dans cette copie : il ne se trouve ni dans la cible, ni dans le dossier du projet.';
-        continue;
-      }
-      let reason: string;
-      if (!found) reason = 'Contenu de départ introuvable (ni dans la cible, ni conservé à la création).';
-      else if (!current) reason = 'Fichier supprimé ou remplacé par un lien depuis la création.';
-      else if (!next) reason = 'Fichier absent de la version à jour de la copie.';
-      else if (
-        workspace.base &&
-        (await git(view.path, ['diff', '--quiet', workspace.base, 'HEAD', '--', `:(literal)${path}`]).then(
-          () => false,
-          () => true,
-        ))
-      )
-        reason = 'Fichier déjà modifié par un commit de la copie.';
-      else {
-        const separated = await threeWay(current, await found.content(), next);
-        if (separated) {
-          step.action = 'separate';
-          file.write = separated;
-          step.diff = await contentDiff(view.path, path, next, separated, temporary);
-          continue;
-        }
-        reason = 'Les changements faits depuis la création touchent les mêmes lignes que le contenu de départ.';
-      }
-      step.diff = await contentDiff(view.path, path, head, current, temporary);
-      if (changedByMerge) {
-        const carried = await carry();
-        if (carried !== undefined) {
-          file.write = carried;
-          step.reason = `${reason} Le fichier est reporté tel quel sur la version à jour de la copie : examinez son diff.`;
-          continue;
-        }
-        if (signature !== undefined && !regular) return null;
-        // Written unchanged: its diff against the merged version also shows the target's later changes, undone.
-        file.write = current;
-        step.reason = `${reason} Attention : la cible a aussi modifié ce fichier depuis la création de la copie. Son diff montre ces changements annulés : ne le commitez pas tel quel, reportez seulement le travail de la conversation.`;
-        continue;
-      }
-      step.reason = `${reason} Examinez ce fichier et cochez-le dans les diffs.`;
     }
     return planned;
+  }
+  /** Plans one dirty file; null when its changes cannot be carried onto the merged version. */
+  private async planFile(
+    view: WorktreeView,
+    workspace: Workspace,
+    path: string,
+    merge: TargetMerge | null,
+    temporary: string,
+    confirmed: StartingConfirmation[],
+  ): Promise<PlannedFile | null> {
+    const versions = await fileVersions(view.path, path, merge, temporary);
+    const { file, current, signature } = versions;
+    const inherited = workspace.baseline[path] === signature;
+    if (!inherited && !workspace.initialDirty.includes(path)) {
+      if (!versions.changedByMerge) return file;
+      const carried = await versions.carry();
+      if (carried === undefined) return null;
+      file.write = carried;
+      return file;
+    }
+    const found = await this.findStarting(view.path, workspace, view.targetPath, view.targetHead, path).catch(
+      () => null,
+    );
+    const step: StartingContentStep = {
+      path,
+      state: inherited ? 'inherited' : 'mixed',
+      origin: found?.origin ?? null,
+      action: 'keep',
+      reason: null,
+      diff: '',
+      version: signature ?? null,
+    };
+    file.step = step;
+    const settled =
+      !inherited &&
+      !!found &&
+      !!current &&
+      (await this.mixedStartingState(view.path, workspace, view.head!, path, found.content).catch(
+        (): MixedStartingState => 'manual',
+      )) === 'settled';
+    if (settled || (!inherited && confirmed.some((entry) => entry.path === path && entry.version === signature)))
+      return (await planSettled(view.path, versions, step, settled, temporary)) ? file : null;
+    if (inherited) {
+      step.action = 'restore';
+      file.write = file.next;
+      if (!found)
+        step.reason =
+          'Ce contenu n’existe plus que dans cette copie : il ne se trouve ni dans la cible, ni dans le dossier du projet.';
+      return file;
+    }
+    const separated = await separation(view.path, workspace, versions, found);
+    if (typeof separated !== 'string') {
+      step.action = 'separate';
+      file.write = separated;
+      step.diff = await contentDiff(view.path, path, file.next, separated, temporary);
+      return file;
+    }
+    return (await planReview(view.path, versions, step, separated, temporary)) ? file : null;
   }
   private async planStartingContent(
     view: WorktreeView,
@@ -1416,9 +1657,7 @@ export class WorktreeManager {
     confirmed: StartingConfirmation[] = [],
   ): Promise<PlannedStarting> {
     const shared = await sharedDependencyLinks(workspace, view.path);
-    const paths = changedFiles(
-      await git(view.path, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none']),
-    ).filter((path) => !shared.some((name) => path === name || path.startsWith(`${name}/`)));
+    const paths = changedFiles(await git(view.path, STATUS)).filter((path) => !underShared(path, shared));
     const simulated = await this.simulateTargetMerge(view, temporary).catch(() => null);
     const merge = simulated && 'tree' in simulated ? simulated : null;
     const merged = merge ? await this.planFiles(view, workspace, paths, merge, temporary, confirmed) : null;
@@ -1447,16 +1686,7 @@ export class WorktreeManager {
   async startingContentResolution(
     id: string,
   ): Promise<{ view: WorktreeView; workspace: Workspace; plan: StartingContentPlan }> {
-    if (this.closed) throw new WorktreeError('Serveur en cours d’arrêt.');
-    const view = await this.get(id);
-    if (view.error) throw new WorktreeError(view.error);
-    if (!view.managed || view.primary)
-      throw new WorktreeError('Worktree principal ou géré hors de Cerebro : lecture seule.');
-    if (view.mergeInProgress) throw new WorktreeError('Une opération Git doit être résolue dans ce worktree.');
-    if (view.operation?.status === 'running') throw new WorktreeError('Une opération utilise ce worktree.');
-    const busy = this.activity(view.path, false);
-    if (busy.length) throw new WorktreeError(busy.join('\n'));
-    const workspace = this.startingWorkspace(view);
+    const { view, workspace } = await this.startingEditable(id);
     const temporary = await mkdtemp(join(tmpdir(), 'cerebro-starting-'));
     try {
       const plan = this.publicPlan(view, await this.planStartingContent(view, workspace, temporary));
@@ -1468,6 +1698,19 @@ export class WorktreeManager {
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
+  }
+  /** The copy and its starting content, when nothing prevents changing its files. */
+  private async startingEditable(id: string): Promise<{ view: WorktreeView; workspace: Workspace }> {
+    if (this.closed) throw new WorktreeError('Serveur en cours d’arrêt.');
+    const view = await this.get(id);
+    if (view.error) throw new WorktreeError(view.error);
+    if (!view.managed || view.primary)
+      throw new WorktreeError('Worktree principal ou géré hors de Cerebro : lecture seule.');
+    if (view.mergeInProgress) throw new WorktreeError('Une opération Git doit être résolue dans ce worktree.');
+    if (view.operation?.status === 'running') throw new WorktreeError('Une opération utilise ce worktree.');
+    const busy = this.activity(view.path, false);
+    if (busy.length) throw new WorktreeError(busy.join('\n'));
+    return { view, workspace: this.startingWorkspace(view) };
   }
   /**
    * Removes the content copied from the project at creation. When the target moved on, the copy first receives
@@ -1485,124 +1728,23 @@ export class WorktreeManager {
     targetUpdate: StartingContentPlan['targetUpdate'];
     view: WorktreeView;
   }> {
-    if (
-      !Array.isArray(confirmations) ||
-      !confirmations.every((entry) => typeof entry?.path === 'string' && typeof entry?.version === 'string')
-    )
-      throw new WorktreeError('Confirmations invalides.', 400);
-    const confirmed = confirmations as StartingConfirmation[];
-    if (this.closed) throw new WorktreeError('Serveur en cours d’arrêt.');
-    const view = await this.get(id);
-    if (view.error) throw new WorktreeError(view.error);
-    if (!view.managed || view.primary)
-      throw new WorktreeError('Worktree principal ou géré hors de Cerebro : lecture seule.');
-    if (view.mergeInProgress) throw new WorktreeError('Une opération Git doit être résolue dans ce worktree.');
-    if (view.operation?.status === 'running') throw new WorktreeError('Une opération utilise ce worktree.');
-    const busy = this.activity(view.path, false);
-    if (busy.length) throw new WorktreeError(busy.join('\n'));
-    const workspace = this.startingWorkspace(view);
+    const confirmed = parseConfirmations(confirmations);
+    const { view, workspace } = await this.startingEditable(id);
     const release = this.services.gate.lock([view.path]);
     const temporary = await mkdtemp(join(tmpdir(), 'cerebro-starting-'));
     try {
       const plan = await this.planStartingContent(view, workspace, temporary, confirmed);
-      const steps = plan.files.flatMap((file) => (file.step ? [file.step] : []));
-      const stale = confirmed.filter((entry) => steps.find((step) => step.path === entry.path)?.action === 'keep');
-      if (stale.length)
-        throw new WorktreeError(
-          `${stale.map((entry) => entry.path).join(', ')} : contenu modifié depuis votre vérification. Rien n’a été modifié : relisez-le et recommencez.`,
-        );
-      const kept = steps.filter((step) => step.action === 'keep');
-      if (!steps.some((step) => step.action !== 'keep'))
-        throw new WorktreeError(
-          kept.length
-            ? `Aucun contenu de départ ne peut être retiré automatiquement :\n${kept.map((step) => `${step.path} : ${step.reason}`).join('\n')}`
-            : 'Aucun fichier n’a encore le contenu de départ.',
-        );
-      // Compared again right before writing: anything edited since the plan stops the action.
-      for (const file of plan.files)
-        if (
-          (file.write !== undefined || file.step?.action === 'settle') &&
-          (await workspaceFileSignature(join(view.path, file.path))) !== file.signature
-        )
-          throw new WorktreeError(`${file.path} a changé pendant la préparation : rien n’a été modifié, recommencez.`);
-      const written = plan.files.filter((file) => file.write !== undefined);
-      const putBack = async (files: PlannedFile[], content: (file: PlannedFile) => Buffer | null): Promise<void> => {
-        for (const file of files) {
-          const target = join(view.path, file.path);
-          const value = content(file);
-          if (value === null) await rm(target, { force: true });
-          else {
-            await mkdir(dirname(target), { recursive: true });
-            await writeFile(target, value);
-          }
-        }
-      };
-      // The index of the rewritten files goes back to the copy's last commit; their content is written last.
-      const literals = written.map((file) => `:(literal)${file.path}`);
-      const inHead = written.length
-        ? (
-            await git(view.path, [
-              'ls-tree',
-              '-r',
-              '-z',
-              '--name-only',
-              'HEAD',
-              '--',
-              ...written.map((file) => file.path),
-            ])
-          )
-            .split('\0')
-            .filter(Boolean)
-        : [];
-      if (literals.length)
-        await git(view.path, ['rm', '--cached', '--quiet', '--ignore-unmatch', '-r', '--', ...literals]);
-      if (plan.merge) {
-        const head = view.head!;
-        // The worktree too, so the tree can switch to the merge.
-        if (inHead.length)
-          await git(view.path, ['checkout', 'HEAD', '--', ...inHead.map((path) => `:(literal)${path}`)]);
-        for (const file of written)
-          if (!inHead.includes(file.path)) await rm(join(view.path, file.path), { force: true });
-        const message = `Copie : intégrer ${branchLabel(view.targetBranch)} avant de retirer le contenu de départ`;
-        try {
-          const commit = (
-            await git(view.path, ['commit-tree', plan.merge.tree, '-p', head, '-p', view.targetHead!, '-m', message])
-          ).trim();
-          await git(view.path, ['read-tree', '-m', '-u', head, commit]);
-          try {
-            await git(view.path, ['update-ref', '-m', mergeCommitReflog(message), 'HEAD', commit, head]);
-          } catch (cause) {
-            await git(view.path, ['read-tree', '-m', '-u', commit, head]);
-            throw cause;
-          }
-        } catch (cause) {
-          await putBack(written, (file) => file.current);
-          throw new WorktreeError(
-            `La copie n’a pas pu être mise à jour avec ${branchLabel(view.targetBranch)} : ${cause instanceof Error ? cause.message : String(cause)}\nLes fichiers de la copie ont été remis dans leur état précédent.`,
-          );
-        }
-      } else if (inHead.length)
-        await git(view.path, ['reset', '--quiet', 'HEAD', '--', ...inHead.map((path) => `:(literal)${path}`)]);
-      await putBack(written, (file) => file.write!);
+      const steps = await assertPlanApplicable(view.path, plan, confirmed);
+      await applyStartingPlan(view, plan);
       const restored = steps.filter((step) => step.action === 'restore').map((step) => step.path);
       const separated = steps.filter((step) => step.action === 'separate').map((step) => step.path);
       const settled = steps.filter((step) => step.action === 'settle').map((step) => step.path);
-      // These files now start from the copy's last commit: what changes in them next belongs to the copy.
-      const done = new Set([...restored, ...separated, ...settled]);
-      workspace.initialDirty = workspace.initialDirty.filter((file) => !done.has(file));
-      for (const file of plan.files)
-        if (done.has(file.path)) {
-          if (file.next === null) delete workspace.baseline[file.path];
-          else workspace.baseline[file.path] = `${(await lstat(join(view.path, file.path))).mode}:${hash(file.next)}`;
-        }
-      this.db.connection
-        .prepare('UPDATE session_workspaces SET data=? WHERE session_id=?')
-        .run(JSON.stringify(workspace), workspace.sessionId);
+      await this.forgetStartingContent(view, workspace, plan, new Set([...restored, ...separated, ...settled]));
       return {
         restored,
         separated,
         settled,
-        kept,
+        kept: steps.filter((step) => step.action === 'keep'),
         targetUpdate: this.publicPlan(view, plan).targetUpdate,
         view: await this.inspect(this.record(id)),
       };
@@ -1610,6 +1752,23 @@ export class WorktreeManager {
       release();
       await rm(temporary, { recursive: true, force: true });
     }
+  }
+  /** The `done` files now start from the copy's last commit: what changes in them next belongs to the copy. */
+  private async forgetStartingContent(
+    view: WorktreeView,
+    workspace: Workspace,
+    plan: PlannedStarting,
+    done: Set<string>,
+  ): Promise<void> {
+    workspace.initialDirty = workspace.initialDirty.filter((file) => !done.has(file));
+    for (const file of plan.files)
+      if (done.has(file.path)) {
+        if (file.next === null) delete workspace.baseline[file.path];
+        else workspace.baseline[file.path] = `${(await lstat(join(view.path, file.path))).mode}:${hash(file.next)}`;
+      }
+    this.db.connection
+      .prepare('UPDATE session_workspaces SET data=? WHERE session_id=?')
+      .run(JSON.stringify(workspace), workspace.sessionId);
   }
   /** Validates a merge or removal and returns the single-use token that `start` requires to run it. */
   async prepareAction(id: string, kind: 'merge' | 'remove'): Promise<{ token: string; view: WorktreeView }> {

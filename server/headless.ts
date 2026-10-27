@@ -16,7 +16,7 @@ export interface HeadlessOptions {
   model: string | null;
   effort: string | null;
   prompt: string;
-  schema: object;
+  schema: JsonSchema;
   /** Working directory of the agent. Defaults to an empty private directory, removed afterwards. */
   cwd?: string;
   access: HeadlessAccess;
@@ -76,13 +76,27 @@ function decode(text: string): unknown {
 }
 
 /** Subset of JSON Schema used by Cerebro's own schemas: type, enum, properties, required, additionalProperties:false, items, min/max. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- schéma JSON parcouru dynamiquement
-export function validateSchema(value: unknown, schema: any, path = '$'): void {
+export interface JsonSchema {
+  type?: string | readonly string[];
+  enum?: readonly unknown[];
+  properties?: Readonly<Record<string, JsonSchema>>;
+  required?: readonly string[];
+  additionalProperties?: boolean;
+  items?: JsonSchema;
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
+  minItems?: number;
+  maxItems?: number;
+}
+
+export function validateSchema(value: unknown, schema: JsonSchema | undefined, path = '$'): void {
   const fail = (reason: string): never => {
     throw new Error(`Réponse de l’agent non conforme au schéma (${path} : ${reason}).`);
   };
   if (!schema || typeof schema !== 'object') return;
-  if (Array.isArray(schema.enum) && !schema.enum.some((option: unknown) => option === value)) fail('valeur inattendue');
+  if (Array.isArray(schema.enum) && !schema.enum.some((option) => option === value)) fail('valeur inattendue');
   const types: string[] = schema.type === undefined ? [] : [schema.type].flat();
   const kind =
     value === null ? 'null' : Array.isArray(value) ? 'array' : Number.isInteger(value) ? 'integer' : typeof value;
@@ -291,7 +305,14 @@ export async function runHeadless(options: HeadlessOptions): Promise<unknown> {
         try {
           if (process.platform === 'win32') child.kill(force ? 'SIGKILL' : 'SIGTERM');
           else if (child.pid) process.kill(-child.pid, force ? 'SIGKILL' : 'SIGTERM');
-        } catch {}
+        } catch (error) {
+          // ESRCH: the agent already exited.
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH')
+            console.warn(
+              `[headless] arrêt impossible de ${agent} (pid ${child.pid}) :`,
+              error instanceof Error ? error.message : error,
+            );
+        }
       };
       const stop = (reason: Error): void => {
         failure = reason;

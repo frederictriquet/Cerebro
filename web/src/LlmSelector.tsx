@@ -59,8 +59,9 @@ export function LlmSelector({
   }, [available.length, refreshing, refresh]);
   // [SPEC UI web › Vue projet] No default choice: the shown model and effort are always explicit.
   const { models, efforts, model, effort } = llmChoices(agents, value);
-  const missingModel = value.model !== null && !models.some((item) => item.value === value.model);
-  const missingEffort = value.effort !== null && !efforts.includes(value.effort);
+  // Choix enregistrés absents du catalogue : affichés désactivés plutôt que perdus.
+  const missingModel = value.model !== null && !models.some((item) => item.value === value.model) ? value.model : null;
+  const missingEffort = value.effort !== null && !efforts.includes(value.effort) ? value.effort : null;
   return (
     <div className="tuning-row">
       <div className="tuning">
@@ -103,7 +104,7 @@ export function LlmSelector({
           />
         )}
       </div>
-      {models.length > 0 || missingModel ? (
+      {models.length > 0 || missingModel !== null ? (
         <div className="tuning">
           <span className="field-label">Modèle</span>
           <ChoiceGroup
@@ -112,8 +113,8 @@ export function LlmSelector({
             value={model ?? ''}
             disabled={disabled}
             options={[
-              ...(missingModel
-                ? [{ value: value.model!, label: value.model!, title: 'Modèle hors catalogue', disabled: true }]
+              ...(missingModel !== null
+                ? [{ value: missingModel, label: missingModel, title: 'Modèle hors catalogue', disabled: true }]
                 : []),
               ...models.map((item) => ({ value: item.value, label: item.label, title: item.description || undefined })),
             ]}
@@ -128,7 +129,7 @@ export function LlmSelector({
           />
         </div>
       ) : null}
-      {efforts.length > 0 || missingEffort ? (
+      {efforts.length > 0 || missingEffort !== null ? (
         <div className="tuning">
           <span className="field-label">Effort</span>
           <ChoiceGroup<Effort | ''>
@@ -137,8 +138,8 @@ export function LlmSelector({
             value={effort ?? ''}
             disabled={disabled}
             options={[
-              ...(missingEffort
-                ? [{ value: value.effort!, label: value.effort!, title: 'Effort hors catalogue', disabled: true }]
+              ...(missingEffort !== null
+                ? [{ value: missingEffort, label: missingEffort, title: 'Effort hors catalogue', disabled: true }]
                 : []),
               ...efforts.map((item) => ({ value: item, label: item })),
             ]}

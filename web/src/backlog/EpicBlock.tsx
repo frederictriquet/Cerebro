@@ -55,8 +55,9 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
     .map((t) => (t.status === 'started' ? sessions.find((s) => s.id === t.sessionId) : undefined))
     .find((s) => s !== undefined && s.status !== 'exited');
   const position = new Map(open.map((t, i) => [t.id, i + 1]));
-  const continuesEpic = run?.workspace != null;
-  const continuesWorktree = continuesEpic && run.workspace!.mode === 'isolated';
+  const continuedWorkspace = run?.workspace ?? null;
+  const continuesEpic = continuedWorkspace !== null;
+  const continuesWorktree = continuedWorkspace?.mode === 'isolated';
   // Le serveur refuse une nouvelle exécution tant qu'une autre est active ; une exécution en échec se reprend
   // par « Reprendre » dans son panneau.
   const runHoldsEpic = run !== null && (RUN_ACTIVE.includes(run.status) || run.status === 'failed');
@@ -74,7 +75,7 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
         ? `Attend des tâches hors de l'epic : ${outsideBlockers.map((t) => taskTitle(t.text).slice(0, 60)).join(' · ')}`
         : activeSession !== undefined
           ? 'Une session traite déjà cet epic'
-          : `Le serveur ordonnance les ${open.length} tâche(s) selon leurs dépendances${continuesEpic ? `, dans ${run.workspace!.path}` : ''}`;
+          : `Le serveur ordonnance les ${open.length} tâche(s) selon leurs dépendances${continuedWorkspace ? `, dans ${continuedWorkspace.path}` : ''}`;
 
   return (
     <div className="epic">

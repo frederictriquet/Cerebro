@@ -194,8 +194,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setTasks(parseTaskList(tRaw));
         setEpics(parseEpicList(eRaw));
         setAgents(parseAgentInfoList(aRaw));
-      } catch {
-        /* le snapshot WS prendra le relais */
+      } catch (error) {
+        // Le snapshot WS prendra le relais.
+        console.warn('[store] chargement initial impossible :', error instanceof Error ? error.message : error);
       }
     })();
     return () => {

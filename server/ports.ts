@@ -6,7 +6,11 @@ const PROBE_TIMEOUT_MS = 500;
 function isListening(host: string, port: number): Promise<boolean> {
   return new Promise((done) => {
     const socket = connect({ host, port });
+    let settled = false;
+    // A timeout may be followed by an error (or the reverse): only the first outcome counts.
     const finish = (listening: boolean): void => {
+      if (settled) return;
+      settled = true;
       socket.destroy();
       done(listening);
     };

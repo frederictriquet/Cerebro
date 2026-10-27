@@ -170,28 +170,8 @@ async function copyIgnoredContext(sourceRoot: string, targetRoot: string): Promi
 /** Isolation is persisted before launching the holder. Historical sessions keep their cwd. */
 export async function createWorkspace(db: CerebroDatabase, sessionId: string, project: Project): Promise<Workspace> {
   const registeredProject = db.getProject(project.id) ?? project;
-  if (registeredProject.workspaceMode === 'shared') {
-    const root = await git(registeredProject.path, ['rev-parse', '--show-toplevel']).catch(
-      () => registeredProject.path,
-    );
-    return save(db, {
-      sessionId,
-      projectId: registeredProject.id,
-      projectName: registeredProject.name,
-      projectRoot: root,
-      mode: 'shared',
-      path: registeredProject.path,
-      root,
-      source: root,
-      base: null,
-      branch: null,
-      initialDirty: [],
-      baseline: {},
-      reason:
-        'Dossier du projet choisi dans l’en-tête du projet : les conversations utilisent la branche courante, sans création de copie ni attribution individuelle des changements.',
-      createdAt: Date.now(),
-    });
-  }
+  if (registeredProject.workspaceMode === 'shared')
+    return save(db, await sharedWorkspace(sessionId, registeredProject));
   const common: Workspace = {
     sessionId,
     projectId: project.id,
@@ -216,18 +196,8 @@ export async function createWorkspace(db: CerebroDatabase, sessionId: string, pr
   }
   common.projectRoot = await git(registeredProject.path, ['rev-parse', '--show-toplevel']).catch(() => root);
   common.targetBranch = await git(common.projectRoot, ['symbolic-ref', '--quiet', 'HEAD']).catch(() => null);
-  if (resolve(DATA_DIR).startsWith(`${resolve(root)}/`) || resolve(DATA_DIR) === resolve(root))
-    throw new Error('Le dossier Cerebro doit être situé hors du dépôt pour isoler les sessions.');
-  if ((await git(root, ['ls-files', '--stage'])).split('\n').some((line) => line.startsWith('160000 ')))
-    throw new Error('Isolation des sous-modules non prise en charge : aucun agent lancé.');
-  if (await git(root, ['ls-files', '-u']))
-    throw new Error('Résolvez les conflits de l’index avant de lancer une session isolée.');
-  const before = await manifest(root);
-  const indexPath = resolve(root, await git(root, ['rev-parse', '--git-path', 'index']));
-  const indexBytes = await readFile(indexPath);
-  const dirty = (await git(root, ['diff', '--name-only', '-z', 'HEAD'])).split('\0').filter(Boolean);
-  const staged = (await git(root, ['diff', '--cached', '--name-only', '-z'])).split('\0').filter(Boolean);
-  const untracked = (await git(root, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
+  await assertIsolable(root);
+  const state = await projectState(root);
   const branch = `cerebro/session-${sessionId}`;
   const workspace = join(DATA_DIR, 'workspaces', sessionId);
   await mkdir(join(DATA_DIR, 'workspaces'), { recursive: true });
@@ -235,31 +205,21 @@ export async function createWorkspace(db: CerebroDatabase, sessionId: string, pr
   let added = false;
   try {
     const sourceIndex = join(temporary, 'source-index');
-    await writeFile(sourceIndex, indexBytes);
+    await writeFile(sourceIndex, state.index);
     const tree = await git(root, ['write-tree'], sourceIndex);
     await git(root, ['worktree', 'add', '-b', branch, '--', workspace, common.base!]);
     added = true;
-    // Recreate the indexed tree, then overlay only Git-visible local changes. Large dependency
-    // directories are shared as links below instead of physically copying and hashing them.
-    for (const name of await readdir(workspace))
-      if (name !== '.git') await rm(join(workspace, name), { recursive: true, force: true });
-    await git(workspace, ['read-tree', tree]);
-    await git(workspace, ['checkout-index', '--all', '--force']);
-    for (const name of new Set([...dirty, ...untracked])) await copyEntry(root, workspace, name);
-    const sharedIgnored = await copyIgnoredContext(root, workspace);
-    if (
-      common.base !== (await git(root, ['rev-parse', 'HEAD'])) ||
-      !indexBytes.equals(await readFile(indexPath)) ||
-      signature(before) !== signature(await manifest(root))
-    )
-      throw new Error('Le projet a changé pendant son isolation : relancez la session.');
+    const sharedIgnored = await populateCopy(root, workspace, tree, [...state.dirty, ...state.untracked]);
+    await assertProjectUnchanged(root, common.base!, state);
     const baseline = await manifest(workspace, sharedIgnored);
-    if (signature(before) !== signature(baseline))
-      throw new Error(`Copie initiale non identique (${firstDifference(before, baseline)}) : aucun agent lancé.`);
+    if (signature(state.manifest) !== signature(baseline))
+      throw new Error(
+        `Copie initiale non identique (${firstDifference(state.manifest, baseline)}) : aucun agent lancé.`,
+      );
     const dependencyNotice = sharedIgnored.length
       ? ` Dépendances partagées avec le projet source : ${sharedIgnored.join(', ')}.`
       : '';
-    const initialDirty = [...new Set([...dirty, ...staged, ...untracked])];
+    const initialDirty = [...new Set([...state.dirty, ...state.staged, ...state.untracked])];
     const startingSnapshot = await snapshotStartingContent(workspace, common.base!, sessionId, initialDirty);
     const saved = save(db, {
       ...common,
@@ -277,15 +237,90 @@ export async function createWorkspace(db: CerebroDatabase, sessionId: string, pr
     await rememberWorktree(db, saved);
     return saved;
   } catch (cause) {
-    if (added) {
-      await git(root, ['worktree', 'remove', '--force', workspace]).catch(() => {});
-      await git(root, ['branch', '-D', branch]).catch(() => {});
-      await git(root, ['update-ref', '-d', `refs/cerebro/starting/${sessionId}`]).catch(() => {});
-    }
+    if (added) await discardCopy(root, workspace, branch, sessionId);
     throw cause;
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
+}
+
+/** A project set to work in its own folder: the conversation uses its current branch, without a copy. */
+async function sharedWorkspace(sessionId: string, project: Project): Promise<Workspace> {
+  const root = await git(project.path, ['rev-parse', '--show-toplevel']).catch(() => project.path);
+  return {
+    sessionId,
+    projectId: project.id,
+    projectName: project.name,
+    projectRoot: root,
+    mode: 'shared',
+    path: project.path,
+    root,
+    source: root,
+    base: null,
+    branch: null,
+    initialDirty: [],
+    baseline: {},
+    reason:
+      'Dossier du projet choisi dans l’en-tête du projet : les conversations utilisent la branche courante, sans création de copie ni attribution individuelle des changements.',
+    createdAt: Date.now(),
+  };
+}
+
+async function assertIsolable(root: string): Promise<void> {
+  if (resolve(DATA_DIR).startsWith(`${resolve(root)}/`) || resolve(DATA_DIR) === resolve(root))
+    throw new Error('Le dossier Cerebro doit être situé hors du dépôt pour isoler les sessions.');
+  if ((await git(root, ['ls-files', '--stage'])).split('\n').some((line) => line.startsWith('160000 ')))
+    throw new Error('Isolation des sous-modules non prise en charge : aucun agent lancé.');
+  if (await git(root, ['ls-files', '-u']))
+    throw new Error('Résolvez les conflits de l’index avant de lancer une session isolée.');
+}
+
+/** The project as the copy reproduces it: its files, its index and its local changes. */
+interface ProjectState {
+  manifest: Record<string, string>;
+  indexPath: string;
+  index: Buffer;
+  dirty: string[];
+  staged: string[];
+  untracked: string[];
+}
+async function projectState(root: string): Promise<ProjectState> {
+  const before = await manifest(root);
+  const indexPath = resolve(root, await git(root, ['rev-parse', '--git-path', 'index']));
+  const index = await readFile(indexPath);
+  const dirty = (await git(root, ['diff', '--name-only', '-z', 'HEAD'])).split('\0').filter(Boolean);
+  const staged = (await git(root, ['diff', '--cached', '--name-only', '-z'])).split('\0').filter(Boolean);
+  const untracked = (await git(root, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
+  return { manifest: before, indexPath, index, dirty, staged, untracked };
+}
+
+/**
+ * Recreates the project's indexed tree in the new worktree, then overlays only Git-visible local changes. Large
+ * dependency directories are shared as links instead of physically copying and hashing them: returns them.
+ */
+async function populateCopy(root: string, workspace: string, tree: string, changed: string[]): Promise<string[]> {
+  for (const name of await readdir(workspace))
+    if (name !== '.git') await rm(join(workspace, name), { recursive: true, force: true });
+  await git(workspace, ['read-tree', tree]);
+  await git(workspace, ['checkout-index', '--all', '--force']);
+  for (const name of new Set(changed)) await copyEntry(root, workspace, name);
+  return copyIgnoredContext(root, workspace);
+}
+
+async function assertProjectUnchanged(root: string, base: string, state: ProjectState): Promise<void> {
+  if (
+    base !== (await git(root, ['rev-parse', 'HEAD'])) ||
+    !state.index.equals(await readFile(state.indexPath)) ||
+    signature(state.manifest) !== signature(await manifest(root))
+  )
+    throw new Error('Le projet a changé pendant son isolation : relancez la session.');
+}
+
+/** Removes a copy whose creation failed, with its branch and its starting content. */
+async function discardCopy(root: string, workspace: string, branch: string, sessionId: string): Promise<void> {
+  await git(root, ['worktree', 'remove', '--force', workspace]).catch(() => {});
+  await git(root, ['branch', '-D', branch]).catch(() => {});
+  await git(root, ['update-ref', '-d', `refs/cerebro/starting/${sessionId}`]).catch(() => {});
 }
 
 /** The live isolated copy whose session directory is `path`, if Cerebro created one there. */

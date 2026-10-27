@@ -3,8 +3,16 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 const PREVIEW_LIMIT = 50;
+// LC_ALL=C keeps git's error messages in English so `notRepository` can recognize them.
 const git = async (path: string, args: string[]): Promise<string> =>
-  (await exec('git', ['-C', path, ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout.trimEnd();
+  (
+    await exec('git', ['-C', path, ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' } })
+  ).stdout.trimEnd();
+const message = (error: unknown): string =>
+  error instanceof Error ? ((error as { stderr?: unknown }).stderr || error.message).toString().trim() : String(error);
+/** A missing folder or one outside any repository: the normal "not a repository" case, as opposed to a failure. */
+const notRepository = (error: unknown): boolean =>
+  /not a git repository|cannot change to .*No such file or directory/.test(message(error));
 
 export interface GitSummary {
   branch: string | null;
@@ -20,7 +28,10 @@ export interface GitSummary {
   pendingCommitsError?: string;
 }
 
-/** Read local refs only. Count and preview use the same captured commit range. */
+/**
+ * Read local refs only. Count and preview use the same captured commit range.
+ * Resolves to an empty summary outside a repository; any other git failure rejects instead of passing for a clean tree.
+ */
 export async function gitSummary(path: string, includeCommits = false): Promise<GitSummary> {
   const empty: GitSummary = { branch: null, dirty: 0, ahead: 0, hasCommits: false, hasUpstream: false };
   try {
@@ -64,13 +75,15 @@ export async function gitSummary(path: string, includeCommits = false): Promise<
           }
           result.pendingCommits = { upstream: name, commits, truncated: count > commits.length };
         }
-      } catch {
+      } catch (error) {
+        console.warn(`[git-summary] commits à pousser illisibles pour ${path} :`, message(error));
         if (includeCommits)
           result.pendingCommitsError = 'Impossible de lire les commits à pousser. Réessayez dans quelques instants.';
       }
     }
     return result;
-  } catch {
-    return empty;
+  } catch (error) {
+    if (notRepository(error)) return empty;
+    throw new Error(`Lecture Git impossible pour ${path} : ${message(error)}`, { cause: error });
   }
 }
