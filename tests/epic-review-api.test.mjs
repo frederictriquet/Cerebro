@@ -52,6 +52,7 @@ test('task, review and command launches keep the epic folder after changing the 
    db.updateTask(command.id,{status:'done'});
    const next=db.createTask(p.id,'Poursuivre globalement',null,epic.id);
    const continued=await send('POST',`/api/epics/${epic.id}/start`,{agent:'codex'});assert.equal(continued.statusCode,202);assert.equal(continued.json().contextRoot,workspace.path);
+   const twice=await send('POST',`/api/epics/${epic.id}/start`,{agent:'codex'});assert.equal(twice.statusCode,409);assert.equal(twice.json().error,'Epic déjà en cours : utilisez reprendre ou arrêter.');
    await until(async()=>{const runs=(await send('GET',`/api/epics/${epic.id}/runs`)).json();return runs[0]?.status==='waiting-validation';});
    assert.equal(workspaceFor(db,db.getTask(next.id).sessionId).path,workspace.path);
    const late=db.createTask(p.id,'Ajout en cours',null,epic.id);

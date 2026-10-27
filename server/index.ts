@@ -322,6 +322,8 @@ export async function buildServer(): Promise<FastifyInstance> {
     const task = db.getTask(run.taskId);
     if(task&&run.finishedAt!==null)notifier.operations.record({id:run.id,projectId:task.projectId,sessionId:null,kind:'command',ok:run.status==='succeeded',summary:`${run.command.name} : ${run.status}, code ${run.exitCode??'inconnu'}${run.error?` ; ${run.error}`:''} ; clôture du travail distincte.`,startedAt:run.startedAt,finishedAt:run.finishedAt});
     if (task) broadcast({type:'task',task});
+    // Without its output (up to 1 MiB): an open view fetches it through /api/tasks/:id/runs.
+    broadcast({type:'command-run',run:{...run,output:undefined}});
   };
   sessions.onEvent((event) => {
     epicRunner.poke();
@@ -565,9 +567,14 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   app.delete<{ Params: { id: string } }>('/api/projects/:id', async (request, reply) => {
+    // La base supprime aussi le backlog du projet (ON DELETE CASCADE) : le relever avant.
+    const taskIds = db.listTasks().filter((task) => task.projectId === request.params.id).map((task) => task.id);
+    const epicIds = db.listEpics().filter((epic) => epic.projectId === request.params.id).map((epic) => epic.id);
     const result = await orError(reply, () => sessions.deleteProject(request.params.id));
     if (!result.ok) return result.reply;
     if (!result.value) return error(reply, 404, 'Projet introuvable');
+    for (const id of taskIds) broadcast({ type: 'task-deleted', id });
+    for (const id of epicIds) broadcast({ type: 'epic-deleted', id });
     const projects = db.listProjects();
     for (const socket of eventSockets) sendSocket(socket, { type: 'projects', projects });
     void peers.sync();
@@ -666,6 +673,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   // Omitted fields inherit the project's last choices; null resets to the Cerebro default (parseTuning).
+  // The launched prompt is not remembered: only the project's « Nouvelle session » form edits it (PATCH).
   const launchSession = async (
     reply: FastifyReply,
     project: Project,
@@ -677,7 +685,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     const defaults = parseSessionDefaults(project.sessionDefaults, rawBody);
     if (defaults === null) return error(reply, 400, 'Paramètres de session invalides pour cet agent');
     try {
-      const session = await sessions.create(project, defaults, validate, undefined, undefined, { epicId });
+      const session = await sessions.create(project, defaults, validate, undefined, undefined, { epicId, rememberPrompt: false });
       return reply.code(201).send(respond(session));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'Impossible de lancer la session';
@@ -737,6 +745,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     const epic = db.updateEpic(id, changes);
     if (epic === null) return { ok: false, status: 404, message: 'Epic introuvable' };
     broadcast({ type: 'epic', epic });
+    // Les sessions conservent le titre de leur epic d'origine : diffuser le titre renommé.
+    for (const session of db.listSessions()) {
+      if (session.epic?.id === id) broadcast({ type: 'session', session });
+    }
     return { ok: true, epic };
   };
 
@@ -860,10 +872,10 @@ export async function buildServer(): Promise<FastifyInstance> {
         const run = await (task.epicId ? withEpicWorkspace(db,task.epicId,start) : start());
         return reply.code(202).send({task:db.getTask(task.id),run});
       }
-      catch (cause) { return error(reply, 409, String(cause)); }
+      catch (cause) { return error(reply, 409, cause instanceof Error ? cause.message : String(cause)); }
     }
     try { const context=task.epicId?epicWorkspace(db,task.epicId):null;if(context)assertEpicWorkspace(db,context); }
-    catch(cause){return error(reply,409,String(cause));}
+    catch(cause){return error(reply,409,cause instanceof Error ? cause.message : String(cause));}
     return launchSession(reply, project, request.body, (session) => {
       const updated = db.updateTask(task.id, { status: 'started', sessionId: session.id });
       if (updated !== null) broadcast({ type: 'task', task: updated });
@@ -920,7 +932,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     const options=parseSessionDefaults(db.getProject(epic.projectId)!.sessionDefaults, {...body,prompt:typeof body.prompt==='string'?body.prompt:''});
     if(!options)return error(reply,400,'Réglages de session invalides');
     try{return reply.code(202).send(epicRunner.start(epic.id,options));}
-    catch(cause){return error(reply,409,String(cause));}
+    catch(cause){return error(reply,409,cause instanceof Error ? cause.message : String(cause));}
   });
   // Code review du travail d'une epic terminée, arrêtée ou échouée : une session rejoint le worktree des étapes.
   app.post<{ Params: { id: string } }>('/api/epics/:id/review', async (request, reply) => {
@@ -1392,6 +1404,8 @@ export async function buildServer(): Promise<FastifyInstance> {
       sessions: db.listSessions(),
       tasks: db.listTasks(),
       epics: db.listEpics(),
+      // Annonce les événements epic-run et command-run : sans ce champ (instance antérieure), l'UI les relit périodiquement.
+      runEvents: true,
     });
     socket.on('close', () => eventSockets.delete(socket));
   });

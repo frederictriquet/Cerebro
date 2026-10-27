@@ -1,6 +1,6 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { api, apiBase } from './api.ts';
+import { api, apiBase, errorMessage } from './api.ts';
 import type { PreparedReview } from '../../server/review.ts';
 import { Modal } from './Dialog.tsx';
 import { NewSessionForm } from './NewSessionForm.tsx';
@@ -68,7 +68,7 @@ function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => 
     let disposed = false;
     let timer: number | undefined;
     const current = (): boolean => !disposed && apiBase() === machineBase;
-    const fail = (cause: unknown): void => { if (current()) setError(cause instanceof Error ? cause.message : String(cause)); };
+    const fail = (cause: unknown): void => { if (current()) setError(errorMessage(cause)); };
     const poll = async (): Promise<void> => {
       if (!current()) return;
       try {
@@ -112,7 +112,7 @@ function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => 
 function RepoReviewDialog({projectId,onClose}:{projectId:string;onClose:()=>void}) {
   const [review,setReview]=useState<PreparedReview|null>(null);
   const [error,setError]=useState<string|null>(null);
-  useEffect(()=>{void api<PreparedReview>(`/api/projects/${projectId}/git/prepare-review`,{method:'POST'}).then(setReview).catch(cause=>setError(String(cause)));},[projectId]);
+  useEffect(()=>{void api<PreparedReview>(`/api/projects/${projectId}/git/prepare-review`,{method:'POST'}).then(setReview).catch(cause=>setError(errorMessage(cause)));},[projectId]);
   return <Modal title="Périmètre de code review" onClose={onClose}>
     {!review&&!error?<p><ActivityStatus>Préparation du périmètre de review…</ActivityStatus></p>:null}
     {review?<>
@@ -133,7 +133,7 @@ function SessionReviewDialog({sessionId,projectId,onClose}:{sessionId:string;pro
   const [error,setError]=useState<string|null>(null);
   useEffect(()=>{void api<SessionGitSnapshot>(`/api/sessions/${sessionId}/git/prepare-commit`,{method:'POST'}).then(s=>{
     setSnapshot(s);setSelection(JSON.stringify({snapshotId:s.id,selection:s.files.filter(f=>!f.warnings.length).map(f=>({path:f.path,all:true})),commits:s.provenance.commits.filter(c=>c.certainty==='workspace').map(c=>c.hash),acknowledged:[]},null,2));
-  }).catch(cause=>setError(String(cause)));},[sessionId]);
+  }).catch(cause=>setError(errorMessage(cause)));},[sessionId]);
   return <Modal title="Périmètre de review de la session" onClose={onClose}>
     {!snapshot&&!error?<p><ActivityStatus>Préparation du périmètre de review…</ActivityStatus></p>:null}
     {snapshot ? <>
@@ -144,7 +144,7 @@ function SessionReviewDialog({sessionId,projectId,onClose}:{sessionId:string;pro
       <textarea aria-label="Sélection de review JSON" rows={12} value={selection} onChange={e=>setSelection(e.target.value)} />
       <NewSessionForm className="bare" projectId={projectId} initialPrompt="Review du périmètre sélectionné" onLaunch={async spec=>{
         try {await api(`/api/sessions/${sessionId}/git/review`,{method:'POST',body:JSON.stringify({selection:JSON.parse(selection),launch:spec})});onClose();}
-        catch(cause){setError(String(cause));throw cause;}
+        catch(cause){setError(errorMessage(cause));throw cause;}
       }} onCancel={onClose}/>
     </> : null}
     {error?<p className="form-error">{error}</p>:null}
@@ -161,7 +161,7 @@ export function SessionGitActions({ sessionId, live: _live }: { sessionId: strin
   useEffect(()=>{
     let disposed=false;setContext(null);setContextError(null);setOpen(null);
     void api<SessionGitContext>(`/api/sessions/${sessionId}/git/context`).then(value=>{if(!disposed&&apiBase()===machineBase)setContext(value);})
-      .catch(cause=>{if(!disposed&&apiBase()===machineBase)setContextError(cause instanceof Error?cause.message:String(cause));});
+      .catch(cause=>{if(!disposed&&apiBase()===machineBase)setContextError(errorMessage(cause));});
     return()=>{disposed=true;};
   },[sessionId,machineBase]);
   if(!session)return null;

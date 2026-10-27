@@ -84,6 +84,7 @@ Au démarrage du serveur, toute session non `exited` passe à `exited` (les PTY 
 - `{type:'session', session: Session}` à chaque création / changement
 - `{type:'session-deleted', id}` ; `{type:'projects', projects: Project[]}` quand la liste change
 - `{type:'alert', session: Session}` quand une session passe à `waiting` ou `idle` avec `attention=true` (signal fiable) → le front affiche une notification navigateur
+- `{type:'epic-run', run}` et `{type:'command-run', run}` (sans la sortie) à chaque changement d'exécution d'epic ou de commande ; le snapshot porte `runEvents: true` pour les annoncer. Sans ce champ (machine distante de même majeure antérieure), l'UI relit `/api/epics/:id/runs` et `/api/tasks/:id/runs` toutes les 5 s, onglet visible
 
 `/ws/term/:id` — terminal d'une session :
 - serveur → client : `{type:'snapshot', data}` (écran sérialisé du terminal headless via SerializeAddon, scrollback inclus ; pour une session `exited` sans terminal vivant : les ~2 Mo de fin du fichier log brut), puis `{type:'output', data}` en flux, `{type:'exit', exitCode}`
@@ -179,7 +180,7 @@ Thème sombre, sobre, dense. Routage par hash : `#/` accueil, `#/p/<projectId>`,
 - **Barre latérale** : en haut, la section « À traiter » qui liste les sessions `attention=true` (pastille orange pour waiting, bleue pour idle) ;
   puis les projets, chacun dépliable avec ses sessions (pastille de statut : running = vert animé, waiting = orange, idle = bleu, exited = gris) ;
   bouton « + Projet » (formulaire : nom, chemin absolu).
-- **Vue projet** : nom + chemin, formulaire « Nouvelle session » (agent : liste des agents disponibles, mode : auto / acceptEdits / plan / bypass avec un avertissement rouge pour bypass, prompt multi-ligne, Ctrl+Entrée (ou Cmd+Entrée sur Mac) pour lancer ; agent, modèle, effort, mode et prompt sont mémorisés automatiquement par projet côté serveur via `PATCH /api/projects/:id` `{sessionDefaults: {...}}`, même avant lancement, puis repris par tous les formulaires et les nouvelles sessions Slack ; les champs omis héritent des choix enregistrés, un prompt explicite reste prioritaire ; les brouillons non lancés et leurs images restent conservés dans le navigateur et sont effacés au lancement, le prompt lancé reste prérempli comme défaut), puis la liste des sessions du projet (titre, agent, statut, date relative, actions). Les sélecteurs de modèle et d'effort n'ont pas de choix « défaut » : la valeur affichée est toujours explicite et correspond à celle que `parseTuning` lance (modèle `AgentCatalog.defaultModel`, effort `defaultEffort`).
+- **Vue projet** : nom + chemin, formulaire « Nouvelle session » (agent : liste des agents disponibles, mode : auto / acceptEdits / plan / bypass avec un avertissement rouge pour bypass, prompt multi-ligne, Ctrl+Entrée (ou Cmd+Entrée sur Mac) pour lancer ; agent, modèle, effort, mode et prompt sont mémorisés automatiquement par projet côté serveur via `PATCH /api/projects/:id` `{sessionDefaults: {...}}`, même avant lancement, puis repris par tous les formulaires et les nouvelles sessions Slack ; les champs omis héritent des choix enregistrés, un prompt explicite reste prioritaire ; les brouillons non lancés et leurs images restent conservés dans le navigateur et sont effacés au lancement, avec le prompt mémorisé ; un lancement ne mémorise jamais son prompt, et les modales à prompt prérempli (tâche du backlog, sélection du terminal, reviews) ne modifient ni n'effacent le prompt mémorisé), puis la liste des sessions du projet (titre, agent, statut, date relative, actions). Les sélecteurs de modèle et d'effort n'ont pas de choix « défaut » : la valeur affichée est toujours explicite et correspond à celle que `parseTuning` lance (modèle `AgentCatalog.defaultModel`, effort `defaultEffort`).
 - **Vue session** : en-tête (titre, agent, mode, statut, raison d'attention) + boutons Arrêter / Reprendre (si exited et agentSessionId) / Supprimer ;
   terminal xterm.js plein espace (FitAddon + ResizeObserver, WebLinksAddon, police monospace 13 px), connecté à `/ws/term/:id`,
   qui reçoit le focus à l'ouverture. Ouvrir la session appelle `POST /api/sessions/:id/seen`. Échap seul dans le terminal
@@ -223,7 +224,7 @@ fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jso
 ## Front (grok)
 
 - Vue session : **barre de réponse rapide** sous le terminal (utile sur mobile) : boutons `Entrée`, `Échap`, `↑`, `↓`,
-  `1`, `2`, `3`, `y`, `n`, `Ctrl+C` (envoie `\x03`, avec confirmation) + un champ texte « Envoyer un message » qui envoie
+  `1`, `2`, `3`, `y`, `n`, `Ctrl+C` (envoie `\x03` après un délai de rétractation de 5 s : second clic ou Échap pour annuler ; abandonné si la vue change de session) + un champ texte « Envoyer un message » qui envoie
   le texte puis `\r` (deux envois séparés de 150 ms, sinon certaines TUI ignorent l'Entrée collée au texte). Utilise le ws
   du terminal ouvert (pas besoin de l'API input).
 - Titre de session renommable (double-clic ou icône crayon → champ, Entrée valide, Échap annule) via `PATCH`.

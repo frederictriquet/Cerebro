@@ -19,7 +19,7 @@ import { SerializeAddon } from '@xterm/addon-serialize';
 import * as headlessPackage from '@xterm/headless';
 import { buildAgentCommand, type Tuning } from './agents.ts';
 import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
-import type { Agent, Mode, Project, Session, SessionDefaults } from './db.ts';
+import type { Agent, Mode, Project, Session, SessionDefaults, Task } from './db.ts';
 import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError } from './db.ts';
 import type { AgentQuestion } from './questions.ts';
 import { archiveSessionWorktree } from './worktrees.ts';
@@ -35,6 +35,8 @@ export type SessionEvent =
   | { type: 'session'; session: Session }
   | { type: 'projects'; projects: Project[] }
   | { type: 'session-deleted'; id: string }
+  // Tâche modifiée par une cascade de la base (session supprimée).
+  | { type: 'task'; task: Task }
   | { type: 'alert'; session: Session }
   // End of an agent turn, with its final message when the agent's hook provides it.
   | { type: 'turn-complete'; id: string; message: string | null };
@@ -242,21 +244,25 @@ export class SessionManager {
     for (const listener of this.eventListeners) listener(event);
   }
 
-  async create(project: Project, overrides: Partial<SessionDefaults> = {}, validate?: () => Promise<void>, contextPath?: string, title?: string, options: { rememberDefaults?: boolean; epicId?: string | null; workspace?: WorkspaceContext } = {}): Promise<Session> {
+  async create(project: Project, overrides: Partial<SessionDefaults> = {}, validate?: () => Promise<void>, contextPath?: string, title?: string, options: { rememberDefaults?: boolean; rememberPrompt?: boolean; epicId?: string | null; workspace?: WorkspaceContext } = {}): Promise<Session> {
     const create = (): Promise<Session> => this.createInContext(project, overrides, validate, contextPath, title, options);
     return options.epicId ? withEpicWorkspace(this.db, options.epicId, create) : create();
   }
 
-  private async createInContext(project: Project, overrides: Partial<SessionDefaults>, validate: (() => Promise<void>) | undefined, contextPath: string | undefined, title: string | undefined, options: { rememberDefaults?: boolean; epicId?: string | null; workspace?: WorkspaceContext }): Promise<Session> {
+  private async createInContext(project: Project, overrides: Partial<SessionDefaults>, validate: (() => Promise<void>) | undefined, contextPath: string | undefined, title: string | undefined, options: { rememberDefaults?: boolean; rememberPrompt?: boolean; epicId?: string | null; workspace?: WorkspaceContext }): Promise<Session> {
     const current = this.db.getProject(project.id);
     if (current === null) throw new Error('Projet introuvable');
     // An explicit workspace (a copy to repair) is joined whatever the project's current preference.
     const context = options.epicId ? epicWorkspace(this.db, options.epicId) : options.workspace ?? null;
     if (options.epicId && context) assertEpicWorkspace(this.db, context);
     // Automated launches must not replace the user's form settings with generated instructions.
+    // rememberPrompt:false keeps the settings but leaves the form's remembered prompt untouched.
+    const { prompt, ...settings } = overrides;
     const defaults = options.rememberDefaults === false
       ? resolveSessionDefaults(current.sessionDefaults, overrides)
-      : this.rememberDefaults(project.id, overrides);
+      : options.rememberPrompt === false
+        ? { ...this.rememberDefaults(project.id, settings), prompt: prompt ?? current.sessionDefaults.prompt }
+        : this.rememberDefaults(project.id, overrides);
     const path=context?.path??(current.workspaceMode==='shared'?current.path:contextPath??current.path);
     assertWorktreeAvailable(path);
     // A context inside an existing copy (next epic step) reuses it instead of copying the copy.
@@ -847,12 +853,18 @@ export class SessionManager {
       await this.stopProcesses(id);
       await archiveSessionWorktree(this.db,id);
       const root = workspaceFor(this.db, id)?.root ?? null;
+      const linked = this.db.listTasks().filter((task) => task.sessionId === id).map((task) => task.id);
       this.db.deleteSession(id);
       this.onSessionReleased(id, root);
       this.cleanupAllArtifacts(id);
       this.questions.delete(id);
       this.askedQuestions.delete(id);
       this.emit({ type: 'session-deleted', id });
+      // La base délie ces tâches (ON DELETE SET NULL) : diffuser leur nouvel état.
+      for (const taskId of linked) {
+        const task = this.db.getTask(taskId);
+        if (task !== null) this.emit({ type: 'task', task });
+      }
       return true;
     } finally {
       this.deleting.delete(id);

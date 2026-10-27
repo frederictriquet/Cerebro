@@ -15,6 +15,7 @@ import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { useStore } from './store.tsx';
+import { ErrorBoundary } from './ErrorBoundary.tsx';
 import type { Project, WorkspaceMode } from './types.ts';
 
 const PROJECT_COLORS = ['#e5484d', '#f76b15', '#ffc53d', '#46a758', '#12a594', '#0090ff', '#6e56cf', '#d6409f'];
@@ -301,7 +302,9 @@ export function ProjectView({ projectId }: { projectId: string }) {
           </DelayedActionButton>
         </div>
         <div className="project-head-details">
-          <GitStatus key={project.id} projectId={project.id} />
+          <ErrorBoundary zone="État Git" resetKey={project.id}>
+            <GitStatus key={project.id} projectId={project.id} />
+          </ErrorBoundary>
         </div>
       </header>
       {commitSettingsOpen?<CommitSettingsDialog project={project} onClose={()=>setCommitSettingsOpen(false)}/>:null}
@@ -311,7 +314,9 @@ export function ProjectView({ projectId }: { projectId: string }) {
 
       {error ? <p className="form-error">{error}</p> : null}
 
-      <Worktrees key={`worktrees-${project.id}`} projectId={project.id} workspaceMode={project.workspaceMode} />
+      <ErrorBoundary zone="Copies de travail" resetKey={project.id}>
+        <Worktrees key={`worktrees-${project.id}`} projectId={project.id} workspaceMode={project.workspaceMode} />
+      </ErrorBoundary>
       <div className="project-columns">
         <section className="card project-panel session-table-wrap">
           <div className="project-panel-head">
@@ -338,11 +343,15 @@ export function ProjectView({ projectId }: { projectId: string }) {
           {kids.length === 0 ? (
             <p className="empty-hint">Aucune session pour ce projet.</p>
           ) : (
-            <SessionList key={`sessions-${project.id}`} sessions={kids} now={now} onError={setError} />
+            <ErrorBoundary zone="Sessions" resetKey={project.id}>
+              <SessionList key={`sessions-${project.id}`} sessions={kids} now={now} onError={setError} />
+            </ErrorBoundary>
           )}
         </section>
 
-        <Backlog projectId={project.id} />
+        <ErrorBoundary zone="Backlog" resetKey={project.id}>
+          <Backlog projectId={project.id} />
+        </ErrorBoundary>
       </div>
     </div>
   );

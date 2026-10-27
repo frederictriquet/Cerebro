@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SessionTask, SessionTaskStatus } from '../../server/session-tasks.ts';
-import { api } from './api.ts';
+import { api, errorMessage } from './api.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
+import { usePolling } from './usePolling.ts';
 import './session-tasks.css';
 
 const LABELS: Record<SessionTaskStatus, string> = {
@@ -26,22 +27,12 @@ export function sessionTasksState(tasks: readonly SessionTask[]): SessionTaskSta
 export function useSessionTasks(sessionId: string) {
   const [data, setData] = useState<{ sessionId: string; tasks: SessionTask[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const requestId = useRef(0);
-  const refresh = useCallback(async (): Promise<void> => {
-    const current = ++requestId.current;
-    try {
-      const tasks = await api<SessionTask[]>(`/api/sessions/${sessionId}/tasks`);
-      if (requestId.current === current) { setData({ sessionId, tasks }); setError(null); }
-    } catch (cause) {
-      if (requestId.current === current) setError(String(cause));
-    }
-  }, [sessionId]);
-  useEffect(() => {
-    setData(null); setError(null);
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 3000);
-    return () => { window.clearInterval(timer); requestId.current++; };
-  }, [refresh]);
+  const fetchTasks = useCallback(() => api<SessionTask[]>(`/api/sessions/${sessionId}/tasks`), [sessionId]);
+  useEffect(() => { setData(null); setError(null); }, [sessionId]);
+  const refresh = usePolling(fetchTasks, 3000, {
+    onData: (tasks) => { setData({ sessionId, tasks }); setError(null); },
+    onError: (cause) => setError(errorMessage(cause)),
+  });
   return { tasks: data?.sessionId === sessionId ? data.tasks : [], loaded: data?.sessionId === sessionId, error, refresh };
 }
 
@@ -65,7 +56,7 @@ export function SessionTasksPanel({ sessionId, tasks, loaded, error, refresh }: 
       await api(`${base}${id ? `/${id}` : ''}`, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       after?.();
       await refresh();
-    } catch (cause) { setSaveError(String(cause)); }
+    } catch (cause) { setSaveError(errorMessage(cause)); }
     finally { setBusy(false); }
   };
   const counts = (Object.keys(LABELS) as SessionTaskStatus[])

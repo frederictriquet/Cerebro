@@ -26,6 +26,7 @@ export interface EpicRun {
   workspaceConflict?:boolean;
 }
 const headOf=(path:string):string|null=>{try{return execFileSync('git',['-C',path,'rev-parse','--verify','HEAD'],{stdio:['ignore','pipe','ignore'],timeout:5000}).toString().trim()||null;}catch{return null;}};
+type EpicWorkspaceState={context:WorkspaceContext|null|undefined;conflict:boolean};
 const askedQuestion=(session:{status:string;attentionReason:string|null}):boolean=>session.status==='waiting'&&!!session.attentionReason?.startsWith('Question : ');
 const version=(t:Task):string=>createHash('sha256').update(JSON.stringify([t.text,t.dependsOn.slice().sort(),t.execution,t.epicId])).digest('hex');
 export function taskOrder(tasks:Task[],all:Task[]):Task[]{
@@ -44,18 +45,25 @@ export class EpicRunner {
   initialize():void{this.timer=setInterval(()=>this.poke(),1000);this.timer.unref();this.poke();}
   close():void{this.closed=true;if(this.timer)clearInterval(this.timer);}
   async shutdown():Promise<void>{this.close();await Promise.allSettled([...this.inFlight]);}
-  list(epicId?:string):EpicRun[]{const rows=(this.db.connection.prepare(epicId?'SELECT data FROM epic_runs WHERE epic_id=? ORDER BY rowid DESC':'SELECT data FROM epic_runs ORDER BY rowid DESC').all(...(epicId?[epicId]:[])) as {data:string}[]);const contexts=new Map<string,WorkspaceContext|null|undefined>();const conflicts=new Set<string>();return rows.map(row=>{
+  list(epicId?:string):EpicRun[]{const rows=(this.db.connection.prepare(epicId?'SELECT data FROM epic_runs WHERE epic_id=? ORDER BY rowid DESC':'SELECT data FROM epic_runs ORDER BY rowid DESC').all(...(epicId?[epicId]:[])) as {data:string}[]);const workspaces=new Map<string,EpicWorkspaceState>();return rows.map(row=>{
     const run=JSON.parse(row.data) as EpicRun;
-    // An ambiguous legacy epic must remain inspectable; start/resume report the conflict explicitly.
-    if(!contexts.has(run.epicId)){let context:WorkspaceContext|null|undefined;try{context=epicWorkspace(this.db,run.epicId);}catch(cause){if(cause instanceof EpicWorkspaceConflict)conflicts.add(run.epicId);}contexts.set(run.epicId,context);}
-    const context=contexts.get(run.epicId);const workspace=context===undefined?run.workspace??null:context;
-    return {...run,workspace,contextRoot:workspace?.path??run.contextRoot,workspaceConflict:conflicts.has(run.epicId)};
+    if(!workspaces.has(run.epicId))workspaces.set(run.epicId,this.workspaceState(run.epicId));
+    return this.present(run,workspaces.get(run.epicId)!);
   });}
+  // An ambiguous legacy epic must remain inspectable; start/resume report the conflict explicitly.
+  private workspaceState(epicId:string):EpicWorkspaceState{try{return {context:epicWorkspace(this.db,epicId),conflict:false};}catch(cause){return {context:undefined,conflict:cause instanceof EpicWorkspaceConflict};}}
+  private present(run:EpicRun,state:EpicWorkspaceState):EpicRun{const workspace=state.context===undefined?run.workspace??null:state.context;return {...run,workspace,contextRoot:workspace?.path??run.contextRoot,workspaceConflict:state.conflict};}
   reserved(taskId:string):boolean{return this.list().some(r=>['running','waiting-validation','blocked'].includes(r.status)&&r.order.includes(taskId));}
-  private save(run:EpicRun,updateSettings=false):void{const previous=this.list(run.epicId).find(r=>r.id===run.id);
+  // Runs on every tick while a command streams output: read only this run's row and resolve the epic's workspace once.
+  private save(run:EpicRun,updateSettings=false):void{const stored=this.db.connection.prepare('SELECT data FROM epic_runs WHERE id=?').get(run.id) as {data:string}|undefined;const previous=stored?JSON.parse(stored.data) as EpicRun:undefined;
     // A setting can change while an asynchronous launch holds an older copy of the run.
     if(!updateSettings)run.autoValidate=previous?.autoValidate??run.autoValidate??false;
-    run.updatedAt=Date.now();this.db.connection.prepare('INSERT INTO epic_runs VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(run.id,run.epicId,JSON.stringify(run));if(['failed','succeeded','blocked'].includes(run.status)&&(previous?.status!==run.status||previous?.error!==run.error))this.onResult(run);}
+    run.updatedAt=Date.now();const data=JSON.stringify(run);this.db.connection.prepare('INSERT INTO epic_runs VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(run.id,run.epicId,data);
+    // Clients follow runs through these events instead of polling; a tick that only refreshes updatedAt is not announced.
+    // The workspace is resolved after the write, since the run's own row feeds it; any change it reflects also shows in the run's other fields.
+    const workspace=this.workspaceState(run.epicId);const saved=this.present(JSON.parse(data) as EpicRun,workspace);const content=(r:EpicRun):string=>JSON.stringify({...r,updatedAt:0});
+    if(!previous||content(this.present(previous,workspace))!==content(saved))this.broadcast({type:'epic-run',run:saved});
+    if(['failed','succeeded','blocked'].includes(run.status)&&(previous?.status!==run.status||previous?.error!==run.error))this.onResult(run);}
   private changeTask(id:string,patch:Parameters<CerebroDatabase['updateTask']>[1]):void{const task=this.db.updateTask(id,patch);if(task)this.broadcast({type:'task',task});}
   private plan(epicId:string){
     const epic=this.db.getEpic(epicId);if(!epic)throw new Error('Epic introuvable.');

@@ -1,3 +1,6 @@
+import type { CommandRun } from '../../server/commands.ts';
+import type { EpicRun } from '../../server/epic-runner.ts';
+
 export type Agent = 'claude' | 'codex' | 'grok';
 export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
@@ -252,7 +255,8 @@ export interface GitInfo {
 }
 
 export type EventsMessage =
-  | { type: 'snapshot'; projects: Project[]; sessions: Session[]; tasks: Task[]; epics: Epic[] }
+  // runEvents : l'instance diffuse epic-run et command-run (absent sur une instance antérieure).
+  | { type: 'snapshot'; projects: Project[]; sessions: Session[]; tasks: Task[]; epics: Epic[]; runEvents: boolean }
   | { type: 'session'; session: Session }
   | { type: 'session-deleted'; id: string }
   | { type: 'task'; task: Task }
@@ -262,7 +266,9 @@ export type EventsMessage =
   | { type: 'projects'; projects: Project[] }
   | { type: 'alert'; session: Session }
   | { type: 'findings-available'; session: Session }
-  | { type: 'peers' };
+  | { type: 'peers' }
+  | { type: 'epic-run'; run: EpicRun }
+  | { type: 'command-run'; run: Omit<CommandRun, 'output'> };
 
 export type TermClientMessage =
   | { type: 'input'; data: string }
@@ -701,6 +707,7 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
         sessions: parseSessionList(v.sessions),
         tasks: parseTaskList(v.tasks),
         epics: parseEpicList(v.epics),
+        runEvents: v.runEvents === true,
       };
     case 'session': {
       const session = parseSession(v.session);
@@ -735,6 +742,13 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
     }
     case 'peers':
       return { type: 'peers' };
+    // Runs d'epic et de commande : le serveur et cette interface partagent leur type.
+    case 'epic-run':
+      return isRecord(v.run) && typeof v.run.id === 'string' && typeof v.run.epicId === 'string' && typeof v.run.startedAt === 'number'
+        ? { type: 'epic-run', run: v.run as unknown as EpicRun } : null;
+    case 'command-run':
+      return isRecord(v.run) && typeof v.run.id === 'string' && typeof v.run.taskId === 'string' && typeof v.run.status === 'string'
+        ? { type: 'command-run', run: v.run as unknown as Omit<CommandRun, 'output'> } : null;
     default:
       return null;
   }

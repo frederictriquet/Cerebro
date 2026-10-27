@@ -38,7 +38,8 @@ export function writeDesktopNotif(enabled: boolean): void {
   }
 }
 
-export function armNotificationPermission(): void {
+/** Arme la demande de permission au premier geste ; renvoie la fonction qui retire l'écouteur. */
+export function armNotificationPermission(): () => void {
   const once = (): void => {
     if (typeof Notification === 'undefined') return;
     if (Notification.permission === 'default') {
@@ -46,6 +47,7 @@ export function armNotificationPermission(): void {
     }
   };
   window.addEventListener('pointerdown', once, { once: true });
+  return () => window.removeEventListener('pointerdown', once);
 }
 
 export function sessionIsOpenAndVisible(id: string, machineId?: string | null): boolean {
@@ -54,6 +56,15 @@ export function sessionIsOpenAndVisible(id: string, machineId?: string | null): 
   if (route.kind !== 'session' || route.sessionId !== id) return false;
   if (machineId === undefined) return true;
   return parseMachine(window.location.hash) === machineId;
+}
+
+/**
+ * Présence réelle de l'utilisateur devant la session : `visibilityState` reste « visible » pour
+ * une fenêtre non focalisée (autre application, second écran, poste laissé allumé), ce qui ne
+ * suffit pas à acquitter une alerte. Le filtrage des notifications garde sessionIsOpenAndVisible.
+ */
+export function sessionIsWatched(id: string, machineId?: string | null): boolean {
+  return sessionIsOpenAndVisible(id, machineId) && document.hasFocus();
 }
 
 function sessionHash(sessionId: string, machineId: string | null, panel?: 'findings'): string {

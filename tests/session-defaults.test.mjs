@@ -248,6 +248,9 @@ test('API : réglages avant lancement, rechargement, backlog et validation des c
     assert.equal(response.statusCode, 201);
     assert.equal(response.json().session.agent, saved.agent);
     assert.equal(response.json().session.prompt, task.text);
+    // Le texte de la tâche n'écrase pas le prompt mémorisé du formulaire « Nouvelle session ».
+    response = await send('GET', '/api/projects');
+    assert.equal(response.json().find((p) => p.id === id).sessionDefaults.prompt, saved.prompt);
 
     // A push operation uses the Git service, never launchSession / an agent CLI.
     execFileSync('git', ['-C', root, 'init', '-b', 'main']);

@@ -47,7 +47,12 @@ export class ApiError extends Error {
   }
 }
 
-function errorMessage(parsed: unknown): string | null {
+// Message à afficher pour une erreur interceptée : String(cause) préfixerait « ApiError: » ou « Error: ».
+export function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+function bodyError(parsed: unknown): string | null {
   if (typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
     const err = (parsed as { error: unknown }).error;
     if (typeof err === 'string' && err.length > 0) return err;
@@ -73,7 +78,7 @@ async function request<T>(url: string, local: boolean, init?: RequestInit): Prom
   if (!res.ok) {
     // Un 401 relayé ne doit pas ouvrir l'écran « Token requis » de la machine locale.
     if (res.status === 401 && local) notifyUnauthorized();
-    throw new ApiError(res.status, errorMessage(parsed) ?? res.statusText);
+    throw new ApiError(res.status, bodyError(parsed) ?? res.statusText);
   }
   return parsed as T;
 }
@@ -105,8 +110,9 @@ export interface MachinesInfo {
   remotes: { id: string; name: string; status: RemoteVersionStatus | null }[];
 }
 
-export function getMachines(): Promise<MachinesInfo> {
-  return request<MachinesInfo>('/api/machines', true);
+// Brut : MachineSwitcher valide la réponse avant de l'exposer comme MachinesInfo.
+export function getMachines(): Promise<unknown> {
+  return request<unknown>('/api/machines', true);
 }
 
 export function wsUrl(path: string, machineBase = base): string {

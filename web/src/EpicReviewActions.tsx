@@ -2,24 +2,35 @@ import { useCallback, useEffect, useState } from 'react';
 import type { EpicRun } from '../../server/epic-runner.ts';
 import { api } from './api.ts';
 import { LaunchSessionDialog } from './Dialog.tsx';
-import { useStore } from './store.tsx';
+import { useRunEvents, useStore } from './store.tsx';
+import { usePolling } from './usePolling.ts';
 
 export const RUN_ACTIVE: EpicRun['status'][] = ['running', 'waiting-validation', 'blocked'];
 
 // Première ligne des étapes de review ajoutées par le serveur (REVIEW_TASK_TITLE dans server/epic-review.ts, non importable côté web).
 const REVIEW_TASK_TITLE = 'Code review du travail de l’epic';
 
-export function useEpicRun(epicId: string, intervalMs = 1000): { run: EpicRun | null; refresh: () => Promise<void> } {
+// Dernier run de l'epic : chargé une fois (et à chaque reconnexion), puis suivi par les événements epic-run,
+// ou relu toutes les runPollMs face à une machine qui ne les diffuse pas.
+export function useEpicRun(epicId: string): { run: EpicRun | null; refresh: () => Promise<void> } {
+  const { connected, runPollMs } = useStore();
   const [run, setRun] = useState<EpicRun | null>(null);
-  const refresh = useCallback(async (): Promise<void> => {
-    const runs = await api<EpicRun[]>(`/api/epics/${epicId}/runs`);
-    setRun(runs[0] ?? null);
+  // Une réponse REST partie avant un événement ne doit pas réafficher un état plus ancien.
+  const newer = (current: EpicRun | null, next: EpicRun | null): EpicRun | null =>
+    current === null || next === null ? next
+      : next.id === current.id ? (next.updatedAt >= current.updatedAt ? next : current)
+        : next.startedAt >= current.startedAt ? next : current;
+  const fetchRuns = useCallback(() => api<EpicRun[]>(`/api/epics/${epicId}/runs`), [epicId]);
+  const refresh = usePolling(fetchRuns, runPollMs, { onData: (runs) => setRun((current) => newer(current, runs[0] ?? null)) });
+  useEffect(() => {
+    setRun(null);
   }, [epicId]);
   useEffect(() => {
-    void refresh().catch(() => {});
-    const timer = window.setInterval(() => void refresh().catch(() => {}), intervalMs);
-    return () => window.clearInterval(timer);
-  }, [refresh, intervalMs]);
+    if (connected) void refresh();
+  }, [connected, refresh]);
+  useRunEvents((event) => {
+    if (event.type === 'epic-run' && event.run.epicId === epicId) setRun((current) => newer(current, event.run));
+  });
   return { run, refresh };
 }
 

@@ -163,3 +163,23 @@ test('changing auto validation during asynchronous preparation survives launch c
  await f.until(()=>f.latest().status==='succeeded');
  assert.equal(f.latest().autoValidate,true);assert.equal(f.db.getTask(a.id).status,'done');
 }));
+test('saving a run reads only its own row instead of the epic history',async()=>fixture(async f=>{
+ await f.runner.shutdown();const events=[];const runner=new EpicRunner(f.db,f.sessions,f.commands,event=>{if(event.type==='epic-run')events.push(event.run);});
+ try{
+  f.task('first');const started=runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);const run=runner.list(f.epic.id)[0];
+  let listed=0;const list=runner.list.bind(runner);runner.list=(...args)=>{listed++;return list(...args);};
+  const count=events.length;runner.save(run);assert.equal(listed,0);assert.equal(events.length,count);
+  run.error='changed';runner.save(run);assert.equal(listed,0);assert.equal(events.at(-1).error,'changed');assert.ok('workspace' in events.at(-1));assert.equal(events.at(-1).id,started.id);
+  runner.list=list;
+ }finally{await runner.shutdown();}
+}));
+test('run changes are broadcast as epic-run events; ticks that change nothing are not',async()=>fixture(async f=>{
+ await f.runner.shutdown();const events=[];const runner=new EpicRunner(f.db,f.sessions,f.commands,event=>{if(event.type==='epic-run')events.push(event.run);});
+ try{
+  f.task('first');const started=runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);assert.equal(events[0].id,started.id);assert.equal(events[0].status,'running');
+  for(let i=0;i<1000&&runner.list(f.epic.id)[0].status!=='waiting-validation';i++){runner.poke();await new Promise(r=>setTimeout(r,5));}
+  assert.equal(events.at(-1).status,'waiting-validation');assert.ok('workspace' in events.at(-1));
+  const count=events.length;for(let i=0;i<3;i++){runner.poke();await new Promise(r=>setTimeout(r,5));}assert.equal(events.length,count);
+  await runner.stop(started.id);assert.equal(events.at(-1).status,'stopped');
+ }finally{await runner.shutdown();}
+}));

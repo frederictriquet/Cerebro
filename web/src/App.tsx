@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
 import { dismissPeerNotice, getPeerNotices, setApiBase, subscribeUnauthorized, type PeerNotice } from './api.ts';
 import { CouncilRunView } from './CouncilRunView.tsx';
+import { ErrorBoundary } from './ErrorBoundary.tsx';
 import { HomeView } from './HomeView.tsx';
 import { ProjectTabs } from './ProjectTabs.tsx';
 import { ProjectView } from './ProjectView.tsx';
@@ -147,7 +148,9 @@ function Shell() {
       {navOpen ? (
         <button type="button" className="nav-backdrop" aria-label="Fermer le menu" onClick={() => setNavOpen(false)} />
       ) : null}
-      <Sidebar route={route} onNavigate={() => setNavOpen(false)} />
+      <ErrorBoundary zone="Barre latérale" className="error-boundary-sidebar">
+        <Sidebar route={route} onNavigate={() => setNavOpen(false)} />
+      </ErrorBoundary>
       <SidebarRail
         width={sidebar.width}
         hidden={sidebar.hidden}
@@ -155,18 +158,22 @@ function Shell() {
         onToggle={() => sidebar.setHidden(!sidebar.hidden)}
       />
       <main className="main">
-        <MachineCompatNotice />
-        <PeerNotices />
-        <ProjectTabs route={route} />
-        {route.kind === 'project' ? (
-          <ProjectView projectId={route.projectId} />
-        ) : route.kind === 'session' ? (
-          <SessionView sessionId={route.sessionId} />
-        ) : route.kind === 'council' ? (
-          <CouncilRunView key={route.councilId} councilId={route.councilId} />
-        ) : (
-          <HomeView />
-        )}
+        <ErrorBoundary zone="Bandeaux">
+          <MachineCompatNotice />
+          <PeerNotices />
+          <ProjectTabs route={route} />
+        </ErrorBoundary>
+        <ErrorBoundary zone="Vue principale" resetKey={routeKey}>
+          {route.kind === 'project' ? (
+            <ProjectView projectId={route.projectId} />
+          ) : route.kind === 'session' ? (
+            <SessionView sessionId={route.sessionId} />
+          ) : route.kind === 'council' ? (
+            <CouncilRunView key={route.councilId} councilId={route.councilId} />
+          ) : (
+            <HomeView />
+          )}
+        </ErrorBoundary>
       </main>
     </div>
   );

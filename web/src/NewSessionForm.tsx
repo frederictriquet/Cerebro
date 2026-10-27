@@ -61,6 +61,16 @@ export function NewSessionForm({
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const queuedPrompt = useRef<string | null>(null);
+  // Seul le formulaire « Nouvelle session » du projet (sans prompt prérempli) mémorise son prompt :
+  // celui d'une modale (tâche, sélection, review) ne doit ni remplacer ni effacer ce défaut.
+  const remembersPrompt = initialPrompt === undefined && promptFor === undefined;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const images = useImageAttachments(
     (image) => uploadProjectImage(projectId, image),
     draft?.images.map((i) => restoredAttachment(i.n, i.token, i.path)),
@@ -84,10 +94,10 @@ export function NewSessionForm({
 
   const expandedPrompt = images.expand(prompt);
   useEffect(() => {
-    if (!promptEdited || images.pending || busy || expandedPrompt === queuedPrompt.current) return;
+    if (!remembersPrompt || !promptEdited || images.pending || busy || expandedPrompt === queuedPrompt.current) return;
     const timer = setTimeout(() => saveDefaults({ prompt: expandedPrompt }), 400);
     return () => clearTimeout(timer);
-  }, [promptEdited, images.pending, busy, expandedPrompt, saveDefaults]);
+  }, [remembersPrompt, promptEdited, images.pending, busy, expandedPrompt, saveDefaults]);
 
   useEffect(() => {
     if (draftKey === undefined) return;
@@ -96,8 +106,8 @@ export function NewSessionForm({
   }, [draftKey, prompt, promptEdited, images.items]);
 
   useEffect(() => {
-    if (!promptEdited && initialPrompt === undefined && promptFor === undefined) setPrompt(defaults.prompt);
-  }, [defaults.prompt, initialPrompt, promptFor, promptEdited]);
+    if (!promptEdited && remembersPrompt) setPrompt(defaults.prompt);
+  }, [defaults.prompt, remembersPrompt, promptEdited]);
 
   useEffect(() => {
     if (savingDefaults > 0 || busy) return;
@@ -172,17 +182,20 @@ export function NewSessionForm({
       await saveQueue.current;
       const spec = { agent, mode, model, effort, prompt: images.expand(prompt) };
       await onLaunch(spec);
+      const draftFailure = draftKey === undefined ? null : writeDraft(draftKey, { prompt: '', images: [] });
+      // Modale refermée par son lancement : rien à réinitialiser.
+      if (!mounted.current) return;
+      setDraftError(draftFailure);
       setPrompt('');
-      // Garder la main sur le champ : les défauts reçus au lancement contiennent encore
-      // le prompt envoyé. Les effacer aussi évite de le restaurer au prochain montage.
+      // Garder la main sur le champ : les défauts mémorisés contiennent encore le dernier
+      // prompt saisi. L'effacer aussi évite de le restaurer au prochain montage.
       setPromptEdited(true);
-      saveDefaults({ prompt: '' });
-      if (draftKey !== undefined) setDraftError(writeDraft(draftKey, { prompt: '', images: [] }));
+      if (remembersPrompt) saveDefaults({ prompt: '' });
       images.reset();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Lancement impossible');
+      if (mounted.current) setError(err instanceof Error ? err.message : 'Lancement impossible');
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   };
 
@@ -243,7 +256,7 @@ export function NewSessionForm({
             images.prune(e.target.value);
           }}
           onBlur={() => {
-            if (promptEdited && !images.pending && expandedPrompt !== queuedPrompt.current) saveDefaults({ prompt: expandedPrompt });
+            if (remembersPrompt && promptEdited && !images.pending && expandedPrompt !== queuedPrompt.current) saveDefaults({ prompt: expandedPrompt });
           }}
           onKeyDown={onKeyDown}
           onPaste={onPromptPaste}
