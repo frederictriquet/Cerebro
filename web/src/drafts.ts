@@ -21,7 +21,7 @@ export function readDraft(key: string): Draft | null {
   return { prompt: draft.prompt, images: Array.isArray(draft.images) ? draft.images : [] };
 }
 
-/** Enregistre (ou efface si le prompt est vide) ; renvoie un message d'erreur si le stockage échoue. */
+/** Enregistre (ou efface si le prompt est vide et sans image) ; renvoie un message d'erreur si le stockage échoue. */
 export function writeDraft(key: string, draft: Draft): string | null {
-  return writeJson(PREFIX + key, draft.prompt.trim() === '' ? null : draft);
+  return writeJson(PREFIX + key, draft.prompt.trim() === '' && draft.images.length === 0 ? null : draft);
 }

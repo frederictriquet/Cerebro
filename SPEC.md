@@ -20,11 +20,17 @@ server/db.ts              persistance SQLite (DATA_DIR/cerebro.db)
 server/agents.ts          construction des lignes de commande par agent
 server/sessions.ts        SessionManager : PTY, terminal headless, statut, logs
 server/hooks.ts           installation du hook global grok + interprétation des événements de hook
-server/index.ts           fastify : API REST, websockets, fichiers statiques web/dist
+server/index.ts           fastify : authentification, assemblage des services, websocket d'événements, fichiers statiques web/dist
+server/route-context.ts   contexte partagé des routes (services, préludes 404, jeton de session, lancement de session)
+server/*-routes.ts        routes REST par domaine : projets, sessions, tâches, epics, backlog des agents, hooks, système…
 bin/cerebro-hook.mjs      relais de hook (JS pur, sans dépendance)
+bin/cerebro-client.mjs    client HTTP commun de cerebro-backlog/-notify/-findings/-tasks (JS pur, sans dépendance)
 web/vite.config.ts        root = web/, build -> web/dist, proxy /api et /ws (ws: true) vers 127.0.0.1:4317
 web/index.html
 web/src/*.tsx|ts|css      UI React
+shared/*.ts               contrat serveur ↔ UI ↔ autres machines : types et parseurs, importés des deux côtés
+                          (le serveur n'importe rien de web/, l'UI rien de server/) ; l'UI valide chaque
+                          réponse de l'API avec un parseur de shared/ (api() renvoie unknown, apiParsed valide)
 ```
 
 ## Modèle de données
@@ -48,7 +54,7 @@ interface Session {
   prompt: string;           // prompt initial (peut être vide)
   title: string;            // = 60 premiers caractères du prompt, ou "<agent> session"
   status: Status;
-  attention: boolean;       // true quand passe à waiting/idle via un signal fiable ; remis à false quand l'utilisateur ouvre la session
+  attention: boolean;       // true quand passe à waiting/idle via un signal fiable ; remis à false quand l'utilisateur ouvre la session ou que l'agent reprend (retour à running)
   attentionReason: string | null;  // ex. "Permission demandée : Bash", "Question", "Tour terminé"
   agentSessionId: string | null;   // id côté agent, pour reprendre (resume)
   exitCode: number | null;
@@ -84,6 +90,7 @@ Au démarrage du serveur, toute session non `exited` passe à `exited` (les PTY 
 - `{type:'session', session: Session}` à chaque création / changement
 - `{type:'session-deleted', id}` ; `{type:'projects', projects: Project[]}` quand la liste change
 - `{type:'alert', session: Session}` quand une session passe à `waiting` ou `idle` avec `attention=true` (signal fiable) → le front affiche une notification navigateur
+- `{type:'epic-run', run}` et `{type:'command-run', run}` (sans la sortie) à chaque changement d'exécution d'epic ou de commande ; le snapshot porte `runEvents: true` pour les annoncer. Sans ce champ (machine distante de même majeure antérieure), l'UI relit `/api/epics/:id/runs` et `/api/tasks/:id/runs` toutes les 5 s, onglet visible
 
 `/ws/term/:id` — terminal d'une session :
 - serveur → client : `{type:'snapshot', data}` (écran sérialisé du terminal headless via SerializeAddon, scrollback inclus ; pour une session `exited` sans terminal vivant : les ~2 Mo de fin du fichier log brut), puis `{type:'output', data}` en flux, `{type:'exit', exitCode}`
@@ -150,7 +157,7 @@ Signaux fiables (→ `attention=true` + diffusion `alert` sur les transitions ve
 - `SessionStart` (grok) : capture `payload.session_id` dans agentSessionId s'il est présent.
 - Ne pas déclencher une nouvelle alerte si le statut et la raison n'ont pas changé.
 
-Retour à `running` (sans alerte, `attention` inchangé) :
+Retour à `running` (sans alerte ; `attention=false` et `attentionReason=null`, même si la session n'a jamais été ouverte : la demande a été traitée ailleurs — Slack, autre terminal — et rien ne reste à faire) :
 - `UserPromptSubmit`, `PostToolUse` ;
 - une entrée utilisateur contenant `\r` alors que le statut est `waiting` ou `idle`.
 
@@ -179,7 +186,7 @@ Thème sombre, sobre, dense. Routage par hash : `#/` accueil, `#/p/<projectId>`,
 - **Barre latérale** : en haut, la section « À traiter » qui liste les sessions `attention=true` (pastille orange pour waiting, bleue pour idle) ;
   puis les projets, chacun dépliable avec ses sessions (pastille de statut : running = vert animé, waiting = orange, idle = bleu, exited = gris) ;
   bouton « + Projet » (formulaire : nom, chemin absolu).
-- **Vue projet** : nom + chemin, formulaire « Nouvelle session » (agent : liste des agents disponibles, mode : auto / acceptEdits / plan / bypass avec un avertissement rouge pour bypass, prompt multi-ligne, Ctrl+Entrée (ou Cmd+Entrée sur Mac) pour lancer ; agent, modèle, effort, mode et prompt sont mémorisés automatiquement par projet côté serveur via `PATCH /api/projects/:id` `{sessionDefaults: {...}}`, même avant lancement, puis repris par tous les formulaires et les nouvelles sessions Slack ; les champs omis héritent des choix enregistrés, un prompt explicite reste prioritaire ; les brouillons non lancés et leurs images restent conservés dans le navigateur et sont effacés au lancement, le prompt lancé reste prérempli comme défaut), puis la liste des sessions du projet (titre, agent, statut, date relative, actions). Les sélecteurs de modèle et d'effort n'ont pas de choix « défaut » : la valeur affichée est toujours explicite et correspond à celle que `parseTuning` lance (modèle `AgentCatalog.defaultModel`, effort `defaultEffort`).
+- **Vue projet** : nom + chemin, formulaire « Nouvelle session » (agent : liste des agents disponibles, mode : auto / acceptEdits / plan / bypass avec un avertissement rouge pour bypass, prompt multi-ligne, Ctrl+Entrée (ou Cmd+Entrée sur Mac) pour lancer ; agent, modèle, effort, mode et prompt sont mémorisés automatiquement par projet côté serveur via `PATCH /api/projects/:id` `{sessionDefaults: {...}}`, même avant lancement, puis repris par tous les formulaires et les nouvelles sessions Slack ; les champs omis héritent des choix enregistrés, un prompt explicite reste prioritaire ; les brouillons non lancés et leurs images restent conservés dans le navigateur et sont effacés au lancement, avec le prompt mémorisé ; un lancement ne mémorise jamais son prompt, et les modales à prompt prérempli (tâche du backlog, sélection du terminal, reviews) ne modifient ni n'effacent le prompt mémorisé), puis la liste des sessions du projet (titre, agent, statut, date relative, actions). Les sélecteurs de modèle et d'effort n'ont pas de choix « défaut » : la valeur affichée est toujours explicite et correspond à celle que `parseTuning` lance (modèle `AgentCatalog.defaultModel`, effort `defaultEffort`).
 - **Vue session** : en-tête (titre, agent, mode, statut, raison d'attention) + boutons Arrêter / Reprendre (si exited et agentSessionId) / Supprimer ;
   terminal xterm.js plein espace (FitAddon + ResizeObserver, WebLinksAddon, police monospace 13 px), connecté à `/ws/term/:id`,
   qui reçoit le focus à l'ouverture. Ouvrir la session appelle `POST /api/sessions/:id/seen`. Échap seul dans le terminal
@@ -195,8 +202,8 @@ Thème sombre, sobre, dense. Routage par hash : `#/` accueil, `#/p/<projectId>`,
 # Lot 2 (ajouts après tests de bout en bout)
 
 Déjà fait (ne pas casser) : détection à l'écran des dialogues (`inspectScreen` dans sessions.ts : dialogues de
-confiance, menus numérotés, y/n → `waiting` avec la question comme raison), dédoublonnage des alertes, filtrage des
-fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jsonl`,
+confiance, menus numérotés, y/n → `waiting` avec la question comme raison ; en buffer normal, seules les 15 dernières lignes non vides sous la dernière ligne de saisie `❯`/`›` sont examinées), dédoublonnage des alertes, filtrage des
+fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jsonl` (rotation à 20 Mo, 3 archives `.1`…`.3`, `server/hook-log.ts`),
 `GET /api/sessions/:id/screen` → `{lines: string[]}` (dernières lignes texte de l'écran vivant, `[]` si la session est terminée).
 
 ## Serveur (codex)
@@ -223,7 +230,7 @@ fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jso
 ## Front (grok)
 
 - Vue session : **barre de réponse rapide** sous le terminal (utile sur mobile) : boutons `Entrée`, `Échap`, `↑`, `↓`,
-  `1`, `2`, `3`, `y`, `n`, `Ctrl+C` (envoie `\x03`, avec confirmation) + un champ texte « Envoyer un message » qui envoie
+  `1`, `2`, `3`, `y`, `n`, `Ctrl+C` (envoie `\x03` après un délai de rétractation de 5 s : second clic ou Échap pour annuler ; abandonné si la vue change de session) + un champ texte « Envoyer un message » qui envoie
   le texte puis `\r` (deux envois séparés de 150 ms, sinon certaines TUI ignorent l'Entrée collée au texte). Utilise le ws
   du terminal ouvert (pas besoin de l'API input).
 - Titre de session renommable (double-clic ou icône crayon → champ, Entrée valide, Échap annule) via `PATCH`.
@@ -313,7 +320,7 @@ du workspace peuvent fonctionner : tester si possible avec `CEREBRO_DATA_DIR=./.
 - `POST .../git/prepare-review`, `POST .../git/review` : périmètre calculé/capturé en code, raisonnement confié à l'agent.
 - `/api/sessions/:id/provenance`, `/api/sessions/:id/git/*` : espace persisté et sélection explicite, y compris pour les sessions arrêtées.
 - `/api/sessions/:id/findings`, `.../:report/import` : rapports structurés et import idempotent en epic/tâches ; publication agent via `cerebro-findings`. L’import accepte `{selected,epicId?}` : un identifiant cible un epic du même projet, `null` crée un nouvel epic, l’absence de choix utilise l’epic d’origine de la session ou crée un epic. Le premier import fixe la destination du rapport pour les imports partiels et les reprises. Les nouvelles tâches dépendent des étapes déjà présentes dans l’epic cible ; les liens entre findings d’un même rapport restent ceux de `dependsOn`.
-- `Task.execution` vaut `{type:"llm"}` par défaut (migration et compatibilité distante), ou `{type:"command",commandId,completion}`. Les commandes configurées dans `/api/projects/:id/commands` créent des opérations `/api/tasks/:id/runs`, sans Session factice.
+- `Task.execution` vaut `{type:"llm"}` par défaut (migration et compatibilité distante), ou `{type:"command",commandId,completion}`. Les commandes configurées dans `/api/projects/:id/commands` créent des opérations `/api/tasks/:id/runs`, sans Session factice. `POST /api/tasks/:id/start` refuse (409) une tâche `done`, quel que soit son exécuteur ; pour une tâche LLM, il refuse aussi un lancement concurrent ou une relance tant que la session liée n’est pas `exited` (« Relancer » ne détache jamais une session active).
 - `POST /api/epics/:id/start` renvoie désormais une exécution d'epic, pas une Session. `/api/epics/:id/runs` et `/api/epic-runs/:id/{stop,resume}` suivent l'étape persistée. Seule la tâche courante est started ; --done demeure compatible, idle/exited ne valent jamais done.
 - Les anciens epics ayant utilisé plusieurs dossiers exposent `workspaceConflict` sur leurs exécutions. `GET /api/epics/:id/workspace-options` décrit leurs copies (branche, HEAD, fichiers modifiés et sessions), sans résoudre l’ambiguïté. `POST /api/epics/:id/workspace` avec `{path}` fixe explicitement un dossier attesté et disponible, lorsque les étapes sont arrêtées. Le choix ne déplace aucun fichier, ne valide aucune tâche et ne reprend pas l’exécution. Il persiste après redémarrage ; une étape interrompue ailleurs est relancée dans le dossier choisi.
 - Les sessions créées automatiquement par une epic reçoivent les instructions de leur tâche sans modifier les réglages ni le prompt mémorisés du formulaire « Nouvelle session » du projet.
@@ -343,7 +350,7 @@ du workspace peuvent fonctionner : tester si possible avec `CEREBRO_DATA_DIR=./.
 - `GET /api/sessions/:id/git/context` consulte uniquement les métadonnées persistées : dossier partagé, copie isolée ou copie retirée. Une ancienne conversation affiche explicitement « Commit / push du projet » avant de lancer l'action sur le dossier partagé ; aucune attribution implicite au contenu de cette session.
 - `WorktreeView.changesSinceCreation` compare les fichiers locaux modifiés à leur empreinte initiale : nombre et liste des changements postérieurs, nombre des changements hérités et des fichiers qui requièrent un examen. `null` si la comparaison n'est pas prouvable. Ce compteur n'attribue pas un auteur. Les contrôles Git continuent d'utiliser l'état complet du worktree.
 - Un fichier « à examiner » (changement initial, attribution incertaine, avertissement du scanner) entre dans un commit automatique quand l'utilisateur l'a coché comme examiné dans les diffs de la copie : `POST .../git/auto-commit` accepte `reviewed: {snapshotId, paths}`, et le fichier n'est inclus que si son diff est identique à celui de ce snapshot (sinon il est écarté avec la raison). Un secret détecté reste toujours exclu.
-- À la création d'une copie isolée, les fichiers alors modifiés dans le projet sont conservés dans un commit référencé par `refs/cerebro/starting/<session>` (`Workspace.startingSnapshot`, au mieux : une copie sans instantané perd seulement la séparation automatique). La référence est supprimée avec la copie.
+- À la création d'une copie isolée, les fichiers alors modifiés dans le projet sont copiés hors du dépôt dans `DATA_DIR/starting/<session>` (`Workspace.startingCopy`, au mieux : une copie sans instantané perd seulement la séparation automatique). Jamais dans la base d'objets Git : des fichiers non suivis (.env, clés) y resteraient, atteignables par une référence et poussés par un miroir. Le dossier est supprimé avec la copie ; les copies plus anciennes gardent leur commit `refs/cerebro/starting/<session>` (`Workspace.startingSnapshot`), référence supprimée avec la copie.
 - `WorktreeView.startingContent` liste les fichiers non commités qui contiennent ce contenu de départ : `inherited` (inchangé depuis la création), `mixed` (modifié depuis) ou `settled` (modifié depuis, et aucune ligne ajoutée ou retirée par le contenu de départ retrouvé, hors lignes sans lettre ni chiffre, n'apparaît plus dans ses changements non commités ; jamais pour un fichier binaire), avec `origin` = où ce contenu se trouve encore (commit de la cible depuis la base de la copie, dossier de la cible non commité, instantané de création, ou `null` s'il n'existe plus que dans la copie) et `separable` (fichier mixte retrouvé et non touché par un commit de la copie).
 - `GET /api/worktrees/:id/starting-content` prévisualise, sans rien modifier, ce que fait `POST /api/worktrees/:id/discard-inherited` : par fichier `restore` (remis à l'état de la copie), `separate` (seul le travail fait depuis la création est gardé, par merge à trois voies entre le contenu actuel, le contenu de départ retrouvé et la version de la copie ; diff du travail gardé) `settle` (fichier `settled`, ou fichier `keep` confirmé par `confirmed: [{path,version}]` dans le corps du POST, `version` étant l'empreinte annoncée par l'aperçu : il reste tel quel et devient le travail de la conversation ; une confirmation dont le fichier a changé depuis fait refuser l'action) ou `keep` (raison : contenu introuvable, changements sur les mêmes lignes, fichier déjà commité dans la copie… ; diff de ses changements non commités). Si la cible a avancé et que son merge dans la copie se résout sans conflit (simulé dans un index temporaire), `targetUpdate` annonce que la copie reçoit d'abord ces commits : un commit de merge est créé par plomberie (`commit-tree`, `read-tree -m -u`, `update-ref` journalisé « commit (merge) »), puis chaque fichier est reporté sur la version à jour ; sinon la séparation se fait sur `HEAD`. Les empreintes sont revérifiées avant écriture ; en cas d'échec de la mise à jour, les fichiers sont remis dans leur état précédent. Les fichiers traités quittent `initialDirty` et prennent pour empreinte de départ la version de la copie : leurs changements restants sont attribués à la copie et commitables automatiquement. Le dossier du projet n'est jamais modifié. Refusé si une session, une commande ou une opération Git utilise la copie. Un commit automatique qui ne trouve que du contenu hérité l'indique explicitement (« Rien de nouveau à commiter »).
 - `POST /api/worktrees/:id/resolve-starting-content` confie les fichiers `keep` de ce plan à une session lancée dans la copie (même si le projet est passé depuis au dossier partagé), avec `Project.resolutionSettings` (`{agent,mode,model,effort}`, défaut Claude en mode auto, réglable par `PATCH /api/projects/:id` et dans « Réglages LLM »). Son prompt donne, par fichier, où lire le contenu de départ et le constat de Cerebro, la demande de la conversation d'origine, et interdit commit, merge et modification des autres fichiers. Refusé (409) sans fichier à examiner, ou si une session, une commande ou une opération Git utilise la copie. Les préférences de lancement des sessions ne sont pas modifiées.
@@ -363,9 +370,9 @@ du workspace peuvent fonctionner : tester si possible avec `CEREBRO_DATA_DIR=./.
 
 ## Council
 
-Fichiers : `server/headless.ts` (lanceur headless générique, aussi utilisé par `commit-proposal.ts`), `server/council.ts` (types, validation, prompts, anonymisation, agrégation, export ; fonctions pures), `server/council-runner.ts` (`CouncilRuns` : exécution par phases), `server/council-routes.ts`, `server/persona-routes.ts`, `server/slack.ts` (commandes) ; `web/src/CouncilLaunch.tsx`, `CouncilRunView.tsx`, `CouncilSettingsDialog.tsx`, `PersonasDialog.tsx`, `council.css`. Tests : `tests/council.test.mjs`, `tests/council-api.test.mjs`, `tests/council-slack.test.mjs`, `tests/headless-images.test.mjs`.
+Fichiers : `server/headless.ts` (lanceur headless générique, aussi utilisé par `commit-proposal.ts`), `server/council.ts` (validation, prompts, anonymisation, agrégation, export ; fonctions pures), `server/council-runner.ts` (`CouncilRuns` : exécution par phases), `server/council-routes.ts`, `server/persona-routes.ts`, `server/slack.ts` (commandes) ; `web/src/CouncilLaunch.tsx`, `CouncilRunView.tsx`, `CouncilSettingsDialog.tsx`, `PersonasDialog.tsx`, `council.css`. Tests : `tests/council.test.mjs`, `tests/council-api.test.mjs`, `tests/council-slack.test.mjs`, `tests/headless-images.test.mjs`.
 
-### Types (`server/council.ts`, miroir dans `web/src/types.ts`)
+### Types (`shared/types.ts`)
 
 ```ts
 interface Persona { id: string; name: string; description: string; prompt: string; builtin: boolean; createdAt: number; updatedAt: number }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, appendFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, appendFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, mock } from 'node:test';
@@ -83,5 +83,39 @@ test('lecture des journaux locaux : liaison par identifiant, ligne tronquée, re
     await rm(join(claudeDir, 'claude-session.jsonl'));
     now += 31_000;
     assert.deepEqual((await tracker.get(sessions)).map(s => s.tokens?.inputTokens ?? null), [null, 500, null, null]);
+  } finally { clock.mock.restore(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('journal réécrit en place, même inode et plus gros : relu entièrement au lieu de garder des compteurs obsolètes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cerebro-tokens-'));
+  const roots = { claude: join(root, 'claude'), codex: join(root, 'codex'), grok: join(root, 'grok') };
+  let now = 100_000;
+  const clock = mock.method(Date, 'now', () => now);
+  const lines = (...events) => events.map(e => JSON.stringify(e) + '\n').join('');
+  // Ignored records push the parsed prefix beyond both 4 KiB probe windows.
+  const filler = lines(...Array.from({ length: 200 }, (_, i) => ({ type: 'user', i })));
+  try {
+    const dir = join(roots.claude, 'projects', 'project');
+    await mkdir(dir, { recursive: true });
+    const path = join(dir, 'claude-session.jsonl');
+    const sessions = [{ id: 'claude', agent: 'claude', agentSessionId: 'claude-session' }];
+    const tracker = new TokenUsageTracker(roots);
+    const read = async () => { now += 31_000; return (await tracker.get(sessions))[0].tokens?.inputTokens ?? null; };
+    await writeFile(path, lines(claude('one', 5), claude('two', 5)));
+    assert.equal(await read(), 260);
+    const { ino } = await stat(path);
+    // Rewritten from the start: different head.
+    await writeFile(path, lines(claude('three', 5)) + filler);
+    assert.equal((await stat(path)).ino, ino);
+    assert.equal(await read(), 130);
+    // Genuine append still reuses the counters.
+    await appendFile(path, lines(claude('four', 5)));
+    assert.equal(await read(), 260);
+    // Same head, but the last parsed record was removed: the tail window catches it.
+    await writeFile(path, lines(claude('three', 5)) + filler + lines({ type: 'user', note: 'x'.repeat(400) }));
+    assert.equal((await stat(path)).ino, ino);
+    assert.equal(await read(), 130);
+    await appendFile(path, lines(claude('seven', 5)));
+    assert.equal(await read(), 260);
   } finally { clock.mock.restore(); await rm(root, { recursive: true, force: true }); }
 });

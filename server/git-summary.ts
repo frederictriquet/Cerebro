@@ -1,12 +1,23 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { git as runGit, parseStatusZ } from './git.ts';
 
-const exec = promisify(execFile);
 const PREVIEW_LIMIT = 50;
-const git = async (path: string, args: string[]): Promise<string> =>
-  (await exec('git', ['-C', path, ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout.trimEnd();
+// git.ts sets LC_ALL=C: Git's messages stay in English so that "not a git repository" can be recognized.
+const git = async (path: string, args: string[]): Promise<string> => (await runGit(path, args)).trimEnd();
+
+/** Only a path outside any work tree is "not a repository"; any other failure is a read error. */
+async function insideWorkTree(path: string): Promise<boolean> {
+  try { return await git(path, ['rev-parse', '--is-inside-work-tree']) === 'true'; }
+  catch (cause) {
+    if (/not a git repository/i.test(String((cause as { stderr?: unknown }).stderr ?? ''))) return false;
+    throw cause;
+  }
+}
 
 export interface GitSummary {
+  /** False only when the path is outside any Git work tree. */
+  repository: boolean;
+  /** Set when the repository exists but its state could not be read: the other fields are then unknown. */
+  error?: string;
   branch: string | null;
   dirty: number;
   ahead: number | null;
@@ -22,17 +33,17 @@ export interface GitSummary {
 
 /** Read local refs only. Count and preview use the same captured commit range. */
 export async function gitSummary(path: string, includeCommits = false): Promise<GitSummary> {
-  const empty: GitSummary = { branch: null, dirty: 0, ahead: 0, hasCommits: false, hasUpstream: false };
+  const empty: GitSummary = { repository: false, branch: null, dirty: 0, ahead: 0, hasCommits: false, hasUpstream: false };
   try {
-    if (await git(path, ['rev-parse', '--is-inside-work-tree']) !== 'true') return empty;
+    if (!await insideWorkTree(path)) return empty;
     const [branch, status, head, upstream] = await Promise.all([
       git(path, ['branch', '--show-current']),
-      git(path, ['status', '--porcelain']),
+      git(path, ['status', '--porcelain', '-z']),
       git(path, ['rev-parse', '--verify', 'HEAD']).catch(() => null),
       git(path, ['rev-parse', '--verify', '@{upstream}']).catch(() => null),
     ]);
     const result: GitSummary = {
-      branch: branch || null, dirty: status === '' ? 0 : status.split(/\r?\n/).length,
+      repository: true, branch: branch || null, dirty: parseStatusZ(status).length,
       ahead: head ? null : 0, hasCommits: head !== null, hasUpstream: upstream !== null,
     };
     if (head && upstream) {
@@ -57,7 +68,8 @@ export async function gitSummary(path: string, includeCommits = false): Promise<
       }
     }
     return result;
-  } catch {
-    return empty;
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message.split('\n').find(line => line.trim() && !line.startsWith('Command failed')) : undefined;
+    return { ...empty, repository: true, error: `Impossible de lire l’état Git${detail ? ` : ${detail.trim()}` : '.'}` };
   }
 }

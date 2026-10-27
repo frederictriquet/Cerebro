@@ -1,8 +1,6 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import type { StartingContentPlan, StartingContentStep, StartingOrigin, WorktreeInventory, WorktreeView } from '../../server/worktrees.ts';
-import type { GitSnapshot } from '../../server/git-plan.ts';
-import { api, apiBase } from './api.ts';
+import { api, apiBase, apiParsed } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
 import { Modal } from './Dialog.tsx';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
@@ -11,8 +9,21 @@ import { href } from './route.ts';
 import { usePolling } from './polling.tsx';
 import { AGENT_LABEL, errorMessage, formatDateTime, MODE_CHIP, plural, pluralize, sessionTitle } from './format.ts';
 import { useStore } from './store.tsx';
-import { normalizeMode, type Session, type WorkspaceMode } from './types.ts';
+import { normalizeMode, parseSession, type Session, type WorkspaceMode } from '../../shared/types.ts';
 import './worktrees.css';
+import {
+  parsePreparedWorktreeOperation,
+  parseStartingContentDiscard,
+  parseStartingContentPlan,
+  parseWorktreeInventory,
+  type StartingContentDiscard,
+  type StartingContentPlan,
+  type StartingContentStep,
+  type StartingOrigin,
+  type WorktreeInventory,
+  type WorktreeView,
+} from '../../shared/worktrees.ts';
+import { parseGitSnapshot, type GitSnapshot } from '../../shared/git.ts';
 
 const branchName = (branch: string | null): string => branch?.replace(/^refs\/heads\//,'') ?? 'branche inconnue';
 const INVENTORY_REFRESH_MS = 30_000;
@@ -91,7 +102,7 @@ function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReview
   const [error,setError]=useState<string|null>(null);
   const load=async():Promise<void>=>{
     setBusy(true);setError(null);
-    try{const value=await api<GitSnapshot>(`/api/worktrees/${view.id}/git/prepare-commit`,{method:'POST'});setSnapshot(value);setChecked(new Set());}
+    try{const value=await apiParsed(`/api/worktrees/${view.id}/git/prepare-commit`,parseGitSnapshot,{method:'POST'});setSnapshot(value);setChecked(new Set());}
     catch(cause){setError(errorMessage(cause));}
     finally{setBusy(false);}
   };
@@ -112,25 +123,24 @@ function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReview
 }
 
 const ACTION_LABEL: Record<StartingContentStep['action'],string> = {restore:'remis à l’état de la copie',separate:'seul le travail fait depuis la création est gardé',settle:'rattaché tel quel au travail de la conversation',keep:'laissé tel quel, à examiner'};
-interface DiscardResult { restored:string[];separated:string[];settled:string[];kept:StartingContentStep[];targetUpdate:StartingContentPlan['targetUpdate'] }
 type Resolver = Pick<Session,'id'|'title'>;
 /** Preview, then removal of the content copied from the project when the copy was created. */
-function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeView;onClose:()=>void;onDone:(result:DiscardResult)=>void;onResolving:(session:Resolver)=>void}) {
+function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeView;onClose:()=>void;onDone:(result:StartingContentDiscard)=>void;onResolving:(session:Resolver)=>void}) {
   const {projects}=useStore();
   const settings=projects.find(project=>project.id===view.projectId)?.resolutionSettings;
   const [plan,setPlan]=useState<StartingContentPlan|null>(null);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState<string|null>(null);
-  const discard=useAsyncAction(async()=>{const result=await api<DiscardResult>(`/api/worktrees/${view.id}/discard-inherited`,{method:'POST',body:JSON.stringify({confirmed:[...confirmed].map(([path,version])=>({path,version}))})});onDone(result);},{onError:setError});
+  const discard=useAsyncAction(async()=>{const result=await apiParsed(`/api/worktrees/${view.id}/discard-inherited`,parseStartingContentDiscard,{method:'POST',body:JSON.stringify({confirmed:[...confirmed].map(([path,version])=>({path,version}))})});onDone(result);},{onError:setError});
   // The files left for a manual review go to a session working in the copy, with the project's LLM settings.
-  const resolution=useAsyncAction(async()=>{const session=await api<Session>(`/api/worktrees/${view.id}/resolve-starting-content`,{method:'POST'});onResolving(session);},{onError:setError});
+  const resolution=useAsyncAction(async()=>{const session=await apiParsed(`/api/worktrees/${view.id}/resolve-starting-content`,parseSession,{method:'POST'});onResolving(session);},{onError:setError});
   const busy=loading?'loading':discard.busy?'running':resolution.busy?'resolving':null;
   // Kept files checked as holding only the conversation's work, with the content they were checked with.
   const [confirmed,setConfirmed]=useState<Map<string,string>>(()=>new Map());
   const target=branchName(view.targetBranch);
   useEffect(()=>{
     let disposed=false;
-    api<StartingContentPlan>(`/api/worktrees/${view.id}/starting-content`)
+    apiParsed(`/api/worktrees/${view.id}/starting-content`, parseStartingContentPlan)
       .then(value=>{if(!disposed)setPlan(value);})
       .catch(cause=>{if(!disposed)setError(errorMessage(cause));})
       .finally(()=>{if(!disposed)setLoading(false);});
@@ -175,12 +185,12 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   const [historyBusy,setHistoryBusy]=useState<Set<string>>(()=>new Set());
   const [confirmation,setConfirmation]=useState<Confirmation|null>(null);
   const [discarding,setDiscarding]=useState<WorktreeView|null>(null);
-  const [results,setResults]=useState<Map<string,DiscardResult>>(()=>new Map());
+  const [results,setResults]=useState<Map<string,StartingContentDiscard>>(()=>new Map());
   const [resolvers,setResolvers]=useState<Map<string,Resolver>>(()=>new Map());
   const [committing,setCommitting]=useState<WorktreeView|null>(null);
   const [reviewed,setReviewed]=useState<Reviewed|null>(null);
   const [expanded,setExpanded]=useState<Set<string>>(()=>new Set());
-  const load=useCallback(()=>api<WorktreeInventory>(path),[path]);
+  const load=useCallback(()=>apiParsed(path,parseWorktreeInventory),[path]);
   useEffect(()=>{
     const cached=inventoryCache.get(cacheKey(machineBase,path))??null;
     setInventory(cached);setConfirmation(null);setDiscarding(null);setResults(new Map());setResolvers(new Map());setCommitting(null);setReviewed(null);setError(null);setLoadError(null);setHistoryBusy(new Set());setExpanded(new Set());
@@ -190,7 +200,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
     onError:cause=>setLoadError(errorMessage(cause)),
   });
   const prepare=async(view:WorktreeView,kind:'merge'|'remove'):Promise<void>=>{
-    await perform(async()=>{const prepared=await api<{token:string;view:WorktreeView}>(`/api/worktrees/${view.id}/prepare-${kind}`,{method:'POST'});setConfirmation({kind,...prepared});});
+    await perform(async()=>{const prepared=await apiParsed(`/api/worktrees/${view.id}/prepare-${kind}`,parsePreparedWorktreeOperation,{method:'POST'});setConfirmation({kind,...prepared});});
   };
   const run=async():Promise<void>=>{
     if(!confirmation)return;
@@ -225,8 +235,9 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   const other=inventory?.worktrees.filter(view=>!view.managed||view.primary)??[];
   // Absent des serveurs antérieurs au nettoyage automatique.
   const cleaned=inventory?.cleaned??[];
-  const historyOnly=!!projectId&&workspaceMode==='shared'&&!!inventory&&copies.length===0&&other.every(view=>view.primary)&&!loadError&&!inventory.errors.length;
-  if(projectId&&workspaceMode==='shared'&&inventory&&copies.length===0&&cleaned.length===0&&other.every(view=>view.primary)&&!loadError&&!error&&!inventory.errors.length)return null;
+  const inventoryErrors=inventory?.errors??[];
+  const historyOnly=!!projectId&&workspaceMode==='shared'&&!!inventory&&copies.length===0&&other.every(view=>view.primary)&&!loadError&&!inventoryErrors.length;
+  if(projectId&&workspaceMode==='shared'&&inventory&&copies.length===0&&cleaned.length===0&&other.every(view=>view.primary)&&!loadError&&!error&&!inventoryErrors.length)return null;
   return <section className="card worktrees-panel" aria-label="Copies de travail des conversations">
     {!historyOnly?<><div className="worktrees-heading"><h2>Copies de travail <span className="pill">{inventory?copies.length:'…'}</span></h2>
       <button type="button" className="btn" onClick={()=>void refresh()}>Actualiser</button>
@@ -234,7 +245,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
     <p className="worktrees-explanation">{workspaceMode==='shared'?'Ce projet utilise directement son dossier. Ses anciennes copies isolées restent accessibles ici.':'Chaque conversation travaille dans sa copie, sur sa propre branche. Pour récupérer son travail : l’enregistrer (commit) dans la copie, régler les conflits éventuels avec la branche du projet, l’intégrer, puis le publier avec « Push ». Une copie sans rien à conserver est nettoyée automatiquement à la fin de sa conversation.'}</p></>:null}
     {loadError?<p className="form-error" role="alert">{loadError}</p>:null}
     {error?<p className="form-error" role="alert">{error}</p>:null}
-    {inventory?.errors.map(message=><p className="form-error" key={message}>{message}</p>)}
+    {inventoryErrors.map((message,index)=><p className="form-error" key={`${index}:${message}`}>{message}</p>)}
     {!historyOnly&&inventory&&copies.length===0?<p className="empty-hint">Aucune copie de conversation à traiter.</p>:null}
     <ul className="worktree-list">
       {copies.map(view=>{
@@ -347,6 +358,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
                   {view.dirty?<p className="worktree-warning">Terminez d’abord l’étape 1 : la copie doit être entièrement commitée.</p>:null}
                   <button type="button" className="btn primary" disabled={commitBlocked||!!view.dirty} onClick={()=>void act(view,'update-from-target')}>Mettre à jour avec {target}</button>
                 </>}
+                {!view.mergeInProgress&&view.integrationConflicts&&view.integrationNote?<p className="meta">{view.integrationNote}</p>:null}
               </Step>
               <Step number={3} title={`Intégrer dans ${target}`} state={plan.integrate}>
                 <div className="worktree-target"><label>Branche cible <select aria-label={`Cible de ${copyTitle(view)}`} value={view.targetBranch??''} disabled={disabled} onChange={event=>void chooseTarget(view,event.target.value)}>

@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {existsSync,mkdirSync,mkdtempSync,readFileSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
+import {promises as fsPromises,existsSync,mkdirSync,mkdtempSync,readFileSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {syncBuiltinESMExports} from 'node:module';
 import {after,test} from 'node:test';
 const root=mkdtempSync(join(tmpdir(),'cerebro-auto-commits-'));
 process.env.HOME=root;process.env.CEREBRO_DATA_DIR=join(root,'data');process.env.CODEX_HOME=join(root,'codex');
 const {CerebroDatabase}=await import('../server/db.ts');
 const {AutomaticCommits}=await import('../server/automatic-commits.ts');
-const {prepareSessionGit,executeSessionCommit}=await import('../server/session-git.ts');
+const {SessionGitScopes}=await import('../server/session-git.ts');
 const {proposeCommits}=await import('../server/commit-proposal.ts');
 const {runHeadless}=await import('../server/headless.ts');
 const {prepareCommit}=await import('../server/git-plan.ts');
@@ -58,6 +59,30 @@ test('concurrent edits after inference invalidate the snapshot without creating 
  writeFileSync(join(f.repo,'file'),'first\n');const before=git(f.repo,'rev-parse','HEAD');
  f.manager.propose=async()=>{writeFileSync(join(f.repo,'file'),'human changed it\n');return {commits:[{message:'change',paths:['file']}]};};
  const result=await f.finish(await f.manager.start(f.context,randomUUID(),false));assert.equal(result.status,'failed');assert.match(result.error,/obsolète/);assert.equal(git(f.repo,'rev-parse','HEAD'),before);assert.equal(readFileSync(join(f.repo,'file'),'utf8'),'human changed it\n');
+}));
+test('a resolved merge still in progress blocks the automatic commit without calling the model',async()=>fixture(async f=>{
+ git(f.repo,'checkout','-q','-b','target');writeFileSync(join(f.repo,'file'),'target\n');git(f.repo,'commit','-qam','target');
+ git(f.repo,'checkout','-q','main');writeFileSync(join(f.repo,'file'),'main\n');git(f.repo,'commit','-qam','main');
+ assert.throws(()=>git(f.repo,'merge','--no-ff','--no-commit','target'));writeFileSync(join(f.repo,'file'),'resolved\n');git(f.repo,'add','file');
+ const before=git(f.repo,'rev-parse','HEAD');
+ const result=await f.finish(await f.manager.start(f.context,randomUUID(),false));assert.equal(result.status,'blocked');assert.match(result.error,/Opération Git en cours/);
+ assert.equal(f.calls,0);assert.equal(git(f.repo,'rev-parse','HEAD'),before);assert.ok(existsSync(join(f.repo,'.git/MERGE_HEAD')));
+}));
+test('an index.lock taken by an external git during drafting blocks the automatic commit instead of failing it',async()=>fixture(async f=>{
+ writeFileSync(join(f.repo,'file'),'work\n');const before=git(f.repo,'rev-parse','HEAD');const lock=join(f.repo,'.git/index.lock');
+ f.manager.propose=async input=>{writeFileSync(lock,'');return {commits:[{message:'feat: work',paths:input.files.map(file=>file.path)}]};};
+ const result=await f.finish(await f.manager.start(f.context,randomUUID(),false));
+ assert.equal(result.status,'blocked');assert.equal(result.error,'Une autre opération Git est en cours (index.lock) : réessayez.');
+ assert.equal(git(f.repo,'rev-parse','HEAD'),before);assert.ok(existsSync(lock));
+}));
+test('an index.lock taken by an external git between two commits fails the automatic commit with the commits already created',async()=>fixture(async f=>{
+ writeFileSync(join(f.repo,'file'),'work\n');writeFileSync(join(f.repo,'new'),'new\n');const before=git(f.repo,'rev-parse','HEAD');const lock=join(f.repo,'.git/index.lock');
+ f.manager.propose=async()=>({commits:[{message:'feat: first',paths:['file']},{message:'feat: second',paths:['new']}]});
+ const original=fsPromises.rename;
+ fsPromises.rename=async(from,to)=>{await original(from,to);if(to===join(f.repo,'.git/index'))writeFileSync(lock,'',{flag:'wx'});};syncBuiltinESMExports();
+ let result;try{result=await f.finish(await f.manager.start(f.context,randomUUID(),false,undefined,'atomic'));}finally{fsPromises.rename=original;syncBuiltinESMExports();}
+ assert.equal(result.status,'failed');assert.match(result.error,/Plan appliqué partiellement : 1 commit\(s\) sur 2/);assert.doesNotMatch(result.error,/réessayez/);
+ assert.equal(result.commits.length,1);assert.equal(git(f.repo,'rev-parse','HEAD^'),before);assert.equal(git(f.repo,'log','-1','--format=%s'),'feat: first');
 }));
 test('an active commit can only be reused by an action requesting the same strategy',async()=>fixture(async f=>{
  writeFileSync(join(f.repo,'file'),'work\n');
@@ -112,7 +137,7 @@ test('a reviewed diff lifts its warning only while unchanged, and never for a de
 test('unknown session attribution requires intervention and never calls the model',async()=>fixture(async f=>{
  const id=randomUUID();f.db.createSession({id,projectId:f.project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Legacy',status:'exited',agentSessionId:'fake'},'token');
  writeFileSync(join(f.repo,'file'),'legacy work\n');
- const context={...f.context,scope:`sessions/${id}`,sessionId:id,prepare:()=>prepareSessionGit(f.db,id),execute:plan=>executeSessionCommit(id,plan)};
+ const sessionGit=new SessionGitScopes(f.db);const context={...f.context,scope:`sessions/${id}`,sessionId:id,prepare:()=>sessionGit.prepare(id),execute:plan=>sessionGit.executeCommit(id,plan)};
  const result=await f.finish(await f.manager.start(context,randomUUID(),true));assert.equal(result.status,'blocked');assert.match(result.error,/en-tête du projet/);assert.equal(f.calls,0);assert.equal(git(f.repo,'rev-list','--count','HEAD'),'1');
 }));
 test('Git hooks are respected and existing staged files outside the selected scope are preserved',async()=>fixture(async f=>{
@@ -226,7 +251,7 @@ test('a copy holding only content inherited from the project says there is nothi
  writeFileSync(join(f.repo,'file'),'uncommitted in the project\n');
  const id=randomUUID();f.db.createSession({id,projectId:f.project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Step',status:'exited',agentSessionId:'fake'},'token');
  const workspace=await createWorkspace(f.db,id,f.project);
- const context={...f.context,scope:`sessions/${id}`,path:workspace.root,sessionId:id,prepare:()=>prepareSessionGit(f.db,id),execute:plan=>executeSessionCommit(id,plan)};
+ const sessionGit=new SessionGitScopes(f.db);const context={...f.context,scope:`sessions/${id}`,path:workspace.root,sessionId:id,prepare:()=>sessionGit.prepare(id),execute:plan=>sessionGit.executeCommit(id,plan)};
  const result=await f.finish(await f.manager.start(context,randomUUID(),false));assert.equal(result.status,'blocked');
  assert.match(result.error,/Rien de nouveau à commiter/);assert.match(result.exclusions[0].reason,/inchangé depuis/);assert.equal(f.calls,0);
 }));

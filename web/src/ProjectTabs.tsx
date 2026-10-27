@@ -1,6 +1,6 @@
 import { useRef, useState, type DragEvent } from 'react';
 import { Modal } from './Dialog.tsx';
-import { plural } from './format.ts';
+import { attentionCounts, plural } from './format.ts';
 import { NewProjectForm } from './NewProjectForm.tsx';
 import { href, type Route } from './route.ts';
 import { useStore } from './store.tsx';
@@ -73,18 +73,17 @@ export function ProjectTabs({ route }: { route: Route }) {
         const active = project.id === activeProjectId;
         const projectSessions = sessions.filter((session) => session.projectId === project.id);
         const sessionCount = projectSessions.length;
-        const alerts = projectSessions.filter((session) => session.attention);
-        const alertTone = alerts.some((session) => session.status === 'waiting') ? 'waiting' : 'idle';
-        const questions = alerts.filter((session) => session.status === 'waiting').length;
+        const { total: alerts, waiting: questions } = attentionCounts(projectSessions);
+        const alertTone = questions > 0 ? 'waiting' : 'idle';
         const alertLabel =
-          alerts.length > 0
-            ? `${plural(alerts.length, 'session demande', 'sessions demandent')} votre attention` +
+          alerts > 0
+            ? `${plural(alerts, 'session demande', 'sessions demandent')} votre attention` +
               (questions > 0 ? ` (${plural(questions, 'question')})` : '')
             : undefined;
         return (
           <a
             key={project.id}
-            className={`project-tab${active ? ' active' : ''}${alerts.length > 0 ? ` alert ${alertTone}` : ''}${dragging === project.id ? ' dragging' : ''}${dropTarget?.id === project.id ? ` drop-${dropTarget.side}` : ''}`}
+            className={`project-tab${active ? ' active' : ''}${alerts > 0 ? ` alert ${alertTone}` : ''}${dragging === project.id ? ' dragging' : ''}${dropTarget?.id === project.id ? ` drop-${dropTarget.side}` : ''}`}
             href={href(`#/p/${project.id}`)}
             aria-current={active ? 'page' : undefined}
             title={`${project.path}${alertLabel ? `\n${alertLabel}` : ''}`}
@@ -93,7 +92,10 @@ export function ProjectTabs({ route }: { route: Route }) {
               if (draggedId.current === null || saving) return;
               event.preventDefault();
               event.dataTransfer.dropEffect = 'move';
-              setDropTarget(draggedId.current === project.id ? null : { id: project.id, side: dropSide(event) });
+              const side = draggedId.current === project.id ? null : dropSide(event);
+              setDropTarget((current) =>
+                side === null ? null : current?.id === project.id && current.side === side ? current : { id: project.id, side },
+              );
             }}
             onDrop={(event) => void dropProject(event, project.id)}
           >
@@ -133,7 +135,7 @@ export function ProjectTabs({ route }: { route: Route }) {
                 </g>
               </svg>
             </span>
-            {alerts.length > 0 ? (
+            {alerts > 0 ? (
               <span
                 className={`project-tab-alert ${alertTone}${alertTone === 'waiting' ? ' ask-mark' : ''}`}
                 role="status"

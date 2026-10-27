@@ -1,7 +1,8 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ROOT } from './config.ts';
+import { gitSync } from './git.ts';
+import type { Compatibility, VersionInfo } from '../shared/machine.ts';
 
 /*
  * Version de l'application, en SemVer (package.json), complétée du commit git court en métadonnée de build.
@@ -9,14 +10,6 @@ import { ROOT } from './config.ts';
  * par /m/<id>/…, formats lus par l'UI d'une autre machine) ; MINEURE : fonctionnalité ; CORRECTIVE : correctif.
  * Règle : même version majeure = compatible (en 0.y.z, même 0.y, chaque mineure pouvant tout casser).
  */
-
-export interface VersionInfo {
-  version: string;
-  commit: string | null;
-}
-
-/** same : même version ; compatible : version différente, même majeure ; unknown : instance trop ancienne ou injoignable. */
-export type Compatibility = 'same' | 'compatible' | 'incompatible' | 'unknown';
 
 // Grammaire officielle (semver.org), sans métadonnée de build : le commit en tient lieu.
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$/;
@@ -47,11 +40,7 @@ function packageVersion(): string {
 function gitCommit(): string | null {
   if (process.env.CEREBRO_COMMIT !== undefined) return process.env.CEREBRO_COMMIT || null;
   try {
-    const commit = execFileSync('git', ['-C', ROOT, 'rev-parse', '--short', 'HEAD'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 2_000,
-    }).trim();
+    const commit = gitSync(ROOT, ['rev-parse', '--short', 'HEAD'], { timeout: 2_000 }).trim();
     return commit === '' ? null : commit;
   } catch {
     // Installation hors dépôt git.

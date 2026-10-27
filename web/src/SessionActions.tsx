@@ -1,6 +1,6 @@
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { SESSION_PROTECTED_HINT } from './SessionProtection.tsx';
-import type { Session } from './types.ts';
+import type { Session } from '../../shared/types.ts';
 import { RELEASE_HINT, resumeBlockedReason } from './WorktreeLabel.tsx';
 
 /** Arrêter, Reprendre et Supprimer une session : mêmes conditions dans la liste et dans la vue session. */

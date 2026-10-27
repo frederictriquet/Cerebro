@@ -1,18 +1,10 @@
 import { AgentLabel } from './AgentLabel.tsx';
 import { useState } from 'react';
-import {
-  getUpdates,
-  getUsage,
-  setAutoUpdate,
-  startUpdate,
-  type AgentAuth,
-  type AgentUpdate,
-  type AgentUsage,
-  type UsageWindow,
-} from './api.ts';
+import { getUpdates, getUsage, setAutoUpdate, startUpdate } from './api.ts';
 import { errorMessage, formatDateTime, formatDuration, relativeTime } from './format.ts';
 import { useNow, usePolling } from './polling.tsx';
 import { useStoredFlag } from './storage.ts';
+import type { AgentAuth, AgentUpdate, AgentUsage, UsageWindow } from '../../shared/machine.ts';
 
 /** Why a team login has no gauge: /usage hits the same endpoint and gets no percent. */
 const GROK_USAGE_HINT = [
@@ -80,9 +72,9 @@ function AuthLine({ auth, now }: { auth: AgentAuth; now: number }) {
   if (auth.error !== null) return <span className="auth-line high">{auth.error}</span>;
   if (auth.loginExpiresAt !== null) {
     const left = Date.parse(auth.loginExpiresAt) - now;
-    const tone = left <= DAY_MS ? 'high' : left <= 3 * DAY_MS ? 'warn' : 'ok';
+    const tone = left <= DAY_MS ? ' high' : left <= 3 * DAY_MS ? ' warn' : '';
     return (
-      <span className={`auth-line ${tone}`} title={`Le jeton de renouvellement expire le ${formatDateTime(auth.loginExpiresAt)}`}>
+      <span className={`auth-line${tone}`} title={`Le jeton de renouvellement expire le ${formatDateTime(auth.loginExpiresAt)}`}>
         {left <= 0 ? 'Reconnexion requise' : `Reconnexion dans ${formatDuration(left)}`}
       </span>
     );
@@ -94,7 +86,7 @@ function AuthLine({ auth, now }: { auth: AgentAuth; now: number }) {
     expired ? 'il sera renouvelé au prochain lancement' : null,
   ].filter(Boolean).join('\n');
   return (
-    <span className="auth-line ok" title={title}>
+    <span className="auth-line" title={title}>
       {auth.renewedAt === null
         ? 'Connexion renouvelée auto.'
         : `Connexion renouvelée ${relativeTime(Date.parse(auth.renewedAt), now)}`}

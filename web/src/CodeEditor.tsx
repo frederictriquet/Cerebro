@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, apiBase } from './api.ts';
-import type { Project } from './types.ts';
+import type { Project } from '../../shared/types.ts';
 import { errorMessage } from './format.ts';
 
 type VscodeOpen = { ready: false } | { ready: true; path: string };
@@ -28,7 +28,7 @@ export function CodeEditor({ project, onClose }: { project: Project; onClose: ()
     const base = apiBase();
     const load = async (): Promise<void> => {
       try {
-        const opened = parseVscodeOpen(await api<unknown>(`/api/projects/${project.id}/vscode`, { method: 'POST' }));
+        const opened = parseVscodeOpen(await api(`/api/projects/${project.id}/vscode`, { method: 'POST' }));
         if (cancelled) return;
         if (opened === null) throw new Error('Réponse inattendue du serveur');
         // Premier lancement : le serveur VS Code est en cours de téléchargement.

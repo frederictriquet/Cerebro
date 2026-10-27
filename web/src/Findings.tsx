@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import type { Finding, SavedReport } from '../../server/findings.ts';
 import { api } from './api.ts';
 import { href } from './route.ts';
 import { useStore } from './store.tsx';
-import type { Session } from './types.ts';
+import type { Session } from '../../shared/types.ts';
 import { errorMessage, plural } from './format.ts';
 import './findings.css';
+import type { Finding, SavedReport } from '../../shared/backlog.ts';
 
 const SEVERITY: Record<Finding['severity'], string> = {
   critical: 'Critique', high: 'Élevée', medium: 'Moyenne', low: 'Faible',
@@ -16,7 +16,7 @@ export function FindingsNotice({ reports, expanded, onToggle }: {
 }) {
   if (!reports.length) return null;
   const total = reports.reduce((count, report) => count + report.findings.length, 0);
-  const remaining = reports.reduce((count, report) => count + report.findings.filter(f => !report.imported[f.id]).length, 0);
+  const remaining = reports.reduce((count, report) => count + report.findings.filter(f => !report.imported?.[f.id]).length, 0);
   return <button type="button" className="findings-notice" onClick={onToggle}
     aria-expanded={expanded} aria-controls={expanded ? 'session-findings' : undefined}>
     <span className="findings-notice-icon" aria-hidden="true">
@@ -55,7 +55,7 @@ export function FindingsPanel({ sessionId, epic, reports, refresh }: {
     </div>
     {error ? <p className="form-error" role="alert">{error}</p> : null}
     {reports.map(report => {
-      const available = report.findings.filter(f => !report.imported[f.id]);
+      const available = report.findings.filter(f => !report.imported?.[f.id]);
       const selected = available.filter(f => chosen.has(`${report.id}:${f.id}`));
       const allSelected = available.length > 0 && selected.length === available.length;
       const destination = report.epicId ?? (Object.hasOwn(destinations, report.id) ? destinations[report.id] : sourceEpic?.id ?? null);
@@ -75,7 +75,7 @@ export function FindingsPanel({ sessionId, epic, reports, refresh }: {
         <div className="finding-cards">
           {report.findings.map(f => {
             const key = `${report.id}:${f.id}`;
-            const imported = !!report.imported[f.id];
+            const imported = !!report.imported?.[f.id];
             const checked = !imported && chosen.has(key);
             return <article key={f.id} className={`finding-card${checked ? ' selected' : ''}${imported ? ' imported' : ''}`}>
               <div className="finding-card-meta">

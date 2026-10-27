@@ -1,11 +1,10 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { FINDING_INSTRUCTIONS } from './findings.ts';
-import type { CerebroDatabase, Task } from './db.ts';
-import type { EpicRun } from './epic-runner.ts';
+import type { CerebroDatabase } from './db.ts';
 import { workspaceAt } from './provenance.ts';
-const exec=promisify(execFile);
-const git=async(path:string,args:string[]):Promise<string>=>(await exec('git',['-C',path,...args],{maxBuffer:8*1024*1024,env:{...process.env,GIT_OPTIONAL_LOCKS:'0'}})).stdout.trim();
+import { git as runGit, repositoryRoot } from './git.ts';
+import type { Task } from '../shared/types.ts';
+import type { EpicRun } from '../shared/backlog.ts';
+const git=async(path:string,args:string[]):Promise<string>=>(await runGit(path,args)).trim();
 const lines=(text:string):string[]=>text.split('\n').filter(Boolean);
 /** First line of the final review step added by « Ajouter une étape de review » ; the runner completes its prompt at launch. */
 export const REVIEW_TASK_TITLE='Code review du travail de l’epic';
@@ -29,7 +28,7 @@ export async function epicReviewScope(db:CerebroDatabase,run:Pick<EpicRun,'proje
   const path=run.workspace?.path??run.contextRoot;
   const workspace=workspaceAt(db,path);
   if(!workspace&&(run.workspace?run.workspace.mode==='isolated':project.workspaceMode!=='shared'))throw new Error('Le worktree de l’epic est introuvable ou a été retiré : aucun travail à relire.');
-  const root=workspace?.root??await git(path,['rev-parse','--show-toplevel']).catch(()=>{throw new Error('Le dossier de l’epic n’est pas un dépôt Git.');});
+  const root=workspace?.root??await repositoryRoot(path).catch(()=>{throw new Error('Le dossier de l’epic n’est pas un dépôt Git.');});
   const head=await git(root,['rev-parse','--verify','HEAD']).catch(()=>{throw new Error('Dépôt sans commit : aucun travail à relire.');});
   const base=workspace?.base??run.baseHead??null;
   const committed=base&&base!==head;

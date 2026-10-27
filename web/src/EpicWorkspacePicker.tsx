@@ -1,9 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import type { EpicWorkspaceOptions } from '../../server/epic-workspace.ts';
-import { api } from './api.ts';
+import { api, apiParsed } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
 import { href } from './route.ts';
 import { errorMessage, plural } from './format.ts';
+import { parseEpicWorkspaceOptions, type EpicWorkspaceOptions } from '../../shared/backlog.ts';
 
 export function EpicWorkspacePicker({ epicId, onResolved }: { epicId: string; onResolved: () => Promise<void> }) {
   const [options, setOptions] = useState<EpicWorkspaceOptions | null>(null);
@@ -16,7 +16,7 @@ export function EpicWorkspacePicker({ epicId, onResolved }: { epicId: string; on
   useEffect(() => {
     let active = true;
     setOptions(null); setPath(''); setError(null);
-    void api<EpicWorkspaceOptions>(`/api/epics/${epicId}/workspace-options`)
+    void apiParsed(`/api/epics/${epicId}/workspace-options`, parseEpicWorkspaceOptions)
       .then(result => { if (active) setOptions(result); })
       .catch(cause => { if (active) setError(errorMessage(cause)); });
     return () => { active = false; };

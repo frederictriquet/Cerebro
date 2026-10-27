@@ -11,7 +11,7 @@ const {AutomaticCommits}=await import('../server/automatic-commits.ts');
 const {CerebroDatabase}=await import('../server/db.ts');
 const {SessionManager}=await import('../server/sessions.ts');
 const {UpdateManager}=await import('../server/updates.ts');const {PeerSync}=await import('../server/peers.ts');
-const {buildServer}=await import('../server/index.ts');const {parseProject}=await import('../web/src/types.ts');
+const {buildServer}=await import('../server/index.ts');const {parseProject}=await import('../shared/types.ts');
 mock.method(UpdateManager.prototype,'start',()=>{});mock.method(PeerSync.prototype,'sync',async function(){this.markReady();this.markSynced();});
 let sessions=0;mock.method(SessionManager.prototype,'launch',async()=>{sessions++;throw new Error('No interactive session expected');});
 const inputs=[];mock.method(AutomaticCommits.prototype,'propose',async context=>{inputs.push(context);return {commits:context.settings.strategy==='atomic'?context.files.map(file=>({message:`feat: update ${file.path}`,paths:[file.path]})):[{message:'feat: requested behavior',paths:context.files.map(file=>file.path)}]};});

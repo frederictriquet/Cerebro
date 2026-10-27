@@ -1,5 +1,5 @@
 import { formatDateTime } from './format.ts';
-import type { SessionWorktree } from './types.ts';
+import type { SessionWorktree } from '../../shared/types.ts';
 
 /** Arrêter ou supprimer une conversation peut retirer sa copie : la reprise devient alors impossible. */
 export const RELEASE_HINT = 'Si sa copie de travail ne contient rien à conserver (aucun changement, commits intégrés, aucun fichier ignoré), elle sera nettoyée automatiquement ; la conversation restera consultable mais ne pourra plus être reprise.';

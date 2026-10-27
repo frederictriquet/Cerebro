@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { request, requireSession, run, sessionPath } from './cerebro-client.mjs';
+
 const HELP = `Usage : cerebro-tasks <commande>
 
 Suivi persistant des sous-tâches de la session courante :
@@ -25,8 +27,7 @@ async function main() {
   const args = process.argv.slice(2);
   const command = args.shift() ?? 'list';
   if (command === '--help' || command === '-h') { process.stdout.write(HELP); return; }
-  const { CEREBRO_SESSION_ID: id, CEREBRO_TOKEN: token, CEREBRO_URL: base } = process.env;
-  if (!id || !token || !base) throw new Error('Commande à utiliser dans une session Cerebro.');
+  requireSession();
   let method = 'GET', suffix = '', body;
   let json = command !== 'list';
   if (command === 'list') {
@@ -56,15 +57,8 @@ async function main() {
     if (!Object.keys(body).length) throw new Error('Indiquez au moins un champ à modifier.');
   }
   if (args.length) throw new Error(`Arguments inattendus : ${args.join(' ')}`);
-  const response = await fetch(`${base.replace(/\/+$/, '')}/api/session-tasks/${encodeURIComponent(id)}${suffix}`, {
-    method,
-    headers: { 'x-cerebro-token': token, ...(body ? { 'content-type': 'application/json' } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (response.status === 204) { process.stdout.write('Sous-tâche supprimée.\n'); return; }
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error ?? `Erreur HTTP ${response.status}`);
+  const result = await request(`${sessionPath('session-tasks')}${suffix}`, { method, body });
+  if (result === null) { process.stdout.write('Sous-tâche supprimée.\n'); return; }
   if (json) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   else {
     if (!result.length) { process.stdout.write('Aucune sous-tâche enregistrée.\n'); return; }
@@ -78,4 +72,5 @@ async function main() {
   }
 }
 
-main().catch(cause => { process.stderr.write(`${cause.message}\n`); process.exitCode = 1; });
+// Errors print without the command name, as before the shared client.
+await run('cerebro-tasks', main, { prefix: false });

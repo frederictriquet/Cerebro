@@ -16,7 +16,7 @@ const {buildServer}=await import('../server/index.ts');
 mock.method(UpdateManager.prototype,'start',()=>{});mock.method(PeerSync.prototype,'sync',async function(){this.markReady();this.markSynced();});
 const launches=[];mock.method(SessionManager.prototype,'launch',async(...args)=>{
  launches.push(args);
- const [project,agent,mode,tuning,prompt,,,validate,joined,title,epicId,context]=args;
+ const [project,{agent,mode,tuning,prompt,validate,joined,title,epicId,context}]=args;
  const session=db.createSession({id:randomUUID(),projectId:project.id,agent,mode,...tuning,prompt,title:title??'Session de test',status:'idle',agentSessionId:'fake'},'token',epicId);
  const workspace=context?await createWorkspaceInContext(db,session.id,project,context):joined?await joinWorkspace(db,session.id,joined):await createWorkspace(db,session.id,project);
  await validate?.();return {...db.getSession(session.id),cwd:workspace.path};
@@ -61,7 +61,7 @@ test('« Résoudre avec l’IA » launches a session in the copy, with the proje
   const session=response.json();
   assert.equal(workspaceFor(db,session.id).path,workspace.path);
   assert.equal(session.agent,'codex');assert.equal(session.mode,'acceptEdits');assert.match(session.title,/Conversation d’origine/);
-  const prompt=launches.at(-1)[4];
+  const prompt=launches.at(-1)[1].prompt;
   assert.match(prompt,/- doc \(contenu de départ et travail de la conversation mélangés\)/);
   assert.ok(prompt.includes(`Contenu de départ : le fichier ${join(repo,'doc')}, encore non commité dans le dossier de main`));
   assert.match(prompt,/mêmes lignes/);assert.match(prompt,/extra\) seront traités automatiquement/);
@@ -84,9 +84,11 @@ test('the prompt tells where each starting content can be read, and leaves the t
  const plan={targetUpdate:{branch:'refs/heads/main',commits:2},steps:[
   step('a',{kind:'snapshot'},'r1'),step('b',null,'Contenu de départ introuvable'),step('c',{kind:'target-commit',commit:'0123456789abcdef',subject:'Projet'},'r3'),
  ]};
- const prompt=startingResolutionPrompt(view,{base:'base0',startingSnapshot:'snap0'},plan,null);
- assert.match(prompt,/`git show snap0:a` \(instantané conservé par Cerebro/);
- assert.match(prompt,/b \(contenu[^\n]*\n {2}Contenu de départ : introuvable : ni dans la cible, ni identique dans l’instantané de création \(`git show snap0:b`/);
+ const prompt=startingResolutionPrompt(view,{base:'base0',startingCopy:'/donnees/starting/s'},plan,null);
+ assert.match(prompt,/le fichier \/donnees\/starting\/s\/a \(instantané conservé par Cerebro/);
+ assert.match(prompt,/b \(contenu[^\n]*\n {2}Contenu de départ : introuvable : ni dans la cible, ni identique dans l’instantané de création \(le fichier \/donnees\/starting\/s\/b/);
+ // Copies created before the content was kept out of Git still point to their commit.
+ assert.match(startingResolutionPrompt(view,{base:'base0',startingSnapshot:'snap0'},plan,null),/`git show snap0:a` \(instantané conservé par Cerebro/);
  assert.match(prompt,/`git show 0123456789abcdef:c` \(commit 0123456 « Projet » de main\)/);
  assert.match(prompt,/main a reçu 2 commits depuis la création : ne les intègre pas/);
  assert.match(prompt,/git log base0\.\.HEAD/);assert.doesNotMatch(prompt,/Conversation d’origine/);assert.doesNotMatch(prompt,/seront traités automatiquement/);

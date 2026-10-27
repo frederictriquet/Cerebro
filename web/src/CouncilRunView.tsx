@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { api, ApiError, cancelCouncil, councilExportUrl, councilImageUrl, getCouncil } from './api.ts';
+import { api, apiBase, ApiError, cancelCouncil, councilExportUrl, councilImageUrl, getCouncil } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
 import { readDraft, writeDraft, type DraftImage } from './drafts.ts';
 import { Markdown } from './Markdown.tsx';
 import { usePolling } from './polling.tsx';
 import { go, href } from './route.ts';
 import { useStore } from './store.tsx';
-import type { Advisor, CouncilAnswer, CouncilPhase, CouncilReview, CouncilRun, CouncilSynthesis, Llm } from './types.ts';
+import type {
+  Advisor,
+  AggregatedRank,
+  CouncilAnswer,
+  CouncilPhase,
+  CouncilReview,
+  CouncilRun,
+  CouncilSynthesis,
+  Llm,
+} from '../../shared/types.ts';
 import { COUNCIL_STATUS_LABEL, errorMessage, formatDuration, truncate } from './format.ts';
 import './council.css';
 
@@ -68,14 +77,6 @@ function StateBadge({ state, error }: { state: StepState; error?: string | null 
   return <span className={`council-state ${state}`} title={error ?? undefined}>
     {state === 'running' ? <ActivityStatus>{STEP_STATE_LABEL[state]}</ActivityStatus> : STEP_STATE_LABEL[state]}
   </span>;
-}
-
-interface AggregatedRank {
-  letter: string;
-  advisorId: string;
-  // Rang moyen (1 = meilleur) sur les relectures réussies ; null si aucune ne l'a classée.
-  averageRank: number | null;
-  votes: number;
 }
 
 // Même calcul que `aggregateRanks` côté serveur (server/council.ts), repris pour l'affichage.
@@ -399,35 +400,37 @@ export function CouncilRunView({ councilId }: { councilId: string }) {
   const [run, setRun] = useState<CouncilRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [missing, setMissing] = useState(false);
+  const [machineBase] = useState(apiBase);
   // Le suivi efface déjà l'erreur à chaque réponse : l'annulation ne fait que la signaler.
   const { run: cancelRun, busy: cancelling } = useAsyncAction(async (id: string) => setRun(await cancelCouncil(id)), {
     onError: (message) => { if (message !== null) setError(message); },
   });
   const [now, setNow] = useState(Date.now);
-  // Council terminé ou introuvable : le suivi s'arrête.
-  const [settled, setSettled] = useState(false);
 
-  const load = useCallback(() => getCouncil(councilId), [councilId]);
-  usePolling(load, 1000, {
-    enabled: !settled,
+  // Interrogé chaque seconde jusqu'à la fin du council (ou sa disparition), jamais pour une autre machine que celle d'origine.
+  const finished = run !== null && run.finishedAt !== null;
+  const fetchRun = useCallback(() => getCouncil(councilId), [councilId]);
+  usePolling(fetchRun, 1000, {
+    enabled: !missing && !finished && apiBase() === machineBase,
     onData: (value) => {
       setRun(value);
       setError(null);
-      if (value.finishedAt !== null) {
-        setSettled(true);
-        // Rapport affiché : le résultat ne doit plus être notifié.
-        void api(`/api/operations/${encodeURIComponent(`council:${value.id}`)}/seen`, { method: 'POST' }).catch(() => {});
-      }
     },
     onError: (cause) => {
-      if (cause instanceof ApiError && cause.status === 404) {
-        setMissing(true);
-        setSettled(true);
-        return;
-      }
-      setError(errorMessage(cause));
+      if (cause instanceof ApiError && cause.status === 404) setMissing(true);
+      else setError(errorMessage(cause));
     },
   });
+  useEffect(() => {
+    setRun(null);
+    setMissing(false);
+    setError(null);
+  }, [councilId]);
+  // Rapport affiché : le résultat ne doit plus être notifié.
+  const finishedId = finished ? run.id : null;
+  useEffect(() => {
+    if (finishedId !== null) void api(`/api/operations/${encodeURIComponent(`council:${finishedId}`)}/seen`, { method: 'POST' }).catch(() => {});
+  }, [finishedId]);
 
   const running = run !== null && run.finishedAt === null;
   useEffect(() => {

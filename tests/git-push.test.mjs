@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { startPush } from '../server/git-push.ts';
+import { onPushComplete, startPush } from '../server/git-push.ts';
 
 const git = (path, ...args) => execFileSync('git', ['-C', path, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 async function fixture(run) {
@@ -79,4 +79,42 @@ test('concurrent starts share operation; real dirty state is rejected without in
   const allowed = await wait(await startPush(repo, { allowDirty: true }));
   assert.equal(allowed.status, 'succeeded', JSON.stringify(allowed));
   assert.deepEqual(integrity(repo), before);
+}));
+
+test('detached HEAD fails with the explicit message instead of the raw git error', async () => fixture(async ({repo, remote}) => {
+  const origin = remote('origin');
+  git(repo, 'checkout', '--detach');
+  const op = await wait(await startPush(repo));
+  assert.equal(op.status, 'failed');
+  assert.equal(op.error, 'HEAD détachée : choisissez une branche.');
+  assert.deepEqual(op.remotes, []);
+  assert.throws(() => git(origin, 'rev-parse', '--verify', 'main'));
+}));
+
+test('dirty check survives a status larger than the former 1 MiB buffer', async () => fixture(async ({repo, remote}) => {
+  remote('origin');
+  const dir = join(repo, 'untracked'); mkdirSync(dir);
+  for (let i = 0; i < 6000; i++) writeFileSync(join(dir, `${String(i).padStart(6, '0')}-${'x'.repeat(200)}`), '');
+  git(repo, 'config', 'status.showUntrackedFiles', 'all');
+  assert.ok(execFileSync('git', ['-C', repo, 'status', '--porcelain=v1', '-z'], { maxBuffer: 16 * 1024 * 1024 }).length > 1024 * 1024);
+  const op = await wait(await startPush(repo));
+  assert.equal(op.status, 'failed'); assert.match(op.error, /préparez un commit/);
+  assert.equal((await wait(await startPush(repo, { allowDirty: true }))).status, 'succeeded');
+}));
+
+test('a throwing completion listener is logged and does not stop the next listeners', async () => fixture(async ({repo, remote}) => {
+  remote('origin');
+  const unhandled = []; const onUnhandled = (cause) => unhandled.push(cause); process.on('unhandledRejection', onUnhandled);
+  const logged = []; const error = console.error; console.error = (...args) => logged.push(args.join(' '));
+  const calls = [];
+  const offFailing = onPushComplete(() => { throw new Error('listener cassé'); });
+  const offNext = onPushComplete((path, op) => calls.push(op.id));
+  try {
+    const op = await wait(await startPush(repo));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(op.status, 'succeeded', JSON.stringify(op));
+    assert.deepEqual(calls, [op.id]);
+    assert.deepEqual(unhandled, []);
+    assert.ok(logged.some((line) => /listener cassé/.test(line)), logged.join('\n'));
+  } finally { offFailing(); offNext(); console.error = error; process.off('unhandledRejection', onUnhandled); }
 }));

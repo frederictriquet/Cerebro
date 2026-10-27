@@ -1,6 +1,5 @@
-import type { EpicRun } from '../../server/epic-runner.ts';
-import type { SessionTaskStatus } from '../../server/session-tasks.ts';
-import type { Agent, CouncilStatus, Mode, Session, Status, Task, WorkspaceMode } from './types.ts';
+import type { EpicRun, SessionTaskStatus } from '../../shared/backlog.ts';
+import type { Agent, CouncilStatus, Mode, Session, Status, Task, WorkspaceMode } from '../../shared/types.ts';
 
 // Statut affiché : une session inactive ou terminée depuis plus d'une heure passe « en sommeil »,
 // signe qu'on n'en aura sans doute plus besoin ; ce sont celles que la purge supprime.
@@ -73,6 +72,27 @@ export function isAwaiting(session: Pick<Session, 'attention' | 'status'>): bool
 
 export function needsAttention(session: Pick<Session, 'attention' | 'pendingFindings'>): boolean {
   return session.attention || session.pendingFindings > 0;
+}
+
+export interface AttentionCounts {
+  /** Sessions réclamant l'attention, tous motifs confondus (voir needsAttention). */
+  total: number;
+  /** Parmi elles, celles en attente d'une réponse ou d'une autorisation. */
+  waiting: number;
+  /** Findings en attente de traitement, toutes sessions confondues. */
+  pendingFindings: number;
+}
+
+// Seul décompte de l'attention : favicon, sidebar, onglets de projet, machines et groupes d'epic doivent concorder.
+export function attentionCounts(sessions: readonly Pick<Session, 'attention' | 'pendingFindings' | 'status'>[]): AttentionCounts {
+  const counts: AttentionCounts = { total: 0, waiting: 0, pendingFindings: 0 };
+  for (const session of sessions) {
+    counts.pendingFindings += session.pendingFindings;
+    if (!needsAttention(session)) continue;
+    counts.total += 1;
+    if (session.status === 'waiting') counts.waiting += 1;
+  }
+  return counts;
 }
 
 export const MODE_CHIP: Record<Mode, string> = {
@@ -162,8 +182,8 @@ export function sessionTitle(title: string): string {
   return t.length > 0 ? t : 'Session';
 }
 
-// Message lisible d'une erreur capturée : le message d'une Error (sans le préfixe « ApiError: »
-// qu'ajouterait String), sinon le libellé de repli ou, à défaut, la valeur convertie en texte.
+// Message à afficher pour une erreur interceptée : String(cause) préfixerait « ApiError: » ou « Error: ».
+// Hors Error, le libellé de repli s'il est fourni, sinon la valeur convertie en texte.
 export function errorMessage(cause: unknown, fallback?: string): string {
   if (cause instanceof Error) return cause.message;
   return fallback ?? String(cause);

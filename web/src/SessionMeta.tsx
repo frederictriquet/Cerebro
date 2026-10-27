@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { AgentLabel } from './AgentLabel.tsx';
 import { FindingsLink } from './FindingsLink.tsx';
 import { STATUS_LABEL, type DisplayStatus } from './format.ts';
-import type { Session } from './types.ts';
+import type { Session } from '../../shared/types.ts';
 import { WorktreeLabel } from './WorktreeLabel.tsx';
 
 /** Ton d'une session qui demande l'attention : question en attente ou simple inactivité. */

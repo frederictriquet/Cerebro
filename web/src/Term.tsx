@@ -1,13 +1,23 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { clipboardImage, readClipboardImage, uploadImage, wsUrl } from './api.ts';
-import { openReconnectingSocket, type ReconnectingSocket } from './socket.ts';
-import { parseTermServerMessage, type TermClientMessage } from './types.ts';
 import { errorMessage } from './format.ts';
+import { openReconnectingSocket, type ReconnectingSocket } from './reconnectingSocket.ts';
+import { parseTermServerMessage, type TermClientMessage } from '../../shared/types.ts';
 
 const FONT = 'ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace';
+// Frappes conservées pendant une reconnexion ; au-delà, elles sont refusées et signalées.
+const MAX_PENDING_INPUT = 4096;
+
+interface LinkState {
+  reconnecting: boolean;
+  pending: number;
+  dropped: boolean;
+}
+
+const LINK_OPEN: LinkState = { reconnecting: false, pending: 0, dropped: false };
 
 export interface TermApi {
   sendInput: (data: string) => boolean;
@@ -55,6 +65,7 @@ export function Term({
   onSelectionRef.current = onSelectionChange;
   const onEscapeRef = useRef(onEscape);
   onEscapeRef.current = onEscape;
+  const [link, setLink] = useState<LinkState>(LINK_OPEN);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -111,21 +122,49 @@ export function Term({
     term.open(host);
     term.focus();
 
-    let connection: ReconnectingSocket | null = null;
-    const socket = (): WebSocket | null => connection?.socket ?? null;
+    let link: ReconnectingSocket | null = null;
+    const current = (): WebSocket | null => link?.current() ?? null;
+    let closed = false;
     let lastCols = 0;
     let lastRows = 0;
+    let reconnecting = false;
+    let pending = '';
+    let dropped = false;
+
+    const publishLink = (): void => {
+      if (closed) return;
+      setLink(reconnecting
+        ? { reconnecting, pending: pending.length, dropped }
+        : LINK_OPEN);
+    };
+
+    // Saisie clavier : mise en attente si le socket n'est pas ouvert, puis envoyée à la reconnexion.
+    const input = (data: string): void => {
+      if (pending === '' && send(current(), { type: 'input', data })) return;
+      if (pending.length + data.length > MAX_PENDING_INPUT) {
+        dropped = true;
+      } else {
+        pending += data;
+      }
+      publishLink();
+    };
+
+    const flushPending = (): void => {
+      if (pending !== '' && send(current(), { type: 'input', data: pending })) pending = '';
+      dropped = false;
+      publishLink();
+    };
 
     const api: TermApi = {
       sendInput(data: string): boolean {
-        return send(socket(), { type: 'input', data });
+        return send(current(), { type: 'input', data });
       },
       sendArrow(direction: 'up' | 'down'): boolean {
         const application = term.modes.applicationCursorKeysMode;
         const data = direction === 'up'
           ? (application ? '\x1bOA' : '\x1b[A')
           : (application ? '\x1bOB' : '\x1b[B');
-        return send(socket(), { type: 'input', data });
+        return send(current(), { type: 'input', data });
       },
       focus(): void {
         term.focus();
@@ -143,7 +182,7 @@ export function Term({
       if (cols === lastCols && rows === lastRows) return;
       lastCols = cols;
       lastRows = rows;
-      send(socket(), { type: 'resize', cols, rows });
+      send(current(), { type: 'resize', cols, rows });
     };
 
     const doFit = (): void => {
@@ -156,9 +195,7 @@ export function Term({
       sendResize();
     };
 
-    const dataSub = term.onData((data) => {
-      send(socket(), { type: 'input', data });
-    });
+    const dataSub = term.onData(input);
     const selectionSub = term.onSelectionChange(() => {
       onSelectionRef.current?.(term.getSelection().trim() !== '');
     });
@@ -169,7 +206,7 @@ export function Term({
     const sendImage = (image: Blob): void => {
       uploadImage(sessionId, image).then(
         (path) => {
-          send(socket(), { type: 'input', data: `${path} ` });
+          input(`${path} `);
         },
         (err: unknown) => {
           notice(`image non envoyée : ${errorMessage(err, 'erreur')}`);
@@ -208,11 +245,13 @@ export function Term({
     });
     ro.observe(host);
 
-    connection = openReconnectingSocket(wsUrl(`/ws/term/${sessionId}`), {
+    link = openReconnectingSocket(wsUrl(`/ws/term/${sessionId}`), {
       onOpen: () => {
+        reconnecting = false;
         lastCols = 0;
         lastRows = 0;
         doFit();
+        flushPending();
         term.focus();
       },
       onMessage: (raw) => {
@@ -225,23 +264,40 @@ export function Term({
           term.write(msg.data);
         }
       },
+      onClose: () => {
+        reconnecting = true;
+        publishLink();
+      },
     });
-    requestAnimationFrame(() => {
+    const firstFrame = requestAnimationFrame(() => {
       doFit();
       term.focus();
     });
 
     return () => {
+      closed = true;
+      cancelAnimationFrame(firstFrame);
       onApiRef.current?.(null);
-      connection.close();
       dataSub.dispose();
       selectionSub.dispose();
       onSelectionRef.current?.(false);
       host.removeEventListener('paste', onPaste, true);
       ro.disconnect();
+      link?.close();
       term.dispose();
     };
   }, [sessionId]);
 
-  return <div className="term-host" ref={hostRef} />;
+  return (
+    <>
+      <div className="term-host" ref={hostRef} />
+      {link.reconnecting ? (
+        <div className="term-link" role="status">
+          Terminal déconnecté — reconnexion…
+          {link.pending > 0 ? ` · ${link.pending} caractère${link.pending > 1 ? 's' : ''} en attente d’envoi` : ''}
+          {link.dropped ? ' · frappes au-delà de la limite ignorées' : ''}
+        </div>
+      ) : null}
+    </>
+  );
 }

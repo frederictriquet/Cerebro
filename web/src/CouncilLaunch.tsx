@@ -11,7 +11,7 @@ import { PersonasDialog } from './PersonasDialog.tsx';
 import { usePolling, useNow } from './polling.tsx';
 import { go, href } from './route.ts';
 import { readJson, writeJson } from './storage.ts';
-import { MAX_ADVISORS, MIN_ADVISORS, type CouncilRun, type CouncilSettings, type Llm, type Persona } from './types.ts';
+import { MAX_ADVISORS, MIN_ADVISORS, type CouncilRun, type CouncilSettings, type Llm, type Persona } from '../../shared/types.ts';
 import './council.css';
 
 // Brouillon d'un council non lancé, par périmètre (projet ou accueil), comme les brouillons de prompt.

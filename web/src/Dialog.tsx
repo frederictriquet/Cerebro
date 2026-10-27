@@ -1,18 +1,19 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
-import type { Agent, LaunchSpec } from './types.ts';
+import type { Agent, SessionDefaults } from '../../shared/types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
-import { api, uploadProjectImage } from './api.ts';
-import type { WorkspaceContext } from '../../server/provenance.ts';
+import { apiParsed, uploadProjectImage } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
-import { AttachmentStrip, useAttachedField } from './attachments.tsx';
+import { AttachmentStrip, removeToken, useAttachedField } from './attachments.tsx';
 import { errorMessage } from './format.ts';
+import { parseOptionalWorkspaceContext } from '../../shared/git.ts';
 
 // Modale native : Échap et un clic hors du contenu la ferment.
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -35,6 +36,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
     <dialog
       ref={ref}
       className="modal"
+      aria-labelledby={titleId}
       onMouseDown={(e) => {
         // Le backdrop et la barre de défilement ont tous deux le <dialog> pour cible :
         // seul un clic hors de son rectangle vient du backdrop.
@@ -46,7 +48,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
       }}
     >
       <div className="modal-body">
-        <h2>{title}</h2>
+        <h2 id={titleId}>{title}</h2>
         {children}
       </div>
     </dialog>
@@ -114,10 +116,10 @@ export function LaunchSessionDialog({
   promptFor?: (agent: Agent) => string;
   submitLabel?: string;
   epicId?: string | null;
-  onLaunch: (spec: LaunchSpec) => Promise<void>;
+  onLaunch: (spec: SessionDefaults) => Promise<void>;
   onClose: () => void;
 }) {
-  const load = useCallback(() => api<WorkspaceContext | null>(`/api/epics/${epicId}/workspace`), [epicId]);
+  const load = useCallback(() => apiParsed(`/api/epics/${epicId}/workspace`, parseOptionalWorkspaceContext), [epicId]);
   // Le dossier de l'epic est facultatif : le formulaire ne l'attend pas, et un échec de chargement reste silencieux.
   const { value: workspace } = usePrepared(epicId ? load : null);
   const contextLabel = workspace ? workspace.mode === 'isolated' ? 'Poursuivre dans le worktree de l’epic' : 'Poursuivre dans le dossier d’origine de l’epic' : undefined;
@@ -147,13 +149,25 @@ export function AddTaskDialog({
     await createTask(targetId, images.expand(text), sourceSessionId);
     onClose();
   }, { fallback: 'Ajout impossible' });
+  const imageError = (message: string): void => setError(`Image non envoyée : ${message}`);
   const { images, fieldProps, stripProps } = useAttachedField({
     upload: (image) => uploadProjectImage(targetId, image),
     text,
     setText,
-    onError: (message) => setError(`Image non envoyée : ${message}`),
+    onError: imageError,
     disabled: busy,
   });
+
+  // Les images vivent dans le dossier du projet qui les a reçues (supprimé avec lui) :
+  // changer de backlog les renvoie vers le nouveau projet.
+  const changeTarget = (next: string): void => {
+    if (next === targetId) return;
+    setTargetId(next);
+    images.reupload((image) => uploadProjectImage(next, image), (failed, message) => {
+      setText((current) => removeToken(current, failed));
+      imageError(message);
+    });
+  };
 
   const add = async (): Promise<void> => {
     if (busy || images.pending || text.trim() === '') return;
@@ -187,7 +201,7 @@ export function AddTaskDialog({
         {projects.length > 1 ? (
           <label className="task-form-project">
             Backlog du projet
-            <select value={targetId} disabled={busy || images.pending} onChange={(e) => setTargetId(e.target.value)}>
+            <select value={targetId} disabled={busy || images.pending} onChange={(e) => changeTarget(e.target.value)}>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}

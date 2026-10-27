@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { SessionTask, SessionTaskStatus } from '../../server/session-tasks.ts';
-import { api } from './api.ts';
+import { api, apiParsed } from './api.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { errorMessage, plural, SESSION_TASK_STATUS_LABEL } from './format.ts';
 import { usePolling } from './polling.tsx';
 import './session-tasks.css';
+import { parseSessionTasks, type SessionTask, type SessionTaskStatus } from '../../shared/backlog.ts';
 
 // « à faire » et « en cours » sont invariables ; les autres états s'accordent avec le nombre.
 const INVARIABLE: readonly SessionTaskStatus[] = ['todo', 'in_progress'];
@@ -20,9 +20,9 @@ export function sessionTasksState(tasks: readonly SessionTask[]): SessionTaskSta
 export function useSessionTasks(sessionId: string) {
   const [data, setData] = useState<{ sessionId: string; tasks: SessionTask[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(() => api<SessionTask[]>(`/api/sessions/${sessionId}/tasks`), [sessionId]);
-  useEffect(() => { setData(null); setError(null); }, [load]);
-  const refresh = usePolling(load, 3000, {
+  const fetchTasks = useCallback(() => apiParsed(`/api/sessions/${sessionId}/tasks`, parseSessionTasks), [sessionId]);
+  useEffect(() => { setData(null); setError(null); }, [sessionId]);
+  const refresh = usePolling(fetchTasks, 3000, {
     onData: (tasks) => { setData({ sessionId, tasks }); setError(null); },
     onError: (cause) => setError(errorMessage(cause)),
   });

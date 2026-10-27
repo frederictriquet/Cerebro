@@ -1,40 +1,14 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import type { Agent } from './db.ts';
-
-export interface UsageWindow {
-  label: string;
-  /** 0-100 */
-  percent: number;
-  /** Window length, to show how much of it has elapsed. */
-  minutes: number | null;
-  /** ISO date, null when unknown. */
-  resetsAt: string | null;
-}
-
-/** When the CLI's login lapses, read from its credentials file (no token leaves the server). */
-export interface AgentAuth {
-  /** Date a new login will be required (ISO), when the CLI records it: only Claude does. */
-  loginExpiresAt: string | null;
-  /** Access token expiry (ISO): the CLI renews it by itself the next time it runs. */
-  accessExpiresAt: string | null;
-  /** Last login or token renewal (ISO), when known. */
-  renewedAt: string | null;
-  error: string | null;
-}
-
-export interface AgentUsage {
-  agent: Agent;
-  windows: UsageWindow[];
-  auth: AgentAuth | null;
-  /** When the figures were measured (ISO); for Codex, the last time it ran. */
-  updatedAt: string | null;
-  error: string | null;
-}
+import type { Agent } from '../shared/types.ts';
+import type { AgentAuth, AgentUsage, UsageWindow } from '../shared/machine.ts';
+import { codexHome, listCodexRollouts } from './codex-config.ts';
+import { readJsonlTail } from './jsonl.ts';
+import { asRecord, errorMessage, isEnoent } from './util.ts';
 
 const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 // The endpoint is rate limited: never query it more often than this.
@@ -49,10 +23,6 @@ const CLAUDE_WINDOWS: readonly [key: string, label: string, minutes: number][] =
   ['seven_day_opus', 'Semaine Opus', 10_080],
   ['seven_day_sonnet', 'Semaine Sonnet', 10_080],
 ];
-
-function errorText(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
 
 function windowLabel(minutes: number): string {
   if (minutes === 300) return '5 h';
@@ -72,9 +42,6 @@ function freshen(window: UsageWindow, now: number): UsageWindow {
   return window;
 }
 
-function record(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
 
 const execFileAsync = promisify(execFile);
 
@@ -117,7 +84,7 @@ function isoFromString(value: unknown): string | null {
 function jwtExpiry(token: unknown): string | null {
   if (typeof token !== 'string') return null;
   try {
-    const payload = record(JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8')));
+    const payload = asRecord(JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8')));
     return typeof payload?.exp === 'number' ? isoFromMillis(payload.exp * 1_000) : null;
   } catch {
     return null;
@@ -134,8 +101,8 @@ function claudeAuth(oauth: Record<string, unknown> | null): AgentAuth {
 }
 
 function readCodexAuth(): AgentAuth {
-  const auth = record(JSON.parse(readFileSync(join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json'), 'utf8')));
-  const tokens = record(auth?.tokens);
+  const auth = asRecord(JSON.parse(readFileSync(join(codexHome(), 'auth.json'), 'utf8')));
+  const tokens = asRecord(auth?.tokens);
   if (tokens === null) {
     const apiKey = typeof auth?.OPENAI_API_KEY === 'string' && auth.OPENAI_API_KEY !== '';
     return { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: apiKey ? null : 'Pas de connexion Codex' };
@@ -150,10 +117,10 @@ function readCodexAuth(): AgentAuth {
 
 /** ~/.grok/auth.json maps "<issuer>::<id>" to a login: take the most recently renewed one. */
 function readGrokAuth(): AgentAuth {
-  const auth = record(JSON.parse(readFileSync(join(homedir(), '.grok', 'auth.json'), 'utf8')));
+  const auth = asRecord(JSON.parse(readFileSync(join(homedir(), '.grok', 'auth.json'), 'utf8')));
   let latest: AgentAuth | null = null;
   for (const value of Object.values(auth ?? {})) {
-    const entry = record(value);
+    const entry = asRecord(value);
     if (entry === null) continue;
     const candidate: AgentAuth = {
       loginExpiresAt: null,
@@ -171,7 +138,7 @@ function readAuth(read: () => AgentAuth): AgentAuth {
     return read();
   } catch (cause) {
     const missing = (cause as NodeJS.ErrnoException).code === 'ENOENT';
-    return { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: missing ? 'Non connecté' : errorText(cause) };
+    return { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: missing ? 'Non connecté' : errorMessage(cause) };
   }
 }
 
@@ -187,10 +154,10 @@ async function fetchClaude(oauth: Record<string, unknown> | null): Promise<Agent
     signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) throw new Error(`API Claude : HTTP ${res.status}`);
-  const body = record(await res.json());
+  const body = asRecord(await res.json());
   const windows: UsageWindow[] = [];
   for (const [key, label, minutes] of CLAUDE_WINDOWS) {
-    const entry = record(body?.[key]);
+    const entry = asRecord(body?.[key]);
     if (entry === null || typeof entry.utilization !== 'number') continue;
     windows.push({
       label,
@@ -202,47 +169,28 @@ async function fetchClaude(oauth: Record<string, unknown> | null): Promise<Agent
   return { agent: 'claude', windows, auth: null, updatedAt: new Date().toISOString(), error: null };
 }
 
-function codexRollouts(): string[] {
-  const root = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'sessions');
-  const subdirs = (dir: string): string[] => {
-    try {
-      return readdirSync(dir).filter((name) => /^\d+$/.test(name)).sort().reverse();
-    } catch {
-      return [];
-    }
-  };
-  // sessions/YYYY/MM/DD/rollout-*.jsonl: gather the most recent days, then order by last write
-  // (a resumed session keeps writing into the directory of the day it started).
-  const files: { path: string; mtime: number }[] = [];
-  for (const year of subdirs(root)) {
-    for (const month of subdirs(join(root, year))) {
-      for (const day of subdirs(join(root, year, month))) {
-        const dir = join(root, year, month, day);
-        for (const name of readdirSync(dir)) {
-          if (name.endsWith('.jsonl')) files.push({ path: join(dir, name), mtime: statSync(join(dir, name)).mtimeMs });
-        }
-        if (files.length >= CODEX_MAX_FILES) return files.sort((a, b) => b.mtime - a.mtime).map((f) => f.path);
-      }
-    }
+/** Runs a filesystem read, returning null when the entry vanished in the meantime (ENOENT). */
+function ignoreMissing<T>(read: () => T): T | null {
+  try {
+    return read();
+  } catch (cause) {
+    if (isEnoent(cause)) return null;
+    throw cause;
   }
+}
+
+// Rollouts of the most recent days, ordered by last write.
+async function codexRollouts(): Promise<string[]> {
+  // Codex may delete or rename a rollout while we scan: skip it rather than fail the whole read.
+  const files = (await listCodexRollouts(undefined, CODEX_MAX_FILES)).flatMap((path) => {
+    const mtime = ignoreMissing(() => statSync(path).mtimeMs);
+    return mtime === null ? [] : [{ path, mtime }];
+  });
   return files.sort((a, b) => b.mtime - a.mtime).map((f) => f.path);
 }
 
-function readTail(path: string): string {
-  const fd = openSync(path, 'r');
-  try {
-    const size = statSync(path).size;
-    const length = Math.min(size, CODEX_TAIL_BYTES);
-    const buffer = Buffer.alloc(length);
-    readSync(fd, buffer, 0, length, size - length);
-    return buffer.toString('utf8');
-  } finally {
-    closeSync(fd);
-  }
-}
-
 function codexWindow(value: unknown): UsageWindow | null {
-  const entry = record(value);
+  const entry = asRecord(value);
   if (entry === null || typeof entry.used_percent !== 'number') return null;
   const minutes = typeof entry.window_minutes === 'number' ? entry.window_minutes : null;
   return {
@@ -254,19 +202,16 @@ function codexWindow(value: unknown): UsageWindow | null {
 }
 
 /** Codex only reports its limits inside session rollouts: take the latest token_count event. */
-function readCodex(): AgentUsage {
+export async function readCodex(): Promise<AgentUsage> {
   let latest: { timestamp: string; limits: Record<string, unknown> } | null = null;
   // Newest rollout first: the first rate_limits event found from the end is the latest one.
-  for (const path of codexRollouts()) {
-    const lines = readTail(path).split('\n');
-    for (let i = lines.length - 1; i >= 0 && latest === null; i--) {
-      if (!lines[i].includes('"rate_limits"')) continue;
-      try {
-        const event = record(JSON.parse(lines[i]));
-        const limits = record(record(event?.payload)?.rate_limits);
-        if (limits !== null && typeof event?.timestamp === 'string') latest = { timestamp: event.timestamp, limits };
-      } catch {
-        // Truncated first line of the tail: keep looking.
+  for (const path of await codexRollouts()) {
+    for (const record of ignoreMissing(() => readJsonlTail(path, CODEX_TAIL_BYTES, '"rate_limits"')) ?? []) {
+      const event = asRecord(record);
+      const limits = asRecord(asRecord(event?.payload)?.rate_limits);
+      if (limits !== null && typeof event?.timestamp === 'string') {
+        latest = { timestamp: event.timestamp, limits };
+        break;
       }
     }
     if (latest !== null) break;
@@ -301,14 +246,14 @@ export class UsageTracker {
       this.claudeFetchedAt = now;
       this.claudePending = readClaudeCredentials()
         .then(async (raw) => {
-          const oauth = record(record(JSON.parse(raw))?.claudeAiOauth);
+          const oauth = asRecord(asRecord(JSON.parse(raw))?.claudeAiOauth);
           this.claudeAuth = claudeAuth(oauth);
           this.claude = await fetchClaude(oauth);
         })
         .catch((cause: unknown) => {
           // Keep the last good figures and say why they are not refreshed.
-          this.claude = { ...this.claude, error: errorText(cause) };
-          this.claudeAuth ??= { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: errorText(cause) };
+          this.claude = { ...this.claude, error: errorMessage(cause) };
+          this.claudeAuth ??= { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: errorMessage(cause) };
         })
         .finally(() => {
           this.claudePending = null;
@@ -319,9 +264,9 @@ export class UsageTracker {
     if (now - this.codexReadAt >= CODEX_MIN_INTERVAL_MS) {
       this.codexReadAt = now;
       try {
-        this.codex = readCodex();
+        this.codex = await readCodex();
       } catch (cause) {
-        this.codex = { ...this.codex, error: errorText(cause) };
+        this.codex = { ...this.codex, error: errorMessage(cause) };
       }
       this.codexAuth = readAuth(readCodexAuth);
       this.grokAuth = readAuth(readGrokAuth);

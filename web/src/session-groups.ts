@@ -1,5 +1,5 @@
 import { sessionTitle } from './format.ts';
-import type { Epic, Session, SessionEpic, Task } from './types.ts';
+import type { Epic, Session, SessionEpic, Task } from '../../shared/types.ts';
 
 export type SessionGroup =
   | { kind: 'session'; session: Session }

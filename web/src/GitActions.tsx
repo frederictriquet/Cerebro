@@ -1,24 +1,29 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { api } from './api.ts';
-import type { PreparedReview } from '../../server/review.ts';
+import { api, apiParsed } from './api.ts';
 import { LaunchDialog, Modal, usePrepared } from './Dialog.tsx';
 import { useStore } from './store.tsx';
-import type { SessionGitContext, SessionGitSnapshot } from '../../server/session-git.ts';
-import type { GitInfo } from './types.ts';
-import type { PushOperation, PushRemoteResult } from '../../server/git-push.ts';
+import { pushBlockedReason, type GitInfo } from '../../shared/types.ts';
 import './automatic-commits.css';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
 import { errorMessage, plural } from './format.ts';
 import { usePolling } from './polling.tsx';
-
-const canPush = (git: GitInfo): boolean => (git.ahead ?? 0) > 0 || (git.hasCommits && !git.hasUpstream);
+import {
+  parseOptionalPushOperation,
+  parsePreparedReview,
+  parsePushOperation,
+  parseSessionGitContext,
+  parseSessionGitSnapshot,
+  type PushOperation,
+  type PushRemoteResult,
+  type SessionGitContext,
+} from '../../shared/git.ts';
 
 export function GitActions({ projectId, git, pendingCommits }: { projectId: string; git: GitInfo; pendingCommits: ReactNode }) {
   const [open, setOpen] = useState<'review' | 'single' | 'atomic' | 'push' | null>(null);
   const close = (): void => setOpen(null);
   const hasChanges = git.dirty > 0;
-  const pushable = canPush(git);
+  const pushBlocked = pushBlockedReason(git);
 
   return (
     <>
@@ -40,13 +45,13 @@ export function GitActions({ projectId, git, pendingCommits }: { projectId: stri
       </span>
       <span className="git-actions git-actions-publish" role="group" aria-label="Publication des commits">
         {pendingCommits}
-        {!git.hasUpstream ? <span className="meta">pas d’upstream</span> : null}
+        {git.branch !== null && !git.hasUpstream ? <span className="meta">pas d’upstream</span> : null}
         <button
           type="button"
           className="btn"
           onClick={() => setOpen('push')}
-          disabled={!pushable}
-          title={pushable ? 'Pousser les commits locaux vers les remotes' : 'Rien à pousser'}
+          disabled={pushBlocked !== null}
+          title={pushBlocked ?? 'Pousser les commits locaux vers les remotes'}
         >
           Push
         </button>
@@ -67,12 +72,12 @@ function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => 
   useEffect(() => {
     let disposed = false;
     // Reuse the same request in React StrictMode; a double submission returns the running operation.
-    start.current ??= api<PushOperation>(`/api/projects/${projectId}/git/push`, { method: 'POST', body: JSON.stringify({ allowDirty: true }) });
+    start.current ??= apiParsed(`/api/projects/${projectId}/git/push`, parsePushOperation, { method: 'POST', body: JSON.stringify({ allowDirty: true }) });
     void start.current.then(value => { if (!disposed) setOperation(value); }, cause => { if (!disposed) setError(errorMessage(cause)); });
     return () => { disposed = true; };
   }, [projectId]);
   // Suivi tant que le push tourne ; une erreur de suivi l'interrompt.
-  const load = useCallback(() => api<PushOperation | null>(`/api/projects/${projectId}/git/push`), [projectId]);
+  const load = useCallback(() => apiParsed(`/api/projects/${projectId}/git/push`, parseOptionalPushOperation), [projectId]);
   usePolling(load, 500, {
     enabled: operation?.status === 'running' && error === null,
     immediate: false,
@@ -100,7 +105,7 @@ function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => 
 }
 
 function RepoReviewDialog({projectId,onClose}:{projectId:string;onClose:()=>void}) {
-  const prepare=useCallback(()=>api<PreparedReview>(`/api/projects/${projectId}/git/prepare-review`,{method:'POST'}),[projectId]);
+  const prepare=useCallback(()=>apiParsed(`/api/projects/${projectId}/git/prepare-review`,parsePreparedReview,{method:'POST'}),[projectId]);
   const {value:review,error}=usePrepared(prepare);
   return <LaunchDialog title="Périmètre de code review" projectId={projectId} ready={review!==null} error={error} initialPrompt="Recherche les bugs dans le périmètre préparé par Cerebro." launchDisabled={review?.scope==='empty'} onLaunch={async spec=>{
     await api(`/api/projects/${projectId}/git/review`,{method:'POST',body:JSON.stringify({reviewId:review!.id,launch:spec})});onClose();
@@ -114,7 +119,7 @@ function RepoReviewDialog({projectId,onClose}:{projectId:string;onClose:()=>void
 }
 
 function SessionReviewDialog({sessionId,projectId,onClose}:{sessionId:string;projectId:string;onClose:()=>void}) {
-  const prepare=useCallback(()=>api<SessionGitSnapshot>(`/api/sessions/${sessionId}/git/prepare-commit`,{method:'POST'}),[sessionId]);
+  const prepare=useCallback(()=>apiParsed(`/api/sessions/${sessionId}/git/prepare-commit`,parseSessionGitSnapshot,{method:'POST'}),[sessionId]);
   const {value:snapshot,error}=usePrepared(prepare);
   // Sélection proposée par défaut tant que l'utilisateur ne l'a pas modifiée.
   const [edited,setEdited]=useState<string|null>(null);
@@ -140,7 +145,7 @@ export function SessionGitActions({ sessionId, live: _live }: { sessionId: strin
   const [contextError,setContextError]=useState<string|null>(null);
   useEffect(()=>{
     let disposed=false;setContext(null);setContextError(null);setOpen(null);
-    void api<SessionGitContext>(`/api/sessions/${sessionId}/git/context`).then(value=>{if(!disposed)setContext(value);})
+    void apiParsed(`/api/sessions/${sessionId}/git/context`, parseSessionGitContext).then(value=>{if(!disposed)setContext(value);})
       .catch(cause=>{if(!disposed)setContextError(errorMessage(cause));});
     return()=>{disposed=true;};
   },[sessionId]);

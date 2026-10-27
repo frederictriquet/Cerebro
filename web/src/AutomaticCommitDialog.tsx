@@ -1,12 +1,12 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from './api.ts';
+import { api, apiParsed } from './api.ts';
 import { Modal } from './Dialog.tsx';
-import type { CommitSettings } from './types.ts';
-import type { AutomaticCommit } from '../../server/automatic-commits.ts';
+import type { CommitSettings } from '../../shared/types.ts';
 import { errorMessage, plural } from './format.ts';
 import { usePolling } from './polling.tsx';
 import './automatic-commits.css';
+import { parseAutomaticCommit, type AutomaticCommit } from '../../shared/git.ts';
 
 const PHASE_LABEL:Record<AutomaticCommit['phase'],string>={collecting:'Vérification des changements…',drafting:'Rédaction du message par l’IA…',committing:'Création du commit…',pushing:'Push vers les remotes…',finished:'Terminé'};
 interface CommitDialogProps {projectId:string;endpoint?:string;push?:boolean;strategy?:CommitSettings['strategy'];onClose:()=>void;scopeLabel?:string;reviewed?:{snapshotId:string;paths:string[]}}
@@ -32,12 +32,12 @@ function AutomaticCommitRun({projectId,endpoint,push=true,strategy,onClose,scope
   useEffect(()=>{
     let disposed=false;
     // Reuse the same request in React StrictMode. Reopening also attaches to an active server operation.
-    start.current??=api<AutomaticCommit>(`${path}/auto-commit`,{method:'POST',body:JSON.stringify({requestId,push,strategy,...(review?{reviewed:review}:{})})});
+    start.current??=apiParsed(`${path}/auto-commit`,parseAutomaticCommit,{method:'POST',body:JSON.stringify({requestId,push,strategy,...(review?{reviewed:review}:{})})});
     void start.current.then(value=>{if(!disposed)show(value);}).catch(cause=>{if(!disposed)setError(errorMessage(cause));});
     return()=>{disposed=true;};
   },[path,requestId,push,strategy,review]);
   const operationId=operation?.id??null;
-  const load=useCallback(()=>api<AutomaticCommit>(`/api/git/auto-commits/${operationId}`),[operationId]);
+  const load=useCallback(()=>apiParsed(`/api/git/auto-commits/${operationId}`,parseAutomaticCommit),[operationId]);
   usePolling(load,300,{
     enabled:operation!==null&&!operation.finishedAt,
     onData:show,

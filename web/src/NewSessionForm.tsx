@@ -7,7 +7,15 @@ import { LlmSelector, llmChoices } from './LlmSelector.tsx';
 import { readDraft, writeDraft } from './drafts.ts';
 import { errorMessage, MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from './format.ts';
 import { useStore } from './store.tsx';
-import { DEFAULT_SESSION_DEFAULTS, MODE_CHOICES, normalizeMode, type Agent, type Effort, type LaunchSpec, type Mode } from './types.ts';
+import {
+  DEFAULT_SESSION_DEFAULTS,
+  MODE_CHOICES,
+  normalizeMode,
+  type Agent,
+  type Effort,
+  type Mode,
+  type SessionDefaults,
+} from '../../shared/types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
 
 // Agent, mode, modèle, effort et prompt d'une nouvelle session : page projet, et modales lancées depuis une
@@ -36,7 +44,7 @@ export function NewSessionForm({
   launchDisabled?: boolean;
   autoFocus?: boolean;
   className?: string;
-  onLaunch: (spec: LaunchSpec) => Promise<void>;
+  onLaunch: (spec: SessionDefaults) => Promise<void>;
   onCancel?: () => void;
 }) {
   const { agents, projects, updateProject } = useStore();
@@ -61,6 +69,16 @@ export function NewSessionForm({
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const queuedPrompt = useRef<string | null>(null);
+  // Seul le formulaire « Nouvelle session » du projet (sans prompt prérempli) mémorise son prompt :
+  // celui d'une modale (tâche, sélection, review) ne doit ni remplacer ni effacer ce défaut.
+  const remembersPrompt = initialPrompt === undefined && promptFor === undefined;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   // Image collée ou déposée : « [Image #N] » est inséré au curseur, et remplacé par le chemin
   // du fichier au lancement (les agents lisent les images référencées par chemin).
   const { images, fieldProps, stripProps } = useAttachedField({
@@ -75,7 +93,7 @@ export function NewSessionForm({
   });
 
   // Sérialiser les modifications rapides évite qu'une réponse ancienne remplace le dernier choix.
-  const saveDefaults = useCallback((patch: Partial<LaunchSpec>): void => {
+  const saveDefaults = useCallback((patch: Partial<SessionDefaults>): void => {
     if (patch.prompt !== undefined) queuedPrompt.current = patch.prompt;
     setSavingDefaults((count) => count + 1);
     saveQueue.current = saveQueue.current.then(async () => {
@@ -92,10 +110,10 @@ export function NewSessionForm({
 
   const expandedPrompt = images.expand(prompt);
   useEffect(() => {
-    if (!promptEdited || images.pending || busy || expandedPrompt === queuedPrompt.current) return;
+    if (!remembersPrompt || !promptEdited || images.pending || busy || expandedPrompt === queuedPrompt.current) return;
     const timer = setTimeout(() => saveDefaults({ prompt: expandedPrompt }), 400);
     return () => clearTimeout(timer);
-  }, [promptEdited, images.pending, busy, expandedPrompt, saveDefaults]);
+  }, [remembersPrompt, promptEdited, images.pending, busy, expandedPrompt, saveDefaults]);
 
   useEffect(() => {
     if (draftKey === undefined) return;
@@ -104,8 +122,8 @@ export function NewSessionForm({
   }, [draftKey, prompt, promptEdited, images.items]);
 
   useEffect(() => {
-    if (!promptEdited && initialPrompt === undefined && promptFor === undefined) setPrompt(defaults.prompt);
-  }, [defaults.prompt, initialPrompt, promptFor, promptEdited]);
+    if (!promptEdited && remembersPrompt) setPrompt(defaults.prompt);
+  }, [defaults.prompt, remembersPrompt, promptEdited]);
 
   useEffect(() => {
     if (savingDefaults > 0 || busy) return;
@@ -154,17 +172,20 @@ export function NewSessionForm({
       await saveQueue.current;
       const spec = { agent, mode, model, effort, prompt: images.expand(prompt) };
       await onLaunch(spec);
+      const draftFailure = draftKey === undefined ? null : writeDraft(draftKey, { prompt: '', images: [] });
+      // Modale refermée par son lancement : rien à réinitialiser.
+      if (!mounted.current) return;
+      setDraftError(draftFailure);
       setPrompt('');
-      // Garder la main sur le champ : les défauts reçus au lancement contiennent encore
-      // le prompt envoyé. Les effacer aussi évite de le restaurer au prochain montage.
+      // Garder la main sur le champ : les défauts mémorisés contiennent encore le dernier
+      // prompt saisi. L'effacer aussi évite de le restaurer au prochain montage.
       setPromptEdited(true);
-      saveDefaults({ prompt: '' });
-      if (draftKey !== undefined) setDraftError(writeDraft(draftKey, { prompt: '', images: [] }));
+      if (remembersPrompt) saveDefaults({ prompt: '' });
       images.reset();
     } catch (err) {
-      setError(errorMessage(err, 'Lancement impossible'));
+      if (mounted.current) setError(errorMessage(err, 'Lancement impossible'));
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   };
 
@@ -221,7 +242,7 @@ export function NewSessionForm({
           value={prompt}
           {...fieldProps}
           onBlur={() => {
-            if (promptEdited && !images.pending && expandedPrompt !== queuedPrompt.current) saveDefaults({ prompt: expandedPrompt });
+            if (remembersPrompt && promptEdited && !images.pending && expandedPrompt !== queuedPrompt.current) saveDefaults({ prompt: expandedPrompt });
           }}
           onKeyDown={onKeyDown}
           ref={promptRef}

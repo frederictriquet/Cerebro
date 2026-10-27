@@ -1,13 +1,13 @@
 import { useId, useState } from 'react';
 import { EpicReviewActions, useEpicRun } from './EpicReviewActions.tsx';
 import { FindingsLink } from './FindingsLink.tsx';
-import { isAwaiting, plural } from './format.ts';
+import { attentionCounts, isAwaiting, plural } from './format.ts';
 import { href, parseMachine } from './route.ts';
 import { SessionRow } from './SessionRow.tsx';
 import { useStoredFlag } from './storage.ts';
 import { groupSessions, type SessionGroup } from './session-groups.ts';
 import { useStore } from './store.tsx';
-import type { Project, Session } from './types.ts';
+import type { Project, Session } from '../../shared/types.ts';
 import './session-groups.css';
 
 export function SessionList({ sessions, now, showProject = false, onError }: {
@@ -37,16 +37,15 @@ function EpicSessions({ group, now, project, onError }: {
   onError: (message: string) => void;
 }) {
   const listId = useId();
-  // Plus lent que dans le backlog : la liste peut afficher de nombreux epics, et la review n'a besoin que d'un état d'exécution à peu près à jour.
-  const { run } = useEpicRun(group.epic.id, 5000);
+  // Suivi par les événements epic-run, comme dans le backlog.
+  const { run } = useEpicRun(group.epic.id);
   const [actionError, setActionError] = useState<string | null>(null);
   const storageKey = `cerebro.sessionEpic.${JSON.stringify([parseMachine(window.location.hash), group.projectId, group.epic.id])}`;
   const [open, setOpen] = useStoredFlag(storageKey,
     () => group.sessions.some((session) => session.status !== 'exited' || isAwaiting(session) || session.pendingFindings > 0),
     ['open', 'closed']);
   const toggle = (): void => setOpen(!open);
-  const attention = group.sessions.filter(session => isAwaiting(session) || session.pendingFindings > 0).length;
-  const pendingFindings = group.sessions.reduce((total, session) => total + session.pendingFindings, 0);
+  const { total: attention, pendingFindings } = attentionCounts(group.sessions);
   const nextReview = group.sessions.find(session => session.pendingFindings > 0);
   const running = group.sessions.filter((session) => session.status === 'starting' || session.status === 'running').length;
   return (

@@ -11,13 +11,13 @@ mkdirSync(process.env.CEREBRO_DATA_DIR);
 const {CerebroDatabase}=await import('../server/db.ts');
 const {createWorkspace,createWorkspaceInContext,joinWorkspace,workspaceFor}=await import('../server/provenance.ts');
 const {epicWorkspace,rememberEpicWorkspace}=await import('../server/epic-workspace.ts');
-const {SessionManager}=await import('../server/sessions.ts');
+const {SessionManager}=await import('../server/sessions.ts');const {EpicRunner}=await import('../server/epic-runner.ts');
 const {PeerSync}=await import('../server/peers.ts');const {UpdateManager}=await import('../server/updates.ts');
 const {buildServer}=await import('../server/index.ts');
 mock.method(UpdateManager.prototype,'start',()=>{});mock.method(PeerSync.prototype,'sync',async function(){this.markReady();this.markSynced();});
 const launches=[];mock.method(SessionManager.prototype,'launch',async(...args)=>{
  launches.push(args);
- const [project,agent,mode,tuning,prompt,,,validate,joined,title,epicId,context]=args;
+ const [project,{agent,mode,tuning,prompt,validate,joined,title,epicId,context}]=args;
  const session=db.createSession({id:randomUUID(),projectId:project.id,agent,mode,...tuning,prompt,title:title??'Session de test',status:'idle',agentSessionId:'fake'},'token',epicId);
  const workspace=context?await createWorkspaceInContext(db,session.id,project,context):joined?await joinWorkspace(db,session.id,joined):await createWorkspace(db,session.id,project);
  if(epicId)rememberEpicWorkspace(db,epicId,{path:workspace.path,mode:workspace.mode});
@@ -37,10 +37,15 @@ test('task, review and command launches keep the epic folder after changing the 
    db.connection.prepare('INSERT INTO epic_runs VALUES (?,?,?)').run(run.id,epic.id,JSON.stringify(run));
    db.updateProject(p.id,{workspaceMode:mode==='isolated'?'shared':'isolated'});
    const context=(await send('GET',`/api/epics/${epic.id}/workspace`)).json();assert.deepEqual(context,{path:workspace.path,mode});
+   // Reading the epic's folder never fixes it: only a launch does.
+   const saved=()=>db.connection.prepare('SELECT data,verified FROM epic_workspaces WHERE epic_id=?').all(epic.id).map(row=>({...row}));
+   assert.equal((await send('GET',`/api/epics/${epic.id}/runs`)).statusCode,200);assert.equal((await send('GET',`/api/epics/${epic.id}/workspace-options`)).statusCode,200);
+   assert.deepEqual(saved(),[]);
    const reopened=new CerebroDatabase();try{assert.deepEqual(epicWorkspace(reopened,epic.id),context);}finally{reopened.close();}
    const count=git(repo,'worktree','list','--porcelain').split('\n').filter(line=>line.startsWith('worktree ')).length;
    const review=await send('POST',`/api/epics/${epic.id}/review`,{agent:'codex'});assert.equal(review.statusCode,201,review.body);
    assert.equal(workspaceFor(db,review.json().id).path,workspace.path);assert.equal(workspaceFor(db,review.json().id).mode,mode);
+   assert.deepEqual(saved().map(row=>[JSON.parse(row.data).path,row.verified]),[[workspace.path,1]]);
    const fix=db.createTask(p.id,'Corriger seul',null,epic.id);
    const started=await send('POST',`/api/tasks/${fix.id}/start`,{agent:'codex'});assert.equal(started.statusCode,201,started.body);
    assert.equal(workspaceFor(db,started.json().session.id).path,workspace.path);assert.equal(workspaceFor(db,started.json().session.id).mode,mode);
@@ -52,6 +57,7 @@ test('task, review and command launches keep the epic folder after changing the 
    db.updateTask(command.id,{status:'done'});
    const next=db.createTask(p.id,'Poursuivre globalement',null,epic.id);
    const continued=await send('POST',`/api/epics/${epic.id}/start`,{agent:'codex'});assert.equal(continued.statusCode,202);assert.equal(continued.json().contextRoot,workspace.path);
+   const twice=await send('POST',`/api/epics/${epic.id}/start`,{agent:'codex'});assert.equal(twice.statusCode,409);assert.equal(twice.json().error,'Epic déjà en cours : utilisez reprendre ou arrêter.');
    await until(async()=>{const runs=(await send('GET',`/api/epics/${epic.id}/runs`)).json();return runs[0]?.status==='waiting-validation';});
    assert.equal(workspaceFor(db,db.getTask(next.id).sessionId).path,workspace.path);
    const late=db.createTask(p.id,'Ajout en cours',null,epic.id);
@@ -118,7 +124,10 @@ test('ambiguous epics expose their copies and accept only an explicit available 
   assert.equal((await send('POST',url,{path:root})).statusCode,409);
   assert.equal((await send('POST',url,{path:missing.path})).statusCode,409);
   assert.equal(db.connection.prepare('SELECT verified FROM epic_workspaces WHERE epic_id=?').get(epic.id).verified,0);
-  run.status='running';save();assert.equal((await send('POST',url,{path:workspace.path})).statusCode,409);run.status='blocked';save();
+  // The runner's timer would tick this fake run and block it again: freeze it so only the refusal is tested.
+  const frozen=mock.method(EpicRunner.prototype,'poke',()=>{});
+  try{run.status='running';save();assert.equal((await send('POST',url,{path:workspace.path})).statusCode,409);}
+  finally{run.status='blocked';save();frozen.mock.restore();}
   db.updateSession(shared.id,{status:'running'});assert.equal((await send('POST',url,{path:workspace.path})).statusCode,409);db.updateSession(shared.id,{status:'exited'});
   db.updateSession(shared.id,{status:'idle'});db.updateTask(pending.id,{sessionId:shared.id});
   assert.equal((await send('POST',url,{path:workspace.path})).statusCode,409);
@@ -166,7 +175,7 @@ test('review step is added once, depends on every task; epic review needs a fini
   const active=await send('POST',`/api/epics/${epic.id}/review`,{});assert.equal(active.statusCode,409);assert.match(active.json().error,/en cours/);assert.equal(launches.length,0);
   save('succeeded');
   const response=await send('POST',`/api/epics/${epic.id}/review`,{prompt:'Sois précis.'});assert.equal(response.statusCode,201);assert.equal(launches.length,1);
-  const [launched,,,,prompt,,,,joined,title,,context]=launches[0];
+  const [launched,{prompt,joined,title,context}]=launches[0];
   assert.equal(context?.path,workspace.path);assert.match(prompt,/^Sois précis\./);assert.match(prompt,/feature\.txt/);assert.match(prompt,/code review du travail produit par l’epic « Livraison »/);assert.match(title,/Review de l’epic « Livraison »/);
   const review=response.json();assert.equal(review.epic.id,epic.id);assert.equal(review.worktree.path,workspace.path);
   const events=[];socket=await app.injectWS('/ws/events');socket.on('message',data=>events.push(JSON.parse(data.toString())));
@@ -198,4 +207,15 @@ test('review step is added once, depends on every task; epic review needs a fini
   assert.equal((await send('GET',`/api/sessions/${review.id}/findings`)).json().find(item=>item.id===report.id).epicId,epic.id);
   assert.equal(launches.length,1);
  }finally{socket?.terminate();await app.close();}
+});
+
+test('route errors carry the message without the Error: prefix',async()=>{
+ const app=await buildServer();
+ try{
+  const p=db.createProject('Erreurs',repo);const epic=db.createEpic(p.id,'Vide','',null);
+  const started=await app.inject({method:'POST',url:`/api/epics/${epic.id}/start`,payload:{agent:'codex'}});
+  assert.equal(started.statusCode,409);assert.deepEqual(started.json(),{error:'Aucune tâche ouverte.'});
+  const stopped=await app.inject({method:'POST',url:`/api/epic-runs/${randomUUID()}/stop`});
+  assert.equal(stopped.statusCode,409);assert.deepEqual(stopped.json(),{error:'Exécution introuvable.'});
+ }finally{await app.close();}
 });

@@ -7,7 +7,7 @@ import { useSessionPreview } from './ScreenPreview.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { groupedSessionTitle } from './session-groups.ts';
-import type { Project, Session } from './types.ts';
+import type { Project, Session } from '../../shared/types.ts';
 
 export function SessionRow({
   session,

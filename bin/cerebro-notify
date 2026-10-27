@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 
-const { CEREBRO_SESSION_ID, CEREBRO_TOKEN, CEREBRO_URL } = process.env;
+import { request, requireSession, run, sessionPath } from './cerebro-client.mjs';
 
-if (CEREBRO_SESSION_ID === undefined || CEREBRO_TOKEN === undefined || CEREBRO_URL === undefined) {
-  process.stderr.write('cerebro-notify : uniquement dans une session Cerebro\n');
-  process.exitCode = 1;
-} else {
+await run('cerebro-notify', async () => {
+  requireSession();
   const args = process.argv.slice(2);
   const ask = args[0] === '--ask';
   if (ask) args.shift();
@@ -17,31 +15,10 @@ if (CEREBRO_SESSION_ID === undefined || CEREBRO_TOKEN === undefined || CEREBRO_U
     text = text.trim();
   }
 
-  try {
-    const response = await fetch(`${CEREBRO_URL.replace(/\/+$/, '')}/api/notify/${encodeURIComponent(CEREBRO_SESSION_ID)}`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        'x-cerebro-token': CEREBRO_TOKEN,
-      },
-      body: JSON.stringify({ kind: ask ? 'ask' : 'notify', text }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) {
-      let message = `Erreur HTTP ${response.status}`;
-      try {
-        const body = await response.json();
-        if (typeof body === 'object' && body !== null && typeof body.error === 'string') message = body.error;
-      } catch {
-        // Keep the HTTP status when the server did not return JSON.
-      }
-      throw new Error(message);
-    }
-    process.stdout.write(ask
-      ? "Question envoyée sur Slack. Termine ton tour maintenant : la réponse arrivera comme prochain message de l'utilisateur.\n"
-      : 'Message envoyé sur Slack.\n');
-  } catch (error) {
-    process.stderr.write(`cerebro-notify : ${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
-  }
-}
+  const result = await request(sessionPath('notify'), { method: 'POST', body: { kind: ask ? 'ask' : 'notify', text } });
+  // Older servers answer without `queued`.
+  const delivery = result?.queued === true ? 'en file (limite de débit Slack), envoi automatique dès la fin de la fenêtre' : 'envoyé sur Slack';
+  process.stdout.write(ask
+    ? `Question : ${delivery}. Termine ton tour maintenant : la réponse arrivera comme prochain message de l'utilisateur.\n`
+    : `Message ${delivery}.\n`);
+});

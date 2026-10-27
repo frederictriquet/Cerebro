@@ -1,10 +1,12 @@
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { globSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { getGrokHookSettings } from './agents.ts';
-import type { Agent } from './db.ts';
+import { codexHome } from './codex-config.ts';
 import { parseQuestions } from './questions.ts';
 import type { SessionManager } from './sessions.ts';
+import type { Agent } from '../shared/types.ts';
+import { ignoreEnoent, isRecord } from './util.ts';
 
 type HookPayload = Record<string, unknown>;
 
@@ -16,19 +18,47 @@ function stringField(payload: HookPayload, ...names: string[]): string | null {
   return null;
 }
 
-function codexRolloutExists(threadId: string): boolean {
-  const root = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'sessions');
-  // Rollouts live in sessions/YYYY/MM/DD/; check today and yesterday (sessions spanning midnight).
-  for (const offset of [0, 1]) {
-    const day = new Date(Date.now() - offset * 86_400_000);
-    const dir = join(root, String(day.getFullYear()), String(day.getMonth() + 1).padStart(2, '0'), String(day.getDate()).padStart(2, '0'));
-    try {
-      if (readdirSync(dir).some((name) => name.endsWith(`${threadId}.jsonl`))) return true;
-    } catch {
-      // Directory missing: keep looking.
-    }
+// Threads already matched to a rollout: a rollout is never removed while its session lives.
+const knownCodexThreads = new Set<string>();
+// Threads whose full scan found nothing, with the scan time: helper threads (e.g. title generation)
+// notify repeatedly and must not rescan the whole, ever-growing rollout tree each time.
+const missedCodexThreads = new Map<string, number>();
+const CODEX_MISS_TTL_MS = 60_000;
+
+function rolloutInDay(root: string, threadId: string, day: Date): boolean {
+  const dir = join(root, String(day.getFullYear()), String(day.getMonth() + 1).padStart(2, '0'), String(day.getDate()).padStart(2, '0'));
+  try {
+    return readdirSync(dir).some((name) => name.startsWith('rollout-') && name.endsWith(`${threadId}.jsonl`));
+  } catch {
+    return false;
   }
-  return false;
+}
+
+function codexRolloutExists(threadId: string): boolean {
+  if (knownCodexThreads.has(threadId)) return true;
+  // Thread ids are UUIDs: refuse anything that could act as a glob pattern.
+  if (!/^[\w-]+$/.test(threadId)) return false;
+  const root = join(codexHome(), 'sessions');
+  // Rollouts live in sessions/YYYY/MM/DD/, dated by the thread's creation, not by its resumption.
+  // A new thread's rollout lands in today's (or, past midnight, yesterday's) folder: always check
+  // them, so a rollout written after the first notification is never hidden by the miss cache.
+  const now = Date.now();
+  if (rolloutInDay(root, threadId, new Date(now)) || rolloutInDay(root, threadId, new Date(now - 86_400_000))) {
+    knownCodexThreads.add(threadId);
+    missedCodexThreads.delete(threadId);
+    return true;
+  }
+  // Only a resumed older thread needs the full scan, and its rollout already exists.
+  const missedAt = missedCodexThreads.get(threadId);
+  if (missedAt !== undefined && now - missedAt < CODEX_MISS_TTL_MS) return false;
+  if (globSync(`**/rollout-*${threadId}*.jsonl`, { cwd: root }).length === 0) {
+    for (const [id, at] of missedCodexThreads) if (now - at >= CODEX_MISS_TTL_MS) missedCodexThreads.delete(id);
+    missedCodexThreads.set(threadId, now);
+    return false;
+  }
+  knownCodexThreads.add(threadId);
+  missedCodexThreads.delete(threadId);
+  return true;
 }
 
 export function installGrokHook(path = join(homedir(), '.grok', 'hooks', 'cerebro.json')): void {
@@ -37,7 +67,7 @@ export function installGrokHook(path = join(homedir(), '.grok', 'hooks', 'cerebr
   try {
     current = readFileSync(path, 'utf8');
   } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+    ignoreEnoent(error);
   }
   if (current === contents) return;
   mkdirSync(dirname(path), { recursive: true });
@@ -106,5 +136,5 @@ export function handleHook(
 }
 
 export function isHookPayload(value: unknown): value is HookPayload {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }

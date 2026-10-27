@@ -63,26 +63,37 @@ export function goMachine(id: string | null): void {
   assignHash(id === null || id === 'local' ? '#/' : `#/m/${id}/`);
 }
 
-export function useRoute(): Route {
-  const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));
+// replaceState ne déclenche pas hashchange : cet événement resynchronise les hooks du routeur
+// sans réveiller les écouteurs hashchange, réservés aux navigations.
+const ROUTE_REPLACED = 'cerebro:route-replaced';
+
+export function replaceRoute(path: string): void {
+  const hash = href(path);
+  if (window.location.hash === hash) return;
+  window.history.replaceState(window.history.state, '', hash);
+  window.dispatchEvent(new Event(ROUTE_REPLACED));
+}
+
+function useHashState<T>(read: (hash: string) => T): T {
+  const [value, setValue] = useState<T>(() => read(window.location.hash));
   useEffect(() => {
-    const onHash = (): void => {
-      setRoute(parseHash(window.location.hash));
+    const sync = (): void => {
+      setValue(read(window.location.hash));
     };
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, []);
-  return route;
+    window.addEventListener('hashchange', sync);
+    window.addEventListener(ROUTE_REPLACED, sync);
+    return () => {
+      window.removeEventListener('hashchange', sync);
+      window.removeEventListener(ROUTE_REPLACED, sync);
+    };
+  }, [read]);
+  return value;
+}
+
+export function useRoute(): Route {
+  return useHashState(parseHash);
 }
 
 export function useMachine(): string | null {
-  const [machine, setMachine] = useState<string | null>(() => parseMachine(window.location.hash));
-  useEffect(() => {
-    const onHash = (): void => {
-      setMachine(parseMachine(window.location.hash));
-    };
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, []);
-  return machine;
+  return useHashState(parseMachine);
 }

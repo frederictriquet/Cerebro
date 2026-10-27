@@ -1,17 +1,16 @@
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { AutomaticCommits, type AutomaticCommitContext } from './automatic-commits.ts';
-import { DEFAULT_COMMIT_SETTINGS, type CerebroDatabase } from './db.ts';
+import { type CerebroDatabase } from './db.ts';
 import { workspaceFor } from './provenance.ts';
 import { prepareCommit } from './git-plan.ts';
-import { executeSessionCommit, prepareSessionGit, sessionGitContext } from './session-git.ts';
+import { sessionGitContext, type SessionGitScopes } from './session-git.ts';
 import { WorktreeError, type WorktreeManager } from './worktrees.ts';
+import { routeErrors, statusCodeOf } from './routes-util.ts';
+import { DEFAULT_COMMIT_SETTINGS } from '../shared/types.ts';
 
-export function registerAutomaticCommitRoutes(app:FastifyInstance,db:CerebroDatabase,worktrees:WorktreeManager):AutomaticCommits {
+export function registerAutomaticCommitRoutes(app:FastifyInstance,db:CerebroDatabase,worktrees:WorktreeManager,sessionGit:SessionGitScopes):AutomaticCommits {
   const manager=new AutomaticCommits(db);
-  const attempt=async(reply:FastifyReply,run:()=>Promise<unknown>,status=200):Promise<unknown>=>{
-    try{return reply.code(status).send(await run());}
-    catch(cause){return reply.code(cause instanceof WorktreeError?cause.statusCode:409).send({error:cause instanceof Error?cause.message:String(cause)});}
-  };
+  const {attempt}=routeErrors(statusCodeOf(WorktreeError,409));
   const contexts:Record<string,(id:string)=>Promise<AutomaticCommitContext>>={
     projects:async id=>{
       const project=db.getProject(id);if(!project)throw new WorktreeError('Projet introuvable.',404);
@@ -23,7 +22,7 @@ export function registerAutomaticCommitRoutes(app:FastifyInstance,db:CerebroData
       const location=sessionGitContext(db,id);
       if(location.mode==='removed')throw new WorktreeError('La copie de travail de cette conversation a été supprimée.');
       return {scope:`sessions/${id}`,path:location.path,projectId:project.id,sessionId:id,settings:project.commitSettings,
-        prepare:()=>prepareSessionGit(db,id),execute:plan=>executeSessionCommit(id,plan)};
+        prepare:()=>sessionGit.prepare(id),execute:plan=>sessionGit.executeCommit(id,plan)};
     },
     worktrees:async id=>{
       const view=await worktrees.get(id);
@@ -31,7 +30,7 @@ export function registerAutomaticCommitRoutes(app:FastifyInstance,db:CerebroData
       if(!view.managed||view.primary)throw new WorktreeError('Worktree externe ou principal : utilisez l’action du projet.');
       const project=view.projectId?db.getProject(view.projectId):null;
       const context:AutomaticCommitContext={scope:`worktrees/${id}`,path:view.path,projectId:project?.id??null,sessionId:view.session?.id??null,settings:project?.commitSettings??view.commitSettings??{...DEFAULT_COMMIT_SETTINGS}};
-      if(view.session){context.prepare=()=>prepareSessionGit(db,view.session!.id);context.execute=plan=>executeSessionCommit(view.session!.id,plan);}
+      if(view.session){context.prepare=()=>sessionGit.prepare(view.session!.id);context.execute=plan=>sessionGit.executeCommit(view.session!.id,plan);}
       else if(view.sessionId){
         const workspace=workspaceFor(db,view.sessionId);
         context.prepare=async()=>{const snapshot=await prepareCommit(view.path,workspace??view);return {...snapshot,files:snapshot.files.map(file=>workspace?.initialDirty.includes(file.path)?{...file,warnings:[...file.warnings,'Modification présente avant la création du worktree : vérification manuelle requise.']}:file)};};

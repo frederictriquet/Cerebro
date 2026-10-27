@@ -4,7 +4,7 @@ import { api } from './api.ts';
 import { plural } from './format.ts';
 import { GitActions } from './GitActions.tsx';
 import { usePolling } from './polling.tsx';
-import { parseGitInfo, type GitInfo } from './types.ts';
+import { parseGitInfo, type GitInfo } from '../../shared/types.ts';
 
 export function GitStatus({ projectId }: { projectId: string }) {
   const [git, setGit] = useState<GitInfo | null>(null);
@@ -13,7 +13,7 @@ export function GitStatus({ projectId }: { projectId: string }) {
   const previewId = useId();
 
   const load = useCallback(async (): Promise<GitInfo> => {
-    const raw = await api<unknown>(`/api/projects/${projectId}/git${expanded ? '?commits=true' : ''}`);
+    const raw = await api(`/api/projects/${projectId}/git${expanded ? '?commits=true' : ''}`);
     const parsed = parseGitInfo(raw);
     if (!parsed) throw new Error('Réponse Git invalide');
     return parsed;
@@ -30,13 +30,14 @@ export function GitStatus({ projectId }: { projectId: string }) {
   });
 
   if (!git) return null;
-  if (git.branch === null) return <p className="git-line meta">Pas un dépôt git</p>;
+  if (git.error) return <p className="git-line form-error" role="alert">{git.error}</p>;
+  if (!git.repository) return <p className="git-line meta">Pas un dépôt git</p>;
   const count = git.ahead ?? 0;
   const preview = git.pendingCommits;
   const error = git.pendingCommitsError ?? previewError;
   return <>
     <div className="git-line">
-      <span className="pill">{git.branch}</span>
+      <span className="pill">{git.branch ?? 'HEAD détachée'}</span>
       <GitActions projectId={projectId} git={git} pendingCommits={count > 0 ? <button type="button" className="git-ahead-toggle" aria-expanded={expanded} aria-controls={previewId}
         onClick={() => { setExpanded(value => !value); setPreviewError(null); }}>
         <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {plural(count, 'commit')} à pousser
