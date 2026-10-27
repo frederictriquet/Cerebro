@@ -35,13 +35,14 @@ export function GitStatus({ projectId }: { projectId: string }) {
   }, [projectId, expanded]);
 
   if (!git) return null;
-  if (git.branch === null) return <p className="git-line meta">Pas un dépôt git</p>;
+  if (git.error) return <p className="git-line form-error" role="alert">{git.error}</p>;
+  if (!git.repository) return <p className="git-line meta">Pas un dépôt git</p>;
   const count = git.ahead ?? 0;
   const preview = git.pendingCommits;
   const error = git.pendingCommitsError ?? previewError;
   return <>
     <div className="git-line">
-      <span className="pill">{git.branch}</span>
+      <span className="pill">{git.branch ?? 'HEAD détachée'}</span>
       <GitActions projectId={projectId} git={git} pendingCommits={count > 0 ? <button type="button" className="git-ahead-toggle" aria-expanded={expanded} aria-controls={previewId}
         onClick={() => { setExpanded(value => !value); setPreviewError(null); }}>
         <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {count} commit{count === 1 ? '' : 's'} à pousser

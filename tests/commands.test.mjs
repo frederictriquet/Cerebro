@@ -11,6 +11,13 @@ test('migration preserves old LLM tasks and argv command runs have logs, exit co
   assert.equal(run.status,'succeeded');assert.equal(run.exitCode,0);assert.match(run.output,/result/);assert.match(run.output,/diagnostic/);assert.equal(db.getTask(task.id).status,'started');assert.equal(db.getTask(task.id).sessionId,null);assert.equal(db.listSessions().length,0);
   const failed=await ended(await executor.start(taskFor(configure('process.exit(7)')).id));assert.equal(failed.status,'failed');assert.equal(failed.exitCode,7);
 });
+test('commands do not inherit Cerebro server secrets but keep their run marker',async()=>{
+  process.env.CEREBRO_BIND_TOKEN='bind-secret';process.env.CEREBRO_SLACK_TOKEN='slack-secret';
+  try{
+    const task=taskFor(configure('console.log(JSON.stringify(process.env))'));const run=await ended(await executor.start(task.id));const env=JSON.parse(run.output);
+    assert.equal(env.CEREBRO_BIND_TOKEN,undefined);assert.equal(env.CEREBRO_SLACK_TOKEN,undefined);assert.equal(env.CEREBRO_DATA_DIR,undefined);assert.equal(env.CEREBRO_COMMAND_RUN,run.id);assert.equal(env.PATH,process.env.PATH);
+  }finally{delete process.env.CEREBRO_BIND_TOKEN;delete process.env.CEREBRO_SLACK_TOKEN;}
+});
 test('stop, timeout, double launch and dependencies are enforced',async()=>{
   const task=taskFor(configure('setInterval(()=>{},1000)'));const [a,b]=await Promise.allSettled([executor.start(task.id),executor.start(task.id)]);assert.equal([a,b].filter(r=>r.status==='fulfilled').length,1);const run=[a,b].find(r=>r.status==='fulfilled').value;
   executor.stop(run.id);assert.equal((await ended(run)).status,'stopped');

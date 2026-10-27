@@ -17,6 +17,8 @@ import type { Socket } from 'node:net';
 import { delimiter, join } from 'node:path';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import * as headlessPackage from '@xterm/headless';
+import { withoutCerebroVariables } from './agent-env.ts';
+import { secretMatches } from './secret-compare.ts';
 import { buildAgentCommand, type Tuning } from './agents.ts';
 import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
 import type { Agent, Mode, Project, Session, SessionDefaults } from './db.ts';
@@ -125,7 +127,7 @@ function titleFor(agent: Agent, prompt: string): string {
 }
 
 function ptyEnvironment(sessionId: string, token: string): Record<string, string | undefined> {
-  const env = { ...process.env };
+  const env = withoutCerebroVariables();
   const binPath = join(ROOT, 'bin');
   // Strip markers that make a CLI think it runs nested inside another agent session
   // (e.g. when Cerebro itself is started from Claude Code): they disable transcripts/resume.
@@ -134,9 +136,8 @@ function ptyEnvironment(sessionId: string, token: string): Record<string, string
       || /^CLAUDE_CODE_(ENTRYPOINT|SSE_PORT|CHILD_SESSION|SESSION_ID|SESSION_ATTENDED|EXECPATH|MESSAGING_)/.test(key)) {
       delete env[key];
     }
-    // Agents reach Slack only through cerebro-notify: never hand them the bot token.
-    if (key.startsWith('CEREBRO_SLACK_')) delete env[key];
   }
+  // Only the variables the bin/ helpers and hooks read: never the bind token or Slack credentials.
   return {
     ...env,
     TERM: 'xterm-256color',
@@ -221,7 +222,8 @@ export class SessionManager {
   spawnHolder: (configPath: string) => ChildProcess = (configPath) => spawn(
     process.execPath,
     [join(ROOT, 'server', 'holder.ts'), configPath],
-    { detached: true, stdio: 'ignore' },
+    // Parent direct de l'agent : son /proc/<pid>/environ lui est lisible, il ne doit donc porter aucun secret.
+    { detached: true, stdio: 'ignore', env: withoutCerebroVariables() },
   );
 
   constructor(db: CerebroDatabase) {
@@ -808,7 +810,7 @@ export class SessionManager {
   }
 
   tokenMatches(id: string, token: string | undefined): boolean {
-    return token !== undefined && token === this.db.getHookToken(id);
+    return secretMatches(this.db.getHookToken(id), token);
   }
 
   seen(id: string): Session | null {

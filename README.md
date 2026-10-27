@@ -51,12 +51,15 @@ dont le journal global peut être purgé indépendamment des sessions.
 | `CEREBRO_DATA_DIR` | `~/.cerebro` | Base SQLite, sockets des holders, journaux de terminal et `hooks.jsonl`. |
 | `CEREBRO_BIND_TOKEN` | non défini | Protège les API et WebSockets lorsqu'un accès réseau est nécessaire. |
 | `CEREBRO_KILL_ON_EXIT` | non défini | Avec la valeur `1`, tue les agents lorsque le serveur s'arrête (ancien comportement). |
+| `CEREBRO_GIT_TIMEOUT_READ` | `60` | Secondes avant l'arrêt d'une lecture Git (status, diff, log…), hooks et processus enfants compris. |
+| `CEREBRO_GIT_TIMEOUT_WRITE` | `600` | Idem pour les opérations qui écrivent (commit, merge, checkout, update-ref…) et peuvent lancer des hooks. |
+| `CEREBRO_GIT_TIMEOUT_NETWORK` | `600` | Idem pour push et fetch. À l'expiration, l'opération échoue avec « Opération Git interrompue après N s ». Pour ces trois variables, une valeur non numérique, nulle ou négative est ignorée (avertissement au démarrage) au profit du défaut. |
 | `CEREBRO_SLACK_TOKEN` | non défini | Jeton bot Slack `xoxb-…`. Sans ce jeton, l'intégration Slack est inactive. |
 | `CEREBRO_SLACK_USER` | non défini | ID Slack (`U…`) du destinataire des messages privés. |
 | `CEREBRO_SLACK_ALERTS` | `all` | Alertes automatiques par défaut : `all`, `waiting` (questions et confirmations seulement) ou `off`. Modifiable ensuite dans l'interface. |
 | `CEREBRO_SLACK_DELAY` | `30` | Délai par défaut en secondes avant une alerte automatique. Modifiable ensuite dans l'interface. |
 | `CEREBRO_MACHINE_NAME` | nom d'hôte | Nom de la machine dans le sélecteur multi-machines. |
-| `CEREBRO_PUBLIC_URL` | `http://${CEREBRO_HOST}:${CEREBRO_PORT}` | Base des liens « Ouvrir dans Cerebro » envoyés sur Slack. |
+| `CEREBRO_PUBLIC_URL` | `http://${CEREBRO_HOST}:${CEREBRO_PORT}` | Base des liens « Ouvrir dans Cerebro » envoyés sur Slack ; origine acceptée pour les WebSockets et les requêtes de modification. |
 
 Pour une écoute sur le réseau local, définissez un secret robuste en même temps que
 `CEREBRO_HOST=0.0.0.0`. Saisissez le secret dans l'écran « Token requis » (ou ouvrez
@@ -65,6 +68,17 @@ Pour une écoute sur le réseau local, définissez un secret robuste en même te
 `POST /api/auth`, ce qui fonctionne aussi derrière le serveur de dev Vite. Les clients API
 peuvent aussi utiliser `?token=SECRET` ou l'en-tête
 `Authorization: Bearer SECRET`. Les hooks d'agents conservent leur jeton propre.
+
+Les WebSockets et les requêtes de modification (`POST`, `PATCH`, `DELETE`…) venant d'un
+navigateur sont refusés (403) si leur en-tête `Origin` n'est pas celle de l'interface :
+`CEREBRO_PUBLIC_URL`, l'adresse d'écoute et ses alias de bouclage sur `CEREBRO_PORT`, ou le
+serveur de dev Vite (`:5173`). Avec `CEREBRO_BIND_TOKEN`, l'hôte demandé (`Host` ou
+`X-Forwarded-Host`) est aussi accepté. Une page tierce ouverte dans le navigateur ne peut donc
+pas piloter les terminaux, même depuis un autre port de `localhost`. Les clients hors navigateur
+(bins, hooks) n'envoient pas d'`Origin` ou s'authentifient par jeton explicite, et ne sont pas
+concernés. La passerelle multi-machines valide l'`Origin` localement puis retire `Origin` et
+`Referer` des requêtes relayées : une machine distante sans jeton accepte donc les modifications. Sans jeton, renseignez `CEREBRO_PUBLIC_URL` si l'interface
+est ouverte sous une autre adresse.
 
 Les PTY restent attachés à des processus `server/holder.ts` indépendants. Au
 redémarrage, le serveur retrouve les sockets dans
@@ -427,7 +441,9 @@ L'`id` (`a-z`, `0-9`, `-`) apparaît dans l'URL (`#/m/mac/…`). Des pastilles e
 la barre latérale basculent l'interface d'une machine à l'autre. Elles indiquent si
 chaque machine est en ligne et combien de sessions attendent une réponse. Les alertes
 des machines non affichées déclenchent aussi la notification du navigateur et le bip.
-Les routes d'agents `/api/hook`, `/api/notify` et `/api/backlog` ne sont jamais relayées. Un jeton refusé ou une
+Seules les routes de l'interface sont relayées, d'après une liste blanche (`server/remotes.ts`) : les routes
+d'agents (`/api/hook`, `/api/notify`, `/api/backlog`, `/api/session-tasks`), `/api/auth` et `/api/peer/sync`
+restent locales, et un chemin contenant un séparateur encodé ou un segment `..` est refusé. Un jeton refusé ou une
 machine injoignable renvoie une erreur 502 explicite.
 
 **Slack partagé entre machines.** Si plusieurs machines utilisent le même bot Slack, elles
@@ -499,6 +515,10 @@ utilisateur sans session ouverte, l'administrateur peut activer le linger avec
 - Les notifications OSC de Codex dépendent aussi de sa gestion du focus terminal.
 - Cerebro est conçu pour un utilisateur de confiance. Un jeton protège l'accès
   réseau, mais ne remplace pas TLS ni un reverse proxy correctement configuré.
+- Les agents tournent sous le même utilisateur que le serveur. Cerebro retire les
+  variables `CEREBRO_*` de leur environnement et de celui du holder, mais un agent
+  peut lire `$CEREBRO_DATA_DIR/env` ou tout autre fichier de l'utilisateur : seule
+  une isolation par utilisateur ou par bac à sable protège réellement ces secrets.
 
 ## Dépannage
 
@@ -842,7 +862,10 @@ prochaine action est aussi proposée directement sur la ligne de la copie.
    l'intégration laisserait en conflit. **Mettre à jour avec master** merge la cible
    dans la copie : les conflits se résolvent dans la copie (soi-même ou en le
    demandant à la conversation), puis **Terminer la mise à jour** crée le commit de
-   merge. **Annuler la mise à jour** remet la copie dans son état précédent.
+   merge. Ces commits passent par les hooks et la configuration Git comme les
+   autres ; un hook qui refuse laisse la mise à jour en cours dans la copie, à
+   terminer une fois la cause corrigée. **Annuler la mise à jour** remet la copie
+   dans son état précédent.
 3. **Intégrer** : le bouton reste visible, désactivé tant qu'un blocage subsiste, et
    la liste des blocages dit quoi faire.
 4. **Publier** : l'intégration reste locale ; **Push** dans l'en-tête du projet
@@ -887,10 +910,21 @@ d'exécuter des plans de commits Git explicites, puis de merger dans la cible.
 
 **Supprimer le worktree** est une action distincte. Elle exige un espace propre,
 une intégration vérifiée des commits, aucune session encore ouverte, aucune
-commande/aucun epic actif qui utilise ce répertoire et aucun fichier ignoré.
-Les fichiers ignorés, même s'ils sont habituellement générés, doivent être déplacés
-ou retirés explicitement avant cette action : ils ne sont jamais effacés de force
-par Cerebro. Les worktrees principal, externes, verrouillés ou dont l'identité a
+commande/aucun epic actif qui utilise ce répertoire et aucun fichier ignoré à
+conserver. Seules quelques entrées ignorées par Git, sans rien à perdre, sont
+supprimées avec la copie :
+
+- un lien vers le même chemin du projet source, ou un fichier identique à ce
+  chemin dans le projet (par exemple `.claude/settings.local.json`) ;
+- un dossier situé **à la racine** de la copie et nommé `node_modules`, `.venv`,
+  `venv`, `vendor`, `dist`, `build`, `.vite`, `.next`, `coverage`, `__pycache__`
+  ou `.cache` : une installation ou une compilation le recrée ;
+- un dossier dont tout le contenu relève des cas précédents.
+
+Un dossier de ces noms placé plus bas, comme `data/build/` ou `packages/app/dist/`,
+n'est pas présumé régénérable. Tout autre fichier ignoré bloque la suppression et
+doit être déplacé ou retiré explicitement : Cerebro ne l'efface jamais de force.
+Les worktrees principal, externes, verrouillés ou dont l'identité a
 changé restent protégés. Une confirmation devient invalide si Git a changé entre
 sa préparation et son exécution. La suppression passe par Git sans `--force` et
 conserve la branche, les commits et la conversation. La conversation reste lisible,
