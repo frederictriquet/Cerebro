@@ -7,6 +7,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { CerebroDatabase } from './db.ts';
 import type { CommitSettings } from './db.ts';
+import { mergeCommitReflog } from './git-reflog.ts';
 import type { Workspace } from './provenance.ts';
 import { sharedDependencyLinks } from './git-plan.ts';
 import type { Services } from './services.ts';
@@ -1564,7 +1565,7 @@ export class WorktreeManager {
           ).trim();
           await git(view.path, ['read-tree', '-m', '-u', head, commit]);
           try {
-            await git(view.path, ['update-ref', '-m', `commit (merge): ${message}`, 'HEAD', commit, head]);
+            await git(view.path, ['update-ref', '-m', mergeCommitReflog(message), 'HEAD', commit, head]);
           } catch (cause) {
             await git(view.path, ['read-tree', '-m', '-u', commit, head]);
             throw cause;

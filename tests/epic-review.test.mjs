@@ -17,8 +17,8 @@ const { createWorkspace, createWorkspaceInContext, joinWorkspace, workspaceFor }
   await import('../server/provenance.ts');
 const { EpicWorkspaces } = await import('../server/epic-workspace.ts');
 const { importFindings, saveReport } = await import('../server/findings.ts');
-const { epicReviewScope, epicReviewInstructions, isReviewTask, reviewTaskText, REVIEW_TASK_TITLE } =
-  await import('../server/epic-review.ts');
+const { epicReviewScope, epicReviewInstructions, reviewTaskText } = await import('../server/epic-review.ts');
+const { isReviewTask, REVIEW_TASK_TITLE } = await import('../shared/epic-review.ts');
 const git = (path, ...args) =>
   execFileSync('git', ['-C', path, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 after(() => rmSync(root, { recursive: true, force: true }));

@@ -8,7 +8,7 @@ import { parseCommitProposal, proposeCommits, type ProposalContext, type CommitP
 import type { Services } from './services.ts';
 import { canonicalWorktreePath } from './worktree-gate.ts';
 import { workspaceFor } from './provenance.ts';
-import { INHERITED_WARNING } from './session-git.ts';
+import { INHERITED_WARNING, type SessionGitSnapshot } from './session-git.ts';
 
 export interface AutomaticCommit {
   id: string;
@@ -31,13 +31,15 @@ export interface AutomaticCommit {
   /** Files the user reviewed in a diff snapshot; included despite warnings only while that diff is unchanged. */
   reviewed?: { snapshotId: string; paths: string[] };
 }
+/** Session scopes return their provenance with the snapshot (SessionGit.prepare). */
+type PreparedSnapshot = GitSnapshot & Partial<Pick<SessionGitSnapshot, 'provenance'>>;
 export interface AutomaticCommitContext {
   scope: string;
   path: string;
   projectId: string | null;
   sessionId: string | null;
   settings: CommitSettings;
-  prepare?: () => Promise<GitSnapshot>;
+  prepare?: () => Promise<PreparedSnapshot>;
   execute?: (plan: CommitPlan) => Promise<CommitResult>;
 }
 class CommitBlocked extends Error {}
@@ -211,7 +213,7 @@ export class AutomaticCommits {
       signal.throwIfAborted();
       if ((await this.services.pushes.current(operation.path))?.status === 'running')
         throw new CommitBlocked('Un push est déjà en cours dans ce dépôt.');
-      const snapshot = await (context.prepare?.() ?? this.services.git.prepareCommit(operation.path));
+      const snapshot: PreparedSnapshot = await (context.prepare?.() ?? this.services.git.prepareCommit(operation.path));
       signal.throwIfAborted();
       const shown = operation.reviewed
         ? this.services.git.reviewedDiffs(operation.reviewed.snapshotId, operation.path)
@@ -246,8 +248,7 @@ export class AutomaticCommits {
       operation.files = eligible.map((file) => file.path);
       this.save(operation);
       if (snapshot.files.length && !eligible.length) {
-        const mode = (snapshot as GitSnapshot & { provenance?: { workspace: { mode: string } } }).provenance?.workspace
-          .mode;
+        const mode = snapshot.provenance?.workspace.mode;
         operation.needsProjectScope = mode === 'unknown' || mode === 'shared';
         throw new CommitBlocked(
           operation.needsProjectScope

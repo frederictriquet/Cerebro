@@ -8,6 +8,7 @@ const root = mkdtempSync(join(tmpdir(), 'cerebro-shared-workspace-'));
 process.env.HOME = root;
 process.env.CEREBRO_DATA_DIR = join(root, 'data');
 process.env.CODEX_HOME = join(root, 'codex');
+(await import('../server/config.ts')).ensureDataDirs();
 const { CerebroDatabase } = await import('../server/db.ts');
 const { createWorkspace, sessionProvenance, workspaceFor } = await import('../server/provenance.ts');
 const { sessionGitContext } = await import('../server/session-git.ts');

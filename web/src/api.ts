@@ -11,17 +11,15 @@ import {
   type Participant,
   type Persona,
 } from './types.ts';
+import { parseMachine } from './route.ts';
 
 const unauthorizedListeners = new Set<() => void>();
 let unauthorized = false;
-let base = '';
 
-export function setApiBase(machineId: string | null): void {
-  base = machineId === null || machineId === 'local' ? '' : `/m/${machineId}`;
-}
-
+// Machine affichée, lue dans la route (#/m/<id>/…) à chaque appel : aucune base à synchroniser avec le rendu.
 export function apiBase(): string {
-  return base;
+  const machine = parseMachine(window.location.hash);
+  return machine === null ? '' : `/m/${machine}`;
 }
 
 export function subscribeUnauthorized(listener: () => void): () => void {
@@ -79,8 +77,8 @@ async function request<T>(url: string, local: boolean, init?: RequestInit): Prom
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const local = base === '';
-  return request<T>(`${base}${path}`, local, init);
+  const base = apiBase();
+  return request<T>(`${base}${path}`, base === '', init);
 }
 
 export interface VersionInfo {
@@ -109,7 +107,7 @@ export function getMachines(): Promise<MachinesInfo> {
   return request<MachinesInfo>('/api/machines', true);
 }
 
-export function wsUrl(path: string, machineBase = base): string {
+export function wsUrl(path: string, machineBase = apiBase()): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${proto}//${window.location.host}${machineBase}${path}`;
 }
@@ -386,9 +384,9 @@ export function deleteCouncil(id: string): Promise<void> {
 }
 
 export function councilImageUrl(id: string, n: number): string {
-  return `${base}/api/councils/${encodeURIComponent(id)}/images/${n}`;
+  return `${apiBase()}/api/councils/${encodeURIComponent(id)}/images/${n}`;
 }
 
 export function councilExportUrl(id: string): string {
-  return `${base}/api/councils/${encodeURIComponent(id)}/export`;
+  return `${apiBase()}/api/councils/${encodeURIComponent(id)}/export`;
 }

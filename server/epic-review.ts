@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { FINDING_INSTRUCTIONS } from './findings.ts';
-import type { CerebroDatabase, Task } from './db.ts';
+import type { CerebroDatabase } from './db.ts';
 import type { EpicRun } from './epic-runner.ts';
 import { workspaceAt } from './provenance.ts';
+import { REVIEW_TASK_TITLE } from '../shared/epic-review.ts';
 const exec = promisify(execFile);
 const git = async (path: string, args: string[]): Promise<string> =>
   (
@@ -13,9 +14,6 @@ const git = async (path: string, args: string[]): Promise<string> =>
     })
   ).stdout.trim();
 const lines = (text: string): string[] => text.split('\n').filter(Boolean);
-/** First line of the final review step added by « Ajouter une étape de review » ; the runner completes its prompt at launch. */
-export const REVIEW_TASK_TITLE = 'Code review du travail de l’epic';
-export const isReviewTask = (task: Pick<Task, 'text'>): boolean => task.text.split('\n')[0] === REVIEW_TASK_TITLE;
 export const reviewTaskText = (epicTitle: string): string =>
   `${REVIEW_TASK_TITLE}\nRelis le travail réalisé par les étapes précédentes de l’epic « ${epicTitle} » dans ce dossier, sans rien modifier. Le serveur ajoute le périmètre (commit de base, commits, fichiers) au lancement de l’étape.`;
 // The prompt travels as one command-line argument: list names and subjects, never the diff itself.

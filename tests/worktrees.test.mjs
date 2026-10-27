@@ -19,6 +19,7 @@ import { after, test } from 'node:test';
 const root = mkdtempSync(join(tmpdir(), 'cerebro-worktree-tests-'));
 process.env.CEREBRO_DATA_DIR = join(root, 'data');
 process.env.HOME = root;
+(await import('../server/config.ts')).ensureDataDirs();
 const { CerebroDatabase } = await import('../server/db.ts');
 const { createWorkspace, joinWorkspace, sessionProvenance, workspaceFor } = await import('../server/provenance.ts');
 const { WorktreeManager, rememberWorktree } = await import('../server/worktrees.ts');

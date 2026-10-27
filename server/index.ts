@@ -9,7 +9,8 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type WebSocket from 'ws';
 import { EpicRunner } from './epic-runner.ts';
-import { epicReviewInstructions, epicReviewScope, isReviewTask, reviewTaskText } from './epic-review.ts';
+import { epicReviewInstructions, epicReviewScope, reviewTaskText } from './epic-review.ts';
+import { isReviewTask } from '../shared/epic-review.ts';
 import { CommandExecutor } from './commands.ts';
 import { registerWorktreeRoutes } from './worktree-routes.ts';
 import { WorktreeError } from './worktrees.ts';
@@ -21,7 +22,7 @@ import { CouncilError } from './council-runner.ts';
 import { AGENTS, getAgentAvailability } from './agents.ts';
 import type { Catalog } from './catalog.ts';
 import { validateCouncilSettings } from './council.ts';
-import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
+import { ATTACHMENTS_DIR, BIND_TOKEN, ensureDataDirs, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
 import { CerebroDatabase, normalizeMode, resolveSessionDefaults, SessionProtectionError } from './db.ts';
 import type {
   Agent,
@@ -242,6 +243,7 @@ function sendSocket(socket: WebSocket, message: unknown): void {
 export async function buildServer(
   options: { catalog?: Catalog; refreshCatalog?: boolean } = {},
 ): Promise<FastifyInstance> {
+  ensureDataDirs();
   const app = Fastify({ logger: true, forceCloseConnections: true });
   const db = new CerebroDatabase();
   const services = createServices(db, options.catalog);

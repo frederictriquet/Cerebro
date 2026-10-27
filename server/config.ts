@@ -3,7 +3,9 @@ import { homedir, hostname } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Optional secrets file (e.g. Slack token) so they stay out of the shell profile and the repo.
+// The constants below are read from process.env when this module is evaluated, so the optional
+// secrets file (e.g. Slack token, kept out of the shell profile and the repo) is loaded first.
+// Nothing is written to disk on import: the server creates its directories with ensureDataDirs().
 const ENV_FILE = join(process.env.CEREBRO_DATA_DIR ?? join(homedir(), '.cerebro'), 'env');
 if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
 
@@ -105,7 +107,11 @@ export function loadRemotes(): RemoteMachine[] {
   return remotes;
 }
 
-mkdirSync(LOG_DIR, { recursive: true });
-mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
-chmodSync(SESSIONS_DIR, 0o700);
 export const HOOK_LOG = join(DATA_DIR, 'hooks.jsonl');
+
+/** Creates DATA_DIR and its log and session directories (sockets, configs: owner only). */
+export function ensureDataDirs(): void {
+  mkdirSync(LOG_DIR, { recursive: true });
+  mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+  chmodSync(SESSIONS_DIR, 0o700);
+}

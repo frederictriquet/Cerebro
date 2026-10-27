@@ -1,18 +1,14 @@
-import { existsSync } from 'node:fs';
 import type { Socket } from 'node:net';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type ProxyOptions } from 'vite';
+import { INTERNAL_URL } from '../server/config.ts';
 import { assertLoopbackPortFree } from '../server/ports.ts';
 
-// Same env file as the server (server/config.ts), so the proxy targets the port it listens on.
-const envFile = join(process.env.CEREBRO_DATA_DIR ?? join(homedir(), '.cerebro'), 'env');
-if (existsSync(envFile)) process.loadEnvFile(envFile);
-
 const root = dirname(fileURLToPath(import.meta.url));
-const api = `http://127.0.0.1:${process.env.CEREBRO_PORT ?? '4317'}`;
+// The server's own configuration (env file included), so the proxy targets the port it listens on.
+const api = INTERNAL_URL;
 
 // A browser tab closing its websocket (reload, session switch, StrictMode remount)
 // while the PTY is still streaming makes the proxy's write fail with ECONNRESET/EPIPE.

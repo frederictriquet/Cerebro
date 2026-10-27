@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { EpicRun } from '../../server/epic-runner.ts';
+import { isReviewTask } from '../../shared/epic-review.ts';
 import { api } from './api.ts';
 import { LaunchSessionDialog } from './Dialog.tsx';
 import { useStore } from './store.tsx';
 
 export const RUN_ACTIVE: EpicRun['status'][] = ['running', 'waiting-validation', 'blocked'];
-
-// Première ligne des étapes de review ajoutées par le serveur (REVIEW_TASK_TITLE dans server/epic-review.ts, non importable côté web).
-const REVIEW_TASK_TITLE = 'Code review du travail de l’epic';
 
 export function useEpicRun(epicId: string, intervalMs = 1000): { run: EpicRun | null; refresh: () => Promise<void> } {
   const [run, setRun] = useState<EpicRun | null>(null);
@@ -43,7 +41,7 @@ export function EpicReviewActions({
   const members = tasks.filter((t) => t.epicId === epic.id && t.projectId === epic.projectId);
   // Une review porte sur le travail d'une exécution terminée, arrêtée ou échouée, jamais d'une exécution en cours.
   const canReview = run !== null && !RUN_ACTIVE.includes(run.status);
-  const hasOpenReviewStep = members.some((t) => t.status !== 'done' && t.text.split('\n')[0] === REVIEW_TASK_TITLE);
+  const hasOpenReviewStep = members.some((t) => t.status !== 'done' && isReviewTask(t));
   return (
     <>
       {canReview ? (

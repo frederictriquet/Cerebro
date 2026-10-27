@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
-import { dismissPeerNotice, getPeerNotices, setApiBase, subscribeUnauthorized, type PeerNotice } from './api.ts';
+import { dismissPeerNotice, getPeerNotices, subscribeUnauthorized, type PeerNotice } from './api.ts';
 import { CouncilRunView } from './CouncilRunView.tsx';
 import { HomeView } from './HomeView.tsx';
 import { ProjectTabs } from './ProjectTabs.tsx';
@@ -167,8 +167,6 @@ function Shell() {
 
 export function App() {
   const machine = useMachine();
-  // Avant les enfants : leurs fetch et WebSocket lisent cette base dès le premier effet.
-  setApiBase(machine);
   const [locked, setLocked] = useState(false);
 
   useEffect(() => subscribeUnauthorized(() => setLocked(true)), []);

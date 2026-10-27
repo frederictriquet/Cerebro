@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Dev launcher: API server restarted on changes in server/ and bin/ + Vite dev server (HMR),
+// Dev launcher: API server restarted on changes in server/, shared/ and bin/ + Vite dev server (HMR),
 // prefixed output, and both stopped together on Ctrl+C or when either one dies.
 // The server is restarted by this script rather than `node --watch`: Node's watcher loses track
 // of a file once it is saved by rename (atomic write), whereas a directory watch survives it.
@@ -17,7 +17,7 @@ const procs = {
     args: [join(root, 'node_modules', 'vite', 'bin', 'vite.js'), '--config', 'web/vite.config.ts'],
   },
 };
-const WATCH_DIRS = ['server', 'bin'];
+const WATCH_DIRS = ['server', 'shared', 'bin'];
 const WATCH_EXT = /\.(ts|mts|js|mjs|cjs|json)$/;
 
 let stopping = false;

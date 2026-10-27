@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { DATA_DIR } from './config.ts';
 import type { CerebroDatabase, Project } from './db.ts';
 import { rememberWorktree } from './worktrees.ts';
+import { reflogHistoryKnown } from './git-reflog.ts';
 import { canonicalWorktreePath } from './worktree-gate.ts';
 import type { GitPlanner } from './git-plan.ts';
 import { workspaceFileSignature } from './workspace-files.ts';
@@ -391,9 +392,7 @@ export async function sessionProvenance(
     () => false,
   );
   const reflog = await git(workspace.root, ['reflog', 'show', '--format=%gs', workspace.branch!]).catch(() => '');
-  const historyKnown =
-    reflog.includes('branch: Created from') &&
-    !reflog.split('\n').some((line) => line && !/^(?:commit(?: \([^)]*\))?:|branch: Created from)/.test(line));
+  const historyKnown = reflogHistoryKnown(reflog);
   const valid =
     branchMatches &&
     historyKnown &&

@@ -34,6 +34,7 @@ import {
 } from './provenance.ts';
 import type { Services } from './services.ts';
 import { findProcessesByArgument, isAlive, processTree, signalProcesses } from './proc.ts';
+import { isDormant } from '../shared/sessions.ts';
 
 // @xterm/headless is CommonJS at runtime despite exposing ESM-shaped typings.
 const Terminal = (headlessPackage as unknown as { default: typeof headlessPackage }).default.Terminal;
@@ -84,16 +85,6 @@ interface ExitRecord {
 }
 
 const IDLE_DELAY_MS = 20_000;
-// Même seuil que DORMANT_AFTER_MS côté web : au-delà, la session est « en sommeil » et purgeable.
-const DORMANT_AFTER_MS = 60 * 60_000;
-
-function isDormant(session: Session, now: number): boolean {
-  return (
-    session.pendingFindings === 0 &&
-    (session.status === 'idle' || session.status === 'exited') &&
-    now - session.updatedAt >= DORMANT_AFTER_MS
-  );
-}
 const SCREEN_CHECK_DELAY_MS = 2_000;
 const CATCH_UP_DELAY_MS = 4_000;
 // Interactive dialogs that hooks do not report (folder trust, y/n confirmations, numbered menus...).

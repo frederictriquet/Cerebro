@@ -9,7 +9,7 @@ import { GitStatus } from './GitStatus.tsx';
 import { CommitSettingsDialog } from './CommitSettingsDialog.tsx';
 import { CouncilLaunch } from './CouncilLaunch.tsx';
 import { Modal } from './Dialog.tsx';
-import { isDormant } from './format.ts';
+import { isDormant } from '../../shared/sessions.ts';
 import { SessionList } from './SessionList.tsx';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href, useNow } from './route.ts';
