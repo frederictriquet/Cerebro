@@ -47,9 +47,9 @@ const SYNTHESIS_SECTIONS: { key: keyof CouncilSynthesis; label: string }[] = [
   { key: 'firstAction', label: 'Première action' },
 ];
 
-type StepState = 'waiting' | 'running' | 'done' | 'failed' | 'skipped';
+type CouncilStepState = 'waiting' | 'running' | 'done' | 'failed' | 'skipped';
 
-const STEP_STATE_LABELS: Record<StepState, string> = {
+const STEP_STATE_LABELS: Record<CouncilStepState, string> = {
   waiting: 'en attente',
   running: 'en cours',
   done: 'terminé',
@@ -72,14 +72,14 @@ function duration(ms: number): string {
 }
 
 // Une étape sans fin enregistrée d'un run terminé a été coupée par l'annulation ou l'arrêt.
-function entryState(run: CouncilRun, entry: CouncilAnswer | CouncilReview | undefined): StepState {
+function entryState(run: CouncilRun, entry: CouncilAnswer | CouncilReview | undefined): CouncilStepState {
   if (entry === undefined) return run.finishedAt === null ? 'waiting' : 'skipped';
   if (entry.error !== null) return 'failed';
   if (entry.finishedAt !== null) return 'done';
   return run.finishedAt === null ? 'running' : 'failed';
 }
 
-function reviewState(run: CouncilRun, advisor: Advisor): StepState {
+function reviewState(run: CouncilRun, advisor: Advisor): CouncilStepState {
   const review = run.reviews.find((entry) => entry.advisorId === advisor.personaId);
   if (review !== undefined) return entryState(run, review);
   const answer = run.answers.find((entry) => entry.advisorId === advisor.personaId);
@@ -88,7 +88,7 @@ function reviewState(run: CouncilRun, advisor: Advisor): StepState {
   return run.finishedAt === null ? 'waiting' : 'skipped';
 }
 
-function synthesisState(run: CouncilRun): StepState {
+function synthesisState(run: CouncilRun): CouncilStepState {
   if (run.synthesis !== null) return 'done';
   if (run.phase === 'synthesizing') return 'running';
   if (run.finishedAt === null) return 'waiting';
@@ -96,7 +96,7 @@ function synthesisState(run: CouncilRun): StepState {
   return run.reviews.length > 0 && run.reviews.every((review) => review.finishedAt !== null) ? 'failed' : 'skipped';
 }
 
-function StateBadge({ state, error }: { state: StepState; error?: string | null }) {
+function StateBadge({ state, error }: { state: CouncilStepState; error?: string | null }) {
   return (
     <span className={`council-state ${state}`} title={error ?? undefined}>
       {state === 'running' ? <ActivityStatus>{STEP_STATE_LABELS[state]}</ActivityStatus> : STEP_STATE_LABELS[state]}

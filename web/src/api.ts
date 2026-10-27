@@ -77,8 +77,8 @@ async function request<T>(url: string, local: boolean, init?: RequestInit): Prom
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const base = apiBase();
-  return request<T>(`${base}${path}`, base === '', init);
+  const machineBase = apiBase();
+  return request<T>(`${machineBase}${path}`, machineBase === '', init);
 }
 
 export interface VersionInfo {

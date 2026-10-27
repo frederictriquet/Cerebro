@@ -1,4 +1,4 @@
-import type { EpicRun } from '../../server/epic-runner.ts';
+import type { EpicRunRecord } from '../../server/epic-runner.ts';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, wsUrl } from './api.ts';
 import {
@@ -68,7 +68,7 @@ export interface Store {
   createEpic: (projectId: string, title: string, description?: string) => Promise<Epic>;
   updateEpic: (id: string, patch: { title?: string; description?: string }) => Promise<Epic>;
   deleteEpic: (id: string) => Promise<void>;
-  startEpic: (id: string, spec: LaunchSpec) => Promise<EpicRun>;
+  startEpic: (id: string, spec: LaunchSpec) => Promise<EpicRunRecord>;
 }
 
 export interface TaskPatch {
@@ -479,8 +479,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setTasks((list) => list.map((t) => (t.epicId === id ? { ...t, epicId: null } : t)));
   }, []);
 
-  const startEpic = useCallback(async (id: string, spec: LaunchSpec): Promise<EpicRun> => {
-    return api<EpicRun>(`/api/epics/${id}/start`, { method: 'POST', body: JSON.stringify(spec) });
+  const startEpic = useCallback(async (id: string, spec: LaunchSpec): Promise<EpicRunRecord> => {
+    return api<EpicRunRecord>(`/api/epics/${id}/start`, { method: 'POST', body: JSON.stringify(spec) });
   }, []);
 
   const markSeen = useCallback(async (id: string): Promise<void> => {

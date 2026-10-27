@@ -9,7 +9,8 @@ import { isReviewTask } from '../shared/epic-review.ts';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { canonicalWorktreePath } from './worktree-gate.ts';
-export interface EpicRun {
+/** An epic run as stored in `epic_runs`. */
+export interface EpicRunRecord {
   id: string;
   epicId: string;
   projectId: string;
@@ -37,7 +38,14 @@ export interface EpicRun {
   // HEAD of the project folder when the run started: base of the epic review when work is not isolated in a worktree.
   baseHead?: string | null;
   workspace?: WorkspaceContext | null;
-  workspaceConflict?: boolean;
+}
+/**
+ * An epic run as read back: `workspace` and `contextRoot` follow the epic's current working folder, and
+ * `workspaceConflict` (never stored) flags an epic that used several folders.
+ */
+export interface EpicRunView extends EpicRunRecord {
+  workspace: WorkspaceContext | null;
+  workspaceConflict: boolean;
 }
 const headOf = (path: string): string | null => {
   try {
@@ -79,7 +87,7 @@ export function taskOrder(tasks: Task[], all: Task[]): Task[] {
   return result;
 }
 export class EpicRunner {
-  onResult: (run: EpicRun) => void = () => {};
+  onResult: (run: EpicRunRecord) => void = () => {};
   // A session often waits briefly at launch (accepted startup prompt, false positive of the screen heuristic): only a lasting wait blocks the run.
   waitingGraceMs = 12_000;
   private db: CerebroDatabase;
@@ -117,7 +125,7 @@ export class EpicRunner {
     this.close();
     await Promise.allSettled([...this.inFlight]);
   }
-  list(epicId?: string): EpicRun[] {
+  list(epicId?: string): EpicRunView[] {
     const rows = this.db.connection
       .prepare(
         epicId
@@ -128,7 +136,7 @@ export class EpicRunner {
     const contexts = new Map<string, WorkspaceContext | null | undefined>();
     const conflicts = new Set<string>();
     return rows.map((row) => {
-      const run = JSON.parse(row.data) as EpicRun;
+      const run = JSON.parse(row.data) as EpicRunRecord;
       // An ambiguous legacy epic must remain inspectable; start/resume report the conflict explicitly.
       if (!contexts.has(run.epicId)) {
         let context: WorkspaceContext | null | undefined;
@@ -154,14 +162,15 @@ export class EpicRunner {
       (r) => ['running', 'waiting-validation', 'blocked'].includes(r.status) && r.order.includes(taskId),
     );
   }
-  private save(run: EpicRun, updateSettings = false): void {
+  private save(run: EpicRunRecord & Partial<Pick<EpicRunView, 'workspaceConflict'>>, updateSettings = false): void {
     const previous = this.list(run.epicId).find((r) => r.id === run.id);
     // A setting can change while an asynchronous launch holds an older copy of the run.
     if (!updateSettings) run.autoValidate = previous?.autoValidate ?? run.autoValidate ?? false;
     run.updatedAt = Date.now();
+    const { workspaceConflict, ...record } = run;
     this.db.connection
       .prepare('INSERT INTO epic_runs VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data')
-      .run(run.id, run.epicId, JSON.stringify(run));
+      .run(run.id, run.epicId, JSON.stringify(record));
     if (
       ['failed', 'succeeded', 'blocked'].includes(run.status) &&
       (previous?.status !== run.status || previous?.error !== run.error)
@@ -183,7 +192,7 @@ export class EpicRunner {
         throw new Error('Une tâche est déjà confiée à une exécution active.');
     return { epic, members, order: taskOrder(open, all) };
   }
-  start(epicId: string, options: SessionDefaults): EpicRun {
+  start(epicId: string, options: SessionDefaults): EpicRunRecord {
     const runs = this.list(epicId);
     if (runs.some((r) => ['running', 'waiting-validation', 'blocked'].includes(r.status)))
       throw new Error('Epic déjà en cours : utilisez reprendre ou arrêter.');
@@ -197,7 +206,7 @@ export class EpicRunner {
     // A later run (for example review fixes) continues the work and keeps its original review base.
     const baseHead =
       previous?.contextRoot === contextRoot ? (previous.baseHead ?? headOf(contextRoot)) : headOf(contextRoot);
-    const run: EpicRun = {
+    const run: EpicRunRecord = {
       id: randomUUID(),
       epicId,
       projectId: epic.projectId,
@@ -227,7 +236,7 @@ export class EpicRunner {
     taskId: string,
     status: 'failed' | 'blocked' | 'waiting-validation',
     message: string,
-  ): EpicRun {
+  ): EpicRunView {
     const run = this.list().find(
       (r) =>
         r.currentTaskId === taskId &&
@@ -244,7 +253,7 @@ export class EpicRunner {
     this.save(run);
     return run;
   }
-  setAutoValidate(id: string, enabled: boolean): EpicRun {
+  setAutoValidate(id: string, enabled: boolean): EpicRunView {
     const run = this.list().find((r) => r.id === id);
     if (!run) throw new Error('Exécution introuvable.');
     if (!['running', 'waiting-validation', 'blocked'].includes(run.status))
@@ -254,7 +263,7 @@ export class EpicRunner {
     this.poke();
     return run;
   }
-  async stop(id: string): Promise<EpicRun> {
+  async stop(id: string): Promise<EpicRunView> {
     const run = this.list().find((r) => r.id === id);
     if (!run) throw new Error('Exécution introuvable.');
     run.status = 'stopped';
@@ -301,7 +310,7 @@ export class EpicRunner {
       }
     return context;
   }
-  resume(id: string, replan = false): EpicRun {
+  resume(id: string, replan = false): EpicRunView {
     const run = this.list().find((r) => r.id === id);
     if (!run || run.status === 'succeeded' || run.status === 'running') throw new Error('Exécution non reprenable.');
     if (this.busy.has(id)) throw new Error('Une étape est encore en cours de lancement.');
@@ -396,13 +405,17 @@ export class EpicRunner {
       }
   }
   // The step's session no longer holds the run: it stopped waiting, or its task is done and it is not asking an explicit question.
-  private waitOver(run: EpicRun): boolean {
+  private waitOver(run: EpicRunView): boolean {
     const session = run.sessionId ? this.db.getSession(run.sessionId) : null;
     if (!session || session.status !== 'waiting') return true;
     return this.db.getTask(run.currentTaskId ?? '')?.status === 'done' && !askedQuestion(session);
   }
-  private async tick(run: EpicRun): Promise<void> {
-    const stop = (status: EpicRun['status'], error: string, blockReason: EpicRun['blockReason'] = null): void => {
+  private async tick(run: EpicRunView): Promise<void> {
+    const stop = (
+      status: EpicRunRecord['status'],
+      error: string,
+      blockReason: EpicRunRecord['blockReason'] = null,
+    ): void => {
       run.status = status;
       run.error = error;
       run.blockReason = blockReason;

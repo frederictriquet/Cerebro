@@ -30,7 +30,7 @@ mock.method(SessionManager.prototype, 'launch', async () => {
   throw new Error('No interactive session expected');
 });
 const inputs = [];
-mock.method(AutomaticCommits.prototype, 'propose', async (context) => {
+mock.method(AutomaticCommits.prototype, 'proposeCommits', async (context) => {
   inputs.push(context);
   return {
     commits:

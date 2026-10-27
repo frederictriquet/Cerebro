@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { EpicRun } from '../../server/epic-runner.ts';
+import type { EpicRunRecord, EpicRunView } from '../../server/epic-runner.ts';
 import { isReviewTask } from '../../shared/epic-review.ts';
 import { api } from './api.ts';
 import { LaunchSessionDialog } from './Dialog.tsx';
 import { useStore } from './store.tsx';
 
-export const RUN_ACTIVE: EpicRun['status'][] = ['running', 'waiting-validation', 'blocked'];
+export const RUN_ACTIVE: EpicRunRecord['status'][] = ['running', 'waiting-validation', 'blocked'];
 
-export function useEpicRun(epicId: string, intervalMs = 1000): { run: EpicRun | null; refresh: () => Promise<void> } {
-  const [run, setRun] = useState<EpicRun | null>(null);
+export function useEpicRun(
+  epicId: string,
+  intervalMs = 1000,
+): { run: EpicRunView | null; refresh: () => Promise<void> } {
+  const [run, setRun] = useState<EpicRunView | null>(null);
   const refresh = useCallback(async (): Promise<void> => {
-    const runs = await api<EpicRun[]>(`/api/epics/${epicId}/runs`);
+    const runs = await api<EpicRunView[]>(`/api/epics/${epicId}/runs`);
     setRun(runs[0] ?? null);
   }, [epicId]);
   useEffect(() => {
@@ -28,7 +31,7 @@ export function EpicReviewActions({
   onError,
 }: {
   epic: { id: string; projectId: string; title: string };
-  run: EpicRun | null;
+  run: EpicRunView | null;
   onError: (message: string) => void;
 }) {
   const { tasks, projects } = useStore();

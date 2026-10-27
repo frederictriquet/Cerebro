@@ -36,7 +36,7 @@ function originLabel(origin: StartingOrigin | null, target: string): string {
   return 'conservé par Cerebro à la création de la copie';
 }
 
-type StepState = 'done' | 'todo' | 'blocked' | 'waiting';
+type MergeStepState = 'done' | 'todo' | 'blocked' | 'waiting';
 /** The path of a copy towards the project: save its work, settle conflicts with the target, integrate, publish. */
 interface Journey {
   status: string;
@@ -47,9 +47,9 @@ interface Journey {
   /** Files edited since the copy whose starting content is gone: only the removal action settles them. */
   settled: { path: string; origin: StartingOrigin | null }[];
   ownWork: number;
-  save: StepState;
-  update: StepState;
-  integrate: StepState;
+  save: MergeStepState;
+  update: MergeStepState;
+  integrate: MergeStepState;
 }
 function journey(view: WorktreeView): Journey {
   const changes = view.changesSinceCreation;
@@ -62,8 +62,8 @@ function journey(view: WorktreeView): Journey {
   const dirty = !!view.dirty;
   const conflicts = view.integrationConflicts;
   const otherBlockers = view.mergeBlockers.filter((reason) => !reason.startsWith('La copie contient'));
-  const save: StepState = view.mergeInProgress ? 'waiting' : dirty ? 'todo' : 'done';
-  const update: StepState = view.mergeInProgress
+  const save: MergeStepState = view.mergeInProgress ? 'waiting' : dirty ? 'todo' : 'done';
+  const update: MergeStepState = view.mergeInProgress
     ? 'todo'
     : !view.ahead || !view.behind || conflicts?.length === 0
       ? 'done'
@@ -72,7 +72,7 @@ function journey(view: WorktreeView): Journey {
         : dirty
           ? 'blocked'
           : 'todo';
-  const integrate: StepState =
+  const integrate: MergeStepState =
     view.integration === 'integrated'
       ? 'done'
       : !view.ahead
@@ -141,7 +141,7 @@ function journey(view: WorktreeView): Journey {
     integrate,
   };
 }
-const STEP_LABEL: Record<StepState, string> = {
+const STEP_LABEL: Record<MergeStepState, string> = {
   done: 'Fait',
   todo: 'À faire',
   blocked: 'Bloqué',
@@ -155,7 +155,7 @@ function Step({
 }: {
   number: number;
   title: string;
-  state: StepState;
+  state: MergeStepState;
   children?: ReactNode;
 }) {
   return (
@@ -639,7 +639,7 @@ export function Worktrees({ projectId, workspaceMode }: { projectId?: string; wo
   const visibleInventory = loadedBase === machineBase ? inventory : null;
   const copies = visibleInventory?.worktrees.filter((view) => view.managed && !view.primary) ?? [];
   const other = visibleInventory?.worktrees.filter((view) => !view.managed || view.primary) ?? [];
-  // Absent des serveurs antérieurs au nettoyage automatique.
+  // Missing from servers older than automatic cleanup.
   const cleaned = visibleInventory?.cleaned ?? [];
   const historyOnly =
     !!projectId &&

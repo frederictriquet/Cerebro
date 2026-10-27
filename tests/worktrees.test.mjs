@@ -81,7 +81,7 @@ async function fixture(run, initialDirty = false) {
   };
   const merge = async () => {
     const v = await view();
-    const p = await manager.prepare(v.id, 'merge');
+    const p = await manager.prepareAction(v.id, 'merge');
     const op = await manager.start(v.id, 'merge', p.token);
     return untilFinished(op);
   };
@@ -265,21 +265,21 @@ test('dirty source, target, active sessions, command use and missing targets blo
     f.commit();
     let own = await f.view();
     writeFileSync(join(own.path, 'new'), 'not committed');
-    await assert.rejects(f.manager.prepare(own.id, 'merge'), /modifié/);
+    await assert.rejects(f.manager.prepareAction(own.id, 'merge'), /modifié/);
     rmSync(join(own.path, 'new'));
     writeFileSync(join(f.repo, 'file'), 'human local\n');
-    await assert.rejects(f.manager.prepare(own.id, 'merge'), /cible doit être propre/);
+    await assert.rejects(f.manager.prepareAction(own.id, 'merge'), /cible doit être propre/);
     assert.equal(readFileSync(join(f.repo, 'file'), 'utf8'), 'human local\n');
     git(f.repo, 'restore', 'file');
     f.db.updateSession(f.id, { status: 'running' });
-    await assert.rejects(f.manager.prepare(own.id, 'merge'), /Session/);
+    await assert.rejects(f.manager.prepareAction(own.id, 'merge'), /Session/);
     f.db.updateSession(f.id, { status: 'idle' });
     assert.ok((await f.view()).mergeBlockers.length === 0);
     assert.ok((await f.view()).removeBlockers.some((s) => s.includes('Session')));
     f.db.updateSession(f.id, { status: 'exited' });
     const fake = { id: 'command', cwd: own.path, status: 'running' };
     f.db.connection.prepare('INSERT INTO command_runs VALUES (?,?,?)').run(fake.id, 'task', JSON.stringify(fake));
-    await assert.rejects(f.manager.prepare(own.id, 'merge'), /commande/);
+    await assert.rejects(f.manager.prepareAction(own.id, 'merge'), /commande/);
     f.db.connection.prepare('DELETE FROM command_runs').run();
     await assert.rejects(f.manager.target(own.id, 'refs/heads/nonexistent'), /Choisissez/);
   }));
@@ -288,7 +288,7 @@ test('stale confirmations are refused and merge conflicts preserve both branches
   fixture(async (f) => {
     f.commit('source');
     let own = await f.view();
-    const plan = await f.manager.prepare(own.id, 'merge');
+    const plan = await f.manager.prepareAction(own.id, 'merge');
     writeFileSync(join(f.repo, 'other'), 'new target');
     git(f.repo, 'add', '.');
     git(f.repo, 'commit', '-m', 'target change');
@@ -313,17 +313,17 @@ test('removal requires integration, no local/ignored files and no live session; 
   fixture(async (f) => {
     f.commit();
     let own = await f.view();
-    await assert.rejects(f.manager.prepare(own.id, 'remove'), /commits restent/);
+    await assert.rejects(f.manager.prepareAction(own.id, 'remove'), /commits restent/);
     assert.equal((await f.merge()).status, 'succeeded');
     writeFileSync(join(own.path, 'ignored'), 'config');
     own = await f.view();
     assert.equal(own.ignored, 1);
-    await assert.rejects(f.manager.prepare(own.id, 'remove'), /ignoré/);
+    await assert.rejects(f.manager.prepareAction(own.id, 'remove'), /ignoré/);
     rmSync(join(own.path, 'ignored'));
     f.db.updateSession(f.id, { status: 'idle' });
-    await assert.rejects(f.manager.prepare(own.id, 'remove'), /Session/);
+    await assert.rejects(f.manager.prepareAction(own.id, 'remove'), /Session/);
     f.db.updateSession(f.id, { status: 'exited' });
-    const plan = await f.manager.prepare(own.id, 'remove');
+    const plan = await f.manager.prepareAction(own.id, 'remove');
     await f.manager.start(own.id, 'remove', plan.token);
     await f.manager.shutdown();
     assert.equal(existsSync(own.path), false);
@@ -343,7 +343,7 @@ test('an integrated orphan can remove its shared dependency link without touchin
     await new SessionManager(f.db, f.services).delete(f.id);
     assert.equal(f.db.getSession(f.id), null);
     assert.equal(lstatSync(join(own.path, 'node_modules')).isSymbolicLink(), true);
-    const plan = await f.manager.prepare(own.id, 'remove');
+    const plan = await f.manager.prepareAction(own.id, 'remove');
     await f.manager.start(own.id, 'remove', plan.token);
     await f.manager.shutdown();
     assert.equal(existsSync(own.path), false);
@@ -364,7 +364,7 @@ test('merges serialize actions, defer interactive input, and obey hooks', async 
       mode: 0o755,
     });
     const own = await f.view();
-    const p = await f.manager.prepare(own.id, 'merge');
+    const p = await f.manager.prepareAction(own.id, 'merge');
     const operation = await f.manager.start(own.id, 'merge', p.token);
     assert.throws(() => f.services.gate.assertAvailable(own.path), /opération Git/);
     let delivered = false;
@@ -404,7 +404,7 @@ test('a removal confirmation becomes invalid as soon as conversation produces a 
     f.commit();
     assert.equal((await f.merge()).status, 'succeeded');
     const own = await f.view();
-    const plan = await f.manager.prepare(own.id, 'remove');
+    const plan = await f.manager.prepareAction(own.id, 'remove');
     f.commit('continued after confirmation');
     await assert.rejects(f.manager.start(own.id, 'remove', plan.token), /changé/);
     assert.ok(existsSync(own.path));
@@ -611,7 +611,7 @@ test('an epic copy shared by several steps stays one entry and its removal reach
     assert.equal(copies[0].sessionId, f.id);
     assert.equal((await f.merge()).status, 'succeeded');
     const own = await f.view();
-    const plan = await f.manager.prepare(own.id, 'remove');
+    const plan = await f.manager.prepareAction(own.id, 'remove');
     await f.manager.start(own.id, 'remove', plan.token);
     await f.manager.shutdown();
     assert.equal(existsSync(own.path), false);
@@ -884,7 +884,7 @@ test('cleanup resumes after a restart and repeated or concurrent triggers remove
 test('a manual removal confirmed before an automatic cleanup cannot run twice', async () =>
   fixture(async (f) => {
     const own = await f.view();
-    const plan = await f.manager.prepare(own.id, 'remove');
+    const plan = await f.manager.prepareAction(own.id, 'remove');
     await f.manager.releaseSession(f.id, f.workspace.root);
     assert.equal(existsSync(own.path), false);
     await assert.rejects(f.manager.start(own.id, 'remove', plan.token), /introuvable/);
@@ -910,12 +910,12 @@ test('ignored copies identical to the project, links into it and regenerable dir
     let own = await f.view();
     assert.equal(own.ignored, 1);
     assert.deepEqual(own.ignoredFiles, ['ignored']);
-    await assert.rejects(f.manager.prepare(own.id, 'remove'), /ignoré/);
+    await assert.rejects(f.manager.prepareAction(own.id, 'remove'), /ignoré/);
     writeFileSync(join(f.workspace.root, 'ignored'), 'project value\n');
     own = await f.view();
     assert.equal(own.ignored, 0);
     assert.deepEqual(own.disposableIgnored.sort(), ['.claude/', 'dist/', 'ignored', 'linked']);
-    const plan = await f.manager.prepare(own.id, 'remove');
+    const plan = await f.manager.prepareAction(own.id, 'remove');
     await f.manager.start(own.id, 'remove', plan.token);
     await f.manager.shutdown();
     assert.equal(existsSync(f.workspace.root), false);

@@ -24,7 +24,7 @@ export function CodeEditor({ project, onClose }: { project: Project; onClose: ()
     let timer: number | undefined;
     setUrl(null);
     setError(null);
-    const base = apiBase();
+    const machineBase = apiBase();
     const load = async (): Promise<void> => {
       try {
         const opened = parseVscodeOpen(await api<unknown>(`/api/projects/${project.id}/vscode`, { method: 'POST' }));
@@ -32,7 +32,7 @@ export function CodeEditor({ project, onClose }: { project: Project; onClose: ()
         if (opened === null) throw new Error('Réponse inattendue du serveur');
         // Premier lancement : le serveur VS Code est en cours de téléchargement.
         if (!opened.ready) timer = window.setTimeout(() => void load(), RETRY_MS);
-        else setUrl(`${base}${opened.path}`);
+        else setUrl(`${machineBase}${opened.path}`);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'VS Code indisponible');
       }

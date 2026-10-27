@@ -423,8 +423,12 @@ function diffLines(diff: string): { added: Set<string>; removed: Set<string> } {
   }
   return { added, removed };
 }
-/** separable: its starting content can be removed automatically; removed: none is left in its uncommitted changes. */
-type StartingState = 'removed' | 'separable' | 'manual';
+/**
+ * What is left of the starting content of an edited file. settled: none is left in its uncommitted changes (the public
+ * `settled` state); separable and manual are both `mixed`, separable when the starting content can be removed
+ * automatically.
+ */
+type MixedStartingState = 'settled' | 'separable' | 'manual';
 function changedFiles(status: string): string[] {
   const entries = status.split('\0');
   const files: string[] = [];
@@ -445,7 +449,7 @@ export class WorktreeManager {
   private plans = new Map<string, { id: string; kind: 'merge' | 'remove'; fingerprint: string; expires: number }>();
   private startingCommits = new Map<string, { commit: string; subject: string } | null>();
   private forecasts = new Map<string, string[] | null>();
-  private separations = new Map<string, StartingState>();
+  private separations = new Map<string, MixedStartingState>();
   private forecastQueue: Promise<void> = Promise.resolve();
   private forecastQueued = new Set<string>();
   private pending = new Set<Promise<unknown>>();
@@ -774,13 +778,13 @@ export class WorktreeManager {
               ).catch(() => null);
               const state =
                 !inherited && found
-                  ? await this.startingState(record.path, workspace, view.head!, file, found.content).catch(
-                      (): StartingState => 'manual',
+                  ? await this.mixedStartingState(record.path, workspace, view.head!, file, found.content).catch(
+                      (): MixedStartingState => 'manual',
                     )
                   : 'manual';
               starting.push({
                 path: file,
-                state: inherited ? 'inherited' : state === 'removed' ? 'settled' : 'mixed',
+                state: inherited ? 'inherited' : state === 'settled' ? 'settled' : 'mixed',
                 origin: found?.origin ?? null,
                 separable: state === 'separable',
               });
@@ -1021,30 +1025,30 @@ export class WorktreeManager {
     return null;
   }
   /**
-   * What is left of the starting content of a mixed file. Removed when none of the lines it added or removed is
+   * What is left of the starting content of a mixed file. Settled when none of the lines it added or removed is
    * still added or removed by the file's uncommitted changes: the conversation or a resolution session already took
    * it out. Otherwise separable when its removal succeeds against the copy's last commit: the file was not committed
    * in the copy, and its recent changes do not touch the lines of the starting content.
    */
-  private async startingState(
+  private async mixedStartingState(
     path: string,
     workspace: Workspace,
     head: string,
     file: string,
     starting: () => Promise<Buffer>,
-  ): Promise<StartingState> {
+  ): Promise<MixedStartingState> {
     const target = join(path, file);
     const key = [path, file, await workspaceFileSignature(target), workspace.baseline[file], head].join('\0');
     const cached = this.separations.get(key);
     if (cached !== undefined) return cached;
-    let result: StartingState = 'manual';
+    let result: MixedStartingState = 'manual';
     const last = await gitBytes(path, ['cat-file', 'blob', `${head}:${file}`]).catch(() => null);
     const current = await readFile(target).catch(() => null);
     if (current) {
       const temporary = await mkdtemp(join(tmpdir(), 'cerebro-separable-'));
       try {
         const copied = await starting();
-        if (await this.startingRemoved(path, workspace, file, copied, last, current, temporary)) result = 'removed';
+        if (await this.startingRemoved(path, workspace, file, copied, last, current, temporary)) result = 'settled';
         else {
           const committed = workspace.base
             ? await git(path, ['diff', '--quiet', workspace.base, 'HEAD', '--', `:(literal)${file}`]).then(
@@ -1330,16 +1334,17 @@ export class WorktreeManager {
         version: signature ?? null,
       };
       file.step = step;
-      const removed =
+      const settled =
         !inherited &&
         !!found &&
         !!current &&
-        (await this.startingState(view.path, workspace, view.head!, path, found.content).catch(() => 'manual')) ===
-          'removed';
-      if (removed || (!inherited && confirmed.some((entry) => entry.path === path && entry.version === signature))) {
-        step.state = removed ? 'settled' : 'mixed';
+        (await this.mixedStartingState(view.path, workspace, view.head!, path, found.content).catch(
+          (): MixedStartingState => 'manual',
+        )) === 'settled';
+      if (settled || (!inherited && confirmed.some((entry) => entry.path === path && entry.version === signature))) {
+        step.state = settled ? 'settled' : 'mixed';
         step.action = 'settle';
-        step.reason = removed
+        step.reason = settled
           ? 'Le contenu de départ n’apparaît plus dans ses changements non commités.'
           : 'Vérifié par vous : ne contient que le travail de la conversation.';
         if (changedByMerge) {
@@ -1606,7 +1611,8 @@ export class WorktreeManager {
       await rm(temporary, { recursive: true, force: true });
     }
   }
-  async prepare(id: string, kind: 'merge' | 'remove'): Promise<{ token: string; view: WorktreeView }> {
+  /** Validates a merge or removal and returns the single-use token that `start` requires to run it. */
+  async prepareAction(id: string, kind: 'merge' | 'remove'): Promise<{ token: string; view: WorktreeView }> {
     const view = await this.get(id);
     const blockers = kind === 'merge' ? view.mergeBlockers : view.removeBlockers;
     if (blockers.length || !view.fingerprint) throw new WorktreeError(blockers.join('\n'));
@@ -1809,7 +1815,7 @@ export class WorktreeManager {
         );
       if (epic)
         throw new WorktreeError('Un epic du projet est en cours : ses étapes peuvent encore utiliser cette copie.');
-      const { token } = await this.prepare(id, 'remove');
+      const { token } = await this.prepareAction(id, 'remove');
       if (this.closed) return;
       const { operation, done } = await this.begin(id, 'remove', token, true);
       await done;

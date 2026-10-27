@@ -47,7 +47,7 @@ export function registerAutomaticCommitRoutes(
         projectId: project.id,
         sessionId: id,
         settings: project.commitSettings,
-        prepare: () => services.sessionGit.prepare(id),
+        prepareCommit: () => services.sessionGit.prepareCommit(id),
         execute: (plan) => services.sessionGit.executeCommit(id, plan),
       };
     },
@@ -65,11 +65,11 @@ export function registerAutomaticCommitRoutes(
         settings: project?.commitSettings ?? view.commitSettings ?? { ...DEFAULT_COMMIT_SETTINGS },
       };
       if (view.session) {
-        context.prepare = () => services.sessionGit.prepare(view.session!.id);
+        context.prepareCommit = () => services.sessionGit.prepareCommit(view.session!.id);
         context.execute = (plan) => services.sessionGit.executeCommit(view.session!.id, plan);
       } else if (view.sessionId) {
         const workspace = workspaceFor(db, view.sessionId);
-        context.prepare = async () => {
+        context.prepareCommit = async () => {
           const snapshot = await services.git.prepareCommit(view.path, workspace ?? view);
           return {
             ...snapshot,

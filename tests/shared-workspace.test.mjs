@@ -103,7 +103,7 @@ test('project shared mode keeps the exact integration directory, staged edits, u
     assert.deepEqual(provenance.changes, []);
     assert.deepEqual(provenance.commits, []);
     assert.equal(sessionGitContext(f.db, 'first').mode, 'shared');
-    const snapshot = await services.sessionGit.prepare('first');
+    const snapshot = await services.sessionGit.prepareCommit('first');
     assert.ok(snapshot.files.every((file) => file.warnings.length));
     assert.match(snapshot.scopeNotice, /Dossier partagé/);
   }));

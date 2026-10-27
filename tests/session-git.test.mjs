@@ -58,8 +58,8 @@ const plan = (s, path) => ({
 test('stopped concurrent sessions commit only their explicit isolated selection', async () => {
   writeFileSync(join(a.path, 'shared'), 'a\n');
   writeFileSync(join(b.path, 'shared'), 'b\n');
-  const sa = await sessionGit.prepare('a'),
-    sb = await sessionGit.prepare('b');
+  const sa = await sessionGit.prepareCommit('a'),
+    sb = await sessionGit.prepareCommit('b');
   assert.ok(sa.files.find((f) => f.path === 'initial').warnings.length);
   const ra = await sessionGit.executeCommit('a', plan(sa, 'shared'));
   const rb = await sessionGit.executeCommit('b', plan(sb, 'shared'));
@@ -73,7 +73,7 @@ test('stopped concurrent sessions commit only their explicit isolated selection'
   await assert.rejects(sessionGit.executeCommit('b', plan(sa, 'shared')), /Sélection de session/);
 });
 test('review includes explicit attributed commits, no reconstruction of ownership', async () => {
-  const s = await sessionGit.prepare('a');
+  const s = await sessionGit.prepareCommit('a');
   const c = s.provenance.commits[0].hash;
   const r = await sessionGit.reviewContext('a', { snapshotId: s.id, selection: [], commits: [c], acknowledged: [] });
   assert.ok(r.prompt.includes(c));
@@ -85,7 +85,7 @@ test('review includes explicit attributed commits, no reconstruction of ownershi
   );
 });
 test('historical sessions require manual confirmation and stale selections are refused', async () => {
-  const s = await sessionGit.prepare('old');
+  const s = await sessionGit.prepareCommit('old');
   assert.equal(s.provenance.workspace.mode, 'unknown');
   assert.ok(s.files.every((f) => f.warnings.length));
   await assert.rejects(sessionGit.executeCommit('old', plan(s, 'initial')), /incertaine/);

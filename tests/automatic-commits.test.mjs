@@ -41,7 +41,7 @@ async function fixture(run) {
       commits: [{ message: 'feat: implement the intended changes', paths: input.files.map((file) => file.path) }],
     };
   };
-  manager.propose = proposal;
+  manager.proposeCommits = proposal;
   const finish = async (operation) => {
     for (let i = 0; i < 500; i++) {
       const current = manager.get(operation.id);
@@ -71,7 +71,7 @@ async function fixture(run) {
       // A restarted server starts with empty in-memory state.
       services = createServices(db);
       manager = new AutomaticCommits(db, services);
-      manager.propose = proposal;
+      manager.proposeCommits = proposal;
     },
   };
   try {
@@ -87,7 +87,7 @@ test('one action drafts a message with project tuning, commits and pushes to a l
     git(f.directory, 'init', '--bare', remote);
     git(f.repo, 'remote', 'add', 'origin', remote);
     writeFileSync(join(f.repo, 'file'), 'implemented\n');
-    f.manager.propose = async (input) => {
+    f.manager.proposeCommits = async (input) => {
       assert.deepEqual(input.settings, f.context.settings);
       assert.match(input.files[0].diff, /implemented/);
       return { commits: [{ message: 'feat: implement requested behavior', paths: ['file'] }] };
@@ -119,7 +119,7 @@ test('a shared dependency link alone neither blocks the commit nor the push', as
     symlinkSync(join(source, 'node_modules'), join(f.repo, 'node_modules'), 'dir');
     const context = {
       ...f.context,
-      prepare: () => f.services.git.prepareCommit(f.repo, { sharedIgnored: ['node_modules'], source }),
+      prepareCommit: () => f.services.git.prepareCommit(f.repo, { sharedIgnored: ['node_modules'], source }),
     };
     const result = await f.finish(await f.manager.start(context, randomUUID(), true));
     assert.equal(result.status, 'succeeded', result.error);
@@ -137,7 +137,7 @@ test('duplicate clicks, request replay and subdirectory aliases do not draft or 
       unblock = resolve;
     });
     let calls = 0;
-    f.manager.propose = async (input) => {
+    f.manager.proposeCommits = async (input) => {
       calls++;
       await waiting;
       return { commits: [{ message: 'change', paths: input.files.map((file) => file.path) }] };
@@ -158,7 +158,7 @@ test('concurrent edits after inference invalidate the snapshot without creating 
   fixture(async (f) => {
     writeFileSync(join(f.repo, 'file'), 'first\n');
     const before = git(f.repo, 'rev-parse', 'HEAD');
-    f.manager.propose = async () => {
+    f.manager.proposeCommits = async () => {
       writeFileSync(join(f.repo, 'file'), 'human changed it\n');
       return { commits: [{ message: 'change', paths: ['file'] }] };
     };
@@ -175,7 +175,7 @@ test('an active commit can only be reused by an action requesting the same strat
     const waiting = new Promise((resolve) => {
       unblock = resolve;
     });
-    f.manager.propose = async (input) => {
+    f.manager.proposeCommits = async (input) => {
       await waiting;
       return { commits: [{ message: 'change', paths: input.files.map((file) => file.path) }] };
     };
@@ -199,7 +199,7 @@ test('new requests use the effective strategy while recorded requests remain ide
     const waiting = new Promise((resolve) => {
       unblock = resolve;
     });
-    f.manager.propose = async (input) => {
+    f.manager.proposeCommits = async (input) => {
       await waiting;
       return { commits: input.files.map((file) => ({ message: `change ${file.path}`, paths: [file.path] })) };
     };
@@ -236,7 +236,7 @@ test('scanners exclude suspicious files and the model only sees eligible diffs',
   fixture(async (f) => {
     writeFileSync(join(f.repo, 'file'), 'safe\n');
     writeFileSync(join(f.repo, '.env'), 'TOKEN=do-not-send\n');
-    f.manager.propose = async (input) => {
+    f.manager.proposeCommits = async (input) => {
       assert.deepEqual(
         input.files.map((file) => file.path),
         ['file'],
@@ -292,7 +292,7 @@ test('unknown session attribution requires intervention and never calls the mode
       ...f.context,
       scope: `sessions/${id}`,
       sessionId: id,
-      prepare: () => f.services.sessionGit.prepare(id),
+      prepareCommit: () => f.services.sessionGit.prepareCommit(id),
       execute: (plan) => f.services.sessionGit.executeCommit(id, plan),
     };
     const result = await f.finish(await f.manager.start(context, randomUUID(), true));
@@ -318,11 +318,11 @@ test('invalid proposal fails before mutation and atomic proposals execute in ord
   fixture(async (f) => {
     writeFileSync(join(f.repo, 'file'), 'updated\n');
     writeFileSync(join(f.repo, 'new'), 'new\n');
-    f.manager.propose = async () => ({ commits: [{ message: 'bad', paths: ['file', 'unknown'] }] });
+    f.manager.proposeCommits = async () => ({ commits: [{ message: 'bad', paths: ['file', 'unknown'] }] });
     let result = await f.finish(await f.manager.start(f.context, randomUUID(), false));
     assert.equal(result.status, 'failed');
     assert.equal(git(f.repo, 'rev-list', '--count', 'HEAD'), '1');
-    f.manager.propose = async () => ({
+    f.manager.proposeCommits = async () => ({
       commits: [
         { message: 'first', paths: ['file'] },
         { message: 'second', paths: ['new'] },
@@ -344,7 +344,7 @@ test('invalid proposal fails before mutation and atomic proposals execute in ord
 test('cancellation interrupts preparation without committing, and restart does not replay actions', async () =>
   fixture(async (f) => {
     writeFileSync(join(f.repo, 'file'), 'work\n');
-    f.manager.propose = async (_input, signal) =>
+    f.manager.proposeCommits = async (_input, signal) =>
       new Promise((_, reject) => {
         signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
       });
@@ -594,7 +594,7 @@ test('a copy holding only content inherited from the project says there is nothi
       scope: `sessions/${id}`,
       path: workspace.root,
       sessionId: id,
-      prepare: () => f.services.sessionGit.prepare(id),
+      prepareCommit: () => f.services.sessionGit.prepareCommit(id),
       execute: (plan) => f.services.sessionGit.executeCommit(id, plan),
     };
     const result = await f.finish(await f.manager.start(context, randomUUID(), false));

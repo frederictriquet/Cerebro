@@ -55,7 +55,7 @@ export class SessionGit {
     this.git = git;
   }
 
-  async prepare(id: string): Promise<SessionGitSnapshot> {
+  async prepareCommit(id: string): Promise<SessionGitSnapshot> {
     const provenance = await sessionProvenance(this.db, this.git, id);
     const snapshot = await this.git.prepareCommit(provenance.workspace.root, provenance.workspace);
     const uncertain = new Set(

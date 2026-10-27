@@ -1,4 +1,4 @@
-import type { EpicRun } from '../../server/epic-runner.ts';
+import type { EpicRunRecord, EpicRunView } from '../../server/epic-runner.ts';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { api, clipboardImage, uploadProjectImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
@@ -90,11 +90,11 @@ function taskPill(task: Task, session: Session | undefined, blocked: boolean): {
 
 export function Backlog({ projectId }: { projectId: string }) {
   const { tasks, epics, sessions, createTask, createEpic, startTask, startEpic, deleteCompletedBacklog } = useStore();
-  const own = tasks.filter((t) => t.projectId === projectId);
+  const projectTasks = tasks.filter((t) => t.projectId === projectId);
   const ownEpics = epics.filter((e) => e.projectId === projectId);
   const epicIds = new Set(ownEpics.map((e) => e.id));
-  const open = own.filter((t) => t.status !== 'done');
-  const done = own.filter((t) => t.status === 'done');
+  const open = projectTasks.filter((t) => t.status !== 'done');
+  const done = projectTasks.filter((t) => t.status === 'done');
   const [showDone, setShowDone] = useState(false);
   const [draft, setDraft] = useState('');
   const [draftEpic, setDraftEpic] = useState('');
@@ -165,10 +165,10 @@ export function Backlog({ projectId }: { projectId: string }) {
     (next === 'llm' ? llmTab : commandTab).current?.focus();
   };
   const visible = (t: Task): boolean => showDone || t.status !== 'done';
-  const loose = own.filter((t) => (t.epicId === null || !epicIds.has(t.epicId)) && visible(t));
+  const tasksWithoutEpic = projectTasks.filter((t) => (t.epicId === null || !epicIds.has(t.epicId)) && visible(t));
   // Un epic entièrement terminé se range avec les tâches terminées.
   const shownEpics = ownEpics.filter((e) => {
-    const members = own.filter((t) => t.epicId === e.id);
+    const members = projectTasks.filter((t) => t.epicId === e.id);
     return showDone || members.length === 0 || members.some((t) => t.status !== 'done');
   });
   const renderTask = (task: Task, index?: number) => (
@@ -176,7 +176,7 @@ export function Backlog({ projectId }: { projectId: string }) {
       key={task.id}
       task={task}
       index={index}
-      projectTasks={own}
+      projectTasks={projectTasks}
       epics={ownEpics}
       launching={launching.has(task.id)}
       session={sessions.find((s) => s.id === task.sessionId)}
@@ -329,13 +329,13 @@ export function Backlog({ projectId }: { projectId: string }) {
         <EpicBlock
           key={epic.id}
           epic={epic}
-          projectTasks={own}
+          projectTasks={projectTasks}
           sessions={sessions}
           showDone={showDone}
           launching={launching.has(epic.id)}
           renderTask={renderTask}
           onStart={(prompt) => {
-            const members = own.filter((t) => t.epicId === epic.id && t.status !== 'done');
+            const members = projectTasks.filter((t) => t.epicId === epic.id && t.status !== 'done');
             if (members.every((t) => t.execution?.type === 'command'))
               void api(`/api/epics/${epic.id}/start`, { method: 'POST', body: '{}' }).catch((cause) =>
                 setError(String(cause)),
@@ -345,14 +345,14 @@ export function Backlog({ projectId }: { projectId: string }) {
           onError={setError}
         />
       ))}
-      {shownEpics.length > 0 && loose.length > 0 ? <h3 className="backlog-loose">Sans epic</h3> : null}
-      {loose.length === 0 && shownEpics.length === 0 ? (
+      {shownEpics.length > 0 && tasksWithoutEpic.length > 0 ? <h3 className="backlog-loose">Sans epic</h3> : null}
+      {tasksWithoutEpic.length === 0 && shownEpics.length === 0 ? (
         <p className="empty-hint">
           Aucune tâche. Sélectionnez du texte dans un terminal, ou demandez à l'agent de mettre ses findings dans le
           backlog.
         </p>
-      ) : loose.length > 0 ? (
-        <ul className="task-list">{loose.map((task) => renderTask(task))}</ul>
+      ) : tasksWithoutEpic.length > 0 ? (
+        <ul className="task-list">{tasksWithoutEpic.map((task) => renderTask(task))}</ul>
       ) : null}
       {error ? <p className="form-error">{error}</p> : null}
       {starting ? (
@@ -385,7 +385,7 @@ export function Backlog({ projectId }: { projectId: string }) {
   );
 }
 
-const RUN_STATUS_LABEL: Record<EpicRun['status'], string> = {
+const RUN_STATUS_LABEL: Record<EpicRunRecord['status'], string> = {
   running: 'en cours',
   'waiting-validation': 'en attente de validation',
   blocked: 'bloqué',
@@ -403,11 +403,11 @@ const RUN_RESULT_LABEL: Record<string, string> = {
   blocked: 'bloquée',
   failed: 'en échec',
 };
-// States in which the run waits for the user: its reason and actions stay visible without unfolding anything.
-const RUN_NEEDS_ACTION: EpicRun['status'][] = ['blocked', 'failed', 'waiting-validation'];
-const RUN_RESUMABLE: EpicRun['status'][] = ['waiting-validation', 'blocked', 'failed', 'stopped'];
+// États où l'exécution attend l'utilisateur : sa raison et ses actions restent visibles sans rien déplier.
+const RUN_NEEDS_ACTION: EpicRunRecord['status'][] = ['blocked', 'failed', 'waiting-validation'];
+const RUN_RESUMABLE: EpicRunRecord['status'][] = ['waiting-validation', 'blocked', 'failed', 'stopped'];
 
-function runAction(run: EpicRun, name: 'stop' | 'resume'): Promise<unknown> {
+function runAction(run: EpicRunView, name: 'stop' | 'resume'): Promise<unknown> {
   void api(`/api/operations/${encodeURIComponent(`epic:${run.id}:${run.status}`)}/seen`, { method: 'POST' }).catch(
     () => {},
   );
@@ -417,12 +417,12 @@ function runAction(run: EpicRun, name: 'stop' | 'resume'): Promise<unknown> {
   });
 }
 
-function EpicRunView({
+function EpicRunPanel({
   run,
   taskLabel,
   onChanged,
 }: {
-  run: EpicRun;
+  run: EpicRunView;
   taskLabel: (id: string) => string;
   onChanged: () => Promise<void>;
 }) {
@@ -895,13 +895,14 @@ function EpicBlock({
   const position = new Map(open.map((t, i) => [t.id, i + 1]));
   const continuesEpic = run?.workspace != null;
   const continuesWorktree = continuesEpic && run.workspace!.mode === 'isolated';
-  // The server refuses a new run while one is active; a failed one is taken over by « Reprendre » in the run view.
+  // Le serveur refuse une nouvelle exécution tant qu'une autre est active ; une exécution en échec se reprend
+  // par « Reprendre » dans son panneau.
   const runHoldsEpic = run !== null && (RUN_ACTIVE.includes(run.status) || run.status === 'failed');
   const taskLabel = (id: string): string => {
     const task = byId.get(id);
     return task ? taskTitle(task.text).slice(0, 80) : id;
   };
-  // Displayed in creation order; the number gives the processing rank (dependency order).
+  // Affichées dans l'ordre de création ; le numéro donne le rang de traitement (ordre des dépendances).
   const shown = showDone ? members : members.filter((t) => t.status !== 'done');
   const startHint =
     open.length === 0
@@ -973,7 +974,7 @@ function EpicBlock({
           </DelayedActionButton>
         </div>
       </div>
-      {run ? <EpicRunView run={run} taskLabel={taskLabel} onChanged={refreshRun} /> : null}
+      {run ? <EpicRunPanel run={run} taskLabel={taskLabel} onChanged={refreshRun} /> : null}
       {editing ? (
         <EpicForm
           initialTitle={epic.title}

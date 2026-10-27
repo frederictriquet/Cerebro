@@ -18,7 +18,13 @@ export interface AutomaticCommit {
   sessionId: string | null;
   settings: CommitSettings;
   push: boolean;
+  /**
+   * Outcome, on the vocabulary shared by the server's operations (running, succeeded, failed; see PushOperation)
+   * plus the endings specific to automatic commits: blocked by a precondition, cancelled by the user, interrupted
+   * by a server restart.
+   */
   status: 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'interrupted';
+  /** Step reached, independent of the outcome: `finished` once the status is no longer running. */
   phase: 'collecting' | 'drafting' | 'committing' | 'pushing' | 'finished';
   files: string[];
   exclusions: { path: string; reason: string }[];
@@ -31,7 +37,7 @@ export interface AutomaticCommit {
   /** Files the user reviewed in a diff snapshot; included despite warnings only while that diff is unchanged. */
   reviewed?: { snapshotId: string; paths: string[] };
 }
-/** Session scopes return their provenance with the snapshot (SessionGit.prepare). */
+/** Session scopes return their provenance with the snapshot (SessionGit.prepareCommit). */
 type PreparedSnapshot = GitSnapshot & Partial<Pick<SessionGitSnapshot, 'provenance'>>;
 export interface AutomaticCommitContext {
   scope: string;
@@ -39,7 +45,7 @@ export interface AutomaticCommitContext {
   projectId: string | null;
   sessionId: string | null;
   settings: CommitSettings;
-  prepare?: () => Promise<PreparedSnapshot>;
+  prepareCommit?: () => Promise<PreparedSnapshot>;
   execute?: (plan: CommitPlan) => Promise<CommitResult>;
 }
 class CommitBlocked extends Error {}
@@ -81,7 +87,7 @@ export class AutomaticCommits {
       .prepare('INSERT INTO automatic_commits VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data')
       .run(operation.id, JSON.stringify(operation));
   }
-  async propose(context: ProposalContext, signal: AbortSignal): Promise<CommitProposal> {
+  async proposeCommits(context: ProposalContext, signal: AbortSignal): Promise<CommitProposal> {
     return proposeCommits(context, signal);
   }
   private idle(path: string): void {
@@ -213,7 +219,8 @@ export class AutomaticCommits {
       signal.throwIfAborted();
       if ((await this.services.pushes.current(operation.path))?.status === 'running')
         throw new CommitBlocked('Un push est déjà en cours dans ce dépôt.');
-      const snapshot: PreparedSnapshot = await (context.prepare?.() ?? this.services.git.prepareCommit(operation.path));
+      const snapshot: PreparedSnapshot = await (context.prepareCommit?.() ??
+        this.services.git.prepareCommit(operation.path));
       signal.throwIfAborted();
       const shown = operation.reviewed
         ? this.services.git.reviewedDiffs(operation.reviewed.snapshotId, operation.path)
@@ -261,7 +268,7 @@ export class AutomaticCommits {
       if (eligible.length) {
         phase('drafting');
         const input = { settings: operation.settings, files: eligible, log: snapshot.log };
-        const proposal = parseCommitProposal(await this.propose(input, signal), input);
+        const proposal = parseCommitProposal(await this.proposeCommits(input, signal), input);
         signal.throwIfAborted();
         this.idle(operation.path);
         await this.services.git.verifySnapshot(operation.path, snapshot.id);

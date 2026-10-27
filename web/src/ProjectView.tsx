@@ -146,10 +146,10 @@ function WorkspaceModeControl({ project }: { project: Project }) {
 export function ProjectView({ projectId }: { projectId: string }) {
   const { projects, sessions, createSession, purgeProjectSessions, deleteProject, updateProject } = useStore();
   const project = projects.find((p) => p.id === projectId);
-  const kids = sessions.filter((s) => s.projectId === projectId);
+  const projectSessions = sessions.filter((s) => s.projectId === projectId);
   const now = useNow();
-  const dormantCount = kids.filter((s) => !s.protected && isDormant(s, now)).length;
-  const hasProtectedSessions = kids.some((s) => s.protected);
+  const dormantCount = projectSessions.filter((s) => !s.protected && isDormant(s, now)).length;
+  const hasProtectedSessions = projectSessions.some((s) => s.protected);
 
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -346,7 +346,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
         <section className="card project-panel session-table-wrap">
           <div className="project-panel-head">
             <h2>
-              Sessions <span className="pill project-panel-count">{kids.length}</span>
+              Sessions <span className="pill project-panel-count">{projectSessions.length}</span>
             </h2>
             {dormantCount > 0 ? (
               <DelayedActionButton
@@ -367,10 +367,10 @@ export function ProjectView({ projectId }: { projectId: string }) {
               await createSession(project.id, spec);
             }}
           />
-          {kids.length === 0 ? (
+          {projectSessions.length === 0 ? (
             <p className="empty-hint">Aucune session pour ce projet.</p>
           ) : (
-            <SessionList key={`sessions-${project.id}`} sessions={kids} now={now} onError={setError} />
+            <SessionList key={`sessions-${project.id}`} sessions={projectSessions} now={now} onError={setError} />
           )}
         </section>
 

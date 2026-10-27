@@ -49,6 +49,12 @@ et `npm run typecheck` lance le `tsc` de TypeScript 7 installé sous l'alias
 `typescript7`. Le reformatage global est listé dans `.git-blame-ignore-revs` :
 `git config blame.ignoreRevsFile .git-blame-ignore-revs` l'écarte de `git blame`.
 
+Langue : les identifiants (variables, types, routes, champs JSON) sont en
+anglais ; les textes vus par l'utilisateur (interface, messages d'erreur,
+notifications, prompts confiés aux agents), la documentation et les messages de
+commit sont en français. Les commentaires suivent la langue déjà dominante du
+fichier, une seule par fichier ; un nouveau fichier les écrit en anglais.
+
 ## Statistiques d’utilisation des LLM
 
 L’accueil affiche une barre de répartition des sessions entre Claude, Codex et

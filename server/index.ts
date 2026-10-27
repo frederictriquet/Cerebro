@@ -75,10 +75,10 @@ function error(reply: FastifyReply, statusCode: number, message: string): Fastif
   return reply.code(statusCode).send({ error: message });
 }
 
-async function orError<T>(
-  reply: FastifyReply,
-  run: () => Promise<T>,
-): Promise<{ ok: true; value: T } | { ok: false; reply: FastifyReply }> {
+/** A value, or the error reply already sent in its place: the caller returns `reply` as is. */
+type Checked<T> = { ok: true; value: T } | { ok: false; reply: FastifyReply };
+
+async function orError<T>(reply: FastifyReply, run: () => Promise<T>): Promise<Checked<T>> {
   try {
     return { ok: true, value: await run() };
   } catch (cause) {
@@ -772,7 +772,7 @@ export async function buildServer(
 
   app.post<{ Params: { id: string } }>('/api/sessions/:id/git/prepare-commit', async (request, reply) => {
     if (db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');
-    const result = await orError(reply, () => sessionGit.prepare(request.params.id));
+    const result = await orError(reply, () => sessionGit.prepareCommit(request.params.id));
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.get<{ Params: { id: string } }>('/api/sessions/:id/git/context', async (request, reply) => {
@@ -1411,7 +1411,7 @@ export async function buildServer(
   app.post('/api/council/attachments', async (request, reply) => saveImage('council', request, reply));
 
   app.get<{ Params: { id: string } }>('/api/sessions/:id/screen', async (request, reply) => {
-    if (sessions.db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');
+    if (db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');
     return reply.send({ lines: sessions.screenText(request.params.id) ?? [] });
   });
 
@@ -1509,22 +1509,24 @@ export async function buildServer(
 
   // Routes de bin/cerebro-backlog, authentifiées par le jeton de session : elles n'agissent que sur le
   // backlog du projet de la session.
-  const backlogSession = (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply): Session | null => {
+  const backlogSession = (
+    request: FastifyRequest<{ Params: { id: string } }>,
+    reply: FastifyReply,
+  ): Checked<Session> => {
     const token = request.headers['x-cerebro-token'];
-    if (typeof token !== 'string' || !sessions.tokenMatches(request.params.id, token)) {
-      error(reply, 403, 'Token de hook invalide');
-      return null;
-    }
+    if (typeof token !== 'string' || !sessions.tokenMatches(request.params.id, token))
+      return { ok: false, reply: error(reply, 403, 'Token de hook invalide') };
     const session = db.getSession(request.params.id);
-    if (session === null) error(reply, 404, 'Session introuvable');
-    return session;
+    if (session === null) return { ok: false, reply: error(reply, 404, 'Session introuvable') };
+    return { ok: true, value: session };
   };
   app.post<{ Params: { id: string } }>(
     '/api/backlog/:id/findings',
     { bodyLimit: 1024 * 1024 },
     async (request, reply) => {
-      const session = backlogSession(request, reply);
-      if (!session) return reply;
+      const checked = backlogSession(request, reply);
+      if (!checked.ok) return checked.reply;
+      const session = checked.value;
       try {
         return reply.send(publishFindings(session.id, request.body));
       } catch (cause) {
@@ -1535,8 +1537,9 @@ export async function buildServer(
   app.post<{ Params: { id: string; taskId: string } }>(
     '/api/backlog/:id/tasks/:taskId/result',
     async (request, reply) => {
-      const session = backlogSession(request, reply);
-      if (!session) return reply;
+      const checked = backlogSession(request, reply);
+      if (!checked.ok) return checked.reply;
+      const session = checked.value;
       const body = bodyRecord(request.body);
       if (
         !['failed', 'blocked', 'waiting-validation'].includes(String(body?.status)) ||
@@ -1559,8 +1562,9 @@ export async function buildServer(
     },
   );
   app.get<{ Params: { id: string } }>('/api/backlog/:id', async (request, reply) => {
-    const session = backlogSession(request, reply);
-    if (session === null) return reply;
+    const checked = backlogSession(request, reply);
+    if (!checked.ok) return checked.reply;
+    const session = checked.value;
     return projectTasks(session.projectId).map(
       ({ id, status, text, dependsOn, epicId, sourceSessionId, sessionId }) => ({
         id,
@@ -1574,18 +1578,17 @@ export async function buildServer(
     );
   });
 
-  const projectEpic = (session: Session, epicId: string, reply: FastifyReply): Epic | null => {
+  const projectEpic = (session: Session, epicId: string, reply: FastifyReply): Checked<Epic> => {
     const epic = db.getEpic(epicId);
-    if (epic === null || epic.projectId !== session.projectId) {
-      error(reply, 404, 'Epic introuvable dans ce projet');
-      return null;
-    }
-    return epic;
+    if (epic === null || epic.projectId !== session.projectId)
+      return { ok: false, reply: error(reply, 404, 'Epic introuvable dans ce projet') };
+    return { ok: true, value: epic };
   };
 
   app.get<{ Params: { id: string } }>('/api/backlog/:id/epics', async (request, reply) => {
-    const session = backlogSession(request, reply);
-    if (session === null) return reply;
+    const checked = backlogSession(request, reply);
+    if (!checked.ok) return checked.reply;
+    const session = checked.value;
     const tasks = projectTasks(session.projectId);
     return db
       .listEpics()
@@ -1601,8 +1604,9 @@ export async function buildServer(
 
   // Crée un epic, vide ou avec des tâches existantes ({ title, description?, taskIds? }).
   app.post<{ Params: { id: string } }>('/api/backlog/:id/epics', async (request, reply) => {
-    const session = backlogSession(request, reply);
-    if (session === null) return reply;
+    const checked = backlogSession(request, reply);
+    if (!checked.ok) return checked.reply;
+    const session = checked.value;
     const result = createEpic(session.projectId, bodyRecord(request.body), session.id);
     if (!result.ok) return error(reply, 400, result.message);
     const { id, title, description } = result.epic;
@@ -1610,9 +1614,11 @@ export async function buildServer(
   });
 
   app.patch<{ Params: { id: string; epicId: string } }>('/api/backlog/:id/epics/:epicId', async (request, reply) => {
-    const session = backlogSession(request, reply);
-    if (session === null) return reply;
-    if (projectEpic(session, request.params.epicId, reply) === null) return reply;
+    const checked = backlogSession(request, reply);
+    if (!checked.ok) return checked.reply;
+    const session = checked.value;
+    const found = projectEpic(session, request.params.epicId, reply);
+    if (!found.ok) return found.reply;
     const body = bodyRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps invalide');
     const result = updateEpic(request.params.epicId, body);
@@ -1623,10 +1629,12 @@ export async function buildServer(
 
   // Supprime un epic créé par cette session ; ses tâches restent dans le backlog.
   app.delete<{ Params: { id: string; epicId: string } }>('/api/backlog/:id/epics/:epicId', async (request, reply) => {
-    const session = backlogSession(request, reply);
-    if (session === null) return reply;
-    const epic = projectEpic(session, request.params.epicId, reply);
-    if (epic === null) return reply;
+    const checked = backlogSession(request, reply);
+    if (!checked.ok) return checked.reply;
+    const session = checked.value;
+    const found = projectEpic(session, request.params.epicId, reply);
+    if (!found.ok) return found.reply;
+    const epic = found.value;
     if (epic.sourceSessionId !== session.id)
       return error(reply, 403, 'Seuls les epics créés par cette session peuvent être supprimés ici');
     deleteEpic(epic.id);
@@ -1637,8 +1645,9 @@ export async function buildServer(
   app.post<{ Params: { id: string; taskId: string } }>(
     '/api/backlog/:id/tasks/:taskId/done',
     async (request, reply) => {
-      const session = backlogSession(request, reply);
-      if (session === null) return reply;
+      const checked = backlogSession(request, reply);
+      if (!checked.ok) return checked.reply;
+      const session = checked.value;
       const current = db.getTask(request.params.taskId);
       if (current === null || current.projectId !== session.projectId)
         return error(reply, 404, 'Tâche introuvable dans ce projet');
@@ -1656,8 +1665,9 @@ export async function buildServer(
     '/api/backlog/:id',
     { bodyLimit: BACKLOG_BODY_LIMIT },
     async (request, reply) => {
-      const session = backlogSession(request, reply);
-      if (session === null) return reply;
+      const checked = backlogSession(request, reply);
+      if (!checked.ok) return checked.reply;
+      const session = checked.value;
       const body = bodyRecord(request.body);
       if (
         body === null ||
@@ -1743,8 +1753,9 @@ export async function buildServer(
 
   // Remplace les dépendances d'une tâche du projet.
   app.patch<{ Params: { id: string; taskId: string } }>('/api/backlog/:id/tasks/:taskId', async (request, reply) => {
-    const session = backlogSession(request, reply);
-    if (session === null) return reply;
+    const checked = backlogSession(request, reply);
+    if (!checked.ok) return checked.reply;
+    const session = checked.value;
     const current = db.getTask(request.params.taskId);
     if (current === null || current.projectId !== session.projectId)
       return error(reply, 404, 'Tâche introuvable dans ce projet');
@@ -1771,8 +1782,9 @@ export async function buildServer(
 
   // Supprime une tâche, uniquement si elle a été créée par cette session et n'a pas été démarrée.
   app.delete<{ Params: { id: string; taskId: string } }>('/api/backlog/:id/tasks/:taskId', async (request, reply) => {
-    const session = backlogSession(request, reply);
-    if (session === null) return reply;
+    const checked = backlogSession(request, reply);
+    if (!checked.ok) return checked.reply;
+    const session = checked.value;
     const task = db.getTask(request.params.taskId);
     if (task === null || task.projectId !== session.projectId)
       return error(reply, 404, 'Tâche introuvable dans ce projet');

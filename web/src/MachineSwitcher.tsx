@@ -30,7 +30,7 @@ interface WatchState {
 
 interface WatchTarget {
   key: string;
-  base: string;
+  machineBase: string;
   machineId: string | null;
 }
 
@@ -138,10 +138,10 @@ export function useMachineInfo(): MachinesInfo | null {
 function hiddenTargets(remoteIds: string[], current: string | null): WatchTarget[] {
   if (remoteIds.length === 0) return [];
   const targets: WatchTarget[] = [];
-  if (current !== null) targets.push({ key: 'local', base: '', machineId: null });
+  if (current !== null) targets.push({ key: 'local', machineBase: '', machineId: null });
   for (const id of remoteIds) {
     if (id !== current) {
-      targets.push({ key: id, base: `/m/${id}`, machineId: id });
+      targets.push({ key: id, machineBase: `/m/${id}`, machineId: id });
     }
   }
   return targets;
@@ -173,7 +173,7 @@ function startWatcher(target: WatchTarget, setState: Dispatch<SetStateAction<Rec
 
   const connect = (): void => {
     if (stopped) return;
-    const next = new WebSocket(wsUrl('/ws/events', target.base));
+    const next = new WebSocket(wsUrl('/ws/events', target.machineBase));
     socket = next;
     next.addEventListener('open', () => {
       if (stopped) return;

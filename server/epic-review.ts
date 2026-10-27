@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { FINDING_INSTRUCTIONS } from './findings.ts';
 import type { CerebroDatabase } from './db.ts';
-import type { EpicRun } from './epic-runner.ts';
+import type { EpicRunRecord } from './epic-runner.ts';
 import { workspaceAt } from './provenance.ts';
 import { REVIEW_TASK_TITLE } from '../shared/epic-review.ts';
 const exec = promisify(execFile);
@@ -31,7 +31,7 @@ export interface EpicReviewScope {
 /** What the epic changed: its shared worktree against the commit it started from, or the project folder against the HEAD recorded at launch. */
 export async function epicReviewScope(
   db: CerebroDatabase,
-  run: Pick<EpicRun, 'projectId' | 'contextRoot' | 'baseHead' | 'workspace'>,
+  run: Pick<EpicRunRecord, 'projectId' | 'contextRoot' | 'baseHead' | 'workspace'>,
 ): Promise<EpicReviewScope> {
   const project = db.getProject(run.projectId);
   if (!project) throw new Error('Projet introuvable.');
