@@ -385,9 +385,25 @@ const projectWithEditedDocument=extra=>repo=>{
  writeFileSync(join(repo,'doc'),document({2:'project edit'}));
  if(extra)writeFileSync(join(repo,'extra'),'untracked in project\n');
 };
+test('the starting content stays out of Git: an untracked secret is neither stored as an object nor reachable from a ref',async()=>fixture(async f=>{
+ const secret='API_KEY=sk-proj-0123456789abcdefghijklmnopqrstuvwxyz\n';
+ const oid=execFileSync('git',['hash-object','--stdin'],{input:secret,encoding:'utf8'}).trim();
+ assert.equal(readFileSync(join(f.workspace.startingCopy,'.env'),'utf8'),secret);
+ assert.equal(readFileSync(join(f.workspace.startingCopy,'file'),'utf8'),'changes already in project\n');
+ assert.equal(git(f.repo,'for-each-ref','refs/cerebro/'),'');
+ assert.throws(()=>git(f.repo,'cat-file','-e',oid));
+ // The copied content is found again from the kept files, and removed with the copy.
+ const own=await f.view();
+ assert.deepEqual(own.startingContent.map(file=>[file.path,file.origin?.kind]).sort(),[['.env','target-worktree'],['file','target-worktree']]);
+ rmSync(join(f.repo,'.env'));git(f.repo,'checkout','file');
+ assert.deepEqual((await f.view()).startingContent.map(file=>[file.path,file.origin?.kind]).sort(),[['.env','snapshot'],['file','snapshot']]);
+ rmSync(join(f.workspace.root,'.env'));git(f.workspace.root,'checkout','file');
+ const clean=await f.view();const plan=await f.manager.prepare(clean.id,'remove');await f.manager.start(clean.id,'remove',plan.token);await f.manager.shutdown();
+ assert.equal(existsSync(f.workspace.root),false);assert.equal(existsSync(f.workspace.startingCopy),false);
+},repo=>{writeFileSync(join(repo,'file'),'changes already in project\n');writeFileSync(join(repo,'.env'),'API_KEY=sk-proj-0123456789abcdefghijklmnopqrstuvwxyz\n');}));
 test('removing the starting content keeps only the work done since the copy, found in the snapshot taken at creation',async()=>fixture(async f=>{
  const copy=f.workspace.root;
- assert.ok(f.workspace.startingSnapshot);assert.equal(git(f.repo,'rev-parse',`refs/cerebro/starting/${f.id}`),f.workspace.startingSnapshot);
+ assert.ok(f.workspace.startingCopy);assert.equal(readFileSync(join(f.workspace.startingCopy,'doc'),'utf8'),document({2:'project edit'}));
  writeFileSync(join(copy,'doc'),document({2:'project edit',9:'conversation'}));
  // The project folder moves on: the copied content now only exists in the snapshot.
  writeFileSync(join(f.repo,'doc'),document({2:'other project edit'}));rmSync(join(f.repo,'extra'));
