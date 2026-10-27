@@ -1,5 +1,5 @@
 import { SessionActions } from './SessionActions.tsx';
-import { SessionAttention, SessionMeta } from './SessionMeta.tsx';
+import { attentionTone, SessionAttention, SessionMeta } from './SessionMeta.tsx';
 import { SessionProtection } from './SessionProtection.tsx';
 import { displayStatus, errorMessage, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { go, href } from './route.ts';
@@ -12,7 +12,7 @@ import type { Session } from '../../shared/types.ts';
 
 // Une session regroupée sous son epic n'affiche pas son projet : l'en-tête du groupe le porte.
 export function SessionRow({ session, grouped = false }: { session: Session; grouped?: boolean }) {
-  const { projects, killSession, resumeSession, deleteSession, sendSessionInput } = useStore();
+  const { projects, killSession, resumeSession, deleteSession, sendSessionInput, markSeen } = useStore();
   const { now, showProject, onError } = useSessionList();
   const project = showProject && !grouped ? projects.find((item) => item.id === session.projectId) : undefined;
   const reportError =
@@ -37,9 +37,16 @@ export function SessionRow({ session, grouped = false }: { session: Session; gro
   const awaiting = isAwaiting(session);
   const preview = useSessionPreview(session.id);
   const shown = displayStatus(session, now);
+  const rowClass = [
+    'session-row',
+    session.pendingFindings > 0 ? 'has-findings' : '',
+    session.attention ? `has-attention ${attentionTone(session)}` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   return (
-    <li className={`session-row${session.pendingFindings > 0 ? ' has-findings' : ''}`}>
+    <li className={rowClass}>
       <div className="session-row-main">
         <a href={href(`#/s/${session.id}`)} className="session-main">
           <span className="session-row-titleline">
@@ -78,6 +85,16 @@ export function SessionRow({ session, grouped = false }: { session: Session; gro
             <a className="btn" href={href(`#/s/${session.id}`)}>
               Ouvrir
             </a>
+            {session.attention ? (
+              <button
+                type="button"
+                className="btn"
+                title="Acquitter sans ouvrir"
+                onClick={() => void markSeen(session.id)}
+              >
+                Vu
+              </button>
+            ) : null}
             {preview.button}
           </>
         ) : null}

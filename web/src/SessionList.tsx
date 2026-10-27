@@ -58,7 +58,9 @@ function EpicSessions({ group }: { group: Extract<SessionGroup, { kind: 'epic' }
     ['open', 'closed'],
   );
   const toggle = (): void => setOpen(!open);
-  const { total: attention, pendingFindings } = attentionCounts(group.sessions);
+  const { total: attention, waiting, pendingFindings } = attentionCounts(group.sessions);
+  // Tours terminés pas encore ouverts : comptés « à traiter » comme partout, mais sans rien à répondre.
+  const unread = group.sessions.filter((session) => session.attention && session.status !== 'waiting').length;
   const nextReview = group.sessions.find((session) => session.pendingFindings > 0);
   const running = group.sessions.filter(
     (session) => session.status === 'starting' || session.status === 'running',
@@ -85,7 +87,12 @@ function EpicSessions({ group }: { group: Extract<SessionGroup, { kind: 'epic' }
             <span className="session-epic-summary">
               <span>{plural(group.sessions.length, 'session')}</span>
               {running > 0 ? <span className="pill status running">{running} en cours</span> : null}
-              {attention > 0 ? <span className="pill status waiting">{attention} à traiter</span> : null}
+              {waiting > 0 ? <span className="pill status waiting">{plural(waiting, 'question')}</span> : null}
+              {unread > 0 ? (
+                <span className="pill status idle" title="Tour terminé depuis la dernière ouverture de la session">
+                  {plural(unread, 'tour non lu', 'tours non lus')}
+                </span>
+              ) : null}
             </span>
           </span>
         </button>

@@ -67,8 +67,12 @@
   outline: 2px solid var(--waiting);
   outline-offset: 2px;
 }
-.session-row.has-findings {
+.session-row.has-findings,
+.session-row.has-attention.waiting {
   box-shadow: inset 3px 0 var(--waiting);
+}
+.session-row.has-attention.idle:not(.has-findings) {
+  box-shadow: inset 3px 0 var(--idle);
 }
 .session-row-main > .findings-link {
   margin: 6px 0 0 16px;
