@@ -59,7 +59,7 @@ dont le journal global peut être purgé indépendamment des sessions.
 | `CEREBRO_SLACK_ALERTS` | `all` | Alertes automatiques par défaut : `all`, `waiting` (questions et confirmations seulement) ou `off`. Modifiable ensuite dans l'interface. |
 | `CEREBRO_SLACK_DELAY` | `30` | Délai par défaut en secondes avant une alerte automatique. Modifiable ensuite dans l'interface. |
 | `CEREBRO_MACHINE_NAME` | nom d'hôte | Nom de la machine dans le sélecteur multi-machines. |
-| `CEREBRO_PUBLIC_URL` | `http://${CEREBRO_HOST}:${CEREBRO_PORT}` | Base des liens « Ouvrir dans Cerebro » envoyés sur Slack. |
+| `CEREBRO_PUBLIC_URL` | `http://${CEREBRO_HOST}:${CEREBRO_PORT}` | Base des liens « Ouvrir dans Cerebro » envoyés sur Slack ; origine acceptée pour les WebSockets et les requêtes de modification. |
 
 Pour une écoute sur le réseau local, définissez un secret robuste en même temps que
 `CEREBRO_HOST=0.0.0.0`. Saisissez le secret dans l'écran « Token requis » (ou ouvrez
@@ -68,6 +68,17 @@ Pour une écoute sur le réseau local, définissez un secret robuste en même te
 `POST /api/auth`, ce qui fonctionne aussi derrière le serveur de dev Vite. Les clients API
 peuvent aussi utiliser `?token=SECRET` ou l'en-tête
 `Authorization: Bearer SECRET`. Les hooks d'agents conservent leur jeton propre.
+
+Les WebSockets et les requêtes de modification (`POST`, `PATCH`, `DELETE`…) venant d'un
+navigateur sont refusés (403) si leur en-tête `Origin` n'est pas celle de l'interface :
+`CEREBRO_PUBLIC_URL`, l'adresse d'écoute et ses alias de bouclage sur `CEREBRO_PORT`, ou le
+serveur de dev Vite (`:5173`). Avec `CEREBRO_BIND_TOKEN`, l'hôte demandé (`Host` ou
+`X-Forwarded-Host`) est aussi accepté. Une page tierce ouverte dans le navigateur ne peut donc
+pas piloter les terminaux, même depuis un autre port de `localhost`. Les clients hors navigateur
+(bins, hooks) n'envoient pas d'`Origin` ou s'authentifient par jeton explicite, et ne sont pas
+concernés. La passerelle multi-machines valide l'`Origin` localement puis retire `Origin` et
+`Referer` des requêtes relayées : une machine distante sans jeton accepte donc les modifications. Sans jeton, renseignez `CEREBRO_PUBLIC_URL` si l'interface
+est ouverte sous une autre adresse.
 
 Les PTY restent attachés à des processus `server/holder.ts` indépendants. Au
 redémarrage, le serveur retrouve les sockets dans
@@ -428,7 +439,9 @@ L'`id` (`a-z`, `0-9`, `-`) apparaît dans l'URL (`#/m/mac/…`). Des pastilles e
 la barre latérale basculent l'interface d'une machine à l'autre. Elles indiquent si
 chaque machine est en ligne et combien de sessions attendent une réponse. Les alertes
 des machines non affichées déclenchent aussi la notification du navigateur et le bip.
-Les routes d'agents `/api/hook`, `/api/notify` et `/api/backlog` ne sont jamais relayées. Un jeton refusé ou une
+Seules les routes de l'interface sont relayées, d'après une liste blanche (`server/remotes.ts`) : les routes
+d'agents (`/api/hook`, `/api/notify`, `/api/backlog`, `/api/session-tasks`), `/api/auth` et `/api/peer/sync`
+restent locales, et un chemin contenant un séparateur encodé ou un segment `..` est refusé. Un jeton refusé ou une
 machine injoignable renvoie une erreur 502 explicite.
 
 **Slack partagé entre machines.** Si plusieurs machines utilisent le même bot Slack, elles
@@ -500,6 +513,10 @@ utilisateur sans session ouverte, l'administrateur peut activer le linger avec
 - Les notifications OSC de Codex dépendent aussi de sa gestion du focus terminal.
 - Cerebro est conçu pour un utilisateur de confiance. Un jeton protège l'accès
   réseau, mais ne remplace pas TLS ni un reverse proxy correctement configuré.
+- Les agents tournent sous le même utilisateur que le serveur. Cerebro retire les
+  variables `CEREBRO_*` de leur environnement et de celui du holder, mais un agent
+  peut lire `$CEREBRO_DATA_DIR/env` ou tout autre fichier de l'utilisateur : seule
+  une isolation par utilisateur ou par bac à sable protège réellement ces secrets.
 
 ## Dépannage
 

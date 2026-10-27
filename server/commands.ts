@@ -1,4 +1,5 @@
 import { assertWorktreeAvailable } from './worktree-gate.ts';
+import { withoutCerebroVariables } from './agent-env.ts';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -46,7 +47,7 @@ export class CommandExecutor {
       assertWorktreeAvailable(cwd);
       const run:CommandRun={id:randomUUID(),taskId,pid:null,command,cwd,status:'running',output:'',startedAt:Date.now(),finishedAt:null,exitCode:null,error:null};
       this.db.updateTask(taskId,{status:'started',sessionId:null});this.save(run);
-      const child=spawn(command.executable,command.args,{cwd,shell:false,detached:true,env:{...process.env,CEREBRO_COMMAND_RUN:run.id},stdio:['ignore','pipe','pipe']});
+      const child=spawn(command.executable,command.args,{cwd,shell:false,detached:true,env:{...withoutCerebroVariables(),CEREBRO_COMMAND_RUN:run.id},stdio:['ignore','pipe','pipe']});
       run.pid=child.pid??null;this.save(run);
       const timer=setTimeout(()=>{run.error='Durée limite dépassée.';this.stop(run.id);},command.timeoutSeconds*1000);timer.unref();
       const runtime={child,timer,run,stopping:false};this.live.set(run.id,runtime);

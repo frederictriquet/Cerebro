@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
+import { withoutCerebroVariables } from './agent-env.ts';
 import type { Agent } from './db.ts';
 
 /** `none`: no tool at all. `read-only`: the agent may read files below `cwd`, never write nor run anything that mutates. */
@@ -154,9 +155,8 @@ export async function runHeadless(options: HeadlessOptions): Promise<unknown> {
       if(model!==null)args.push('--model',model);
       if(effort!==null)args.push(agent==='claude'?'--effort':'--reasoning-effort',effort);
     }
-    const env={...process.env};
     // Headless agents need CLI authentication, never Cerebro's server secrets or session helpers.
-    for(const key of Object.keys(env))if(key.startsWith('CEREBRO_')||key==='CLAUDECODE')delete env[key];
+    const env=withoutCerebroVariables();delete env.CLAUDECODE;
     const text=await new Promise<string>((accept,reject)=>{
       signal.throwIfAborted();
       const child=spawn(agent,args,{cwd:options.cwd??directory,env,detached:process.platform!=='win32',stdio:['pipe','pipe','pipe']});

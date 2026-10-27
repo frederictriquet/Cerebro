@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -28,6 +28,7 @@ import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED 
 import { CerebroDatabase, normalizeMode, resolveSessionDefaults, SessionProtectionError } from './db.ts';
 import type { Agent, CommitSettings, Epic, Mode, Project, ResolutionSettings, Session, SessionDefaults, Task, TaskExecution, TaskStatus } from './db.ts';
 import { assertNoGitOperation, prepareCommit, executeCommitPlan } from './git-plan.ts';
+import { secretMatches } from './secret-compare.ts';
 import { currentPush, startPush, onPushComplete } from './git-push.ts';
 import { gitSummary } from './git-summary.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
@@ -36,6 +37,8 @@ import { importFindings, listReports, saveReport } from './findings.ts';
 import { prepareReview, verifyReview, reviewInstructions } from './review.ts';
 import { prepareSessionGit, executeSessionCommit, sessionReviewContext, sessionGitContext } from './session-git.ts';
 import { sessionProvenance, workspaceFor } from './provenance.ts';
+import { originAllowed } from './origin.ts';
+import { LOGGER_OPTIONS } from './log-redaction.ts';
 import { assertLoopbackPortFree } from './ports.ts';
 import { registerRemoteGateway } from './remotes.ts';
 import { compatibility, VERSION_INFO } from './version.ts';
@@ -173,10 +176,7 @@ function validDirectory(path: string): boolean {
 }
 
 function tokenMatches(candidate: string | undefined): boolean {
-  if (BIND_TOKEN === undefined || candidate === undefined) return false;
-  const expected = Buffer.from(BIND_TOKEN);
-  const actual = Buffer.from(candidate);
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
+  return secretMatches(BIND_TOKEN, candidate);
 }
 
 function cookieValue(header: string | undefined, name: string): string | undefined {
@@ -215,7 +215,7 @@ function sendSocket(socket: WebSocket, message: unknown): void {
 }
 
 export async function buildServer(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: true, forceCloseConnections: true });
+  const app = Fastify({ logger: LOGGER_OPTIONS, forceCloseConnections: true });
   const db = new CerebroDatabase();
   const sessions = new SessionManager(db);
   const commands = new CommandExecutor(db);
@@ -233,6 +233,8 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.addHook('onRequest', async (request, reply) => {
     const queryToken = requestQueryToken(request.query);
+    const explicitToken = tokenMatches(queryToken) || tokenMatches(bearerToken(request.headers.authorization));
+    if (!originAllowed(request, explicitToken)) return error(reply, 403, 'Origine refusée');
     if (BIND_TOKEN !== undefined && request.url.split('?', 1)[0] === '/' && tokenMatches(queryToken)) {
       reply.header('set-cookie', tokenCookie(request));
     }
@@ -246,9 +248,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       && !path.startsWith('/api/backlog/')) || path.startsWith('/ws/') || path.startsWith('/m/')
       || path === '/vscode' || path.startsWith('/vscode/');
     if (BIND_TOKEN === undefined || !protectedRoute) return;
-    const authorized = tokenMatches(queryToken)
-      || tokenMatches(bearerToken(request.headers.authorization))
-      || tokenMatches(cookieValue(request.headers.cookie, 'cerebro_token'));
+    const authorized = explicitToken || tokenMatches(cookieValue(request.headers.cookie, 'cerebro_token'));
     if (!authorized) return error(reply, 401, 'Token requis');
   });
 
@@ -268,7 +268,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     peers.stop();
     notifier.stop();
     unsubscribePush();
-    vscode.stop();
+    await vscode.stop();
     await automaticCommits.shutdown();
     await councils.shutdown();
     await worktrees.shutdown();

@@ -677,10 +677,9 @@ export class WorktreeManager {
       const content=await readFile(join(targetPath,file)).catch(()=>null);
       if(content&&hash(content)===digest)return {origin:{kind:'target-worktree'},content:async()=>content};
     }
-    if(workspace.startingSnapshot){
-      const content=await gitBytes(path,['cat-file','blob',`${workspace.startingSnapshot}:${file}`]).catch(()=>null);
-      if(content&&hash(content)===digest)return {origin:{kind:'snapshot'},content:async()=>content};
-    }
+    const content=workspace.startingCopy?await readFile(join(workspace.startingCopy,file)).catch(()=>null)
+      :workspace.startingSnapshot?await gitBytes(path,['cat-file','blob',`${workspace.startingSnapshot}:${file}`]).catch(()=>null):null;
+    if(content&&hash(content)===digest)return {origin:{kind:'snapshot'},content:async()=>content};
     return null;
   }
   /**
@@ -1152,6 +1151,7 @@ export class WorktreeManager {
           if(lost.length)throw new WorktreeError(`${cause instanceof Error?cause.message:String(cause)}\nLiens de dépendances non rétablis dans la copie : ${lost.join(', ')}.`);
           throw cause;
         }
+        if(workspace?.startingCopy)await rm(workspace.startingCopy,{recursive:true,force:true});
         if(workspace?.startingSnapshot)await git(view.targetPath??view.source,['update-ref','-d',`refs/cerebro/starting/${workspace.sessionId}`]).catch(()=>'');
         const record=this.record(view.id);record.removedAt=Date.now();store(this.db,record);
         // Every epic step sharing this copy loses it, not only the session that created it.

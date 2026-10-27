@@ -84,3 +84,15 @@ export function findProcessesByArgument(argument: string): ProcessInfo[] {
   }
   return found;
 }
+
+// Like findProcessesByArgument, but also requires `entry` (`NAME=value`) in the initial environment, which
+// a program merely naming the same file (an editor, `tail -f`) does not carry.
+export function findProcessesByArgumentAndEnvironment(argument: string, entry: string): ProcessInfo[] {
+  return findProcessesByArgument(argument).filter((info) => {
+    try {
+      return readFileSync(`/proc/${info.pid}/environ`, 'utf8').split('\0').includes(entry);
+    } catch {
+      return false;
+    }
+  });
+}
