@@ -1,6 +1,7 @@
 import { loadRemotes, MACHINE_NAME, type RemoteMachine } from './config.ts';
 import type { CerebroDatabase, Epic, Project, Session, Task } from './db.ts';
 import { parseEpicList, parseProjectList, parseSessionList, parseTaskList } from '../web/src/types.ts';
+import { errorMessage } from './errors.ts';
 
 export interface MachineData {
   machine: string;
@@ -37,7 +38,7 @@ export async function collectMachines(db: CerebroDatabase): Promise<MachineState
       ]);
       return { ok: true, data: { machine: remote.name, projects, sessions, tasks, epics } };
     } catch (cause) {
-      return { ok: false, machine: remote.name, error: cause instanceof Error ? cause.message : String(cause) };
+      return { ok: false, machine: remote.name, error: errorMessage(cause) };
     }
   }));
   return [local, ...remotes];

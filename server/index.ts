@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,7 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type WebSocket from 'ws';
 import { EpicRunner } from './epic-runner.ts';
+import { errorMessage } from './errors.ts';
 import { assertEpicWorkspace, epicWorkspace, epicWorkspaceOptions, rememberEpicWorkspace, withEpicWorkspace } from './epic-workspace.ts';
 import { epicReviewInstructions, epicReviewScope, isReviewTask, reviewTaskText } from './epic-review.ts';
 import { CommandExecutor } from './commands.ts';
@@ -22,20 +23,25 @@ import { registerPersonaRoutes } from './persona-routes.ts';
 import { registerCouncilRoutes } from './council-routes.ts';
 import { CouncilError } from './council-runner.ts';
 import { AGENTS, getAgentAvailability } from './agents.ts';
-import { getCatalog, parseTuning, refreshCatalog, startCatalogRefresh } from './catalog.ts';
+import { catalogReady, getCatalog, parseTuning, refreshCatalog, startCatalogRefresh } from './catalog.ts';
 import { validateCouncilSettings } from './council.ts';
-import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
+import { ATTACHMENTS_DIR, BIND_TOKEN, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
 import { CerebroDatabase, normalizeMode, resolveSessionDefaults, SessionProtectionError } from './db.ts';
 import type { Agent, CommitSettings, Epic, Mode, Project, ResolutionSettings, Session, SessionDefaults, Task, TaskExecution, TaskStatus } from './db.ts';
-import { prepareCommit, executeCommitPlan } from './git-plan.ts';
+import { assertNoGitOperation, prepareCommit, executeCommitPlan } from './git-plan.ts';
+import { secretMatches } from './secret-compare.ts';
 import { currentPush, startPush, onPushComplete } from './git-push.ts';
 import { gitSummary } from './git-summary.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
+import { appendHookLog } from './hook-log.ts';
+import { startHeartbeat } from './ws-heartbeat.ts';
 import { incompatibleMessage, PeerSync, syncPayloadFrom } from './peers.ts';
 import { importFindings, listReports, saveReport } from './findings.ts';
-import { prepareReview, verifyReview, reviewInstructions } from './review.ts';
-import { prepareSessionGit, executeSessionCommit, sessionReviewContext, sessionGitContext } from './session-git.ts';
+import { ReviewStore, reviewInstructions } from './review.ts';
+import { SessionGitScopes, sessionGitContext } from './session-git.ts';
 import { sessionProvenance, workspaceFor } from './provenance.ts';
+import { originAllowed } from './origin.ts';
+import { LOGGER_OPTIONS } from './log-redaction.ts';
 import { assertLoopbackPortFree } from './ports.ts';
 import { registerRemoteGateway } from './remotes.ts';
 import { compatibility, VERSION_INFO } from './version.ts';
@@ -58,6 +64,7 @@ const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_TASK_LENGTH = 20_000;
 const MAX_BACKLOG_TASKS = 100;
+const HISTORY_RETENTION_MS = 30 * 86_400_000;
 // Worst case: 3 UTF-8 bytes per UTF-16 code unit (non-ASCII text), plus JSON escaping and envelope.
 const BACKLOG_BODY_LIMIT = MAX_BACKLOG_TASKS * MAX_TASK_LENGTH * 3 + 1024 * 1024;
 const TASK_STATUSES: readonly TaskStatus[] = ['todo', 'started', 'done'];
@@ -72,7 +79,7 @@ async function orError<T>(reply: FastifyReply, run: () => Promise<T>): Promise<{
     return { ok: true, value: await run() };
   } catch (cause) {
     const status = cause instanceof SessionProtectionError ? 409 : cause instanceof CouncilError ? cause.statusCode : 500;
-    return { ok: false, reply: error(reply, status, cause instanceof Error ? cause.message : String(cause)) };
+    return { ok: false, reply: error(reply, status, errorMessage(cause)) };
   }
 }
 
@@ -173,10 +180,7 @@ function validDirectory(path: string): boolean {
 }
 
 function tokenMatches(candidate: string | undefined): boolean {
-  if (BIND_TOKEN === undefined || candidate === undefined) return false;
-  const expected = Buffer.from(BIND_TOKEN);
-  const actual = Buffer.from(candidate);
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
+  return secretMatches(BIND_TOKEN, candidate);
 }
 
 function cookieValue(header: string | undefined, name: string): string | undefined {
@@ -215,17 +219,29 @@ function sendSocket(socket: WebSocket, message: unknown): void {
 }
 
 export async function buildServer(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: true, forceCloseConnections: true });
+  const app = Fastify({ logger: LOGGER_OPTIONS, forceCloseConnections: true });
   const db = new CerebroDatabase();
   const sessions = new SessionManager(db);
   const commands = new CommandExecutor(db);
-  commands.initialize();
+  const interruptedRuns = commands.initialize();
   const eventSockets = new Set<WebSocket>();
+  const eventHeartbeat = startHeartbeat();
   const peers = new PeerSync(db, () => {
     for (const socket of eventSockets) sendSocket(socket, { type: 'peers' });
   });
   const notifier = new SlackNotifier(sessions, db, peers);
   const vscode = new VscodeServer();
+  const reviews = new ReviewStore();
+  const sessionGit = new SessionGitScopes(db);
+  // Au-delà de 30 jours, résultats d’opérations et runs terminés ne servent plus : la purge borne les tables.
+  const purgeHistory = (): void => {
+    const before = Date.now() - HISTORY_RETENTION_MS;
+    try { notifier.operations.purge(before); commands.purge(before); }
+    catch (cause) { app.log.error(cause, 'Purge de l’historique impossible'); }
+  };
+  purgeHistory();
+  const purgeTimer = setInterval(purgeHistory, 86_400_000);
+  purgeTimer.unref();
 
   installGrokHook();
   await sessions.initialize();
@@ -233,6 +249,8 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.addHook('onRequest', async (request, reply) => {
     const queryToken = requestQueryToken(request.query);
+    const explicitToken = tokenMatches(queryToken) || tokenMatches(bearerToken(request.headers.authorization));
+    if (!originAllowed(request, explicitToken)) return error(reply, 403, 'Origine refusée');
     if (BIND_TOKEN !== undefined && request.url.split('?', 1)[0] === '/' && tokenMatches(queryToken)) {
       reply.header('set-cookie', tokenCookie(request));
     }
@@ -246,9 +264,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       && !path.startsWith('/api/backlog/')) || path.startsWith('/ws/') || path.startsWith('/m/')
       || path === '/vscode' || path.startsWith('/vscode/');
     if (BIND_TOKEN === undefined || !protectedRoute) return;
-    const authorized = tokenMatches(queryToken)
-      || tokenMatches(bearerToken(request.headers.authorization))
-      || tokenMatches(cookieValue(request.headers.cookie, 'cerebro_token'));
+    const authorized = explicitToken || tokenMatches(cookieValue(request.headers.cookie, 'cerebro_token'));
     if (!authorized) return error(reply, 401, 'Token requis');
   });
 
@@ -265,10 +281,12 @@ export async function buildServer(): Promise<FastifyInstance> {
   registerVscodeRelay(app, vscode);
 
   app.addHook('onClose', async () => {
+    clearInterval(purgeTimer);
+    eventHeartbeat.stop();
     peers.stop();
     notifier.stop();
     unsubscribePush();
-    vscode.stop();
+    await vscode.stop();
     await automaticCommits.shutdown();
     await councils.shutdown();
     await worktrees.shutdown();
@@ -284,7 +302,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   const worktrees=registerWorktreeRoutes(app,db);
   registerSessionTaskRoutes(app, db, (id, token) => sessions.tokenMatches(id, token));
-  const automaticCommits=registerAutomaticCommitRoutes(app,db,worktrees);
+  const automaticCommits=registerAutomaticCommitRoutes(app,db,worktrees,sessionGit);
   registerPersonaRoutes(app, db);
   const councils=registerCouncilRoutes(app,db);
   sessions.withProjectDeletion=(id,remove)=>councils.withProjectDeletion(id,remove);
@@ -318,6 +336,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   // Copies whose conversation ended while the server was down, or before automatic cleanup existed.
   void worktrees.resumeAutomaticCleanup();
   commands.onChange = run => {
+    epicRunner.commandChanged(run);
     epicRunner.poke();
     const task = db.getTask(run.taskId);
     if(task&&run.finishedAt!==null)notifier.operations.record({id:run.id,projectId:task.projectId,sessionId:null,kind:'command',ok:run.status==='succeeded',summary:`${run.command.name} : ${run.status}, code ${run.exitCode??'inconnu'}${run.error?` ; ${run.error}`:''} ; clôture du travail distincte.`,startedAt:run.startedAt,finishedAt:run.finishedAt});
@@ -325,7 +344,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     // Without its output (up to 1 MiB): an open view fetches it through /api/tasks/:id/runs.
     broadcast({type:'command-run',run:{...run,output:undefined}});
   };
+  // Runs cut short by the previous shutdown: broadcast and recorded like any other ending.
+  for (const run of interruptedRuns) commands.onChange(run);
   sessions.onEvent((event) => {
+    // Sessions, their copies and project folders all feed the recovery of an epic's folder.
+    epicRunner.sessionChanged(event);
     epicRunner.poke();
     if (event.type === 'turn-complete') return;
     broadcast(event);
@@ -380,9 +403,11 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   app.patch<{ Params: { id: string } }>('/api/projects/:id', async (request, reply) => {
+    const body = bodyRecord(request.body);
+    // Réglages LLM : validés contre le catalogue réel, pas contre le repli du démarrage.
+    if (body !== null && ['sessionDefaults', 'commitSettings', 'resolutionSettings', 'councilSettings'].some(key => key in body)) await catalogReady();
     const project = db.getProject(request.params.id);
     if (project === null) return error(reply, 404, 'Projet introuvable');
-    const body = bodyRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps de requête invalide');
 
     const changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'resolutionSettings' | 'councilSettings' | 'workspaceMode'>> = {};
@@ -446,6 +471,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
     const updated = db.updateProject(project.id, changes);
     if (updated === null) return error(reply, 404, 'Projet introuvable');
+    if (updated.path !== project.path) sessions.forgetInputContexts();
     // Un renommage compte comme une apparition : la machine qui renomme prend la main sur Slack.
     if (updated.name !== project.name) peers.renamed(project.id);
     else if (updated.path !== project.path) void peers.sync();
@@ -457,7 +483,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/prepare-review', async (request, reply) => {
     const project = db.getProject(request.params.id);
     if (!project) return error(reply, 404, 'Projet introuvable');
-    const result = await orError(reply, () => prepareReview(project.path));
+    const result = await orError(reply, () => reviews.prepare(project.path));
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/review', async (request, reply) => {
@@ -466,18 +492,19 @@ export async function buildServer(): Promise<FastifyInstance> {
     const body = bodyRecord(request.body);
     if (typeof body?.reviewId !== 'string') return error(reply, 400, 'reviewId requis');
     const id = body.reviewId;
-    const result = await orError(reply, () => verifyReview(project.path, id));
+    const result = await orError(reply, () => reviews.verify(project.path, id));
     if (!result.ok) return result.reply;
     const launch = bodyRecord(body.launch) ?? {};
     const prepared = result.value;
     return launchSession(reply, project, {...launch, prompt: `${typeof launch.prompt === 'string' ? launch.prompt : ''}\n\n${reviewInstructions(prepared.root, {...prepared, context: undefined}, prepared.context)}`}, s => s,
-      async () => { await verifyReview(project.path, id); });
+      async () => { await reviews.verify(project.path, id); }, { remember: launch });
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/prepare-commit', async (request, reply) => {
     const project = db.getProject(request.params.id);
     if (project === null) return error(reply, 404, 'Projet introuvable');
-    const result = await orError(reply, () => prepareCommit(project.path));
+    // Early refusal: a plan prepared during a merge or rebase could not be executed anyway.
+    const result = await orError(reply, async () => { await assertNoGitOperation(project.path); return prepareCommit(project.path); });
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/commit', async (request, reply) => {
@@ -591,7 +618,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.post<{ Params: { id: string } }>('/api/sessions/:id/git/prepare-commit', async (request, reply) => {
     if (db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');
-    const result = await orError(reply, () => prepareSessionGit(db, request.params.id));
+    const result = await orError(reply, () => sessionGit.prepare(request.params.id));
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.get<{Params:{id:string}}>('/api/sessions/:id/git/context',async(request,reply)=>{
@@ -599,10 +626,12 @@ export async function buildServer(): Promise<FastifyInstance> {
     return reply.send(sessionGitContext(db,request.params.id));
   });
   app.post<{ Params: { id: string } }>('/api/sessions/:id/git/commit', async (request, reply) => {
-    if (db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');
+    // Projet lu avant l’await : la session peut être supprimée pendant le commit déjà effectué.
+    const session = db.getSession(request.params.id);
+    if (session === null) return error(reply, 404, 'Session introuvable');
     const startedAt=Date.now();
-    const result = await orError(reply, () => executeSessionCommit(request.params.id, request.body));
-    if(result.ok){const id=`commit:${String(bodyRecord(request.body)?.snapshotId)}`;result.value.operationId=id;notifier.operations.record({id,projectId:db.getSession(request.params.id)!.projectId,sessionId:request.params.id,kind:'commit',ok:!result.value.error,summary:result.value.error??result.value.commits.map(c=>`${c.hash} ${c.title}`).join(' ; '),startedAt,finishedAt:Date.now()});}
+    const result = await orError(reply, () => sessionGit.executeCommit(request.params.id, request.body));
+    if(result.ok){const id=`commit:${String(bodyRecord(request.body)?.snapshotId)}`;result.value.operationId=id;notifier.operations.record({id,projectId:session.projectId,sessionId:request.params.id,kind:'commit',ok:!result.value.error,summary:result.value.error??result.value.commits.map(c=>`${c.hash} ${c.title}`).join(' ; '),startedAt,finishedAt:Date.now()});}
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.get<{ Params: { id: string } }>('/api/sessions/:id/git/push', async (request, reply) => {
@@ -614,11 +643,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     const session = db.getSession(request.params.id);
     if (!session) return error(reply, 404, 'Session introuvable');
     const body = bodyRecord(request.body);
-    const result = await orError(reply, () => sessionReviewContext(session.id, body?.selection));
+    const result = await orError(reply, () => sessionGit.reviewContext(session.id, body?.selection));
     if (!result.ok) return result.reply;
     const project = db.getProject(session.projectId)!;
     const launch = bodyRecord(body?.launch) ?? {};
-    return launchSession(reply, project, {...launch, prompt: `${typeof launch.prompt === 'string' ? launch.prompt : ''}\n\n${result.value.prompt}`}, session => session, async () => { await sessionReviewContext(session.id, body?.selection); });
+    return launchSession(reply, project, {...launch, prompt: `${typeof launch.prompt === 'string' ? launch.prompt : ''}\n\n${result.value.prompt}`}, session => session, async () => { await sessionGit.reviewContext(session.id, body?.selection); }, { remember: launch });
   });
 
   app.get<{ Params: { id: string } }>('/api/sessions/:id/provenance', async (request, reply) => {
@@ -637,7 +666,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.get<{ Params: { id: string } }>('/api/sessions/:id/findings', async request => listReports(db, request.params.id));
   app.post<{ Params: { id: string } }>('/api/sessions/:id/findings', async (request, reply) => {
     try { return reply.send(publishFindings(request.params.id, request.body)); }
-    catch (cause) { return error(reply, 400, String(cause)); }
+    catch (cause) { return error(reply, 400, errorMessage(cause)); }
   });
   app.post<{ Params: { id: string; report: string } }>('/api/sessions/:id/findings/:report/import', async (request, reply) => {
     try {
@@ -648,7 +677,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       const session = db.getSession(request.params.id);
       if (session) broadcast({ type: 'session', session });
       return reply.send(result);
-    } catch (cause) { return error(reply, 400, String(cause)); }
+    } catch (cause) { return error(reply, 400, errorMessage(cause)); }
   });
 
   app.get('/api/sessions', async () => db.listSessions());
@@ -673,6 +702,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   // Omitted fields inherit the project's last choices; null resets to the Cerebro default (parseTuning).
+  // `remember` replaces rawBody as the form settings to keep when the prompt embeds generated instructions.
   // The launched prompt is not remembered: only the project's « Nouvelle session » form edits it (PATCH).
   const launchSession = async (
     reply: FastifyReply,
@@ -680,12 +710,18 @@ export async function buildServer(): Promise<FastifyInstance> {
     rawBody: unknown,
     respond: (session: Session) => unknown,
     validate?: () => Promise<void>,
-    epicId: string | null = null,
+    { epicId = null, remember }: { epicId?: string | null; remember?: unknown } = {},
   ): Promise<FastifyReply> => {
+    await catalogReady();
     const defaults = parseSessionDefaults(project.sessionDefaults, rawBody);
     if (defaults === null) return error(reply, 400, 'Paramètres de session invalides pour cet agent');
+    const remembered = remember === undefined ? null : parseSessionDefaults(project.sessionDefaults, remember);
     try {
-      const session = await sessions.create(project, defaults, validate, undefined, undefined, { epicId, rememberPrompt: false });
+      const session = await sessions.create(project, defaults, validate, undefined, undefined, { epicId, rememberDefaults: remember === undefined, rememberPrompt: false });
+      if (remembered !== null) {
+        const { prompt: _prompt, ...settings } = remembered;
+        sessions.rememberDefaults(project.id, settings);
+      }
       return reply.code(201).send(respond(session));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'Impossible de lancer la session';
@@ -720,10 +756,14 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (!Array.isArray(rawIds) || !rawIds.every((id) => typeof id === 'string' && own.has(id))) {
       return { ok: false, message: 'taskIds doit lister des tâches de ce projet' };
     }
-    const epic = db.createEpic(projectId, title, description, sourceSessionId);
-    broadcast({ type: 'epic', epic });
     const taskIds = [...new Set(rawIds as string[])];
-    for (const id of taskIds) db.updateTask(id, { epicId: epic.id });
+    // Rien n'est diffusé avant que l'epic et le rangement des tâches soient validés ensemble.
+    const epic = db.transaction(() => {
+      const epic = db.createEpic(projectId, title, description, sourceSessionId);
+      for (const id of taskIds) db.updateTask(id, { epicId: epic.id });
+      return epic;
+    });
+    broadcast({ type: 'epic', epic });
     broadcastTasks(taskIds);
     return { ok: true, epic, taskIds };
   };
@@ -763,7 +803,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.get<{ Params: { id: string } }>('/api/projects/:id/commands', async request => commands.commands(request.params.id));
   app.post<{ Params: { id: string } }>('/api/projects/:id/commands', async (request, reply) => {
     try { return reply.code(201).send(commands.configure(request.params.id, request.body)); }
-    catch (cause) { return error(reply, 400, String(cause)); }
+    catch (cause) { return error(reply, 400, errorMessage(cause)); }
   });
   app.get<{ Params: { id: string } }>('/api/tasks/:id/runs', async request => commands.listRuns(request.params.id));
   app.post<{ Params: { id: string } }>('/api/command-runs/:id/stop', async (request, reply) => commands.stop(request.params.id) ? reply.send({ok:true}) : error(reply, 409, 'Commande non active'));
@@ -773,7 +813,8 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.delete<{ Params: { id: string } }>('/api/projects/:id/backlog/completed', async (request, reply) => {
     const projectId = request.params.id;
     if (db.getProject(projectId) === null) return error(reply, 404, 'Projet introuvable');
-    if (db.listTasks().some((task) => task.projectId === projectId && task.status === 'done' && commands.active(task.id))) {
+    const activeTaskIds = commands.activeTaskIds();
+    if (db.listTasks().some((task) => task.projectId === projectId && task.status === 'done' && activeTaskIds.has(task.id))) {
       return error(reply, 409, 'Arrêtez les commandes avant de supprimer leurs tâches.');
     }
     const { taskIds, epicIds, dependentIds } = db.deleteCompletedBacklog(projectId);
@@ -795,7 +836,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (!epic.ok) return error(reply, 400, epic.message);
     let execution;
     try { execution = commands.execution(request.params.id, body?.execution); }
-    catch (cause) { return error(reply, 400, String(cause)); }
+    catch (cause) { return error(reply, 400, errorMessage(cause)); }
     const task = db.createTask(request.params.id, text, source, epic.id, execution);
     broadcast({ type: 'task', task });
     return reply.code(201).send(task);
@@ -809,7 +850,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     const changes: { text?: string; status?: TaskStatus; execution?:TaskExecution; dependsOn?: string[]; epicId?: string | null } = {};
     if (body.execution !== undefined) {
       try { changes.execution = commands.execution(db.getTask(request.params.id)!.projectId, body.execution); }
-      catch (cause) { return error(reply, 400, String(cause)); }
+      catch (cause) { return error(reply, 400, errorMessage(cause)); }
     }
     if (body.text !== undefined) {
       const text = taskText(body.text);
@@ -849,6 +890,8 @@ export async function buildServer(): Promise<FastifyInstance> {
     return reply.code(204).send();
   });
 
+  // Tâches LLM dont la session est en cours de création : deux POST concurrents n'en lancent qu'une.
+  const launchingTasks = new Set<string>();
   // Confie la tâche à une nouvelle session ; le prompt peut différer du texte (édité avant lancement).
   app.post<{ Params: { id: string } }>('/api/tasks/:id/start', async (request, reply) => {
     const task = db.getTask(request.params.id);
@@ -872,15 +915,25 @@ export async function buildServer(): Promise<FastifyInstance> {
         const run = await (task.epicId ? withEpicWorkspace(db,task.epicId,start) : start());
         return reply.code(202).send({task:db.getTask(task.id),run});
       }
-      catch (cause) { return error(reply, 409, cause instanceof Error ? cause.message : String(cause)); }
+      catch (cause) { return error(reply, 409, errorMessage(cause)); }
+    }
+    // Comme commands.start : une tâche terminée ne se relance pas, et « Relancer » n'est permis
+    // qu'une fois la session précédente arrêtée (sinon elle serait détachée de la tâche).
+    if (task.status === 'done') return error(reply, 409, 'Tâche déjà terminée : rouvrez-la avant de la relancer.');
+    const previous = task.sessionId === null ? null : db.getSession(task.sessionId);
+    if (launchingTasks.has(task.id) || (task.status === 'started' && previous !== null && previous.status !== 'exited')) {
+      return error(reply, 409, 'Tâche déjà en cours : arrêtez sa session avant de la relancer.');
     }
     try { const context=task.epicId?epicWorkspace(db,task.epicId):null;if(context)assertEpicWorkspace(db,context); }
-    catch(cause){return error(reply,409,cause instanceof Error ? cause.message : String(cause));}
-    return launchSession(reply, project, request.body, (session) => {
-      const updated = db.updateTask(task.id, { status: 'started', sessionId: session.id });
-      if (updated !== null) broadcast({ type: 'task', task: updated });
-      return { task: updated, session };
-    }, undefined, task.epicId);
+    catch(cause){return error(reply,409,errorMessage(cause));}
+    launchingTasks.add(task.id);
+    try {
+      return await launchSession(reply, project, request.body, (session) => {
+        const updated = db.updateTask(task.id, { status: 'started', sessionId: session.id });
+        if (updated !== null) broadcast({ type: 'task', task: updated });
+        return { task: updated, session };
+      }, undefined, { epicId: task.epicId });
+    } finally { launchingTasks.delete(task.id); }
   });
 
   app.get('/api/epics', async () => db.listEpics());
@@ -911,31 +964,33 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.get<{ Params: { id: string } }>('/api/epics/:id/runs', async request => epicRunner.list(request.params.id));
   app.get<{ Params: { id: string } }>('/api/epics/:id/workspace', async (request, reply) => {
     if (!db.getEpic(request.params.id)) return error(reply,404,'Epic introuvable');
-    try{return reply.send(epicWorkspace(db,request.params.id));}catch(cause){return error(reply,409,String(cause));}
+    try{return reply.send(epicWorkspace(db,request.params.id));}catch(cause){return error(reply,409,errorMessage(cause));}
   });
   app.get<{ Params: { id: string } }>('/api/epics/:id/workspace-options', async (request, reply) => {
     if (!db.getEpic(request.params.id)) return error(reply,404,'Epic introuvable');
     try { return reply.send(await epicWorkspaceOptions(db,request.params.id)); }
-    catch (cause) { return error(reply,409,cause instanceof Error?cause.message:String(cause)); }
+    catch (cause) { return error(reply,409,errorMessage(cause)); }
   });
   app.post<{ Params: { id: string } }>('/api/epics/:id/workspace', async (request, reply) => {
     if (!db.getEpic(request.params.id)) return error(reply,404,'Epic introuvable');
     const path=bodyRecord(request.body)?.path;
     if(typeof path!=='string'||!path.trim()||path.length>4096)return error(reply,400,'Le chemin du dossier est requis.');
     try { return reply.send(await withEpicWorkspace(db,request.params.id,async()=>epicRunner.selectWorkspace(request.params.id,path))); }
-    catch (cause) { return error(reply,409,cause instanceof Error?cause.message:String(cause)); }
+    catch (cause) { return error(reply,409,errorMessage(cause)); }
   });
   app.post<{ Params: { id: string } }>('/api/epics/:id/start', async (request, reply) => {
+    await catalogReady();
     const epic=db.getEpic(request.params.id);
     if (!epic) return error(reply, 404, 'Epic introuvable');
     const body=bodyRecord(request.body)??{};
     const options=parseSessionDefaults(db.getProject(epic.projectId)!.sessionDefaults, {...body,prompt:typeof body.prompt==='string'?body.prompt:''});
     if(!options)return error(reply,400,'Réglages de session invalides');
-    try{return reply.code(202).send(epicRunner.start(epic.id,options));}
-    catch(cause){return error(reply,409,cause instanceof Error ? cause.message : String(cause));}
+    try{return reply.code(202).send(await epicRunner.start(epic.id,options));}
+    catch(cause){return error(reply,409,errorMessage(cause));}
   });
   // Code review du travail d'une epic terminée, arrêtée ou échouée : une session rejoint le worktree des étapes.
   app.post<{ Params: { id: string } }>('/api/epics/:id/review', async (request, reply) => {
+    await catalogReady();
     const epic = db.getEpic(request.params.id);
     if (!epic) return error(reply, 404, 'Epic introuvable');
     const run = epicRunner.list(epic.id)[0];
@@ -950,7 +1005,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       const workspace=epicWorkspace(db,epic.id);if(workspace)assertEpicWorkspace(db,workspace);
       scope = await epicReviewScope(db, {...run,workspace,contextRoot:workspace?.path??run.contextRoot});
     }
-    catch (cause) { return error(reply, 409, cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { return error(reply, 409, errorMessage(cause)); }
     const prompt = `${defaults.prompt}\n\n${epicReviewInstructions(epic.title, scope)}`.trim();
     try {
       const session = await sessions.create(project, {...defaults, prompt}, undefined, scope.path, `Review de l’epic « ${epic.title} »`.slice(0, 120), { rememberDefaults: false, epicId: epic.id });
@@ -961,9 +1016,10 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
   // Les fichiers que le retrait automatique du contenu de départ laisse à examiner sont confiés à une session, dans la copie.
   app.post<{ Params: { id: string } }>('/api/worktrees/:id/resolve-starting-content', async (request, reply) => {
+    await catalogReady();
     let resolution;
     try { resolution = await worktrees.startingContentResolution(request.params.id); }
-    catch (cause) { return error(reply, cause instanceof WorktreeError ? cause.statusCode : 409, cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { return error(reply, cause instanceof WorktreeError ? cause.statusCode : 409, errorMessage(cause)); }
     const {view, workspace, plan} = resolution;
     const project = view.projectId ? db.getProject(view.projectId) : null;
     if (!project) return error(reply, 409, 'Le projet de cette copie a été retiré : aucune session ne peut y être lancée.');
@@ -994,15 +1050,15 @@ export async function buildServer(): Promise<FastifyInstance> {
     return reply.code(201).send(task);
   });
   app.post<{ Params: { id: string } }>('/api/epic-runs/:id/stop', async (request,reply)=>{
-    try{return reply.send(await epicRunner.stop(request.params.id));}catch(cause){return error(reply,409,String(cause));}
+    try{return reply.send(epicRunner.stop(request.params.id));}catch(cause){return error(reply,409,errorMessage(cause));}
   });
   app.post<{ Params: { id: string } }>('/api/epic-runs/:id/resume', async (request,reply)=>{
-    try{return reply.send(epicRunner.resume(request.params.id,bodyRecord(request.body)?.replan===true));}catch(cause){return error(reply,409,String(cause));}
+    try{return reply.send(epicRunner.resume(request.params.id,bodyRecord(request.body)?.replan===true));}catch(cause){return error(reply,409,errorMessage(cause));}
   });
   app.patch<{ Params: { id: string } }>('/api/epic-runs/:id/auto-validation', async (request,reply)=>{
     const enabled=bodyRecord(request.body)?.enabled;
     if(typeof enabled!=='boolean')return error(reply,400,'enabled doit être un booléen.');
-    try{return reply.send(epicRunner.setAutoValidate(request.params.id,enabled));}catch(cause){return error(reply,409,String(cause));}
+    try{return reply.send(epicRunner.setAutoValidate(request.params.id,enabled));}catch(cause){return error(reply,409,errorMessage(cause));}
   });
 
   app.post<{ Params: { id: string } }>('/api/sessions/:id/kill', async (request, reply) => {
@@ -1127,7 +1183,11 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.patch('/api/slack', async (request, reply) => {
     const body = bodyRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps invalide');
-    const result = await orError(reply, async () => notifier.updateSettings(body));
+    const result = await orError(reply, async () => {
+      const settings = notifier.updateSettings(body);
+      if (settings !== null) await notifier.settingsSaved();
+      return settings;
+    });
     if (!result.ok) return result.reply;
     if (result.value === null) return error(reply, 400, 'Réglages Slack invalides');
     return reply.send(notifier.status());
@@ -1148,13 +1208,13 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (text === '' || text.length > 3_000) {
       return error(reply, 400, 'Le texte doit contenir entre 1 et 3 000 caractères');
     }
-    appendFileSync(HOOK_LOG, `${JSON.stringify({
+    appendHookLog({
       at: new Date().toISOString(),
       session: session.id,
       agent: session.agent,
       event: 'cerebro-notify',
       payload: { kind: body.kind, text },
-    })}\n`);
+    });
     // Even without Slack, the end of the turn must show as a question in the UI.
     if (body.kind === 'ask') sessions.markAsked(session.id, text);
     if (!SLACK_ENABLED) return error(reply, 503, "Slack n'est pas configuré");
@@ -1162,8 +1222,8 @@ export async function buildServer(): Promise<FastifyInstance> {
       return error(reply, 503, "Messages des agents désactivés dans les réglages Slack de Cerebro");
     }
     try {
-      await notifier.agentMessage(session.id, body.kind, text);
-      return reply.send({ ok: true });
+      const outcome = await notifier.agentMessage(session.id, body.kind, text);
+      return reply.send({ ok: true, queued: outcome === 'queued' });
     } catch (caught) {
       console.error('[slack]', caught instanceof Error ? caught.message : caught);
       return error(reply, 502, "Impossible d'envoyer le message Slack");
@@ -1186,14 +1246,14 @@ export async function buildServer(): Promise<FastifyInstance> {
     const session = backlogSession(request, reply);
     if (!session) return reply;
     try { return reply.send(publishFindings(session.id, request.body)); }
-    catch (cause) { return error(reply, 400, String(cause)); }
+    catch (cause) { return error(reply, 400, errorMessage(cause)); }
   });
   app.post<{ Params: { id: string; taskId:string } }>('/api/backlog/:id/tasks/:taskId/result', async (request,reply)=>{
     const session=backlogSession(request,reply);if(!session)return reply;
     const body=bodyRecord(request.body);
     if(!['failed','blocked','waiting-validation'].includes(String(body?.status))||typeof body?.message!=='string'||body.message.length>2000)return error(reply,400,'Résultat invalide.');
     try{return reply.send(epicRunner.report(session.id,request.params.taskId,body.status as 'failed'|'blocked'|'waiting-validation',body.message));}
-    catch(cause){return error(reply,409,String(cause));}
+    catch(cause){return error(reply,409,errorMessage(cause));}
   });
   app.get<{ Params: { id: string } }>('/api/backlog/:id', async (request, reply) => {
     const session = backlogSession(request, reply);
@@ -1278,15 +1338,18 @@ export async function buildServer(): Promise<FastifyInstance> {
     const epics = db.listEpics();
     // `epic` : epic de toutes les tâches de l'envoi, existant (identifiant) ou à créer ({ title, description? }).
     let defaultEpic: string | null = null;
-    let newEpic: Record<string, unknown> | null = null;
+    let newEpic: { title: string; description: string } | null = null;
     if (typeof body.epic === 'string') {
       const checked = checkEpic(body.epic, session.projectId, epics);
       if (!checked.ok) return error(reply, 400, checked.message);
       defaultEpic = checked.id;
     } else if (body.epic !== undefined && body.epic !== null) {
-      newEpic = bodyRecord(body.epic);
-      if (epicTitle(newEpic?.title) === null) return error(reply, 400, EPIC_TITLE_ERROR);
-      if (epicDescription(newEpic?.description) === null) return error(reply, 400, EPIC_DESCRIPTION_ERROR);
+      const raw = bodyRecord(body.epic);
+      const title = epicTitle(raw?.title);
+      if (title === null) return error(reply, 400, EPIC_TITLE_ERROR);
+      const description = epicDescription(raw?.description);
+      if (description === null) return error(reply, 400, EPIC_DESCRIPTION_ERROR);
+      newEpic = { title, description };
     }
     const items: { text: string; deps: (string | number)[]; epicId: string | null | undefined }[] = [];
     for (const [index, raw] of (body.tasks as unknown[]).entries()) {
@@ -1311,20 +1374,26 @@ export async function buildServer(): Promise<FastifyInstance> {
       }
       items.push({ text, deps: deps as (string | number)[], epicId });
     }
-    let createdEpic: Epic | null = null;
-    if (newEpic !== null) {
-      const result = createEpic(session.projectId, { title: newEpic.title, description: newEpic.description }, session.id);
-      if (!result.ok) return error(reply, 400, result.message);
-      createdEpic = result.epic;
-      defaultEpic = result.epic.id;
+    // L'envoi est enregistré d'un bloc et diffusé une fois validé : un échec en cours de route ne laisse rien.
+    let createdEpic: Epic | null;
+    let created: Task[];
+    try {
+      ({ createdEpic, created } = db.transaction(() => {
+        const createdEpic = newEpic === null ? null : db.createEpic(session.projectId, newEpic.title, newEpic.description, session.id);
+        const fallbackEpic = createdEpic?.id ?? defaultEpic;
+        // Les nouvelles tâches ne dépendent que de tâches existantes ou antérieures : pas de cycle possible.
+        const tasks: Task[] = [];
+        for (const { text, deps, epicId } of items) {
+          const task = db.createTask(session.projectId, text, session.id, epicId === undefined ? fallbackEpic : epicId);
+          const dependsOn = deps.map((dep) => typeof dep === 'number' ? (tasks[dep - 1] as Task).id : dep);
+          tasks.push(dependsOn.length === 0 ? task : db.updateTask(task.id, { dependsOn }) ?? task);
+        }
+        return { createdEpic, created: tasks };
+      }));
+    } catch (caught) {
+      return error(reply, 500, caught instanceof Error ? caught.message : 'Impossible d’enregistrer les tâches');
     }
-    // Les nouvelles tâches ne dépendent que de tâches existantes ou antérieures : pas de cycle possible.
-    const created: Task[] = [];
-    for (const { text, deps, epicId } of items) {
-      const task = db.createTask(session.projectId, text, session.id, epicId === undefined ? defaultEpic : epicId);
-      const dependsOn = deps.map((dep) => typeof dep === 'number' ? (created[dep - 1] as Task).id : dep);
-      created.push(dependsOn.length === 0 ? task : db.updateTask(task.id, { dependsOn }) ?? task);
-    }
+    if (createdEpic !== null) broadcast({ type: 'epic', epic: createdEpic });
     for (const task of created) broadcast({ type: 'task', task });
     return reply.code(201).send({
       count: created.length,
@@ -1391,13 +1460,14 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (session === null) return error(reply, 404, 'Session introuvable');
     if (body.agent !== session.agent) return error(reply, 400, "L'agent ne correspond pas à la session");
     // Keep a trace of every hook event: invaluable to debug state detection.
-    appendFileSync(HOOK_LOG, `${JSON.stringify({ at: new Date().toISOString(), session: session.id, agent: body.agent, event: body.event, payload: body.payload })}\n`);
+    appendHookLog({ at: new Date().toISOString(), session: session.id, agent: body.agent, event: body.event, payload: body.payload });
     handleHook(sessions, session.id, body.agent, body.event, body.payload);
     return reply.code(204).send();
   });
 
   app.get('/ws/events', { websocket: true }, (socket) => {
     eventSockets.add(socket);
+    eventHeartbeat.watch(socket);
     sendSocket(socket, {
       type: 'snapshot',
       projects: db.listProjects(),
@@ -1466,12 +1536,12 @@ const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fil
 if (isMain) {
   startServer().then((app) => {
     let closing = false;
-    const shutdown = async (): Promise<void> => {
+    const shutdown = async (code = 0): Promise<void> => {
       if (closing) return;
       closing = true;
       try {
         await app.close();
-        process.exit(0);
+        process.exit(code);
       } catch (caught) {
         const message = caught instanceof Error ? caught.stack ?? caught.message : String(caught);
         process.stderr.write(`${message}\n`);
@@ -1480,6 +1550,18 @@ if (isMain) {
     };
     process.once('SIGINT', () => void shutdown());
     process.once('SIGTERM', () => void shutdown());
+    // Dernier filet : une promesse rejetée sans gestionnaire est journalisée sans arrêter le serveur ;
+    // une exception synchrone laisse un état incertain, le serveur s'arrête alors proprement.
+    process.on('unhandledRejection', (reason) => {
+      process.stderr.write(`${new Date().toISOString()} Promesse rejetée non gérée : ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}\n`);
+    });
+    process.on('uncaughtException', (caught) => {
+      process.stderr.write(`${new Date().toISOString()} Exception non gérée, arrêt du serveur : ${caught.stack ?? caught.message}\n`);
+      process.exitCode = 1;
+      // Une fermeture bloquée ne doit pas laisser un serveur à moitié arrêté.
+      setTimeout(() => process.exit(1), 10_000).unref();
+      void shutdown(1);
+    });
   }).catch((caught: unknown) => {
     const message = caught instanceof Error ? caught.stack ?? caught.message : String(caught);
     process.stderr.write(`${message}\n`);

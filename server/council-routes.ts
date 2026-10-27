@@ -3,24 +3,28 @@ import { basename } from 'node:path';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { AGENTS } from './agents.ts';
 import { CouncilError, CouncilRuns } from './council-runner.ts';
+import { catalogReady } from './catalog.ts';
 import { exportMarkdown, validateCouncilSettings } from './council.ts';
 import type { CerebroDatabase } from './db.ts';
 import { imageMediaType } from './headless.ts';
+import { errorMessage } from './errors.ts';
 
 // Réglages globaux, lancement, suivi et export des councils ; le gestionnaire est renvoyé pour câblage.
 export function registerCouncilRoutes(app: FastifyInstance, db: CerebroDatabase): CouncilRuns {
   const councils = new CouncilRuns(db);
+  councils.startUploadPurge();
   const attempt = async (reply: FastifyReply, run: () => Promise<unknown>, status = 200): Promise<unknown> => {
     try {
       return reply.code(status).send(await run());
     } catch (cause) {
-      return reply.code(cause instanceof CouncilError ? cause.statusCode : 500).send({ error: cause instanceof Error ? cause.message : String(cause) });
+      return reply.code(cause instanceof CouncilError ? cause.statusCode : 500).send({ error: errorMessage(cause) });
     }
   };
 
   app.get('/api/council/settings', async () => councils.settingsFor(null));
   app.put('/api/council/settings', async (request, reply) => {
     // Mêmes agents acceptés que pour la surcharge projet : une CLI absente n'invalide pas les réglages.
+    await catalogReady();
     const result = validateCouncilSettings(request.body, db.listPersonas(), AGENTS);
     if ('error' in result) return reply.code(400).send({ error: result.error });
     db.putSetting('council', result.settings);

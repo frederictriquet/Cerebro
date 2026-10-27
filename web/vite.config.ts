@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type ProxyOptions } from 'vite';
-import { assertLoopbackPortFree } from '../server/ports.ts';
+import { assertLoopbackPortFree, VITE_DEV_HOST as DEV_HOST, VITE_DEV_PORT as DEV_PORT } from '../server/ports.ts';
 
 // Same env file as the server (server/config.ts), so the proxy targets the port it listens on.
 const envFile = join(process.env.CEREBRO_DATA_DIR ?? join(homedir(), '.cerebro'), 'env');
@@ -47,9 +47,6 @@ const quietWsDisconnects: ProxyOptions['configure'] = (proxy) => {
     return emit(event, ...args);
   }) as typeof proxy.emit;
 };
-
-const DEV_HOST = '127.0.0.1';
-const DEV_PORT = 5173;
 
 export default defineConfig(async ({ command }) => {
   // strictPort only covers 127.0.0.1: also refuse a port already taken on [::1].

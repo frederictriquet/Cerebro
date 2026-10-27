@@ -56,7 +56,7 @@ test('la purge supprime les epics terminés et leurs tâches, conserve les autre
     ];
     db.updateTask(kept[0].id, { dependsOn: [removed[0].id, kept[2].id] });
     const url = `/api/projects/${project.id}/backlog/completed`;
-    const active = mock.method(CommandExecutor.prototype, 'active', (id) => id === removed[0].id);
+    const active = mock.method(CommandExecutor.prototype, 'activeTaskIds', () => new Set([removed[0].id]));
     try {
       assert.equal((await app.inject({ method: 'DELETE', url })).statusCode, 409);
       assert.ok(db.getEpic(completed.id));

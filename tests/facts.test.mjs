@@ -64,6 +64,7 @@ test('filters and dependencies outside selected epic, declared progress, recorde
 test('bounded language and malformed/ambiguous explicit requests', async () => {
   assert.equal(parseFactQuery('explique pourquoi ce projet est lent'), null);
   assert.equal(parseFactQuery('combien de tâches restent et lis le code'), null);
+  for (const text of ['constructor', '__proto__', 'toString ?', 'hasOwnProperty']) assert.equal(parseFactQuery(text), null);
   for (const text of ['etat sessions statut=done', 'etat taches projet=x projet=y', 'etat sessions epic=x', 'etat taches limite=5']) {
     assert.equal(typeof parseFactQuery(text), 'string');
   }

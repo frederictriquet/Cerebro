@@ -1,6 +1,7 @@
-import { statSync, unlinkSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { copyFileSync, linkSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { extname, join, resolve, sep } from 'node:path';
 import { getAgentAvailability } from './agents.ts';
+import { catalogReady } from './catalog.ts';
 import { ATTACHMENTS_DIR } from './config.ts';
 import {
   ANSWER_SCHEMA, MIN_ADVISORS, REVIEW_SCHEMA, SYNTHESIS_SCHEMA, answerPrompt, assignLetters, defaultCouncilSettings, imagePaths, imageToken, parseAnswer,
@@ -9,12 +10,16 @@ import {
 } from './council.ts';
 import type { Agent, CerebroDatabase, Project } from './db.ts';
 import { imageMediaType, runHeadless, supportsImages, type HeadlessOptions } from './headless.ts';
+import { errorMessage } from './errors.ts';
 
 export const ANSWER_TIMEOUT_MS = 10 * 60_000;
 export const REVIEW_TIMEOUT_MS = 5 * 60_000;
 export const SYNTHESIS_TIMEOUT_MS = 10 * 60_000;
 export const MAX_QUESTION_LENGTH = 10_000;
 export const MAX_CONTEXT_LENGTH = 100_000;
+// Délai de grâce d'une image déposée hors projet (brouillon rejoué, autre onglet) avant sa purge.
+export const UPLOAD_RETENTION_MS = 24 * 60 * 60_000;
+const UPLOAD_PURGE_INTERVAL_MS = 60 * 60_000;
 
 export interface CouncilStart {
   projectId: string | null;
@@ -37,8 +42,6 @@ export class CouncilError extends Error {
     this.statusCode = statusCode;
   }
 }
-
-const message = (cause: unknown): string => cause instanceof Error ? cause.message : String(cause);
 
 // Un chemin d'image accepté est un fichier image existant sous le dossier des pièces jointes du serveur.
 function attachedImage(path: string): string | null {
@@ -68,11 +71,39 @@ export function checkImages(raw: unknown, llms: readonly { agent: Agent; label: 
   return parsed.images;
 }
 
+// Dossier propre au run, sous celui du projet pour disparaître avec lui.
+function runImagesDir(projectId: string | null, runId: string): string {
+  return join(ATTACHMENTS_DIR, projectId === null ? 'council' : `project-${projectId}`, `council-${runId}`);
+}
+
+// Le run reçoit ses propres fichiers (liens physiques, sinon copies) : un fichier déposé peut être
+// repris par un autre council (brouillon rejoué, autre onglet) ou une session, et doit survivre au run.
+function ownImages(images: readonly CouncilImage[], dir: string): CouncilImage[] {
+  if (images.length === 0) return [];
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    return images.map((image) => {
+      const path = join(dir, `${image.n}${extname(image.path).toLowerCase()}`);
+      try {
+        linkSync(image.path, path);
+      } catch {
+        copyFileSync(image.path, path);
+      }
+      return { n: image.n, path };
+    });
+  } catch (cause) {
+    rmSync(dir, { recursive: true, force: true });
+    throw new CouncilError(`Images jointes illisibles : ${errorMessage(cause)}`);
+  }
+}
+
 export class CouncilRuns {
   private db: CerebroDatabase;
   private active = new Map<string, { run: CouncilRun; abort: AbortController; done: Promise<void> }>();
   private deletingProjects = new Set<string>();
   private closed = false;
+  private purgeTimer: NodeJS.Timeout | null = null;
   onComplete: (run: CouncilRun) => void = () => {};
 
   constructor(db: CerebroDatabase) {
@@ -118,6 +149,16 @@ export class CouncilRuns {
     return this.db.saveCouncilRun(run);
   }
 
+  // Enregistrement en cours d'exécution : personne n'attend `done`, une erreur SQLite passagère est journalisée sans interrompre le council.
+  private persist(run: CouncilRun): boolean {
+    try {
+      return this.save(run);
+    } catch (cause) {
+      console.error(`Council ${run.id} non enregistré :`, errorMessage(cause));
+      return false;
+    }
+  }
+
   private projectForStart(id: string | null): Project | null {
     if (id === null) return null;
     if (this.deletingProjects.has(id)) throw new CouncilError('Suppression du projet en cours.', 409);
@@ -142,6 +183,8 @@ export class CouncilRuns {
 
   // Idempotent sur `requestId`, qui devient l'identifiant du run.
   async start(input: CouncilStart, requestId: unknown): Promise<CouncilRun> {
+    // Modèles validés contre le catalogue réel, pas contre le repli du démarrage.
+    await catalogReady();
     if (this.closed) throw new CouncilError('Serveur en cours d’arrêt.', 409);
     if (typeof requestId !== 'string' || !/^[\da-f-]{36}$/i.test(requestId)) throw new CouncilError('Identifiant de lancement invalide.');
     const question = typeof input.question === 'string' ? input.question.trim() : '';
@@ -155,8 +198,13 @@ export class CouncilRuns {
     const settings = structuredClone(await this.settingsFor(project));
     const resolved = resolveParticipants(settings, this.db.listPersonas(), input.participants);
     if ('error' in resolved) throw new CouncilError(resolved.error);
+    const llms = [...resolved.advisors.map((advisor) => ({ agent: advisor.agent, label: advisor.name })), { agent: settings.chairman.agent, label: 'chairman' }];
+    // Les réglages acceptent une CLI absente : refusé ici plutôt qu'après les réponses et relectures.
+    const installed = await this.availableAgents();
+    const missing = llms.filter((llm) => !installed.includes(llm.agent));
+    if (missing.length > 0) throw new CouncilError(`Agent non installé : ${missing.map((llm) => `${llm.label} (${llm.agent})`).join(', ')}.`);
     // Relectures et synthèse reçoivent aussi les images : le chairman doit les accepter comme les conseillers.
-    const images = checkImages(input.images, [...resolved.advisors.map((advisor) => ({ agent: advisor.agent, label: advisor.name })), { agent: settings.chairman.agent, label: 'chairman' }]);
+    const images = checkImages(input.images, llms);
     if (this.closed) throw new CouncilError('Serveur en cours d’arrêt.', 409);
     // La suppression a pu commencer ou se terminer pendant la résolution des réglages.
     project = this.projectForStart(input.projectId);
@@ -165,14 +213,18 @@ export class CouncilRuns {
     if (raced !== null) return raced;
     const now = Date.now();
     const advisors = resolved.advisors;
+    const imagesDir = runImagesDir(input.projectId, requestId);
     const run: CouncilRun = {
-      id: requestId, projectId: input.projectId, origin: input.origin, question, context, images,
+      id: requestId, projectId: input.projectId, origin: input.origin, question, context, images: ownImages(images, imagesDir),
       readProject: project !== null && (input.readProject ?? settings.readProject),
       settings, advisors, status: 'running', phase: 'answering', letters: assignLetters(advisors),
       answers: advisors.map((advisor) => ({ advisorId: advisor.personaId, text: null, error: null, startedAt: now, finishedAt: null })),
       reviews: [], synthesis: null, error: null, startedAt: now, finishedAt: null,
     };
-    if (!this.save(run)) throw new CouncilError('Projet introuvable.', 404);
+    if (!this.save(run)) {
+      rmSync(imagesDir, { recursive: true, force: true });
+      throw new CouncilError('Projet introuvable.', 404);
+    }
     const abort = new AbortController();
     const done = Promise.resolve().then(() => this.execute(run, project, abort.signal)).finally(() => this.active.delete(run.id));
     this.active.set(run.id, { run, abort, done });
@@ -196,19 +248,70 @@ export class CouncilRuns {
     return active.run;
   }
 
-  // Les images jointes appartiennent au run : elles disparaissent avec lui.
+  // Les images du run disparaissent avec lui ; celles d'un run antérieur à leur dossier propre
+  // pointent vers les fichiers déposés et sont conservées tant qu'un autre council les référence.
   delete(id: string): void {
     if (this.active.has(id)) throw new CouncilError('Ce council est en cours : annulez-le avant de le supprimer.', 409);
     const run = this.get(id);
     if (run === null || !this.db.deleteCouncilRun(id)) throw new CouncilError('Council introuvable.', 404);
-    for (const path of imagePaths(run)) {
-      if (attachedImage(path) !== null) continue;
+    const dir = resolve(runImagesDir(run.projectId, run.id));
+    const shared = imagePaths(run).filter((path) => !resolve(path).startsWith(dir + sep));
+    if (shared.length < imagePaths(run).length) rmSync(dir, { recursive: true, force: true });
+    const referenced = shared.length === 0 ? new Set<string>() : new Set(this.list().flatMap(imagePaths).map((path) => resolve(path)));
+    for (const path of shared) {
+      if (attachedImage(path) !== null || referenced.has(resolve(path))) continue;
       try {
         unlinkSync(path);
       } catch (cause) {
-        console.warn(`Image du council ${id} non supprimée (${path}) :`, message(cause));
+        console.warn(`Image du council ${id} non supprimée (${path}) :`, errorMessage(cause));
       }
     }
+  }
+
+  // Les images déposées hors projet ne disparaissent avec aucun dossier : chaque run en possède sa
+  // copie, on efface donc celles qui ont dépassé le délai de grâce et qu'aucun run antérieur ne référence.
+  purgeUploads(now = Date.now()): number {
+    const dir = join(ATTACHMENTS_DIR, 'council');
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return 0;
+    }
+    const stale = entries.filter((entry) => entry.isFile()).map((entry) => join(dir, entry.name)).filter((path) => {
+      try {
+        return now - statSync(path).mtimeMs >= UPLOAD_RETENTION_MS;
+      } catch {
+        return false;
+      }
+    });
+    if (stale.length === 0) return 0;
+    const referenced = new Set(this.list().flatMap(imagePaths).map((path) => resolve(path)));
+    let removed = 0;
+    for (const path of stale) {
+      if (referenced.has(resolve(path))) continue;
+      try {
+        unlinkSync(path);
+        removed++;
+      } catch (cause) {
+        console.warn(`Image déposée non supprimée (${path}) :`, errorMessage(cause));
+      }
+    }
+    return removed;
+  }
+
+  startUploadPurge(): void {
+    if (this.purgeTimer !== null) return;
+    const purge = (): void => {
+      try {
+        this.purgeUploads();
+      } catch (cause) {
+        console.warn('Purge des images déposées impossible :', errorMessage(cause));
+      }
+    };
+    purge();
+    this.purgeTimer = setInterval(purge, UPLOAD_PURGE_INTERVAL_MS);
+    this.purgeTimer.unref();
   }
 
   // Run tel qu'enregistré à la fin de son exécution (immédiatement s'il n'est plus en cours).
@@ -221,7 +324,7 @@ export class CouncilRuns {
     const phase = (value: CouncilPhase): void => {
       signal.throwIfAborted();
       run.phase = value;
-      this.save(run);
+      this.persist(run);
     };
     // Seuls les conseillers lisent le dépôt ; relectures et synthèse portent sur les réponses.
     const reading = readsProject(run);
@@ -237,10 +340,10 @@ export class CouncilRuns {
         try {
           answer.text = parseAnswer(await call(advisor, answerPrompt(run, advisor, cwd ?? null), ANSWER_SCHEMA, ANSWER_TIMEOUT_MS, reading ? 'read-only' : 'none'));
         } catch (cause) {
-          answer.error = message(cause);
+          answer.error = errorMessage(cause);
         } finally {
           answer.finishedAt = Date.now();
-          this.save(run);
+          this.persist(run);
         }
       }));
       signal.throwIfAborted();
@@ -254,10 +357,10 @@ export class CouncilRuns {
         try {
           Object.assign(review, parseReview(await call(advisor, reviewPrompt(run, advisor), REVIEW_SCHEMA, REVIEW_TIMEOUT_MS), reviewLetters(run, advisor)));
         } catch (cause) {
-          review.error = message(cause);
+          review.error = errorMessage(cause);
         } finally {
           review.finishedAt = Date.now();
-          this.save(run);
+          this.persist(run);
         }
       }));
       phase('synthesizing');
@@ -269,16 +372,24 @@ export class CouncilRuns {
       run.status = signal.aborted ? this.closed ? 'interrupted' : 'cancelled' : 'failed';
       run.error = signal.aborted
         ? this.closed ? 'Serveur arrêté pendant le council : les avis obtenus sont conservés.' : 'Council annulé.'
-        : run.phase === 'synthesizing' ? `Synthèse impossible : ${message(cause)}` : message(cause);
+        : run.phase === 'synthesizing' ? `Synthèse impossible : ${errorMessage(cause)}` : errorMessage(cause);
     } finally {
       run.phase = 'finished';
       run.finishedAt = Date.now();
-      if (this.save(run)) this.onComplete(run);
+      if (this.persist(run)) {
+        try {
+          this.onComplete(run);
+        } catch (cause) {
+          console.error(`Council ${run.id} : notification de fin en échec :`, errorMessage(cause));
+        }
+      }
     }
   }
 
   async shutdown(): Promise<void> {
     this.closed = true;
+    if (this.purgeTimer !== null) clearInterval(this.purgeTimer);
+    this.purgeTimer = null;
     for (const item of this.active.values()) item.abort.abort();
     await Promise.allSettled([...this.active.values()].map((item) => item.done));
   }

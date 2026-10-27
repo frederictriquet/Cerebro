@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { Agent } from './db.ts';
+import { errorMessage } from './errors.ts';
 
 export interface UsageWindow {
   label: string;
@@ -50,9 +51,6 @@ const CLAUDE_WINDOWS: readonly [key: string, label: string, minutes: number][] =
   ['seven_day_sonnet', 'Semaine Sonnet', 10_080],
 ];
 
-function errorText(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
 
 function windowLabel(minutes: number): string {
   if (minutes === 300) return '5 h';
@@ -171,7 +169,7 @@ function readAuth(read: () => AgentAuth): AgentAuth {
     return read();
   } catch (cause) {
     const missing = (cause as NodeJS.ErrnoException).code === 'ENOENT';
-    return { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: missing ? 'Non connecté' : errorText(cause) };
+    return { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: missing ? 'Non connecté' : errorMessage(cause) };
   }
 }
 
@@ -202,6 +200,16 @@ async function fetchClaude(oauth: Record<string, unknown> | null): Promise<Agent
   return { agent: 'claude', windows, auth: null, updatedAt: new Date().toISOString(), error: null };
 }
 
+/** Runs a filesystem read, returning null when the entry vanished in the meantime (ENOENT). */
+function ignoreMissing<T>(read: () => T): T | null {
+  try {
+    return read();
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw cause;
+  }
+}
+
 function codexRollouts(): string[] {
   const root = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'sessions');
   const subdirs = (dir: string): string[] => {
@@ -218,8 +226,11 @@ function codexRollouts(): string[] {
     for (const month of subdirs(join(root, year))) {
       for (const day of subdirs(join(root, year, month))) {
         const dir = join(root, year, month, day);
-        for (const name of readdirSync(dir)) {
-          if (name.endsWith('.jsonl')) files.push({ path: join(dir, name), mtime: statSync(join(dir, name)).mtimeMs });
+        for (const name of ignoreMissing(() => readdirSync(dir)) ?? []) {
+          if (!name.endsWith('.jsonl')) continue;
+          // Codex may delete or rename a rollout while we scan: skip it rather than fail the whole read.
+          const mtime = ignoreMissing(() => statSync(join(dir, name)).mtimeMs);
+          if (mtime !== null) files.push({ path: join(dir, name), mtime });
         }
         if (files.length >= CODEX_MAX_FILES) return files.sort((a, b) => b.mtime - a.mtime).map((f) => f.path);
       }
@@ -254,11 +265,13 @@ function codexWindow(value: unknown): UsageWindow | null {
 }
 
 /** Codex only reports its limits inside session rollouts: take the latest token_count event. */
-function readCodex(): AgentUsage {
+export function readCodex(): AgentUsage {
   let latest: { timestamp: string; limits: Record<string, unknown> } | null = null;
   // Newest rollout first: the first rate_limits event found from the end is the latest one.
   for (const path of codexRollouts()) {
-    const lines = readTail(path).split('\n');
+    const tail = ignoreMissing(() => readTail(path));
+    if (tail === null) continue;
+    const lines = tail.split('\n');
     for (let i = lines.length - 1; i >= 0 && latest === null; i--) {
       if (!lines[i].includes('"rate_limits"')) continue;
       try {
@@ -307,8 +320,8 @@ export class UsageTracker {
         })
         .catch((cause: unknown) => {
           // Keep the last good figures and say why they are not refreshed.
-          this.claude = { ...this.claude, error: errorText(cause) };
-          this.claudeAuth ??= { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: errorText(cause) };
+          this.claude = { ...this.claude, error: errorMessage(cause) };
+          this.claudeAuth ??= { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: errorMessage(cause) };
         })
         .finally(() => {
           this.claudePending = null;
@@ -321,7 +334,7 @@ export class UsageTracker {
       try {
         this.codex = readCodex();
       } catch (cause) {
-        this.codex = { ...this.codex, error: errorText(cause) };
+        this.codex = { ...this.codex, error: errorMessage(cause) };
       }
       this.codexAuth = readAuth(readCodexAuth);
       this.grokAuth = readAuth(readGrokAuth);

@@ -22,7 +22,7 @@ export function parseReport(raw:unknown):FindingReport{
 export function saveReport(db:CerebroDatabase,sessionId:string,raw:unknown):SavedReport{
   if(!db.getSession(sessionId))throw new Error('Session introuvable.');
   const report=parseReport(raw);const digest=createHash('sha256').update(JSON.stringify(report)).digest('hex');
-  db.connection.prepare('INSERT OR IGNORE INTO review_reports (id,session_id,digest,data,created_at) VALUES (?,?,?,?,?)').run(randomUUID(),sessionId,digest,JSON.stringify(report),Date.now());
+  db.connection.prepare('INSERT OR IGNORE INTO review_reports (id,session_id,digest,data,created_at,finding_count) VALUES (?,?,?,?,?,?)').run(randomUUID(),sessionId,digest,JSON.stringify(report),Date.now(),report.findings.length);
   return listReports(db,sessionId).find(r=>createHash('sha256').update(JSON.stringify({title:r.title,findings:r.findings})).digest('hex')===digest)!;
 }
 export function listReports(db:CerebroDatabase,sessionId:string):SavedReport[]{
@@ -41,8 +41,7 @@ export function importFindings(db:CerebroDatabase,sessionId:string,reportId:stri
     if(f.dependsOn.some(id=>!wanted.has(id)&&!report.imported[id]))throw new Error('Sélectionnez aussi les findings prérequis.');
     if(f.taskDependencies.some(id=>db.getTask(id)?.projectId!==session.projectId))throw new Error('Dépendance externe introuvable dans le projet.');
   }
-  db.connection.exec('BEGIN IMMEDIATE');
-  try{
+  return db.transaction(()=>{
     // A report keeps its first destination across partial imports and retries. Without an
     // explicit choice, findings from an epic session extend that same epic.
     const targetId=report.epicId??(epicId===undefined?session.epic?.id:epicId) as string|null|undefined;
@@ -64,6 +63,6 @@ export function importFindings(db:CerebroDatabase,sessionId:string,reportId:stri
       db.connection.prepare('INSERT INTO finding_imports (report_id,finding_id,task_id) VALUES (?,?,?)').run(reportId,f.id,task.id);
     }
     for(const f of selected.filter(f=>created.some(t=>t.id===imported[f.id])))for(const dep of [...predecessors,...f.dependsOn.map(id=>imported[id]),...f.taskDependencies])db.connection.prepare('INSERT OR IGNORE INTO task_dependencies (task_id,depends_on_id) VALUES (?,?)').run(imported[f.id],dep);
-    db.connection.exec('COMMIT');return {epic,tasks:created.map(t=>db.getTask(t.id)!),imported};
-  }catch(cause){db.connection.exec('ROLLBACK');throw cause;}
+    return {epic,tasks:created.map(t=>db.getTask(t.id)!),imported};
+  },'IMMEDIATE');
 }

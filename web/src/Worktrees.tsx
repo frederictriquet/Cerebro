@@ -385,6 +385,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
                   {view.dirty?<p className="worktree-warning">Terminez d’abord l’étape 1 : la copie doit être entièrement commitée.</p>:null}
                   <button type="button" className="btn primary" disabled={commitBlocked||!!view.dirty} onClick={()=>void act(view,'update-from-target')}>Mettre à jour avec {target}</button>
                 </>}
+                {!view.mergeInProgress&&view.integrationConflicts&&view.integrationNote?<p className="meta">{view.integrationNote}</p>:null}
               </Step>
               <Step number={3} title={`Intégrer dans ${target}`} state={plan.integrate}>
                 <div className="worktree-target"><label>Branche cible <select aria-label={`Cible de ${copyTitle(view)}`} value={view.targetBranch??''} disabled={disabled} onChange={event=>void chooseTarget(view,event.target.value)}>

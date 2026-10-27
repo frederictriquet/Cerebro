@@ -4,8 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, mock, test } from 'node:test';
-import { gitSummary } from '../server/git-summary.ts';
-import { parseGitInfo } from '../web/src/types.ts';
+import { parseGitInfo, pushBlockedReason } from '../web/src/types.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'cerebro-git-summary-'));
 process.env.HOME = root;
@@ -14,6 +13,8 @@ process.env.CODEX_HOME = join(root, 'codex');
 delete process.env.CEREBRO_BIND_TOKEN;
 delete process.env.CEREBRO_SLACK_TOKEN;
 delete process.env.CEREBRO_SLACK_USER;
+// Imported after the environment: Git helpers load the configuration, which reads the data directory's env file.
+const { gitSummary } = await import('../server/git-summary.ts');
 after(() => { mock.restoreAll(); rmSync(root, { recursive: true, force: true }); });
 const git = (repo, ...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 function fixture() {
@@ -77,14 +78,45 @@ test('preview is bounded while the full count remains available', async () => {
 
 test('missing repository, unborn branch and missing upstream never invent commits to push', async () => {
   const directory = mkdtempSync(join(root, 'plain-'));
-  assert.equal((await gitSummary(directory, true)).hasCommits, false);
+  const plain = await gitSummary(directory, true);
+  assert.equal(plain.hasCommits, false); assert.equal(plain.repository, false); assert.equal(plain.error, undefined);
   const repo = fixture();
-  assert.deepEqual(await gitSummary(repo, true), { branch: 'main', dirty: 0, ahead: 0, hasCommits: false, hasUpstream: false });
+  assert.deepEqual(await gitSummary(repo, true), { repository: true, branch: 'main', dirty: 0, ahead: 0, hasCommits: false, hasUpstream: false });
   base(repo);
   const summary = await gitSummary(repo, true);
   assert.equal(summary.ahead, null); assert.equal(summary.hasCommits, true); assert.equal(summary.hasUpstream, false);
   assert.equal(summary.pendingCommits, undefined);
-  assert.deepEqual(parseGitInfo({ branch: 'main', dirty: 0, ahead: 3 }), { branch: 'main', dirty: 0, ahead: 3, hasCommits: true, hasUpstream: true });
+  assert.deepEqual(parseGitInfo({ branch: 'main', dirty: 0, ahead: 3 }), { repository: true, branch: 'main', dirty: 0, ahead: 3, hasCommits: true, hasUpstream: true });
+});
+
+test('detached HEAD disables Push with an explanation, even with commits and no upstream', async () => {
+  const repo = fixture(); base(repo);
+  const summary = parseGitInfo(await gitSummary(repo, true));
+  assert.equal(pushBlockedReason(summary), null); // Branch without upstream: first push is allowed.
+  git(repo, 'checkout', '--detach', 'HEAD');
+  const detached = parseGitInfo(await gitSummary(repo, true));
+  assert.equal(detached.repository, true); assert.equal(detached.branch, null);
+  assert.equal(detached.hasCommits, true); assert.equal(detached.hasUpstream, false);
+  assert.match(pushBlockedReason(detached), /HEAD détachée/);
+  assert.match(pushBlockedReason({ ...detached, ahead: 2 }), /HEAD détachée/);
+  assert.equal(pushBlockedReason({ ...summary, hasUpstream: true, ahead: 0 }), 'Rien à pousser');
+});
+
+test('status larger than the former 1 MiB buffer is counted, and an unreadable repository is an error, not "not a repository"', async () => {
+  const repo = fixture(); base(repo);
+  const dir = join(repo, 'untracked'); mkdirSync(dir);
+  const files = 6000;
+  for (let i = 0; i < files; i++) writeFileSync(join(dir, `${String(i).padStart(6, '0')}-${'x'.repeat(200)}`), '');
+  assert.ok(execFileSync('git', ['-C', repo, 'status', '--porcelain', '--untracked-files=all'], { maxBuffer: 16 * 1024 * 1024 }).length > 1024 * 1024);
+  git(repo, 'config', 'status.showUntrackedFiles', 'all');
+  const big = await gitSummary(repo);
+  assert.equal(big.error, undefined); assert.equal(big.branch, 'main'); assert.equal(big.dirty, files);
+  writeFileSync(join(repo, '.git/index'), 'corrompu');
+  const broken = await gitSummary(repo, true);
+  assert.equal(broken.repository, true); assert.match(broken.error, /Impossible de lire l’état Git : .*index/);
+  const parsed = parseGitInfo(broken);
+  assert.equal(parsed.repository, true); assert.equal(parsed.error, broken.error);
+  assert.equal(parseGitInfo({ branch: null, dirty: 0, ahead: 0 }).repository, false); // Older servers.
 });
 
 test('project API exposes previews on request without launching an agent', async () => {

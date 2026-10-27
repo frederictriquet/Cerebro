@@ -167,13 +167,24 @@ export function buildAgentCommand(
   return { cmd: agent, args, agentSessionId };
 }
 
-export async function getAgentAvailability(): Promise<{ agent: Agent; available: boolean }[]> {
-  return Promise.all(AGENTS.map(async (agent) => {
-    try {
-      await execFileAsync('which', [agent]);
-      return { agent, available: true };
-    } catch {
-      return { agent, available: false };
-    }
-  }));
+export type AgentAvailability = { agent: Agent; available: boolean }[];
+
+// Disponibilités mises en cache : `which` ne tourne qu'au premier appel, après expiration ou sur rafraîchissement
+// explicite ; les appels concurrents partagent la même recherche.
+const AVAILABILITY_TTL_MS = 5 * 60_000;
+let availability: { value: Promise<AgentAvailability>; at: number } | null = null;
+
+export function getAgentAvailability(refresh = false): Promise<AgentAvailability> {
+  if (refresh || availability === null || Date.now() - availability.at > AVAILABILITY_TTL_MS) {
+    const value = Promise.all(AGENTS.map(async (agent) => {
+      try {
+        await execFileAsync('which', [agent]);
+        return { agent, available: true };
+      } catch {
+        return { agent, available: false };
+      }
+    }));
+    availability = { value, at: Date.now() };
+  }
+  return availability.value;
 }
