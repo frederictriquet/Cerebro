@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import type { EpicWorkspaceOptions } from '../../server/epic-workspace.ts';
-import { api } from './api.ts';
+import { api, apiParsed } from './api.ts';
 import { href } from './route.ts';
+import { parseEpicWorkspaceOptions, type EpicWorkspaceOptions } from '../../shared/backlog.ts';
 
 const message = (cause: unknown): string => cause instanceof Error ? cause.message : String(cause);
 
@@ -13,7 +13,7 @@ export function EpicWorkspacePicker({ epicId, onResolved }: { epicId: string; on
   useEffect(() => {
     let active = true;
     setOptions(null); setPath(''); setError(null);
-    void api<EpicWorkspaceOptions>(`/api/epics/${epicId}/workspace-options`)
+    void apiParsed(`/api/epics/${epicId}/workspace-options`, parseEpicWorkspaceOptions)
       .then(result => { if (active) setOptions(result); })
       .catch(cause => { if (active) setError(message(cause)); });
     return () => { active = false; };

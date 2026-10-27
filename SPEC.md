@@ -20,11 +20,17 @@ server/db.ts              persistance SQLite (DATA_DIR/cerebro.db)
 server/agents.ts          construction des lignes de commande par agent
 server/sessions.ts        SessionManager : PTY, terminal headless, statut, logs
 server/hooks.ts           installation du hook global grok + interprétation des événements de hook
-server/index.ts           fastify : API REST, websockets, fichiers statiques web/dist
+server/index.ts           fastify : authentification, assemblage des services, websocket d'événements, fichiers statiques web/dist
+server/route-context.ts   contexte partagé des routes (services, préludes 404, jeton de session, lancement de session)
+server/*-routes.ts        routes REST par domaine : projets, sessions, tâches, epics, backlog des agents, hooks, système…
 bin/cerebro-hook.mjs      relais de hook (JS pur, sans dépendance)
+bin/cerebro-client.mjs    client HTTP commun de cerebro-backlog/-notify/-findings/-tasks (JS pur, sans dépendance)
 web/vite.config.ts        root = web/, build -> web/dist, proxy /api et /ws (ws: true) vers 127.0.0.1:4317
 web/index.html
 web/src/*.tsx|ts|css      UI React
+shared/*.ts               contrat serveur ↔ UI ↔ autres machines : types et parseurs, importés des deux côtés
+                          (le serveur n'importe rien de web/, l'UI rien de server/) ; l'UI valide chaque
+                          réponse de l'API avec un parseur de shared/ (api() renvoie unknown, apiParsed valide)
 ```
 
 ## Modèle de données
@@ -363,9 +369,9 @@ du workspace peuvent fonctionner : tester si possible avec `CEREBRO_DATA_DIR=./.
 
 ## Council
 
-Fichiers : `server/headless.ts` (lanceur headless générique, aussi utilisé par `commit-proposal.ts`), `server/council.ts` (types, validation, prompts, anonymisation, agrégation, export ; fonctions pures), `server/council-runner.ts` (`CouncilRuns` : exécution par phases), `server/council-routes.ts`, `server/persona-routes.ts`, `server/slack.ts` (commandes) ; `web/src/CouncilLaunch.tsx`, `CouncilRunView.tsx`, `CouncilSettingsDialog.tsx`, `PersonasDialog.tsx`, `council.css`. Tests : `tests/council.test.mjs`, `tests/council-api.test.mjs`, `tests/council-slack.test.mjs`, `tests/headless-images.test.mjs`.
+Fichiers : `server/headless.ts` (lanceur headless générique, aussi utilisé par `commit-proposal.ts`), `server/council.ts` (validation, prompts, anonymisation, agrégation, export ; fonctions pures), `server/council-runner.ts` (`CouncilRuns` : exécution par phases), `server/council-routes.ts`, `server/persona-routes.ts`, `server/slack.ts` (commandes) ; `web/src/CouncilLaunch.tsx`, `CouncilRunView.tsx`, `CouncilSettingsDialog.tsx`, `PersonasDialog.tsx`, `council.css`. Tests : `tests/council.test.mjs`, `tests/council-api.test.mjs`, `tests/council-slack.test.mjs`, `tests/headless-images.test.mjs`.
 
-### Types (`server/council.ts`, miroir dans `web/src/types.ts`)
+### Types (`shared/types.ts`)
 
 ```ts
 interface Persona { id: string; name: string; description: string; prompt: string; builtin: boolean; createdAt: number; updatedAt: number }

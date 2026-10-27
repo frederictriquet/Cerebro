@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { SessionTask, SessionTaskStatus } from '../../server/session-tasks.ts';
-import { api } from './api.ts';
+import { api, apiParsed } from './api.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import './session-tasks.css';
+import { parseSessionTasks, type SessionTask, type SessionTaskStatus } from '../../shared/backlog.ts';
 
 const LABELS: Record<SessionTaskStatus, string> = {
   todo: 'À faire', in_progress: 'En cours', blocked: 'Bloquée', done: 'Terminée', cancelled: 'Annulée',
@@ -30,7 +30,7 @@ export function useSessionTasks(sessionId: string) {
   const refresh = useCallback(async (): Promise<void> => {
     const current = ++requestId.current;
     try {
-      const tasks = await api<SessionTask[]>(`/api/sessions/${sessionId}/tasks`);
+      const tasks = await apiParsed(`/api/sessions/${sessionId}/tasks`, parseSessionTasks);
       if (requestId.current === current) { setData({ sessionId, tasks }); setError(null); }
     } catch (cause) {
       if (requestId.current === current) setError(String(cause));

@@ -1,33 +1,15 @@
 import { assertWorktreeAvailable } from './worktree-gate.ts';
-import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { promisify } from 'node:util';
+import { git as runGit, GitError } from './git.ts';
+import type { PushOperation } from '../shared/git.ts';
+import { errorMessage } from './util.ts';
 
-const exec = promisify(execFile);
 const LIMIT = 64 * 1024;
-export interface PushRemoteResult {
-  remote: string;
-  status: 'pending' | 'running' | 'succeeded' | 'failed';
-  upstream: boolean;
-  exitCode: number | null;
-  output: string;
-}
-export interface PushOperation {
-  id: string;
-  branch: string | null;
-  head: string | null;
-  status: 'running' | 'succeeded' | 'failed';
-  startedAt: number;
-  finishedAt: number | null;
-  error: string | null;
-  remotes: PushRemoteResult[];
-}
 const listeners=new Set<(path:string,operation:PushOperation)=>void>();
 export function onPushComplete(listener:(path:string,operation:PushOperation)=>void):()=>void{listeners.add(listener);return()=>listeners.delete(listener);}
 const active = new Map<string, PushOperation>();
 const latest = new Map<string, PushOperation>();
-const git = async (path: string, args: string[]): Promise<string> =>
-  (await exec('git', ['-C', path, ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout.trim();
+const git = async (path: string, args: string[]): Promise<string> => (await runGit(path, args)).trim();
 
 /** Canonical worktree identity also serializes aliases of the same project path. */
 async function keyFor(path: string): Promise<string> {
@@ -51,7 +33,7 @@ export async function startPush(path: string, options: PushOptions = {}): Promis
   active.set(key, op);
   latest.set(key, op);
   void execute(path, op, options).catch((cause: unknown) => {
-    op.error = cause instanceof Error ? cause.message : String(cause);
+    op.error = errorMessage(cause);
     op.status = 'failed';
   }).finally(() => {
     op.finishedAt = Date.now();
@@ -90,20 +72,16 @@ async function execute(path: string, op: PushOperation, options: PushOptions): P
       }
       // Explicit refspec avoids push.default, remote.*.push and implicit tag publication.
       // --no-mirror overrides remote.*.mirror, without bypassing any hook.
-      const args = ['-C', path, 'push', '--porcelain', '--progress', '--no-force', '--no-mirror', '--no-follow-tags',
+      const args = ['push', '--porcelain', '--progress', '--no-force', '--no-mirror', '--no-follow-tags',
         ...(result.upstream ? ['--set-upstream'] : []), '--', result.remote, `refs/heads/${branch}:refs/heads/${branch}`];
-      result.exitCode = await new Promise<number | null>((resolve, reject) => {
-        const child = spawn('git', args, { env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
-        const append = (data: Buffer): void => { result.output = (result.output + data.toString()).slice(-LIMIT); };
-        child.stdout.on('data', append);
-        child.stderr.on('data', append);
-        child.once('error', reject);
-        child.once('close', resolve);
-      });
+      // No timeout: a push waits on the network and on remote hooks.
+      const append = (data: Buffer): void => { result.output = (result.output + data.toString()).slice(-LIMIT); };
+      result.exitCode = await runGit(path, args, { timeout: 0, onOutput: append })
+        .then(() => 0, cause => { if (cause instanceof GitError) return cause.code; throw cause; });
       result.status = result.exitCode === 0 ? 'succeeded' : 'failed';
     } catch (cause) {
       result.status = 'failed';
-      result.output += cause instanceof Error ? cause.message : String(cause);
+      result.output += errorMessage(cause);
     }
   }
   op.status = op.remotes.every((remote) => remote.status === 'succeeded') ? 'succeeded' : 'failed';

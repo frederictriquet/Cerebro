@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { createPersona, deletePersona, listPersonas, updatePersona, type PersonaInput } from './api.ts';
+import { createPersona, deletePersona, listPersonas, updatePersona } from './api.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { Modal } from './Dialog.tsx';
 import {
@@ -9,8 +9,9 @@ import {
   MAX_PERSONA_PROMPT_LENGTH,
   MIN_PERSONAS,
   type Persona,
-} from './types.ts';
+} from '../../shared/types.ts';
 import './council.css';
+import type { PersonaInput } from '../../shared/types.ts';
 
 // id null : nouvelle persona.
 type Draft = PersonaInput & { id: string | null };

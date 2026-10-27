@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
-import { MIN_PERSONAS, validatePersonaInput, type PersonaInput } from './council.ts';
+import { validatePersonaInput } from './council.ts';
 import type { CerebroDatabase } from './db.ts';
+import { MIN_PERSONAS, type PersonaInput } from '../shared/types.ts';
 
 // Catalogue des personas du council, propre à la machine.
 export function registerPersonaRoutes(app: FastifyInstance, db: CerebroDatabase): void {

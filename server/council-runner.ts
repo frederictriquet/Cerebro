@@ -2,13 +2,20 @@ import { statSync, unlinkSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { getAgentAvailability } from './agents.ts';
 import { ATTACHMENTS_DIR } from './config.ts';
-import {
-  ANSWER_SCHEMA, MIN_ADVISORS, REVIEW_SCHEMA, SYNTHESIS_SCHEMA, answerPrompt, assignLetters, defaultCouncilSettings, imagePaths, imageToken, parseAnswer,
-  parseCouncilImages, parseReview, parseSynthesis, readsProject, resolveParticipants, reviewLetters, reviewPrompt, synthesisPrompt,
-  type Advisor, type CouncilImage, type CouncilPhase, type CouncilRun, type CouncilSettings,
-} from './council.ts';
-import type { Agent, CerebroDatabase, Project } from './db.ts';
+import { ANSWER_SCHEMA, REVIEW_SCHEMA, SYNTHESIS_SCHEMA, answerPrompt, assignLetters, defaultCouncilSettings, imagePaths, imageToken, parseAnswer, parseCouncilImages, parseReview, parseSynthesis, readsProject, resolveParticipants, reviewLetters, reviewPrompt, synthesisPrompt } from './council.ts';
+import type { CerebroDatabase } from './db.ts';
 import { imageMediaType, runHeadless, supportsImages, type HeadlessOptions } from './headless.ts';
+import {
+  MIN_ADVISORS,
+  type Advisor,
+  type Agent,
+  type CouncilImage,
+  type CouncilPhase,
+  type CouncilRun,
+  type CouncilSettings,
+  type Project,
+} from '../shared/types.ts';
+import { errorMessage } from './util.ts';
 
 export const ANSWER_TIMEOUT_MS = 10 * 60_000;
 export const REVIEW_TIMEOUT_MS = 5 * 60_000;
@@ -38,7 +45,6 @@ export class CouncilError extends Error {
   }
 }
 
-const message = (cause: unknown): string => cause instanceof Error ? cause.message : String(cause);
 
 // Un chemin d'image accepté est un fichier image existant sous le dossier des pièces jointes du serveur.
 function attachedImage(path: string): string | null {
@@ -206,7 +212,7 @@ export class CouncilRuns {
       try {
         unlinkSync(path);
       } catch (cause) {
-        console.warn(`Image du council ${id} non supprimée (${path}) :`, message(cause));
+        console.warn(`Image du council ${id} non supprimée (${path}) :`, errorMessage(cause));
       }
     }
   }
@@ -237,7 +243,7 @@ export class CouncilRuns {
         try {
           answer.text = parseAnswer(await call(advisor, answerPrompt(run, advisor, cwd ?? null), ANSWER_SCHEMA, ANSWER_TIMEOUT_MS, reading ? 'read-only' : 'none'));
         } catch (cause) {
-          answer.error = message(cause);
+          answer.error = errorMessage(cause);
         } finally {
           answer.finishedAt = Date.now();
           this.save(run);
@@ -254,7 +260,7 @@ export class CouncilRuns {
         try {
           Object.assign(review, parseReview(await call(advisor, reviewPrompt(run, advisor), REVIEW_SCHEMA, REVIEW_TIMEOUT_MS), reviewLetters(run, advisor)));
         } catch (cause) {
-          review.error = message(cause);
+          review.error = errorMessage(cause);
         } finally {
           review.finishedAt = Date.now();
           this.save(run);
@@ -269,7 +275,7 @@ export class CouncilRuns {
       run.status = signal.aborted ? this.closed ? 'interrupted' : 'cancelled' : 'failed';
       run.error = signal.aborted
         ? this.closed ? 'Serveur arrêté pendant le council : les avis obtenus sont conservés.' : 'Council annulé.'
-        : run.phase === 'synthesizing' ? `Synthèse impossible : ${message(cause)}` : message(cause);
+        : run.phase === 'synthesizing' ? `Synthèse impossible : ${errorMessage(cause)}` : errorMessage(cause);
     } finally {
       run.phase = 'finished';
       run.finishedAt = Date.now();

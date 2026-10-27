@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { EpicRun } from '../../server/epic-runner.ts';
-import { api } from './api.ts';
+import { api, apiParsed } from './api.ts';
 import { LaunchSessionDialog } from './Dialog.tsx';
 import { useStore } from './store.tsx';
+import { parseEpicRunList, type EpicRun } from '../../shared/backlog.ts';
 
 export const RUN_ACTIVE: EpicRun['status'][] = ['running', 'waiting-validation', 'blocked'];
 
@@ -12,7 +12,7 @@ const REVIEW_TASK_TITLE = 'Code review du travail de l’epic';
 export function useEpicRun(epicId: string, intervalMs = 1000): { run: EpicRun | null; refresh: () => Promise<void> } {
   const [run, setRun] = useState<EpicRun | null>(null);
   const refresh = useCallback(async (): Promise<void> => {
-    const runs = await api<EpicRun[]>(`/api/epics/${epicId}/runs`);
+    const runs = await apiParsed(`/api/epics/${epicId}/runs`, parseEpicRunList);
     setRun(runs[0] ?? null);
   }, [epicId]);
   useEffect(() => {

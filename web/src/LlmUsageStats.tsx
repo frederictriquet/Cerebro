@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { AgentLabel } from './AgentLabel.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
-import { getSessionTokenUsage, type SessionTokenUsage } from './api.ts';
+import { getSessionTokenUsage } from './api.ts';
 import { llmStats, type UsagePeriod } from './llm-stats.ts';
-import type { Session } from './types.ts';
+import type { Session } from '../../shared/types.ts';
 import './llm-stats.css';
+import type { SessionTokenUsage } from '../../shared/machine.ts';
 
 const number = new Intl.NumberFormat('fr-FR');
 const percent = new Intl.NumberFormat('fr-FR', { style: 'percent', maximumFractionDigits: 1 });

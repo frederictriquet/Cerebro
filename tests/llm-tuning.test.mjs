@@ -23,7 +23,7 @@ test('effort par défaut : high s’il est proposé, sinon le premier niveau', (
 });
 
 test('mode « default » non proposé : lu comme « auto » par le serveur', async () => {
-  const { normalizeMode } = await import('../server/db.ts');
+  const { normalizeMode } = await import('../shared/types.ts');
   assert.equal(normalizeMode('default'), 'auto');
   assert.equal(normalizeMode('plan'), 'plan');
 });

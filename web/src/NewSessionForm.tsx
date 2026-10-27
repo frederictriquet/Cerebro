@@ -7,7 +7,15 @@ import { LlmSelector, llmChoices } from './LlmSelector.tsx';
 import { readDraft, writeDraft } from './drafts.ts';
 import { MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from './format.ts';
 import { useStore } from './store.tsx';
-import { DEFAULT_SESSION_DEFAULTS, MODE_CHOICES, normalizeMode, type Agent, type Effort, type LaunchSpec, type Mode } from './types.ts';
+import {
+  DEFAULT_SESSION_DEFAULTS,
+  MODE_CHOICES,
+  normalizeMode,
+  type Agent,
+  type Effort,
+  type Mode,
+  type SessionDefaults,
+} from '../../shared/types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
 
 // Agent, mode, modèle, effort et prompt d'une nouvelle session : page projet, et modales lancées depuis une
@@ -36,7 +44,7 @@ export function NewSessionForm({
   launchDisabled?: boolean;
   autoFocus?: boolean;
   className?: string;
-  onLaunch: (spec: LaunchSpec) => Promise<void>;
+  onLaunch: (spec: SessionDefaults) => Promise<void>;
   onCancel?: () => void;
 }) {
   const { agents, projects, updateProject } = useStore();
@@ -67,7 +75,7 @@ export function NewSessionForm({
   );
 
   // Sérialiser les modifications rapides évite qu'une réponse ancienne remplace le dernier choix.
-  const saveDefaults = useCallback((patch: Partial<LaunchSpec>): void => {
+  const saveDefaults = useCallback((patch: Partial<SessionDefaults>): void => {
     if (patch.prompt !== undefined) queuedPrompt.current = patch.prompt;
     setSavingDefaults((count) => count + 1);
     saveQueue.current = saveQueue.current.then(async () => {

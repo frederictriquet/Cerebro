@@ -17,7 +17,7 @@ const {buildServer}=await import('../server/index.ts');
 mock.method(UpdateManager.prototype,'start',()=>{});mock.method(PeerSync.prototype,'sync',async function(){this.markReady();this.markSynced();});
 const launches=[];mock.method(SessionManager.prototype,'launch',async(...args)=>{
  launches.push(args);
- const [project,agent,mode,tuning,prompt,,,validate,joined,title,epicId,context]=args;
+ const [project,{agent,mode,tuning,prompt,validate,joined,title,epicId,context}]=args;
  const session=db.createSession({id:randomUUID(),projectId:project.id,agent,mode,...tuning,prompt,title:title??'Session de test',status:'idle',agentSessionId:'fake'},'token',epicId);
  const workspace=context?await createWorkspaceInContext(db,session.id,project,context):joined?await joinWorkspace(db,session.id,joined):await createWorkspace(db,session.id,project);
  if(epicId)rememberEpicWorkspace(db,epicId,{path:workspace.path,mode:workspace.mode});
@@ -166,7 +166,7 @@ test('review step is added once, depends on every task; epic review needs a fini
   const active=await send('POST',`/api/epics/${epic.id}/review`,{});assert.equal(active.statusCode,409);assert.match(active.json().error,/en cours/);assert.equal(launches.length,0);
   save('succeeded');
   const response=await send('POST',`/api/epics/${epic.id}/review`,{prompt:'Sois précis.'});assert.equal(response.statusCode,201);assert.equal(launches.length,1);
-  const [launched,,,,prompt,,,,joined,title,,context]=launches[0];
+  const [launched,{prompt,joined,title,context}]=launches[0];
   assert.equal(context?.path,workspace.path);assert.match(prompt,/^Sois précis\./);assert.match(prompt,/feature\.txt/);assert.match(prompt,/code review du travail produit par l’epic « Livraison »/);assert.match(title,/Review de l’epic « Livraison »/);
   const review=response.json();assert.equal(review.epic.id,epic.id);assert.equal(review.worktree.path,workspace.path);
   const events=[];socket=await app.injectWS('/ws/events');socket.on('message',data=>events.push(JSON.parse(data.toString())));

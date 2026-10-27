@@ -8,10 +8,8 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from 'react';
-import type { SavedReport } from '../../server/findings.ts';
 import { FindingsNotice, FindingsPanel } from './Findings.tsx';
-import type { Provenance } from '../../server/provenance.ts';
-import { api, clipboardImage, uploadImage } from './api.ts';
+import { apiParsed, clipboardImage, uploadImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { AddTaskDialog, LaunchSessionDialog } from './Dialog.tsx';
@@ -25,12 +23,14 @@ import { useStore } from './store.tsx';
 import { Term, type TermApi } from './Term.tsx';
 import { RELEASE_HINT, WorktreeLabel, resumeBlockedReason } from './WorktreeLabel.tsx';
 import { SessionEpicBadge } from './SessionEpicBadge.tsx';
+import { parseSavedReports, type SavedReport } from '../../shared/backlog.ts';
+import { parseProvenance, type Provenance } from '../../shared/git.ts';
 
 type SessionDrawer = 'provenance' | 'findings' | 'tasks' | null;
 
 function useFindingsReports(sessionId:string) {
   const [reports,setReports]=useState<SavedReport[]>([]);
-  const refresh=useCallback(async():Promise<void>=>setReports(await api<SavedReport[]>(`/api/sessions/${sessionId}/findings`)),[sessionId]);
+  const refresh=useCallback(async():Promise<void>=>setReports(await apiParsed(`/api/sessions/${sessionId}/findings`, parseSavedReports)),[sessionId]);
   useEffect(()=>{setReports([]);void refresh().catch(()=>{});const timer=window.setInterval(()=>void refresh().catch(()=>{}),3000);return()=>window.clearInterval(timer);},[refresh]);
   return {reports,refresh};
 }
@@ -39,7 +39,7 @@ function useProvenance(sessionId: string) {
   const [data, setData] = useState<Provenance | null>(null);
   const [error, setError] = useState<string | null>(null);
   const refresh = useCallback(async (): Promise<void> => {
-    try { setData(await api<Provenance>(`/api/sessions/${sessionId}/provenance`)); setError(null); }
+    try { setData(await apiParsed(`/api/sessions/${sessionId}/provenance`, parseProvenance)); setError(null); }
     catch (cause) { setError(String(cause)); }
   }, [sessionId]);
   useEffect(() => { setData(null); setError(null); void refresh(); }, [refresh]);

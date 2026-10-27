@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
-import { dismissPeerNotice, getPeerNotices, setApiBase, subscribeUnauthorized, type PeerNotice } from './api.ts';
+import { dismissPeerNotice, getPeerNotices, setApiBase, subscribeUnauthorized } from './api.ts';
 import { CouncilRunView } from './CouncilRunView.tsx';
 import { HomeView } from './HomeView.tsx';
 import { ProjectTabs } from './ProjectTabs.tsx';
@@ -10,6 +10,7 @@ import { Sidebar } from './Sidebar.tsx';
 import { SidebarRail, useSidebarLayout } from './SidebarRail.tsx';
 import { StoreProvider, useStore } from './store.tsx';
 import { useMachine, useRoute } from './route.ts';
+import type { PeerNotice } from '../../shared/machine.ts';
 
 function TokenScreen() {
   const [error, setError] = useState<string | null>(null);

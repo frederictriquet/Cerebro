@@ -1,8 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { CerebroDatabase, Task } from './db.ts';
-export interface Finding { id:string; title:string; severity:'critical'|'high'|'medium'|'low'; file:string; line:number; problem:string; scenario:string; expectedFix:string; dependsOn:string[]; taskDependencies:string[] }
-export interface FindingReport { title:string; findings:Finding[] }
-export interface SavedReport extends FindingReport { id:string; sessionId:string; createdAt:number; epicId:string|null; imported:Record<string,string> }
+import type { CerebroDatabase } from './db.ts';
+import type { Task } from '../shared/types.ts';
+import type { FindingReport, SavedReport } from '../shared/backlog.ts';
 export const FINDING_INSTRUCTIONS='Si des findings sont établis, publie aussi un JSON structuré via `cerebro-findings` sur son entrée standard : {title,findings:[{id,title,severity:"critical|high|medium|low",file,line,problem,scenario,expectedFix,dependsOn:[],taskDependencies:[]}]}. dependsOn référence des ids de findings ; taskDependencies des ids existants du backlog. Chaque finding doit être autonome et étayé. Cerebro permettra leur sélection et leur enregistrement direct dans le backlog. Pour un texte libre ou incomplet, conserve le flux habituel de discussion/reformulation. Ne crée pas de tâches sans demande explicite.';
 function string(v:unknown,max:number):string{if(typeof v!=='string'||!v.trim()||v.length>max)throw new Error('Champ de finding absent ou trop long.');return v.trim();}
 export function parseReport(raw:unknown):FindingReport{
@@ -41,8 +40,7 @@ export function importFindings(db:CerebroDatabase,sessionId:string,reportId:stri
     if(f.dependsOn.some(id=>!wanted.has(id)&&!report.imported[id]))throw new Error('Sélectionnez aussi les findings prérequis.');
     if(f.taskDependencies.some(id=>db.getTask(id)?.projectId!==session.projectId))throw new Error('Dépendance externe introuvable dans le projet.');
   }
-  db.connection.exec('BEGIN IMMEDIATE');
-  try{
+  return db.transaction(()=>{
     // A report keeps its first destination across partial imports and retries. Without an
     // explicit choice, findings from an epic session extend that same epic.
     const targetId=report.epicId??(epicId===undefined?session.epic?.id:epicId) as string|null|undefined;
@@ -64,6 +62,6 @@ export function importFindings(db:CerebroDatabase,sessionId:string,reportId:stri
       db.connection.prepare('INSERT INTO finding_imports (report_id,finding_id,task_id) VALUES (?,?,?)').run(reportId,f.id,task.id);
     }
     for(const f of selected.filter(f=>created.some(t=>t.id===imported[f.id])))for(const dep of [...predecessors,...f.dependsOn.map(id=>imported[id]),...f.taskDependencies])db.connection.prepare('INSERT OR IGNORE INTO task_dependencies (task_id,depends_on_id) VALUES (?,?)').run(imported[f.id],dep);
-    db.connection.exec('COMMIT');return {epic,tasks:created.map(t=>db.getTask(t.id)!),imported};
-  }catch(cause){db.connection.exec('ROLLBACK');throw cause;}
+    return {epic,tasks:created.map(t=>db.getTask(t.id)!),imported};
+  },'IMMEDIATE');
 }

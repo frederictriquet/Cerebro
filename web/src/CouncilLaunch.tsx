@@ -9,7 +9,15 @@ import type { DraftImage } from './drafts.ts';
 import { relativeTime } from './format.ts';
 import { PersonasDialog } from './PersonasDialog.tsx';
 import { go, href, useNow } from './route.ts';
-import { MAX_ADVISORS, MIN_ADVISORS, type CouncilRun, type CouncilSettings, type CouncilStatus, type Llm, type Persona } from './types.ts';
+import {
+  MAX_ADVISORS,
+  MIN_ADVISORS,
+  type CouncilRun,
+  type CouncilSettings,
+  type CouncilStatus,
+  type Llm,
+  type Persona,
+} from '../../shared/types.ts';
 import './council.css';
 
 // Brouillon d'un council non lancé, par périmètre (projet ou accueil), comme les brouillons de prompt.

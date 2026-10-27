@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {after,test} from 'node:test';
 const root=mkdtempSync(join(tmpdir(),'cerebro-epic-review-'));
 process.env.HOME=root;process.env.CEREBRO_DATA_DIR=join(root,'data');process.env.CODEX_HOME=join(root,'codex');
-const {CerebroDatabase,DEFAULT_SESSION_DEFAULTS}=await import('../server/db.ts');
+const {CerebroDatabase}=await import('../server/db.ts');const {DEFAULT_SESSION_DEFAULTS}=await import('../shared/types.ts');
 const {CommandExecutor}=await import('../server/commands.ts');
 const {EpicRunner}=await import('../server/epic-runner.ts');
 const {createWorkspace,createWorkspaceInContext,joinWorkspace,workspaceAt,workspaceFor}=await import('../server/provenance.ts');
@@ -76,8 +76,8 @@ const finding=(id,dependsOn=[])=>({id,title:`Corriger ${id}`,severity:'high',fil
 async function withRunner(f,run){
  const epic=f.db.createEpic(f.project.id,'Livraison','Contexte',null);const commands=new CommandExecutor(f.db);const launches=[];
  const sessions={
-  async create(project,options,validate,contextPath,title,settings){
-   const session=f.db.createSession({id:randomUUID(),projectId:project.id,...options,title,status:'idle',agentSessionId:'fake'},'token',settings?.epicId);
+  async create(project,options,{validate,title,epicId}={}){
+   const session=f.db.createSession({id:randomUUID(),projectId:project.id,...options,title,status:'idle',agentSessionId:'fake'},'token',epicId);
    const context=epicWorkspace(f.db,epic.id);
    const workspace=context?await createWorkspaceInContext(f.db,session.id,project,context):await createWorkspace(f.db,session.id,project);
    rememberEpicWorkspace(f.db,epic.id,{path:workspace.path,mode:workspace.mode});

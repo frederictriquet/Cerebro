@@ -1,32 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { sep } from 'node:path';
-import type { CerebroDatabase, CommitSettings } from './db.ts';
-import { executeCommitPlan, prepareCommit, reviewedDiffs, verifySnapshot, type CommitPlan, type CommitResult, type GitSnapshot } from './git-plan.ts';
-import { currentPush, startPush, type PushOperation } from './git-push.ts';
-import { parseCommitProposal, proposeCommits, type ProposalContext, type CommitProposal } from './commit-proposal.ts';
+import type { CerebroDatabase } from './db.ts';
+import { executeCommitPlan, prepareCommit, reviewedDiffs, verifySnapshot, type CommitPlan } from './git-plan.ts';
+import { currentPush, startPush } from './git-push.ts';
+import { draftCommits, parseCommitProposal, type ProposalContext } from './commit-proposal.ts';
 import { assertWorktreeAvailable, canonicalWorktreePath } from './worktree-gate.ts';
-import { workspaceFor } from './provenance.ts';
+import { repositoryActivity, sessionBusy } from './repository-activity.ts';
 import { INHERITED_WARNING } from './session-git.ts';
+import { repositoryRoot } from './git.ts';
+import type { CommitSettings } from '../shared/types.ts';
+import type { AutomaticCommit, CommitResult, GitSnapshot } from '../shared/git.ts';
 
-export interface AutomaticCommit {
-  id:string;scope:string;path:string;projectId:string|null;sessionId:string|null;settings:CommitSettings;
-  push:boolean;status:'running'|'succeeded'|'failed'|'blocked'|'cancelled'|'interrupted';
-  phase:'collecting'|'drafting'|'committing'|'pushing'|'finished';
-  files:string[];exclusions:{path:string;reason:string}[];commits:CommitResult['commits'];
-  pushOperation:PushOperation|null;error:string|null;startedAt:number;finishedAt:number|null;
-  needsProjectScope:boolean;
-  /** Files the user reviewed in a diff snapshot; included despite warnings only while that diff is unchanged. */
-  reviewed?:{snapshotId:string;paths:string[]};
-}
 export interface AutomaticCommitContext {
   scope:string;path:string;projectId:string|null;sessionId:string|null;settings:CommitSettings;
   prepare?:()=>Promise<GitSnapshot>;execute?:(plan:CommitPlan)=>Promise<CommitResult>;
 }
 class CommitBlocked extends Error {}
-const exec=promisify(execFile);
-const inside=(root:string,path:string):boolean=>{const cwd=canonicalWorktreePath(path);return cwd===root||cwd.startsWith(root+sep);};
 
 export class AutomaticCommits {
   private db:CerebroDatabase;
@@ -43,16 +31,14 @@ export class AutomaticCommits {
   list():AutomaticCommit[]{return (this.db.connection.prepare('SELECT data FROM automatic_commits ORDER BY rowid DESC').all() as {data:string}[]).map(row=>JSON.parse(row.data));}
   get(id:string):AutomaticCommit|null{return this.list().find(operation=>operation.id===id)??null;}
   private save(operation:AutomaticCommit):void{this.db.connection.prepare('INSERT INTO automatic_commits VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(operation.id,JSON.stringify(operation));}
-  async propose(context:ProposalContext,signal:AbortSignal):Promise<CommitProposal>{return proposeCommits(context,signal);}
+  /** Raw answer of the agent, checked once by `execute`. */
+  async propose(context:ProposalContext,signal:AbortSignal):Promise<unknown>{return draftCommits(context,signal);}
   private idle(path:string):void{
     assertWorktreeAvailable(path);
-    for(const session of this.db.listSessions()){
-      const cwd=workspaceFor(this.db,session.id)?.root??this.db.getProject(session.projectId)?.path;
-      if(cwd&&inside(path,cwd)&&['starting','running','waiting'].includes(session.status))throw new CommitBlocked('Une session utilise encore ce dépôt. Attendez la fin de son tour avant de commiter.');
-    }
-    for(const row of this.db.connection.prepare('SELECT data FROM command_runs').all() as {data:string}[]){
-      const run=JSON.parse(row.data);if(run.status==='running'&&inside(path,run.cwd))throw new CommitBlocked('Une commande utilise encore ce dépôt. Attendez sa fin avant de commiter.');
-    }
+    // Its own operation is a running automatic commit of this repository: only sessions and commands block it.
+    const activity=repositoryActivity(this.db,path);
+    if(activity.sessions.some(session=>sessionBusy(session.status)))throw new CommitBlocked('Une session utilise encore ce dépôt. Attendez la fin de son tour avant de commiter.');
+    if(activity.commands)throw new CommitBlocked('Une commande utilise encore ce dépôt. Attendez sa fin avant de commiter.');
   }
   async start(context:AutomaticCommitContext,id:unknown,push:unknown,reviewed?:unknown,strategy?:unknown):Promise<AutomaticCommit> {
     if(this.closed)throw new Error('Serveur en cours d’arrêt.');
@@ -60,7 +46,7 @@ export class AutomaticCommits {
     if(strategy!==undefined&&strategy!=='single'&&strategy!=='atomic')throw new Error('Stratégie de commit invalide.');
     const review=reviewed as AutomaticCommit['reviewed']|undefined;
     if(review!==undefined&&(typeof review?.snapshotId!=='string'||!Array.isArray(review.paths)||!review.paths.every(path=>typeof path==='string')))throw new Error('Sélection des fichiers examinés invalide.');
-    const path=canonicalWorktreePath((await exec('git',['-C',context.path,'rev-parse','--show-toplevel'])).stdout.trim());
+    const path=canonicalWorktreePath(await repositoryRoot(context.path));
     if(this.closed)throw new Error('Serveur en cours d’arrêt.');
     const request=this.db.connection.prepare('SELECT operation_id,scope,push FROM automatic_commit_requests WHERE id=?').get(id) as {operation_id:string;scope:string;push:number}|undefined;
     if(request&&(request.scope!==context.scope||Boolean(request.push)!==push))throw new Error('Ce lancement correspond à une autre action.');
@@ -72,9 +58,7 @@ export class AutomaticCommits {
     const active=this.active.get(path);
     if(active){if(active.operation.scope!==context.scope||active.operation.push!==push||active.operation.settings.strategy!==effectiveStrategy)throw new Error('Un commit est déjà en préparation dans ce dépôt.');remember(active.operation.id);return active.operation;}
     const operation:AutomaticCommit={id,scope:context.scope,path,projectId:context.projectId,sessionId:context.sessionId,settings:{...context.settings,strategy:effectiveStrategy},push,status:'running',phase:'collecting',files:[],exclusions:[],commits:[],pushOperation:null,error:null,startedAt:Date.now(),finishedAt:null,needsProjectScope:false,...(review?{reviewed:{snapshotId:review.snapshotId,paths:[...new Set(review.paths)]}}:{})};
-    this.db.connection.exec('BEGIN IMMEDIATE');
-    try{this.save(operation);remember(operation.id);this.db.connection.exec('COMMIT');}
-    catch(cause){this.db.connection.exec('ROLLBACK');throw cause;}
+    this.db.transaction(()=>{this.save(operation);remember(operation.id);},'IMMEDIATE');
     const abort=new AbortController();
     const done=Promise.resolve().then(()=>this.execute(context,operation,abort.signal)).finally(()=>this.active.delete(path));
     this.active.set(path,{operation,abort,done});return operation;

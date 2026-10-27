@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import type { Finding, SavedReport } from '../../server/findings.ts';
 import { api } from './api.ts';
 import { href } from './route.ts';
 import { useStore } from './store.tsx';
-import type { Session } from './types.ts';
+import type { Session } from '../../shared/types.ts';
 import './findings.css';
+import type { Finding, SavedReport } from '../../shared/backlog.ts';
 
 const SEVERITY: Record<Finding['severity'], string> = {
   critical: 'Critique', high: 'Élevée', medium: 'Moyenne', low: 'Faible',

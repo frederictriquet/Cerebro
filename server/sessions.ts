@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
-  appendFileSync,
   closeSync,
   existsSync,
   fstatSync,
@@ -9,27 +8,26 @@ import {
   readFileSync,
   readSync,
   rmSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { createConnection } from 'node:net';
 import type { Socket } from 'node:net';
 import { delimiter, join } from 'node:path';
-import { SerializeAddon } from '@xterm/addon-serialize';
-import * as headlessPackage from '@xterm/headless';
+import type { SerializeAddon } from '@xterm/addon-serialize';
 import { buildAgentCommand, type Tuning } from './agents.ts';
 import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
-import type { Agent, Mode, Project, Session, SessionDefaults } from './db.ts';
 import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError } from './db.ts';
 import type { AgentQuestion } from './questions.ts';
 import { archiveSessionWorktree } from './worktrees.ts';
 import { assertWorktreeAvailable, deferWorktreeInput } from './worktree-gate.ts';
-import { createWorkspace, createWorkspaceInContext, joinWorkspace, workspaceAt, workspaceFor, type Workspace, type WorkspaceContext } from './provenance.ts';
+import { createWorkspace, createWorkspaceInContext, joinWorkspace, workspaceAt, workspaceFor } from './provenance.ts';
 import { assertEpicWorkspace, epicWorkspace, rememberEpicWorkspace, withEpicWorkspace } from './epic-workspace.ts';
 import { findProcessesByArgument, isAlive, processTree, signalProcesses } from './proc.ts';
-
-// @xterm/headless is CommonJS at runtime despite exposing ESM-shaped typings.
-const Terminal = (headlessPackage as unknown as { default: typeof headlessPackage }).default.Terminal;
+import type { Agent, Mode, Project, Session, SessionDefaults } from '../shared/types.ts';
+import type { Workspace, WorkspaceContext } from '../shared/git.ts';
+import { appendHolderLog, createTerminal, encodeMessage, holderPaths } from './holder-protocol.ts';
+import type { ClientMessage, ExitRecord, HolderConfig } from './holder-protocol.ts';
+import { isRecord, removeFile } from './util.ts';
 
 export type SessionEvent =
   | { type: 'session'; session: Session }
@@ -43,6 +41,36 @@ export type TerminalEvent =
   | { type: 'snapshot'; data: string }
   | { type: 'output'; data: string }
   | { type: 'exit'; exitCode: number | null };
+
+/** Optional settings of SessionManager.create: everything but the project and its form overrides. */
+export interface CreateSessionOptions {
+  /** Last check run once the workspace is ready, before the terminal starts; a throw aborts the launch. */
+  validate?: () => Promise<void>;
+  /** Directory the launch comes from; a path inside an existing copy reuses that copy. */
+  contextPath?: string;
+  title?: string;
+  /** false keeps the project's saved form settings untouched (automated launches). */
+  rememberDefaults?: boolean;
+  epicId?: string | null;
+  /** Explicit workspace to join, whatever the project's workspace preference. */
+  workspace?: WorkspaceContext;
+}
+
+interface LaunchOptions {
+  agent: Agent;
+  mode: Mode;
+  tuning: Tuning;
+  prompt: string;
+  /** Agent-side session to resume, null for a fresh conversation. */
+  resumeSessionId?: string | null;
+  /** Cerebro session relaunched in place (resume), null to create one. */
+  existingId?: string | null;
+  validate?: () => Promise<void>;
+  joined?: Workspace | null;
+  title?: string;
+  epicId?: string | null;
+  context?: WorkspaceContext | null;
+}
 
 interface Runtime {
   agent: Agent;
@@ -63,21 +91,6 @@ interface Runtime {
   rows: number;
   exitWaiters: Set<() => void>;
   lastOutputAt: number;
-}
-
-interface HolderConfig {
-  cmd: string;
-  args: string[];
-  cwd: string;
-  env: Record<string, string | undefined>;
-  cols: number;
-  rows: number;
-}
-
-interface ExitRecord {
-  exitCode: number | null;
-  signal: number | null;
-  at: number;
 }
 
 const IDLE_DELAY_MS = 20_000;
@@ -159,28 +172,6 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function removeFile(path: string): void {
-  try {
-    unlinkSync(path);
-  } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
-  }
-}
-
-function createTerminal(cols = 120, rows = 32): {
-  terminal: import('@xterm/headless').Terminal;
-  serializer: SerializeAddon;
-} {
-  const terminal = new Terminal({ allowProposedApi: true, cols, rows, scrollback: 5000 });
-  const serializer = new SerializeAddon();
-  terminal.loadAddon(serializer);
-  return { terminal, serializer };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 export class SessionManager {
   readonly db: CerebroDatabase;
   private readonly runtimes = new Map<string, Runtime>();
@@ -202,7 +193,7 @@ export class SessionManager {
   async initialize(): Promise<void> {
     for (const session of this.db.listSessions()) {
       if (session.status === 'exited') {
-        this.cleanupExitArtifacts(session.id);
+        this.cleanupHolderArtifacts(session.id);
         continue;
       }
       if (this.db.getHookToken(session.id) === null) {
@@ -229,7 +220,7 @@ export class SessionManager {
       }
       const exit = this.readExitRecord(session.id);
       this.finishSession(session.id, exit?.exitCode ?? null);
-      this.cleanupExitArtifacts(session.id);
+      this.cleanupHolderArtifacts(session.id);
     }
   }
 
@@ -242,17 +233,18 @@ export class SessionManager {
     for (const listener of this.eventListeners) listener(event);
   }
 
-  async create(project: Project, overrides: Partial<SessionDefaults> = {}, validate?: () => Promise<void>, contextPath?: string, title?: string, options: { rememberDefaults?: boolean; epicId?: string | null; workspace?: WorkspaceContext } = {}): Promise<Session> {
-    const create = (): Promise<Session> => this.createInContext(project, overrides, validate, contextPath, title, options);
+  async create(project: Project, overrides: Partial<SessionDefaults> = {}, options: CreateSessionOptions = {}): Promise<Session> {
+    const create = (): Promise<Session> => this.createInContext(project, overrides, options);
     return options.epicId ? withEpicWorkspace(this.db, options.epicId, create) : create();
   }
 
-  private async createInContext(project: Project, overrides: Partial<SessionDefaults>, validate: (() => Promise<void>) | undefined, contextPath: string | undefined, title: string | undefined, options: { rememberDefaults?: boolean; epicId?: string | null; workspace?: WorkspaceContext }): Promise<Session> {
+  private async createInContext(project: Project, overrides: Partial<SessionDefaults>, options: CreateSessionOptions): Promise<Session> {
+    const { validate, contextPath, title, epicId } = options;
     const current = this.db.getProject(project.id);
     if (current === null) throw new Error('Projet introuvable');
     // An explicit workspace (a copy to repair) is joined whatever the project's current preference.
-    const context = options.epicId ? epicWorkspace(this.db, options.epicId) : options.workspace ?? null;
-    if (options.epicId && context) assertEpicWorkspace(this.db, context);
+    const context = epicId ? epicWorkspace(this.db, epicId) : options.workspace ?? null;
+    if (epicId && context) assertEpicWorkspace(this.db, context);
     // Automated launches must not replace the user's form settings with generated instructions.
     const defaults = options.rememberDefaults === false
       ? resolveSessionDefaults(current.sessionDefaults, overrides)
@@ -261,7 +253,7 @@ export class SessionManager {
     assertWorktreeAvailable(path);
     // A context inside an existing copy (next epic step) reuses it instead of copying the copy.
     const joined=context||current.workspaceMode==='shared'||!contextPath?null:workspaceAt(this.db,contextPath);
-    return this.launch({...current,path}, defaults.agent, defaults.mode, defaults, defaults.prompt, null, null, validate, joined, title, options.epicId, context);
+    return this.launch({...current,path}, {agent: defaults.agent, mode: defaults.mode, tuning: defaults, prompt: defaults.prompt, validate, joined, title, epicId, context});
   }
 
   rememberDefaults(projectId: string, overrides: Partial<SessionDefaults>): SessionDefaults {
@@ -286,23 +278,11 @@ export class SessionManager {
       :'Le worktree a été supprimé ; la conversation reste consultable mais ne peut plus être reprise dans cet espace.');
     assertWorktreeAvailable(workspace?.path??project.path);
     const tuning = { model: oldSession.model, effort: oldSession.effort };
-    return this.launch(project, oldSession.agent, oldSession.mode, tuning, '', oldSession.agentSessionId, oldSession.id);
+    return this.launch(project, {agent: oldSession.agent, mode: oldSession.mode, tuning, prompt: '', resumeSessionId: oldSession.agentSessionId, existingId: oldSession.id});
   }
 
-  private async launch(
-    project: Project,
-    agent: Agent,
-    mode: Mode,
-    tuning: Tuning,
-    prompt: string,
-    resumeSessionId: string | null,
-    existingId: string | null = null,
-    validate?: () => Promise<void>,
-    joined: Workspace | null = null,
-    title?: string,
-    epicId: string | null = null,
-    context: WorkspaceContext | null = null,
-  ): Promise<Session> {
+  private async launch(project: Project, options: LaunchOptions): Promise<Session> {
+    const { agent, mode, tuning, prompt, resumeSessionId = null, existingId = null, validate, joined = null, title, epicId = null, context = null } = options;
     const id = existingId ?? randomUUID();
     const command = buildAgentCommand(agent, mode, prompt, id, resumeSessionId, tuning);
     const token = this.db.getHookToken(id) ?? randomBytes(32).toString('hex');
@@ -347,8 +327,8 @@ export class SessionManager {
       throw cause;
     }
 
-    this.cleanupLaunchArtifacts(id);
-    const configPath = this.configPath(id);
+    this.cleanupHolderArtifacts(id);
+    const configPath = holderPaths(SESSIONS_DIR, id).config;
     const config: HolderConfig = {
       cmd: command.cmd,
       args: command.args,
@@ -427,7 +407,7 @@ export class SessionManager {
         resolve(false);
         return;
       }
-      const socket = createConnection(this.socketPath(id));
+      const socket = createConnection(holderPaths(SESSIONS_DIR, id).socket);
       socket.setEncoding('utf8');
       let connected = false;
       let settled = false;
@@ -863,7 +843,7 @@ export class SessionManager {
   // could reach it again. Graceful stop first, then SIGKILL on whatever is left; throws if it survives.
   private async stopProcesses(id: string): Promise<void> {
     await this.terminate(id);
-    const holderArgument = this.configPath(id);
+    const holderArgument = holderPaths(SESSIONS_DIR, id).config;
     const deadline = Date.now() + HOLDER_EXIT_GRACE_MS;
     while (findProcessesByArgument(holderArgument).length > 0 && Date.now() < deadline) {
       await delay(HOLDER_START_RETRY_MS);
@@ -929,9 +909,9 @@ export class SessionManager {
     return updated;
   }
 
-  private sendHolder(runtime: Runtime, message: unknown): boolean {
+  private sendHolder(runtime: Runtime, message: ClientMessage): boolean {
     if (runtime.socket === null || runtime.socket.destroyed || !runtime.socket.writable) return false;
-    runtime.socket.write(`${JSON.stringify(message)}\n`);
+    runtime.socket.write(encodeMessage(message));
     return true;
   }
 
@@ -957,7 +937,7 @@ export class SessionManager {
 
   private readExitRecord(id: string): ExitRecord | null {
     try {
-      const value: unknown = JSON.parse(readFileSync(this.exitPath(id), 'utf8'));
+      const value: unknown = JSON.parse(readFileSync(holderPaths(SESSIONS_DIR, id).exit, 'utf8'));
       if (!isRecord(value)) return null;
       return {
         exitCode: typeof value.exitCode === 'number' ? value.exitCode : null,
@@ -969,44 +949,23 @@ export class SessionManager {
     }
   }
 
-  private cleanupLaunchArtifacts(id: string): void {
-    removeFile(this.configPath(id));
-    removeFile(this.socketPath(id));
-    removeFile(this.exitPath(id));
-  }
-
-  private cleanupExitArtifacts(id: string): void {
-    removeFile(this.configPath(id));
-    removeFile(this.socketPath(id));
-    removeFile(this.exitPath(id));
+  // Before a launch as after an exit: the next holder must not find a stale socket or exit record.
+  private cleanupHolderArtifacts(id: string): void {
+    const paths = holderPaths(SESSIONS_DIR, id);
+    removeFile(paths.config);
+    removeFile(paths.socket);
+    removeFile(paths.exit);
   }
 
   private cleanupAllArtifacts(id: string): void {
-    this.cleanupExitArtifacts(id);
-    removeFile(this.holderLogPath(id));
+    this.cleanupHolderArtifacts(id);
+    removeFile(holderPaths(SESSIONS_DIR, id).holderLog);
     removeFile(join(LOG_DIR, `${id}.log`));
     rmSync(join(ATTACHMENTS_DIR, id), { recursive: true, force: true });
   }
 
-  private configPath(id: string): string {
-    return join(SESSIONS_DIR, `${id}.config.json`);
-  }
-
-  private socketPath(id: string): string {
-    return join(SESSIONS_DIR, `${id}.sock`);
-  }
-
-  private exitPath(id: string): string {
-    return join(SESSIONS_DIR, `${id}.exit.json`);
-  }
-
-  private holderLogPath(id: string): string {
-    return join(SESSIONS_DIR, `${id}.holder.log`);
-  }
-
   private logHolderError(id: string, error: unknown): void {
-    const message = error instanceof Error ? error.stack ?? error.message : String(error);
-    appendFileSync(this.holderLogPath(id), `${new Date().toISOString()} ${message}\n`, { mode: 0o600 });
+    appendHolderLog(holderPaths(SESSIONS_DIR, id).holderLog, error);
   }
 
   async shutdown(): Promise<void> {

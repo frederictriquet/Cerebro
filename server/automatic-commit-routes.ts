@@ -1,17 +1,16 @@
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { AutomaticCommits, type AutomaticCommitContext } from './automatic-commits.ts';
-import { DEFAULT_COMMIT_SETTINGS, type CerebroDatabase } from './db.ts';
+import { type CerebroDatabase } from './db.ts';
 import { workspaceFor } from './provenance.ts';
 import { prepareCommit } from './git-plan.ts';
 import { executeSessionCommit, prepareSessionGit, sessionGitContext } from './session-git.ts';
 import { WorktreeError, type WorktreeManager } from './worktrees.ts';
+import { routeErrors, statusCodeOf } from './routes-util.ts';
+import { DEFAULT_COMMIT_SETTINGS } from '../shared/types.ts';
 
 export function registerAutomaticCommitRoutes(app:FastifyInstance,db:CerebroDatabase,worktrees:WorktreeManager):AutomaticCommits {
   const manager=new AutomaticCommits(db);
-  const attempt=async(reply:FastifyReply,run:()=>Promise<unknown>,status=200):Promise<unknown>=>{
-    try{return reply.code(status).send(await run());}
-    catch(cause){return reply.code(cause instanceof WorktreeError?cause.statusCode:409).send({error:cause instanceof Error?cause.message:String(cause)});}
-  };
+  const {attempt}=routeErrors(statusCodeOf(WorktreeError,409));
   const contexts:Record<string,(id:string)=>Promise<AutomaticCommitContext>>={
     projects:async id=>{
       const project=db.getProject(id);if(!project)throw new WorktreeError('Projet introuvable.',404);

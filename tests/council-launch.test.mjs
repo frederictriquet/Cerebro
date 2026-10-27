@@ -5,7 +5,7 @@ import { setImmediate } from 'node:timers/promises';
 import * as jsx from 'react/jsx-runtime';
 import { moduleRunnerTransform, transformWithOxc } from 'vite';
 import * as format from '../web/src/format.ts';
-import * as types from '../web/src/types.ts';
+import * as types from '../shared/types.ts';
 import { withoutPersona } from '../server/council.ts';
 
 // Exécute les vrais composants et leurs handlers en mémoire, avec le transformateur
@@ -139,7 +139,7 @@ async function fixture(t, projectId, setup = () => {}) {
   f.PersonasDialog = PersonasDialog;
   function Modal() {}
   const modules = {
-    react: hooks, 'react/jsx-runtime': jsx, './types.ts': types, './council.css': {},
+    react: hooks, 'react/jsx-runtime': jsx, '../../shared/types.ts': types, './council.css': {},
     './ActivityStatus.tsx': { ActivityStatus() {} },
     './AgentLabel.tsx': { AgentLogo() {} }, './format.ts': { relativeTime: () => '', AGENT_LABEL: format.AGENT_LABEL },
     './DelayedActionButton.tsx': { DelayedActionButton() {} },

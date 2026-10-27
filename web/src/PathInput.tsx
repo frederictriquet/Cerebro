@@ -1,13 +1,7 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from './api.ts';
-
-interface DirListing {
-  path: string;
-  parent: string | null;
-  home: string;
-  dirs: string[];
-}
+import { apiParsed } from './api.ts';
+import { parseDirListing, type DirListing } from '../../shared/machine.ts';
 
 function joinPath(base: string, name: string): string {
   return base.endsWith('/') ? `${base}${name}` : `${base}/${name}`;
@@ -35,7 +29,7 @@ export function PathInput({
     setLoading(true);
     setError(null);
     try {
-      setListing(await api<DirListing>(`/api/fs/dirs?path=${encodeURIComponent(path)}`));
+      setListing(await apiParsed(`/api/fs/dirs?path=${encodeURIComponent(path)}`, parseDirListing));
     } catch (err) {
       if (fallback) {
         await load('', false);

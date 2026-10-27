@@ -1,16 +1,27 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import type { StartingContentPlan, StartingContentStep, StartingOrigin, WorktreeInventory, WorktreeView } from '../../server/worktrees.ts';
-import type { GitSnapshot } from '../../server/git-plan.ts';
-import { api, apiBase } from './api.ts';
+import { api, apiParsed, apiBase } from './api.ts';
 import { Modal } from './Dialog.tsx';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { href } from './route.ts';
 import { AGENT_LABEL, MODE_CHIP, sessionTitle } from './format.ts';
 import { useStore } from './store.tsx';
-import { normalizeMode, type Session, type WorkspaceMode } from './types.ts';
+import { normalizeMode, parseSession, type Session, type WorkspaceMode } from '../../shared/types.ts';
 import './worktrees.css';
+import {
+  parsePreparedWorktreeOperation,
+  parseStartingContentDiscard,
+  parseStartingContentPlan,
+  parseWorktreeInventory,
+  type StartingContentDiscard,
+  type StartingContentPlan,
+  type StartingContentStep,
+  type StartingOrigin,
+  type WorktreeInventory,
+  type WorktreeView,
+} from '../../shared/worktrees.ts';
+import { parseGitSnapshot, type GitSnapshot } from '../../shared/git.ts';
 
 const branchName = (branch: string | null): string => branch?.replace(/^refs\/heads\//,'') ?? 'branche inconnue';
 const INVENTORY_REFRESH_MS = 30_000;
@@ -91,7 +102,7 @@ function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReview
   const [error,setError]=useState<string|null>(null);
   const load=async():Promise<void>=>{
     const machine=apiBase();setBusy(true);setError(null);
-    try{const value=await api<GitSnapshot>(`/api/worktrees/${view.id}/git/prepare-commit`,{method:'POST'});if(machine===apiBase()){setSnapshot(value);setChecked(new Set());}}
+    try{const value=await apiParsed(`/api/worktrees/${view.id}/git/prepare-commit`,parseGitSnapshot,{method:'POST'});if(machine===apiBase()){setSnapshot(value);setChecked(new Set());}}
     catch(cause){if(machine===apiBase())setError(cause instanceof Error?cause.message:String(cause));}
     finally{if(machine===apiBase())setBusy(false);}
   };
@@ -112,10 +123,9 @@ function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReview
 }
 
 const ACTION_LABEL: Record<StartingContentStep['action'],string> = {restore:'remis à l’état de la copie',separate:'seul le travail fait depuis la création est gardé',settle:'rattaché tel quel au travail de la conversation',keep:'laissé tel quel, à examiner'};
-interface DiscardResult { restored:string[];separated:string[];settled:string[];kept:StartingContentStep[];targetUpdate:StartingContentPlan['targetUpdate'] }
 type Resolver = Pick<Session,'id'|'title'>;
 /** Preview, then removal of the content copied from the project when the copy was created. */
-function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeView;onClose:()=>void;onDone:(result:DiscardResult)=>void;onResolving:(session:Resolver)=>void}) {
+function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeView;onClose:()=>void;onDone:(result:StartingContentDiscard)=>void;onResolving:(session:Resolver)=>void}) {
   const [machineBase]=useState(apiBase);
   const {projects}=useStore();
   const settings=projects.find(project=>project.id===view.projectId)?.resolutionSettings;
@@ -127,7 +137,7 @@ function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeV
   const target=branchName(view.targetBranch);
   useEffect(()=>{
     let disposed=false;
-    api<StartingContentPlan>(`/api/worktrees/${view.id}/starting-content`)
+    apiParsed(`/api/worktrees/${view.id}/starting-content`, parseStartingContentPlan)
       .then(value=>{if(!disposed&&apiBase()===machineBase)setPlan(value);})
       .catch(cause=>{if(!disposed&&apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));})
       .finally(()=>{if(!disposed&&apiBase()===machineBase)setBusy(null);});
@@ -135,14 +145,14 @@ function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeV
   },[view.id,machineBase]);
   const run=async():Promise<void>=>{
     setBusy('running');setError(null);
-    try{const result=await api<DiscardResult>(`/api/worktrees/${view.id}/discard-inherited`,{method:'POST',body:JSON.stringify({confirmed:[...confirmed].map(([path,version])=>({path,version}))})});if(apiBase()===machineBase)onDone(result);}
+    try{const result=await apiParsed(`/api/worktrees/${view.id}/discard-inherited`,parseStartingContentDiscard,{method:'POST',body:JSON.stringify({confirmed:[...confirmed].map(([path,version])=>({path,version}))})});if(apiBase()===machineBase)onDone(result);}
     catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
     finally{if(apiBase()===machineBase)setBusy(null);}
   };
   // The files left for a manual review go to a session working in the copy, with the project's LLM settings.
   const resolve=async():Promise<void>=>{
     setBusy('resolving');setError(null);
-    try{const session=await api<Session>(`/api/worktrees/${view.id}/resolve-starting-content`,{method:'POST'});if(apiBase()===machineBase)onResolving(session);}
+    try{const session=await apiParsed(`/api/worktrees/${view.id}/resolve-starting-content`,parseSession,{method:'POST'});if(apiBase()===machineBase)onResolving(session);}
     catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
     finally{if(apiBase()===machineBase)setBusy(null);}
   };
@@ -184,13 +194,13 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   const [historyBusy,setHistoryBusy]=useState<Set<string>>(()=>new Set());
   const [confirmation,setConfirmation]=useState<Confirmation|null>(null);
   const [discarding,setDiscarding]=useState<WorktreeView|null>(null);
-  const [results,setResults]=useState<Map<string,DiscardResult>>(()=>new Map());
+  const [results,setResults]=useState<Map<string,StartingContentDiscard>>(()=>new Map());
   const [resolvers,setResolvers]=useState<Map<string,Resolver>>(()=>new Map());
   const [committing,setCommitting]=useState<WorktreeView|null>(null);
   const [reviewed,setReviewed]=useState<Reviewed|null>(null);
   const [expanded,setExpanded]=useState<Set<string>>(()=>new Set());
   const refresh=useCallback(async():Promise<void>=>{
-    try{const result=await api<WorktreeInventory>(path);if(apiBase()===machineBase){inventoryCache.set(cacheKey(machineBase,path),result);setInventory(result);setLoadedBase(machineBase);setLoadError(null);}}
+    try{const result=await apiParsed(path, parseWorktreeInventory);if(apiBase()===machineBase){inventoryCache.set(cacheKey(machineBase,path),result);setInventory(result);setLoadedBase(machineBase);setLoadError(null);}}
     catch(cause){if(apiBase()===machineBase)setLoadError(cause instanceof Error?cause.message:String(cause));}
   },[path,machineBase]);
   useEffect(()=>{
@@ -210,7 +220,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   const prepare=async(view:WorktreeView,kind:'merge'|'remove'):Promise<void>=>{
     if(apiBase()!==machineBase)return;
     setBusy(view.id);setError(null);
-    try{const prepared=await api<{token:string;view:WorktreeView}>(`/api/worktrees/${view.id}/prepare-${kind}`,{method:'POST'});if(apiBase()===machineBase)setConfirmation({kind,...prepared,machineBase});}
+    try{const prepared=await apiParsed(`/api/worktrees/${view.id}/prepare-${kind}`,parsePreparedWorktreeOperation,{method:'POST'});if(apiBase()===machineBase)setConfirmation({kind,...prepared,machineBase});}
     catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
     finally{if(apiBase()===machineBase)setBusy(null);}
   };

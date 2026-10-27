@@ -6,7 +6,7 @@ import { href, parseMachine } from './route.ts';
 import { SessionRow } from './SessionRow.tsx';
 import { groupSessions, type SessionGroup } from './session-groups.ts';
 import { useStore } from './store.tsx';
-import type { Project, Session } from './types.ts';
+import type { Project, Session } from '../../shared/types.ts';
 import './session-groups.css';
 
 export function SessionList({ sessions, now, showProject = false, onError }: {

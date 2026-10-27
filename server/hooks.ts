@@ -2,9 +2,11 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { getGrokHookSettings } from './agents.ts';
-import type { Agent } from './db.ts';
+import { codexHome } from './codex-config.ts';
 import { parseQuestions } from './questions.ts';
 import type { SessionManager } from './sessions.ts';
+import type { Agent } from '../shared/types.ts';
+import { ignoreEnoent, isRecord } from './util.ts';
 
 type HookPayload = Record<string, unknown>;
 
@@ -17,7 +19,7 @@ function stringField(payload: HookPayload, ...names: string[]): string | null {
 }
 
 function codexRolloutExists(threadId: string): boolean {
-  const root = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'sessions');
+  const root = join(codexHome(), 'sessions');
   // Rollouts live in sessions/YYYY/MM/DD/; check today and yesterday (sessions spanning midnight).
   for (const offset of [0, 1]) {
     const day = new Date(Date.now() - offset * 86_400_000);
@@ -37,7 +39,7 @@ export function installGrokHook(path = join(homedir(), '.grok', 'hooks', 'cerebr
   try {
     current = readFileSync(path, 'utf8');
   } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+    ignoreEnoent(error);
   }
   if (current === contents) return;
   mkdirSync(dirname(path), { recursive: true });
@@ -106,5 +108,5 @@ export function handleHook(
 }
 
 export function isHookPayload(value: unknown): value is HookPayload {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return isRecord(value);
 }

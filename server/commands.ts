@@ -4,9 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { relative, resolve, isAbsolute } from 'node:path';
-import type { CerebroDatabase, TaskExecution } from './db.ts';
-export interface ProjectCommand {id:string;projectId:string;name:string;executable:string;args:string[];cwd:string;timeoutSeconds:number}
-export interface CommandRun {id:string;taskId:string;pid:number|null;command:ProjectCommand;cwd:string;status:'running'|'succeeded'|'failed'|'stopped'|'interrupted';output:string;startedAt:number;finishedAt:number|null;exitCode:number|null;error:string|null}
+import type { CerebroDatabase } from './db.ts';
+import { killWithEscalation } from './proc.ts';
+import type { TaskExecution } from '../shared/types.ts';
+import type { CommandRun, ProjectCommand } from '../shared/backlog.ts';
 export class CommandExecutor {
   private db:CerebroDatabase;
   private live=new Map<string,{child:ChildProcess;timer:NodeJS.Timeout;killTimer?:NodeJS.Timeout;run:CommandRun;stopping:boolean}>();
@@ -63,7 +64,7 @@ export class CommandExecutor {
   stop(id:string):boolean{
     const runtime=this.live.get(id);if(!runtime)return false;if(runtime.stopping)return true;runtime.stopping=true;
     const kill=(signal:NodeJS.Signals):void=>{try{if(runtime.child.pid)process.kill(-runtime.child.pid,signal);}catch{runtime.child.kill(signal);}};
-    kill('SIGTERM');runtime.killTimer=setTimeout(()=>kill('SIGKILL'),1500);runtime.killTimer.unref();return true;
+    runtime.killTimer=killWithEscalation(kill,1500);runtime.killTimer.unref();return true;
   }
   async shutdown():Promise<void>{
     await Promise.all([...this.live].map(([id,runtime])=>new Promise<void>(resolve=>{runtime.child.once('close',()=>resolve());this.stop(id);})));

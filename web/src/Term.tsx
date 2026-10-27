@@ -3,7 +3,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
 import { useEffect, useRef } from 'react';
 import { clipboardImage, readClipboardImage, uploadImage, wsUrl } from './api.ts';
-import { parseTermServerMessage, type TermClientMessage } from './types.ts';
+import { parseTermServerMessage, type TermClientMessage } from '../../shared/types.ts';
 
 const FONT = 'ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace';
 

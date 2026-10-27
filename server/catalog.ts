@@ -4,19 +4,14 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { query, type ModelInfo } from '@anthropic-ai/claude-agent-sdk';
-import { getAgentAvailability, type Tuning } from './agents.ts';
-import type { Agent, Effort } from './db.ts';
+import { claudeQueryOptions, getAgentAvailability, type Tuning } from './agents.ts';
+import { readCodexString } from './codex-config.ts';
+import { EFFORTS, isEffort, type Agent, type Effort, type ModelChoice } from '../shared/types.ts';
+import { errorMessage, isRecord } from './util.ts';
 
 const execFileAsync = promisify(execFile);
 const DISCOVERY_TIMEOUT_MS = 20_000;
 const REFRESH_MS = 60 * 60 * 1000;
-
-export interface ModelChoice {
-  value: string;
-  label: string;
-  description: string;
-  efforts: Effort[];
-}
 
 // Choix proposés à la création d'une session. `efforts` : ceux du modèle par défaut de l'agent.
 export interface AgentCatalog {
@@ -27,7 +22,6 @@ export interface AgentCatalog {
 }
 
 const CLAUDE_EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-const EFFORT_ORDER: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 // Repli quand la découverte échoue.
 const FALLBACK: Record<Agent, AgentCatalog> = {
@@ -47,12 +41,8 @@ const FALLBACK: Record<Agent, AgentCatalog> = {
 const catalogs: Record<Agent, AgentCatalog> = { ...FALLBACK };
 let pending: Promise<void> | null = null;
 
-function isEffort(value: unknown): value is Effort {
-  return EFFORT_ORDER.includes(value as Effort);
-}
-
 function sortEfforts(efforts: Effort[]): Effort[] {
-  return EFFORT_ORDER.filter((e) => efforts.includes(e));
+  return EFFORTS.filter((e) => efforts.includes(e));
 }
 
 function modelEfforts(info: ModelInfo): Effort[] {
@@ -67,20 +57,12 @@ export function defaultEffort(efforts: Effort[]): Effort | null {
 // Interroge la CLI `claude` installée (celle que lancent les sessions) via le SDK : une requête de
 // contrôle, sans message envoyé au modèle. La ligne « default » donne les efforts du modèle par défaut.
 async function discoverClaude(): Promise<AgentCatalog> {
-  const { stdout } = await execFileAsync('which', ['claude']);
+  const options = await claudeQueryOptions();
   let release = (): void => {};
   const prompt = (async function* () {
     await new Promise<void>((resolve) => { release = resolve; });
   })();
-  const session = query({
-    prompt,
-    options: {
-      cwd: homedir(),
-      pathToClaudeCodeExecutable: stdout.trim(),
-      persistSession: false,
-      settingSources: ['user'],
-    },
-  });
+  const session = query({ prompt, options });
   let timer: NodeJS.Timeout | undefined;
   try {
     const infos = await Promise.race([
@@ -108,10 +90,6 @@ async function discoverClaude(): Promise<AgentCatalog> {
     session.close();
     release();
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 // `grok models` rafraîchit ~/.grok/models_cache.json (format non documenté, lu avec tolérance) et donne
@@ -147,26 +125,12 @@ async function discoverGrok(): Promise<AgentCatalog> {
   return { models, efforts: fallbackDefault.efforts, defaultModel: fallbackDefault.value };
 }
 
-// `model = "…"` de premier niveau dans ~/.codex/config.toml, modèle lancé par défaut par codex.
-async function readCodexDefaultModel(): Promise<string | null> {
-  let text: string;
-  try {
-    text = await readFile(join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'config.toml'), 'utf8');
-  } catch {
-    return null;
-  }
-  const firstTable = text.search(/^\s*\[/m);
-  const topLevel = firstTable === -1 ? text : text.slice(0, firstTable);
-  return /^[ \t]*"?model"?[ \t]*=[ \t]*(?:"([^"\n]*)"|'([^'\n]*)')/m.exec(topLevel)?.slice(1).find((v) => v !== undefined) ?? null;
-}
-
 // `codex debug models` : catalogue JSON de la CLI installée (même source que `model/list` de
 // `codex app-server`, plus léger). Défaut : celui de config.toml, sinon le premier visible.
 async function discoverCodex(): Promise<AgentCatalog> {
-  const [{ stdout }, configured] = await Promise.all([
-    execFileAsync('codex', ['debug', 'models'], { timeout: DISCOVERY_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 }),
-    readCodexDefaultModel(),
-  ]);
+  const { stdout } = await execFileAsync('codex', ['debug', 'models'], { timeout: DISCOVERY_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+  // `model = "…"` de premier niveau dans ~/.codex/config.toml, modèle lancé par défaut par codex.
+  const configured = readCodexString('model');
   const data: unknown = JSON.parse(stdout);
   if (!isRecord(data) || !Array.isArray(data.models)) throw new Error('sortie de `codex debug models` illisible');
   const models = data.models
@@ -199,7 +163,7 @@ export function refreshCatalog(): Promise<void> {
       .map(([agent, discover]) => discover()
         .then((catalog) => { catalogs[agent as Agent] = catalog; })
         .catch((error: unknown) => {
-          console.warn(`Catalogue ${agent} indisponible, liste par défaut : ${error instanceof Error ? error.message : String(error)}`);
+          console.warn(`Catalogue ${agent} indisponible, liste par défaut : ${errorMessage(error)}`);
         }))))
     .then(() => {})
     .finally(() => { pending = null; });

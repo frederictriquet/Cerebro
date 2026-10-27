@@ -1,13 +1,19 @@
-import { resolve, sep } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { realpathSync } from 'node:fs';
 
 export function canonicalWorktreePath(path: string): string {
   try { return realpathSync(path); } catch { return resolve(path); }
 }
 
+/** Whether `path` is `root` or lies below it. Both are compared as given: canonicalize them first. */
+export function pathWithin(root: string, path: string): boolean {
+  const part = relative(root, path);
+  return part === '' || part !== '..' && !part.startsWith(`..${sep}`) && !isAbsolute(part);
+}
+
 interface Lease { paths: string[]; queued: (() => void)[] }
 const leases = new Set<Lease>();
-const overlaps = (left: string, right: string): boolean => left === right || left.startsWith(right + sep) || right.startsWith(left + sep);
+const overlaps = (left: string, right: string): boolean => pathWithin(left, right) || pathWithin(right, left);
 function leaseFor(path: string): Lease | undefined {
   const absolute = canonicalWorktreePath(path);
   return [...leases].find(lease => lease.paths.some(root => overlaps(root, absolute)));

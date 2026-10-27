@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from './api.ts';
-import { parseScreenLines } from './types.ts';
+import { parseScreenLines } from '../../shared/types.ts';
 
 const POPOVER_WIDTH = 440;
 
@@ -31,7 +31,7 @@ export function ScreenPopover({
     let cancelled = false;
     void (async () => {
       try {
-        const raw = await api<unknown>(`/api/sessions/${sessionId}/screen`);
+        const raw = await api(`/api/sessions/${sessionId}/screen`);
         const parsed = parseScreenLines(raw);
         if (cancelled) return;
         if (!parsed) {

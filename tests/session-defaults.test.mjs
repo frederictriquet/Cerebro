@@ -16,7 +16,8 @@ delete process.env.CEREBRO_BIND_TOKEN;
 delete process.env.CEREBRO_SLACK_TOKEN;
 delete process.env.CEREBRO_SLACK_USER;
 
-const { CerebroDatabase, DEFAULT_SESSION_DEFAULTS } = await import('../server/db.ts');
+const { CerebroDatabase } = await import('../server/db.ts');
+const { DEFAULT_SESSION_DEFAULTS } = await import('../shared/types.ts');
 const { SessionManager } = await import('../server/sessions.ts');
 const { EpicRunner } = await import('../server/epic-runner.ts');
 const { CommandExecutor } = await import('../server/commands.ts');
@@ -26,7 +27,7 @@ const { catalogFor } = await import('../server/catalog.ts');
 const { UpdateManager } = await import('../server/updates.ts');
 const { PeerSync } = await import('../server/peers.ts');
 const { buildServer } = await import('../server/index.ts');
-const { parseProject } = await import('../web/src/types.ts');
+const { parseProject } = await import('../shared/types.ts');
 
 const saved = {
   agent: 'codex', mode: 'acceptEdits', model: 'gpt-6.1-sol', effort: 'xhigh', prompt: 'Prompt mémorisé\nDeuxième ligne',
@@ -40,7 +41,7 @@ mock.method(PeerSync.prototype, 'sync', async function () {
 
 // Remplacer uniquement le démarrage du PTY : résolution, persistance et commandes restent réelles.
 const launches = [];
-mock.method(SessionManager.prototype, 'launch', async function (project, agent, mode, tuning, prompt, resumeId, existingId = null, validate, joined, title, epicId) {
+mock.method(SessionManager.prototype, 'launch', async function (project, { agent, mode, tuning, prompt, resumeSessionId: resumeId = null, existingId = null, epicId = null }) {
   const id = existingId ?? randomUUID();
   const command = buildAgentCommand(agent, mode, prompt, id, resumeId, tuning);
   launches.push({ agent, mode, ...tuning, prompt, command, id });

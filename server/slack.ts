@@ -14,23 +14,17 @@ import {
 import { OperationResults } from './operation-results.ts';
 import { answerFactQuestion, FACT_HELP } from './facts.ts';
 import { answerQuestion } from './ask.ts';
-import type { CouncilRun } from './council.ts';
 import type { CouncilRuns } from './council-runner.ts';
-import type { Agent, CerebroDatabase, Project, Session } from './db.ts';
+import type { CerebroDatabase } from './db.ts';
 import { normalizeProjectName, type PeerSync } from './peers.ts';
 import { formatQuestions, interpretAnswer } from './questions.ts';
 import type { AgentQuestion } from './questions.ts';
 import type { SessionEvent, SessionManager } from './sessions.ts';
+import type { Agent, CouncilRun, Project, Session } from '../shared/types.ts';
+import type { SlackSettings } from '../shared/machine.ts';
+import { errorMessage, isRecord } from './util.ts';
 
 type MessageKind = 'alert' | 'notify' | 'ask';
-
-// Notification preferences editable from the web UI; env variables only provide the defaults.
-export interface SlackSettings {
-  waiting: boolean;
-  idle: boolean;
-  agentMessages: boolean;
-  delaySeconds: number;
-}
 
 const SETTINGS_FILE = join(DATA_DIR, 'slack.json');
 const STATE_FILE = join(DATA_DIR, 'slack-state.json');
@@ -114,6 +108,23 @@ interface ActiveThread {
   fromDm: boolean;
 }
 
+const INACTIVE_SESSION_REPLY = 'Session inactive : message non transmis.';
+
+function newThread(fields: Pick<ActiveThread, 'channel' | 'ts' | 'lastTs' | 'kind'> & Partial<ActiveThread>): ActiveThread {
+  const now = Date.now();
+  return {
+    createdAt: now,
+    polledAt: now,
+    answered: false,
+    awaitingReply: false,
+    skipTurnEnd: false,
+    moreTurns: false,
+    questions: null,
+    fromDm: false,
+    ...fields,
+  };
+}
+
 interface SlackResponse {
   ok?: boolean;
   error?: string;
@@ -143,10 +154,6 @@ const THREAD_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 // conversations.replies is rate limited (~50/min): poll fresh threads often, older ones rarely.
 const FRESH_THREAD_MS = 10 * 60 * 1_000;
 const SLOW_POLL_INTERVAL_MS = 60_000;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function isAgentQuestion(value: unknown): value is AgentQuestion {
   if (!isRecord(value) || typeof value.question !== 'string') return false;
@@ -261,9 +268,13 @@ const COUNCIL_FAILURES: Record<CouncilRun['status'], string> = {
   interrupted: 'interrompu',
 };
 
+function cerebroLink(path: string, label: string): string {
+  return `<${PUBLIC_URL.replace(/\/+$/, '')}/${path}|${label}>`;
+}
+
 // Réponse du fil Slack : l'essentiel de la synthèse, le détail reste sur la page du run.
 export function councilSlackText(run: CouncilRun, projectName: string | null): string {
-  const link = `<${PUBLIC_URL.replace(/\/+$/, '')}/#/c/${encodeURIComponent(run.id)}|Ouvrir le rapport dans Cerebro>`;
+  const link = cerebroLink(`#/c/${encodeURIComponent(run.id)}`, 'Ouvrir le rapport dans Cerebro');
   const scope = projectName === null ? 'hors projet' : `*${escapeMrkdwn(projectName)}*`;
   const synthesis = run.synthesis;
   if (run.status !== 'succeeded' || synthesis === null) {
@@ -438,7 +449,7 @@ export class SlackNotifier {
       if(result.projectId!==null&&(!project||!this.peers.owns(project.name)))return false;
       const councilId=result.kind==='council'?result.id.replace(/^council:/,''):null;
       const link=councilId!==null?`#/c/${encodeURIComponent(councilId)}`:project?`#/p/${encodeURIComponent(project.id)}`:'#/';
-      const text=`${result.ok?':white_check_mark:':':x:'} *${escapeMrkdwn(project?.name??'Hors projet')}* — ${result.kind} : ${escapeMrkdwn(result.summary)}\nDurée : ${Math.max(0,Math.round((result.finishedAt-result.startedAt)/1000))} s\n<${PUBLIC_URL.replace(/\/+$/,'')}/${link}|Ouvrir dans Cerebro>`;
+      const text=`${result.ok?':white_check_mark:':':x:'} *${escapeMrkdwn(project?.name??'Hors projet')}* — ${result.kind} : ${escapeMrkdwn(result.summary)}\nDurée : ${Math.max(0,Math.round((result.finishedAt-result.startedAt)/1000))} s\n${cerebroLink(link,'Ouvrir dans Cerebro')}`;
       let sent=false;
       const send=async():Promise<void>=>{
         // Recheck after peer coordination and any pending send in this session.
@@ -495,7 +506,7 @@ export class SlackNotifier {
     const session = this.db.getSession(sessionId);
     if (session === null) throw new Error('Session introuvable');
     this.markTurn(sessionId,'custom_at');
-    const pending=this.timers.get(sessionId);if(pending)clearTimeout(pending);this.timers.delete(sessionId);
+    this.clearTimer(sessionId);
     const header = this.header(session);
     const suffix = kind === 'ask'
       ? `\n${this.sessionLink(session.id)}\n_Réponds dans le fil : ta réponse sera envoyée à l'agent._`
@@ -525,9 +536,7 @@ export class SlackNotifier {
       if(session.status==='idle'&&turn&&turn.ended_at===null)this.db.connection.prepare('UPDATE notification_turns SET ended_at=? WHERE session_id=?').run(Date.now(),session.id);
     }
     if (event.type === 'session-deleted') {
-      const timer = this.timers.get(event.id);
-      if (timer !== undefined) clearTimeout(timer);
-      this.timers.delete(event.id);
+      this.clearTimer(event.id);
       if (this.threads.delete(event.id)) this.stateChanged();
       return;
     }
@@ -537,14 +546,19 @@ export class SlackNotifier {
       return;
     }
     if (event.type !== 'alert' || !this.alertWanted(event.session.status)) return;
-    const previous = this.timers.get(event.session.id);
-    if (previous !== undefined) clearTimeout(previous);
+    this.clearTimer(event.session.id);
     const timer = setTimeout(() => {
       this.timers.delete(event.session.id);
       void this.sendAutomaticAlert(event.session.id).catch((error: unknown) => this.logError(error));
     }, this.settings.delaySeconds * 1_000);
     timer.unref();
     this.timers.set(event.session.id, timer);
+  }
+
+  private clearTimer(sessionId: string): void {
+    const timer = this.timers.get(sessionId);
+    if (timer !== undefined) clearTimeout(timer);
+    this.timers.delete(sessionId);
   }
 
   private relayTurnEnd(sessionId: string, message: string | null): void {
@@ -560,9 +574,7 @@ export class SlackNotifier {
     this.markTurn(sessionId,'relayed_at');
     this.stateChanged();
     // The answer itself lands in the thread: the "turn complete" alert would only repeat it.
-    const timer = this.timers.get(sessionId);
-    if (timer !== undefined) clearTimeout(timer);
-    this.timers.delete(sessionId);
+    this.clearTimer(sessionId);
     const text = message !== null && message.trim() !== ''
       ? slackMarkdown(message)
       : `\`\`\`\n${safeCodeBlock((this.sessions.screenText(sessionId, 30) ?? []).join('\n').slice(-3_000))}\n\`\`\``;
@@ -607,8 +619,7 @@ export class SlackNotifier {
   }
 
   private sessionLink(sessionId: string): string {
-    const base = PUBLIC_URL.replace(/\/+$/, '');
-    return `<${base}/#/s/${encodeURIComponent(sessionId)}|Ouvrir dans Cerebro>`;
+    return cerebroLink(`#/s/${encodeURIComponent(sessionId)}`, 'Ouvrir dans Cerebro');
   }
 
   private async postSessionMessage(
@@ -621,20 +632,7 @@ export class SlackNotifier {
     const response = await this.slackApi('chat.postMessage', { channel, text, unfurl_links: false });
     const responseChannel = typeof response.channel === 'string' ? response.channel : channel;
     if (typeof response.ts !== 'string') throw new Error('Réponse chat.postMessage sans timestamp');
-    this.threads.set(sessionId, {
-      channel: responseChannel,
-      ts: response.ts,
-      lastTs: response.ts,
-      kind,
-      createdAt: Date.now(),
-      polledAt: Date.now(),
-      answered: false,
-      awaitingReply: false,
-      skipTurnEnd: false,
-      moreTurns: false,
-      questions,
-      fromDm: false,
-    });
+    this.threads.set(sessionId, newThread({ channel: responseChannel, ts: response.ts, lastTs: response.ts, kind, questions }));
     this.stateChanged();
   }
 
@@ -801,14 +799,14 @@ export class SlackNotifier {
         session = await this.sessions.create(project, {
           ...(command.agent === null ? {} : { agent: command.agent }),
           prompt: command.text,
-        }, undefined, undefined, undefined, { rememberDefaults: false });
+        }, { rememberDefaults: false });
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
+        const reason = errorMessage(error);
         await this.postThreadReply(channel, message.ts, `:x: Impossible de créer la session : ${escapeMrkdwn(reason)}`);
         return;
       }
     } else if (!await this.injectDmMessage(session, command.text)) {
-      await this.postThreadReply(channel, message.ts, 'Session inactive : message non transmis.');
+      await this.postThreadReply(channel, message.ts, INACTIVE_SESSION_REPLY);
       return;
     }
     // Slack instructions belong to the session; preserve the web form's prompt.
@@ -822,30 +820,17 @@ export class SlackNotifier {
       unfurl_links: false,
     });
     if (typeof response.ts !== 'string') throw new Error('Réponse chat.postMessage sans timestamp');
-    this.threads.set(session.id, {
+    this.threads.set(session.id, newThread({
       channel,
       ts: message.ts,
       lastTs: response.ts,
       kind: 'notify',
-      createdAt: Date.now(),
-      polledAt: Date.now(),
-      answered: false,
       awaitingReply: true,
       skipTurnEnd: queued,
-      moreTurns: false,
-      questions: null,
       fromDm: true,
-    });
+    }));
     this.stateDirty = true;
-    try {
-      await this.slackApi('reactions.add', {
-        channel,
-        timestamp: message.ts,
-        name: 'white_check_mark',
-      });
-    } catch (error) {
-      this.logError(error);
-    }
+    await this.acknowledge(channel, message.ts);
   }
 
   /** Project targeted by a DM command; null when this machine does not handle it (any error reply is posted). */
@@ -885,17 +870,32 @@ export class SlackNotifier {
 
   /** `council: question`: headless council run, its synthesis posted in the request thread. */
   private async answerDmCouncil(channel: string, threadTs: string, project: Project | null, question: string): Promise<void> {
+    await this.withHourglass(channel, threadTs, ':x: Council impossible', async () => {
+      if (this.councils === null) throw new Error('council indisponible sur cette machine.');
+      // readProject absent : valeur des réglages effectifs du projet.
+      const run = await this.councils.start({ projectId: project?.id ?? null, origin: 'slack', question }, randomUUID());
+      return councilSlackText(await this.councils.finished(run.id) ?? run, project?.name ?? null);
+    });
+  }
+
+  /** `? question`: free-form question answered by Claude from Cerebro's state. */
+  private async answerDmQuestion(channel: string, threadTs: string, question: string): Promise<void> {
+    await this.withHourglass(channel, threadTs, ':x: Impossible de répondre', async () => {
+      const factual = await answerFactQuestion(this.db, question);
+      return slackMarkdown(factual ?? await answerQuestion(this.db, question));
+    });
+  }
+
+  /** Long answer to a DM command: hourglass on the request while `answer` runs, its text (or failure) posted in the thread. */
+  private async withHourglass(channel: string, threadTs: string, failure: string, answer: () => Promise<string>): Promise<void> {
     await this.slackApi('reactions.add', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' })
       .catch((error: unknown) => this.logError(error));
     let text: string;
     try {
-      if (this.councils === null) throw new Error('council indisponible sur cette machine.');
-      // readProject absent : valeur des réglages effectifs du projet.
-      const run = await this.councils.start({ projectId: project?.id ?? null, origin: 'slack', question }, randomUUID());
-      text = councilSlackText(await this.councils.finished(run.id) ?? run, project?.name ?? null);
+      text = await answer();
     } catch (error) {
       this.logError(error);
-      text = `:x: Council impossible : ${escapeMrkdwn(error instanceof Error ? error.message : String(error))}`;
+      text = `${failure} : ${escapeMrkdwn(errorMessage(error))}`;
     }
     try {
       for (const chunk of splitMessage(text)) await this.postThreadReply(channel, threadTs, chunk);
@@ -906,24 +906,9 @@ export class SlackNotifier {
       .catch((error: unknown) => this.logError(error));
   }
 
-  /** `? question`: free-form question answered by Claude from Cerebro's state. */
-  private async answerDmQuestion(channel: string, threadTs: string, question: string): Promise<void> {
-    await this.slackApi('reactions.add', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' })
-      .catch((error: unknown) => this.logError(error));
-    let text: string;
-    try {
-      const factual = await answerFactQuestion(this.db, question);
-      text = slackMarkdown(factual ?? await answerQuestion(this.db, question));
-    } catch (error) {
-      this.logError(error);
-      text = `:x: Impossible de répondre : ${escapeMrkdwn(error instanceof Error ? error.message : String(error))}`;
-    }
-    try {
-      for (const chunk of splitMessage(text)) await this.postThreadReply(channel, threadTs, chunk);
-    } catch (error) {
-      this.logError(error);
-    }
-    await this.slackApi('reactions.remove', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' })
+  /** Marks a forwarded message as transmitted. */
+  private async acknowledge(channel: string, timestamp: string): Promise<void> {
+    await this.slackApi('reactions.add', { channel, timestamp, name: 'white_check_mark' })
       .catch((error: unknown) => this.logError(error));
   }
 
@@ -986,14 +971,19 @@ export class SlackNotifier {
   private async injectDmMessage(session: Session, text: string): Promise<boolean> {
     if (session.status === 'exited') return false;
     const questions = session.status === 'waiting' ? this.sessions.pendingQuestions(session.id) : null;
-    if (questions !== null) {
-      if (!this.sessions.writeInput(session.id, '\x1b')) return false;
-      this.sessions.setPendingQuestions(session.id, null);
+    return this.typeIntoSession(session.id, `[Message Slack] ${text}`, questions !== null);
+  }
+
+  /** Types `text` then Enter; an open question dialog is dismissed (Esc) first. */
+  private async typeIntoSession(sessionId: string, text: string, dismissDialog = false): Promise<boolean> {
+    if (dismissDialog) {
+      if (!this.sessions.writeInput(sessionId, '\x1b')) return false;
+      this.sessions.setPendingQuestions(sessionId, null);
       await delay(800);
     }
-    if (!this.sessions.writeInput(session.id, `[Message Slack] ${text}`)) return false;
+    if (!this.sessions.writeInput(sessionId, text)) return false;
     await delay(150);
-    return this.sessions.writeInput(session.id, '\r');
+    return this.sessions.writeInput(sessionId, '\r');
   }
 
   private async pollThread(sessionId: string, thread: ActiveThread): Promise<void> {
@@ -1021,22 +1011,9 @@ export class SlackNotifier {
         thread.answered = true;
         armReply(thread, queued);
         this.stateDirty = true;
-        try {
-          await this.slackApi('reactions.add', {
-            channel: thread.channel,
-            timestamp: message.ts,
-            name: 'white_check_mark',
-          });
-        } catch (error) {
-          this.logError(error);
-        }
+        await this.acknowledge(thread.channel, message.ts);
       } else {
-        await this.slackApi('chat.postMessage', {
-          channel: thread.channel,
-          thread_ts: thread.ts,
-          text: 'Session inactive : message non transmis.',
-          unfurl_links: false,
-        });
+        await this.postThreadReply(thread.channel, thread.ts, INACTIVE_SESSION_REPLY);
       }
     }
   }
@@ -1054,15 +1031,8 @@ export class SlackNotifier {
     const answer = (interpreted ?? text).replace(/\s*\n+\s*/g, ' ');
     // Answered or dismissed meanwhile (e.g. from the web UI): the answer becomes a plain message.
     const dialogOpen = sameQuestions(this.sessions.pendingQuestions(sessionId), questions);
-    if (dialogOpen) {
-      if (!this.sessions.writeInput(sessionId, '\x1b')) return false;
-      this.sessions.setPendingQuestions(sessionId, null);
-      await delay(800);
-    }
     const prefix = dialogOpen ? '[Réponse Slack à tes questions, le dialogue a été fermé]' : '[Réponse Slack à tes questions]';
-    if (!this.sessions.writeInput(sessionId, `${prefix} ${answer}`)) return false;
-    await delay(150);
-    if (!this.sessions.writeInput(sessionId, '\r')) return false;
+    if (!await this.typeIntoSession(sessionId, `${prefix} ${answer}`, dialogOpen)) return false;
     // Later replies in this thread are ordinary messages.
     thread.questions = null;
     this.stateDirty = true;
@@ -1087,10 +1057,7 @@ export class SlackNotifier {
     if (session.status === 'waiting' && kind !== 'ask' && /^[0-9yYnN]$/.test(text)) {
       return this.sessions.writeInput(sessionId, text);
     }
-    const message = kind === 'ask' ? `[Réponse Slack] ${text}` : text;
-    if (!this.sessions.writeInput(sessionId, message)) return false;
-    await delay(150);
-    return this.sessions.writeInput(sessionId, '\r');
+    return this.typeIntoSession(sessionId, kind === 'ask' ? `[Réponse Slack] ${text}` : text);
   }
 
   private loadState(): void {

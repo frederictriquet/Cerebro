@@ -1,11 +1,19 @@
-import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { DATA_DIR, loadRemotes, MACHINE_NAME } from './config.ts';
-import type { CerebroDatabase, Project } from './db.ts';
-import { compatibility, VERSION_INFO, versionInfoFrom, versionLabel, type Compatibility, type VersionInfo } from './version.ts';
+import type { CerebroDatabase } from './db.ts';
+import { git } from './git.ts';
+import { compatibility, VERSION_INFO, versionInfoFrom, versionLabel } from './version.ts';
+import type { Project } from '../shared/types.ts';
+import type {
+  GeneralSlackStatus,
+  PeerNotice,
+  ProjectSlackStatus,
+  RemoteVersionStatus,
+  VersionInfo,
+} from '../shared/machine.ts';
+import { errorMessage, isRecord } from './util.ts';
 
 /*
  * Coordination entre instances Cerebro qui partagent le même bot Slack. Un projet présent sur
@@ -14,7 +22,6 @@ import { compatibility, VERSION_INFO, versionInfoFrom, versionLabel, type Compat
  * si bien qu'un seul sens de connexion (remotes.json d'un côté) suffit à faire converger les deux.
  */
 
-const execFileAsync = promisify(execFile);
 const ID_FILE = join(DATA_DIR, 'instance-id');
 const STATE_FILE = join(DATA_DIR, 'peers.json');
 const SYNC_INTERVAL_MS = 15_000;
@@ -46,13 +53,6 @@ interface PeerInfo {
   lastSeen: number;
 }
 
-export interface PeerNotice {
-  id: string;
-  at: number;
-  projectName: string;
-  text: string;
-}
-
 interface PeerState {
   claims: Record<string, Claim>;
   renamedAt: Record<string, number>;
@@ -71,33 +71,6 @@ export interface SyncPayload {
   version: VersionInfo | null;
 }
 
-/** Version d'une machine de remotes.json, vue lors du dernier échange. */
-export interface RemoteVersionStatus {
-  version: VersionInfo | null;
-  compatibility: Compatibility;
-  reachable: boolean;
-  error: string | null;
-  checkedAt: number;
-}
-
-/** Machine qui traite les commandes Slack générales, quand plusieurs machines lisent le même DM. */
-export interface GeneralSlackStatus {
-  // Au moins une autre machine active : sinon la question ne se pose pas.
-  shared: boolean;
-  owner: 'local' | 'remote';
-  ownerMachine: string;
-  // Choisie par l'utilisateur (sinon : plus petit identifiant parmi les machines actives).
-  manual: boolean;
-}
-
-export interface ProjectSlackStatus {
-  shared: boolean;
-  conflict: boolean;
-  peerMachine: string | null;
-  owner: 'local' | 'remote' | null;
-  ownerMachine: string | null;
-}
-
 export function normalizeProjectName(value: string): string {
   return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').trim().toLocaleLowerCase('fr-FR');
 }
@@ -113,10 +86,6 @@ export function normalizeOrigin(value: string): string | null {
   const slash = url.indexOf('/');
   const host = (slash < 0 ? url : url.slice(0, slash)).toLowerCase().replace(/:\d+$/, '');
   return slash < 0 ? host : `${host}${url.slice(slash)}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function finiteNumber(value: unknown): value is number {
@@ -209,8 +178,7 @@ function loadInstanceId(): string {
 
 async function gitOrigin(path: string): Promise<string | null> {
   try {
-    const result = await execFileAsync('git', ['-C', path, 'remote', 'get-url', 'origin']);
-    return normalizeOrigin(result.stdout);
+    return normalizeOrigin(await git(path, ['remote', 'get-url', 'origin']));
   } catch {
     return null;
   }
@@ -437,7 +405,7 @@ export class PeerSync {
         if (payload.instanceId !== this.instanceId) this.mutate(() => this.absorb(payload));
         if (this.remoteErrors.delete(remote.id)) console.log(`[peers] ${remote.name} de nouveau joignable`);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         // Une machine éteinte échoue à chaque tour : ne journaliser que les changements.
         if (this.remoteErrors.get(remote.id) !== message) console.warn(`[peers] ${remote.name} : ${message}`);
         this.remoteErrors.set(remote.id, message);

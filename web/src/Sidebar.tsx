@@ -1,14 +1,6 @@
 import { AgentLabel } from './AgentLabel.tsx';
 import { useEffect, useRef, useState } from 'react';
-import {
-  acquireGeneralSlack,
-  getGeneralSlack,
-  getSlackStatus,
-  updateSlackSettings,
-  type GeneralSlackStatus,
-  type SlackSettings,
-  type SlackStatus,
-} from './api.ts';
+import { acquireGeneralSlack, getGeneralSlack, getSlackStatus, updateSlackSettings } from './api.ts';
 import { needsAttention, relativeTime, sessionTitle } from './format.ts';
 import { FindingsLink } from './FindingsLink.tsx';
 import { AppVersion, MachineSwitcher } from './MachineSwitcher.tsx';
@@ -18,8 +10,9 @@ import { useStore } from './store.tsx';
 import { UsageGauges } from './UsageGauges.tsx';
 import { WorktreeLabel } from './WorktreeLabel.tsx';
 import { SessionEpicBadge } from './SessionEpicBadge.tsx';
-import type { Session } from './types.ts';
+import type { Session } from '../../shared/types.ts';
 import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
+import type { GeneralSlackStatus, SlackSettings, SlackStatus } from '../../shared/machine.ts';
 
 export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () => void }) {
   const { sessions, connected, muted, setMuted, desktopNotif, setDesktopNotif } = useStore();

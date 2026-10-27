@@ -6,7 +6,7 @@ import { Modal } from './Dialog.tsx';
 import { LlmSelector } from './LlmSelector.tsx';
 import { PersonasDialog } from './PersonasDialog.tsx';
 import { useStore } from './store.tsx';
-import { MAX_ADVISORS, MIN_ADVISORS, type CouncilSettings, type Llm, type Persona } from './types.ts';
+import { MAX_ADVISORS, MIN_ADVISORS, type CouncilSettings, type Llm, type Persona } from '../../shared/types.ts';
 import './council.css';
 
 // global : réglages de l'accueil ; projectId : surcharge propre au projet.

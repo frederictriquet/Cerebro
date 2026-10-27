@@ -83,3 +83,11 @@ test('secret scanning excludes content before writing any blob; simultaneous exe
   const results=await Promise.allSettled([executeCommitPlan(repo,p),executeCommitPlan(repo,p)]);
   assert.equal(results.filter(r=>r.status==='fulfilled'&&r.value.error===null).length,1);
 }));
+test('a staged new file edited again in the worktree commits its worktree content',async()=>fixture(async repo=>{
+  git(repo,'mv','other','moved');writeFileSync(join(repo,'moved'),'edited\n');
+  const s=await prepareCommit(repo);
+  const r=await executeCommitPlan(repo,plan(s,[{message:'move',selection:[one('moved'),one('other')]}]));
+  assert.equal(r.error,null,JSON.stringify(r));
+  assert.equal(git(repo,'show','HEAD:moved'),'edited');assert.equal(git(repo,'show',':moved'),'edited');
+  assert.equal(git(repo,'status','--porcelain'),'');
+}));

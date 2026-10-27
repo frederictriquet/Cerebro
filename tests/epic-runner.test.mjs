@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {test} from 'node:test';
 const root=mkdtempSync(join(tmpdir(),'cerebro-epic-'));process.env.CEREBRO_DATA_DIR=root;
-const {CerebroDatabase,DEFAULT_SESSION_DEFAULTS}=await import('../server/db.ts');const {CommandExecutor}=await import('../server/commands.ts');const {EpicRunner,taskOrder}=await import('../server/epic-runner.ts');
+const {CerebroDatabase}=await import('../server/db.ts');const {DEFAULT_SESSION_DEFAULTS}=await import('../shared/types.ts');const {CommandExecutor}=await import('../server/commands.ts');const {EpicRunner,taskOrder}=await import('../server/epic-runner.ts');
 async function fixture(run){const db=new CerebroDatabase(':memory:');const project=db.createProject('Demo',root);const epic=db.createEpic(project.id,'Epic','Context',null);const commands=new CommandExecutor(db);
- const launches=[];const sessions={async create(p,options,validate,contextPath,title='step'){const session=db.createSession({id:randomUUID(),projectId:p.id,...options,title,status:'idle',agentSessionId:'fake'},'token');launches.push(session);return session;},kill(id){db.updateSession(id,{status:'exited',exitCode:130});return true;}};
+ const launches=[];const sessions={async create(p,options,{title='step'}={}){const session=db.createSession({id:randomUUID(),projectId:p.id,...options,title,status:'idle',agentSessionId:'fake'},'token');launches.push(session);return session;},kill(id){db.updateSession(id,{status:'exited',exitCode:130});return true;}};
  let runner=new EpicRunner(db,sessions,commands,()=>{});
  const task=(name,execution={type:'llm'})=>db.createTask(project.id,name,null,epic.id,execution);
  const command=(script,completion='manual')=>{const c=commands.configure(project.id,{name:'check',executable:process.execPath,args:['-e',script],cwd:'.',timeoutSeconds:5});return {type:'command',commandId:c.id,completion};};
@@ -70,11 +70,11 @@ test('LLM steps get a readable title and a declared-done step frees its terminal
 process.on('exit',()=>rmSync(root,{recursive:true,force:true}));
 test('stop during asynchronous LLM preparation cannot be overwritten by its launch callback',async()=>fixture(async f=>{
  const a=f.task('slow');let release;let beforeLaunch;const gate=new Promise(resolve=>{release=resolve;});
- f.sessions.create=async(p,options,validate)=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title:'slow',status:'starting',agentSessionId:'fake'},'token');beforeLaunch=validate;await gate;try{await validate();}catch(cause){f.db.updateSession(s.id,{status:'exited',exitCode:1});throw cause;}return s;};
+ f.sessions.create=async(p,options,{validate})=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title:'slow',status:'starting',agentSessionId:'fake'},'token');beforeLaunch=validate;await gate;try{await validate();}catch(cause){f.db.updateSession(s.id,{status:'exited',exitCode:1});throw cause;}return s;};
  f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>!!beforeLaunch);await f.runner.stop(f.latest().id);release();await new Promise(r=>setTimeout(r,30));assert.equal(f.latest().status,'stopped');assert.equal(f.db.listSessions()[0].status,'exited');
 }));
 test('a brief wait of the step session does not block; a lasting wait or an explicit question does',async()=>fixture(async f=>{
- const a=f.task('first');f.sessions.create=async(p,options,validate,contextPath,title='step')=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title,status:'running',agentSessionId:'fake'},'token');f.launches.push(s);return s;};
+ const a=f.task('first');f.sessions.create=async(p,options,{title='step'}={})=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title,status:'running',agentSessionId:'fake'},'token');f.launches.push(s);return s;};
  const settle=async()=>{for(let i=0;i<20;i++){f.runner.poke();await new Promise(r=>setTimeout(r,5));}};
  f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.launches.length===1&&f.latest().sessionId===f.launches[0].id);const id=f.launches[0].id;
  f.db.updateSession(id,{status:'waiting',attentionReason:'Confirmation requise'});await settle();assert.equal(f.latest().status,'running');
@@ -86,7 +86,7 @@ test('a brief wait of the step session does not block; a lasting wait or an expl
 }));
 test('a run blocked by its step session resumes by itself once the cause is gone; other blocks stay',async()=>fixture(async f=>{
  const a=f.task('first');const b=f.task('second');f.db.setTaskDependencies(b.id,[a.id]);
- f.sessions.create=async(p,options,validate,contextPath,title='step')=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title,status:'running',agentSessionId:'fake'},'token');f.launches.push(s);return s;};
+ f.sessions.create=async(p,options,{title='step'}={})=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title,status:'running',agentSessionId:'fake'},'token');f.launches.push(s);return s;};
  const settle=async()=>{for(let i=0;i<20;i++){f.runner.poke();await new Promise(r=>setTimeout(r,5));}};
  f.runner.waitingGraceMs=0;f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.launches.length===1&&f.latest().sessionId===f.launches[0].id);const first=f.launches[0].id;
  f.db.updateSession(first,{status:'waiting',attentionReason:'Confirmation requise'});await f.until(()=>f.latest().status==='blocked');
@@ -99,7 +99,7 @@ test('a run blocked by its step session resumes by itself once the cause is gone
  await f.runner.stop(f.latest().id);f.db.updateSession(second,{status:'running',attentionReason:null});await settle();assert.equal(f.latest().status,'stopped');
 }));
 test('a run blocked by its step session resumes when the session runs again',async()=>fixture(async f=>{
- const a=f.task('first');f.sessions.create=async(p,options,validate,contextPath,title='step')=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title,status:'running',agentSessionId:'fake'},'token');f.launches.push(s);return s;};
+ const a=f.task('first');f.sessions.create=async(p,options,{title='step'}={})=>{const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title,status:'running',agentSessionId:'fake'},'token');f.launches.push(s);return s;};
  f.runner.waitingGraceMs=0;f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.launches.length===1&&f.latest().sessionId===f.launches[0].id);const id=f.launches[0].id;
  f.db.updateSession(id,{status:'waiting',attentionReason:'Confirmation requise'});await f.until(()=>f.latest().status==='blocked');
  f.db.updateSession(id,{status:'running',attentionReason:null});await f.until(()=>f.latest().status==='running');assert.equal(f.latest().error,null);assert.equal(f.latest().currentTaskId,a.id);
@@ -151,7 +151,7 @@ test('auto validation does not accept failed commands',async()=>fixture(async f=
 }));
 test('changing auto validation during asynchronous preparation survives launch completion',async()=>fixture(async f=>{
  const a=f.task('slow');let release;const gate=new Promise(resolve=>{release=resolve;});
- f.sessions.create=async(p,options,validate)=>{
+ f.sessions.create=async(p,options,{validate})=>{
   const s=f.db.createSession({id:randomUUID(),projectId:p.id,...options,title:'slow',status:'starting',agentSessionId:'fake'},'token');f.launches.push(s);
   await gate;await validate();f.db.updateSession(s.id,{status:'idle'});return f.db.getSession(s.id);
  };

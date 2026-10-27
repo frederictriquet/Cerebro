@@ -3,50 +3,31 @@ import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { DATA_DIR } from './config.ts';
 import { convertLegacyCouncilSettings, DEFAULT_PERSONAS, isLegacyCouncilSettings, withoutPersona } from './council.ts';
-import type { CouncilRun, CouncilSettings, Persona, PersonaInput } from './council.ts';
-
-export type Agent = 'claude' | 'codex' | 'grok';
-export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
-export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
-export type TaskStatus = 'todo' | 'started' | 'done';
-export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
-export type WorkspaceMode = 'isolated' | 'shared';
+import {
+  DEFAULT_COMMIT_SETTINGS,
+  DEFAULT_RESOLUTION_SETTINGS,
+  DEFAULT_SESSION_DEFAULTS,
+  normalizeMode,
+  type Agent,
+  type CouncilRun,
+  type CouncilSettings,
+  type Effort,
+  type Epic,
+  type Mode,
+  type Persona,
+  type PersonaInput,
+  type Project,
+  type Session,
+  type SessionDefaults,
+  type SessionWorktree,
+  type Status,
+  type Task,
+  type TaskExecution,
+  type TaskStatus,
+  type WorkspaceMode,
+} from '../shared/types.ts';
 
 export class SessionProtectionError extends Error {}
-
-export interface SessionDefaults {
-  agent: Agent;
-  mode: Mode;
-  model: string | null;
-  effort: Effort | null;
-  prompt: string;
-}
-
-export interface CommitSettings {
-  agent: Agent;
-  model: string | null;
-  effort: Effort | null;
-  strategy: 'single' | 'atomic';
-}
-export const DEFAULT_COMMIT_SETTINGS: Readonly<CommitSettings> = { agent: 'claude', model: null, effort: null, strategy: 'single' };
-
-/** Session launched to separate the starting content of a copy from the conversation's work, file by file. */
-export interface ResolutionSettings {
-  agent: Agent;
-  mode: Mode;
-  model: string | null;
-  effort: Effort | null;
-}
-export const DEFAULT_RESOLUTION_SETTINGS: Readonly<ResolutionSettings> = { agent: 'claude', mode: 'auto', model: null, effort: null };
-
-export const DEFAULT_SESSION_DEFAULTS: Readonly<SessionDefaults> = {
-  agent: 'claude', mode: 'auto', model: null, effort: null, prompt: '',
-};
-
-// No widget offers « default » (agent configuration) any more: it is read as the default mode, « auto ».
-export function normalizeMode(mode: Mode): Mode {
-  return mode === 'default' ? 'auto' : mode;
-}
 
 // Un autre agent ne doit pas recevoir le modèle ou l'effort mémorisé pour le précédent.
 // undefined inherits the saved choice; null explicitly resets to the Cerebro default (see parseTuning).
@@ -59,85 +40,6 @@ export function resolveSessionDefaults(defaults: SessionDefaults, overrides: Par
     effort: overrides.effort !== undefined ? overrides.effort : agent === defaults.agent ? defaults.effort : null,
     prompt: overrides.prompt ?? defaults.prompt,
   };
-}
-
-export interface Project {
-  id: string;
-  name: string;
-  path: string;
-  color: string | null;
-  sessionDefaults: SessionDefaults;
-  commitSettings: CommitSettings;
-  // null : le projet suit les réglages globaux du council.
-  councilSettings: CouncilSettings | null;
-  resolutionSettings: ResolutionSettings;
-  workspaceMode: WorkspaceMode;
-  createdAt: number;
-}
-
-export interface Session {
-  id: string;
-  projectId: string;
-  agent: Agent;
-  mode: Mode;
-  // null: model / effort Cerebro default, resolved by parseTuning.
-  model: string | null;
-  effort: Effort | null;
-  prompt: string;
-  title: string;
-  status: Status;
-  attention: boolean;
-  protected: boolean;
-  attentionReason: string | null;
-  agentSessionId: string | null;
-  exitCode: number | null;
-  createdAt: number;
-  updatedAt: number;
-  // Copie de travail isolée de la conversation ; null quand elle travaille dans le dossier du projet.
-  worktree: SessionWorktree | null;
-  // Origine conservée même après nettoyage du backlog.
-  epic: { id: string; title: string } | null;
-  // Findings publiés qui n’ont pas encore été importés dans le backlog.
-  pendingFindings: number;
-}
-
-export interface SessionWorktree {
-  name: string;
-  path: string;
-  branch: string | null;
-  removed: boolean;
-  removedAt: number | null;
-  /** Removed by the automatic cleanup once the conversation was over. */
-  removedAutomatically: boolean;
-}
-
-export type TaskExecution = {type:'llm'} | {type:'command';commandId:string;completion:'manual'|'exit-zero'};
-// Élément du backlog d'un projet : un texte à confier plus tard à une session.
-export interface Task {
-  id: string;
-  projectId: string;
-  text: string;
-  status: TaskStatus;
-  sessionId: string | null;
-  sourceSessionId: string | null;
-  // Tâches du même projet à terminer avant de pouvoir lancer celle-ci.
-  dependsOn: string[];
-  execution: TaskExecution;
-  // Epic du même projet qui regroupe la tâche, ou null.
-  epicId: string | null;
-  createdAt: number;
-  updatedAt: number;
-}
-
-// Regroupement de tâches liées à un même sujet, traitable d'un bloc par une seule session.
-export interface Epic {
-  id: string;
-  projectId: string;
-  title: string;
-  description: string;
-  sourceSessionId: string | null;
-  createdAt: number;
-  updatedAt: number;
 }
 
 interface ProjectRow {
@@ -379,11 +281,8 @@ export class CerebroDatabase {
     `);
     // Workspace records survive session deletion so unmerged work is never silently removed.
     this.connection.exec('CREATE TABLE IF NOT EXISTS session_workspaces (session_id TEXT PRIMARY KEY, data TEXT NOT NULL)');
-    const taskColumns = this.connection.prepare('PRAGMA table_info(tasks)').all() as unknown as { name: string }[];
-    if (!taskColumns.some((column) => column.name === 'epic_id')) {
-      this.connection.exec('ALTER TABLE tasks ADD COLUMN epic_id TEXT REFERENCES epics(id) ON DELETE SET NULL');
-    }
-    if (!taskColumns.some(column=>column.name==='execution')) this.connection.exec(`ALTER TABLE tasks ADD COLUMN execution TEXT NOT NULL DEFAULT '{"type":"llm"}'`);
+    this.addColumnIfMissing('tasks', 'epic_id', 'TEXT REFERENCES epics(id) ON DELETE SET NULL');
+    this.addColumnIfMissing('tasks', 'execution', `TEXT NOT NULL DEFAULT '{"type":"llm"}'`);
     this.connection.exec(`
       CREATE TABLE IF NOT EXISTS project_commands (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS operation_results (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -393,46 +292,23 @@ export class CerebroDatabase {
       CREATE TABLE IF NOT EXISTS command_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, data TEXT NOT NULL);
     `);
     // Contextes mémorisés avant la vérification complète des historiques : ils seront recontrôlés.
-    const epicWorkspaceColumns = this.connection.prepare('PRAGMA table_info(epic_workspaces)').all() as unknown as { name: string }[];
-    if (!epicWorkspaceColumns.some((column) => column.name === 'verified')) this.connection.exec('ALTER TABLE epic_workspaces ADD COLUMN verified INTEGER NOT NULL DEFAULT 0');
+    this.addColumnIfMissing('epic_workspaces', 'verified', 'INTEGER NOT NULL DEFAULT 0');
     this.connection.exec('CREATE INDEX IF NOT EXISTS tasks_epic_id ON tasks(epic_id)');
-    const columns = this.connection.prepare('PRAGMA table_info(sessions)').all() as unknown as { name: string }[];
-    if (!columns.some((column) => column.name === 'protected')) {
-      this.connection.exec('ALTER TABLE sessions ADD COLUMN protected INTEGER NOT NULL DEFAULT 0');
-    }
-    if (!columns.some((column) => column.name === 'hook_token')) {
-      this.connection.exec('ALTER TABLE sessions ADD COLUMN hook_token TEXT');
-    }
-    for (const column of ['model', 'effort']) {
-      if (!columns.some((c) => c.name === column)) this.connection.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
-    }
+    this.addColumnIfMissing('sessions', 'protected', 'INTEGER NOT NULL DEFAULT 0');
+    this.addColumnIfMissing('sessions', 'hook_token', 'TEXT');
+    for (const column of ['model', 'effort']) this.addColumnIfMissing('sessions', column, 'TEXT');
     const epicColumns = ['epic_id', 'epic_title'];
-    if (epicColumns.some((name) => !columns.some((column) => column.name === name))) {
+    if (epicColumns.some((name) => !this.hasColumn('sessions', name))) {
       // Le schéma et la reprise de l'historique doivent être validés ensemble.
-      this.connection.exec('BEGIN');
-      try {
-        for (const name of epicColumns) {
-          if (!columns.some((column) => column.name === name)) this.connection.exec(`ALTER TABLE sessions ADD COLUMN ${name} TEXT`);
-        }
+      this.transaction(() => {
+        for (const name of epicColumns) this.addColumnIfMissing('sessions', name, 'TEXT');
         this.backfillSessionEpics();
-        this.connection.exec('COMMIT');
-      } catch (error) {
-        this.connection.exec('ROLLBACK');
-        throw error;
-      }
+      });
     }
-    const projectColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as unknown as { name: string }[];
-    if (!projectColumns.some((column) => column.name === 'sort_order')) {
-      this.connection.exec('ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
-    }
-    if (!projectColumns.some(column => column.name === 'workspace_mode')) {
-      this.connection.exec("ALTER TABLE projects ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'isolated' CHECK (workspace_mode IN ('isolated','shared'))");
-    }
-    if (!projectColumns.some((column) => column.name === 'color')) {
-      this.connection.exec('ALTER TABLE projects ADD COLUMN color TEXT');
-    }
-    if (!projectColumns.some((column) => column.name === 'session_defaults')) {
-      this.connection.exec('ALTER TABLE projects ADD COLUMN session_defaults TEXT');
+    this.addColumnIfMissing('projects', 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
+    this.addColumnIfMissing('projects', 'workspace_mode', "TEXT NOT NULL DEFAULT 'isolated' CHECK (workspace_mode IN ('isolated','shared'))");
+    this.addColumnIfMissing('projects', 'color', 'TEXT');
+    if (this.addColumnIfMissing('projects', 'session_defaults', 'TEXT')) {
       // Reprendre les derniers choix à l'installation, sans confondre activité récente et création.
       this.connection.exec(`
         UPDATE projects SET session_defaults = (
@@ -441,26 +317,64 @@ export class CerebroDatabase {
         )
       `);
     }
-    const commitColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as {name:string}[];
-    if (!commitColumns.some(column => column.name === 'commit_settings')) {
-      this.connection.exec(`ALTER TABLE projects ADD COLUMN commit_settings TEXT;
-        UPDATE projects SET commit_settings = json_object(
+    if (this.addColumnIfMissing('projects', 'commit_settings', 'TEXT')) {
+      this.connection.exec(`UPDATE projects SET commit_settings = json_object(
           'agent', COALESCE(json_extract(session_defaults, '$.agent'), 'claude'),
           'model', json_extract(session_defaults, '$.model'),
           'effort', json_extract(session_defaults, '$.effort'), 'strategy', 'single');`);
     }
-    if (!commitColumns.some(column => column.name === 'resolution_settings')) this.connection.exec('ALTER TABLE projects ADD COLUMN resolution_settings TEXT');
+    this.addColumnIfMissing('projects', 'resolution_settings', 'TEXT');
     this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commits (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
     this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commit_requests (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, scope TEXT NOT NULL, push INTEGER NOT NULL)');
     this.connection.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS council_runs (id TEXT PRIMARY KEY, project_id TEXT, data TEXT NOT NULL);`);
-    const councilColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as {name:string}[];
-    if (!councilColumns.some(column => column.name === 'council_settings')) this.connection.exec('ALTER TABLE projects ADD COLUMN council_settings TEXT');
+    this.addColumnIfMissing('projects', 'council_settings', 'TEXT');
     this.connection.exec(`CREATE TABLE IF NOT EXISTS personas (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
       prompt TEXT NOT NULL, builtin INTEGER NOT NULL DEFAULT 0, created_at INTEGER, updated_at INTEGER)`);
     this.seedPersonas();
     this.convertLegacyCouncilSettings();
     this.allowAutoMode();
+  }
+
+  private savepointDepth = 0;
+
+  // Valide `fn` d'un bloc ; appelée dans une transaction ouverte, elle n'annule que son propre
+  // travail via un SAVEPOINT, et `mode` ne s'applique qu'à la transaction la plus externe.
+  transaction<T>(fn: () => T, mode: 'DEFERRED' | 'IMMEDIATE' = 'DEFERRED'): T {
+    if (!this.connection.isTransaction) {
+      this.connection.exec(`BEGIN ${mode}`);
+      try {
+        const result = fn();
+        this.connection.exec('COMMIT');
+        return result;
+      } catch (error) {
+        if (this.connection.isTransaction) this.connection.exec('ROLLBACK');
+        throw error;
+      }
+    }
+    const name = `cerebro_${++this.savepointDepth}`;
+    this.connection.exec(`SAVEPOINT ${name}`);
+    try {
+      const result = fn();
+      this.connection.exec(`RELEASE ${name}`);
+      return result;
+    } catch (error) {
+      if (this.connection.isTransaction) this.connection.exec(`ROLLBACK TO ${name}; RELEASE ${name}`);
+      throw error;
+    } finally {
+      this.savepointDepth--;
+    }
+  }
+
+  private hasColumn(table: string, column: string): boolean {
+    return (this.connection.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === column);
+  }
+
+  // Indique si la colonne vient d'être ajoutée, pour reprendre l'historique une seule fois.
+  private addColumnIfMissing(table: string, column: string, definition: string): boolean {
+    if (this.hasColumn(table, column)) return false;
+    this.connection.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    return true;
   }
 
   // Une seule fois par base : une persona par défaut supprimée n'est jamais réinsérée.
@@ -516,19 +430,14 @@ export class CerebroDatabase {
       .replace(/^CREATE TABLE "?sessions"?/, 'CREATE TABLE sessions_new');
     this.connection.exec('PRAGMA foreign_keys = OFF');
     try {
-      this.connection.exec(`
-        BEGIN;
+      this.transaction(() => this.connection.exec(`
         ${sql};
         INSERT INTO sessions_new SELECT * FROM sessions;
         DROP TABLE sessions;
         ALTER TABLE sessions_new RENAME TO sessions;
         CREATE INDEX IF NOT EXISTS sessions_project_id ON sessions(project_id);
         CREATE INDEX IF NOT EXISTS sessions_updated_at ON sessions(updated_at DESC);
-        COMMIT;
-      `);
-    } catch (error) {
-      this.connection.exec('ROLLBACK');
-      throw error;
+      `));
     } finally {
       this.connection.exec('PRAGMA foreign_keys = ON');
     }
@@ -544,15 +453,10 @@ export class CerebroDatabase {
     const knownIds = new Set(projects.map((project) => project.id));
     if (ids.length !== projects.length || new Set(ids).size !== ids.length || ids.some((id) => !knownIds.has(id))) return null;
 
-    this.connection.exec('BEGIN');
-    try {
+    this.transaction(() => {
       const update = this.connection.prepare('UPDATE projects SET sort_order = ? WHERE id = ?');
       ids.forEach((id, index) => update.run(index, id));
-      this.connection.exec('COMMIT');
-    } catch (error) {
-      this.connection.exec('ROLLBACK');
-      throw error;
-    }
+    });
     return this.listProjects();
   }
 
@@ -620,8 +524,7 @@ export class CerebroDatabase {
 
   // Retire aussi la persona des réglages globaux et des surcharges projet ; les runs gardent leur copie.
   deletePersona(id: string): boolean {
-    this.connection.exec('BEGIN');
-    try {
+    return this.transaction(() => {
       const deleted = Number(this.connection.prepare('DELETE FROM personas WHERE id = ?').run(id).changes) > 0;
       if (deleted) {
         const remaining = this.listPersonas();
@@ -631,12 +534,8 @@ export class CerebroDatabase {
         const update = this.connection.prepare('UPDATE projects SET council_settings = ? WHERE id = ?');
         for (const row of rows) update.run(JSON.stringify(withoutPersona(JSON.parse(row.council_settings), id, remaining)), row.id);
       }
-      this.connection.exec('COMMIT');
       return deleted;
-    } catch (error) {
-      this.connection.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
 
   saveCouncilRun(run: CouncilRun): boolean {
@@ -799,16 +698,11 @@ export class CerebroDatabase {
   }
 
   setTaskDependencies(id: string, dependsOn: string[]): void {
-    this.connection.exec('BEGIN');
-    try {
+    this.transaction(() => {
       this.connection.prepare('DELETE FROM task_dependencies WHERE task_id = ?').run(id);
       const insert = this.connection.prepare('INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?, ?)');
       for (const dep of new Set(dependsOn)) insert.run(id, dep);
-      this.connection.exec('COMMIT');
-    } catch (error) {
-      this.connection.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
 
   createTask(projectId: string, text: string, sourceSessionId: string | null, epicId: string | null = null, execution: TaskExecution = {type:'llm'}): Task {
@@ -851,8 +745,7 @@ export class CerebroDatabase {
   }
 
   deleteCompletedBacklog(projectId: string): { taskIds: string[]; epicIds: string[]; dependentIds: string[] } {
-    this.connection.exec('BEGIN IMMEDIATE');
-    try {
+    return this.transaction(() => {
       const tasks = this.listTasks().filter((task) => task.projectId === projectId);
       const taskIds = tasks.filter((task) => task.status === 'done').map((task) => task.id);
       // Identifier les epics terminés avant de retirer leurs tâches. Un epic vide reste à faire.
@@ -864,12 +757,8 @@ export class CerebroDatabase {
       const dependentIds = [...new Set(taskIds.flatMap((id) => this.listDependents(id)))];
       for (const id of taskIds) this.deleteTask(id);
       for (const id of epicIds) this.deleteEpic(id);
-      this.connection.exec('COMMIT');
       return { taskIds, epicIds, dependentIds };
-    } catch (cause) {
-      this.connection.exec('ROLLBACK');
-      throw cause;
-    }
+    }, 'IMMEDIATE');
   }
 
   listEpics(): Epic[] {

@@ -5,7 +5,17 @@ import { readDraft, writeDraft, type DraftImage } from './drafts.ts';
 import { Markdown } from './Markdown.tsx';
 import { go, href } from './route.ts';
 import { useStore } from './store.tsx';
-import type { Advisor, CouncilAnswer, CouncilPhase, CouncilReview, CouncilRun, CouncilStatus, CouncilSynthesis, Llm } from './types.ts';
+import type {
+  Advisor,
+  AggregatedRank,
+  CouncilAnswer,
+  CouncilPhase,
+  CouncilReview,
+  CouncilRun,
+  CouncilStatus,
+  CouncilSynthesis,
+  Llm,
+} from '../../shared/types.ts';
 import './council.css';
 
 const STATUS_LABELS: Record<CouncilStatus, string> = {
@@ -81,14 +91,6 @@ function StateBadge({ state, error }: { state: StepState; error?: string | null 
   return <span className={`council-state ${state}`} title={error ?? undefined}>
     {state === 'running' ? <ActivityStatus>{STEP_STATE_LABELS[state]}</ActivityStatus> : STEP_STATE_LABELS[state]}
   </span>;
-}
-
-interface AggregatedRank {
-  letter: string;
-  advisorId: string;
-  // Rang moyen (1 = meilleur) sur les relectures réussies ; null si aucune ne l'a classée.
-  averageRank: number | null;
-  votes: number;
 }
 
 // Même calcul que `aggregateRanks` côté serveur (server/council.ts), repris pour l'affichage.

@@ -16,7 +16,7 @@ const {buildServer}=await import('../server/index.ts');
 mock.method(UpdateManager.prototype,'start',()=>{});mock.method(PeerSync.prototype,'sync',async function(){this.markReady();this.markSynced();});
 const launches=[];mock.method(SessionManager.prototype,'launch',async(...args)=>{
  launches.push(args);
- const [project,agent,mode,tuning,prompt,,,validate,joined,title,epicId,context]=args;
+ const [project,{agent,mode,tuning,prompt,validate,joined,title,epicId,context}]=args;
  const session=db.createSession({id:randomUUID(),projectId:project.id,agent,mode,...tuning,prompt,title:title??'Session de test',status:'idle',agentSessionId:'fake'},'token',epicId);
  const workspace=context?await createWorkspaceInContext(db,session.id,project,context):joined?await joinWorkspace(db,session.id,joined):await createWorkspace(db,session.id,project);
  await validate?.();return {...db.getSession(session.id),cwd:workspace.path};
@@ -61,7 +61,7 @@ test('« Résoudre avec l’IA » launches a session in the copy, with the proje
   const session=response.json();
   assert.equal(workspaceFor(db,session.id).path,workspace.path);
   assert.equal(session.agent,'codex');assert.equal(session.mode,'acceptEdits');assert.match(session.title,/Conversation d’origine/);
-  const prompt=launches.at(-1)[4];
+  const prompt=launches.at(-1)[1].prompt;
   assert.match(prompt,/- doc \(contenu de départ et travail de la conversation mélangés\)/);
   assert.ok(prompt.includes(`Contenu de départ : le fichier ${join(repo,'doc')}, encore non commité dans le dossier de main`));
   assert.match(prompt,/mêmes lignes/);assert.match(prompt,/extra\) seront traités automatiquement/);

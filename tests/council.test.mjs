@@ -16,16 +16,16 @@ delete process.env.CEREBRO_SLACK_USER;
 
 const { CerebroDatabase } = await import('../server/db.ts');
 const {
-  defaultCouncilSettings, validateCouncilSettings, resolveParticipants, convertLegacyCouncilSettings, DEFAULT_PERSONAS, MAX_ADVISORS,
+  defaultCouncilSettings, validateCouncilSettings, resolveParticipants, convertLegacyCouncilSettings, DEFAULT_PERSONAS,
   assignLetters, answerPrompt, parseAnswer, reviewLetters, reviewPrompt, parseReview, aggregateRanks, synthesisPrompt, parseSynthesis,
-  exportMarkdown, ANSWER_SCHEMA, REVIEW_SCHEMA, SYNTHESIS_SCHEMA, parseCouncilImages, imagePaths, imageToken, MAX_COUNCIL_IMAGES,
+  exportMarkdown, ANSWER_SCHEMA, REVIEW_SCHEMA, SYNTHESIS_SCHEMA, parseCouncilImages, imagePaths, imageToken,
 } = await import('../server/council.ts');
 const { CouncilRuns, ANSWER_TIMEOUT_MS, REVIEW_TIMEOUT_MS, SYNTHESIS_TIMEOUT_MS } = await import('../server/council-runner.ts');
 const { SessionManager } = await import('../server/sessions.ts');
 const { UpdateManager } = await import('../server/updates.ts');
 const { PeerSync } = await import('../server/peers.ts');
 const { buildServer } = await import('../server/index.ts');
-const { parseProject, parsePersona } = await import('../web/src/types.ts');
+const { parseProject, parsePersona, MAX_ADVISORS, MAX_COUNCIL_IMAGES } = await import('../shared/types.ts');
 
 mock.method(UpdateManager.prototype, 'start', () => {});
 mock.method(PeerSync.prototype, 'sync', async function () {

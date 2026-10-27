@@ -1,18 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { CerebroDatabase } from './db.ts';
+import { routeErrors } from './routes-util.ts';
+import type { IdRequest } from './route-context.ts';
+import { SESSION_TASK_STATUSES, type SessionTask, type SessionTaskStatus } from '../shared/backlog.ts';
 
-export const SESSION_TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done', 'cancelled'] as const;
-export type SessionTaskStatus = (typeof SESSION_TASK_STATUSES)[number];
-export interface SessionTask {
-  id: string;
-  sessionId: string;
-  title: string;
-  status: SessionTaskStatus;
-  note: string;
-  createdAt: number;
-  updatedAt: number;
-}
 type TaskFields = Pick<SessionTask, 'title' | 'status' | 'note'>;
 const SELECT = `SELECT id, session_id AS sessionId, title, status, note,
   created_at AS createdAt, updated_at AS updatedAt FROM session_tasks`;
@@ -49,21 +41,20 @@ function getSessionTask(db: CerebroDatabase, sessionId: string, id: string): Ses
 }
 
 // Browser routes use the application authentication; agent routes require the owning session's token.
+const badRequest = routeErrors(400);
+
 export function registerSessionTaskRoutes(
   app: FastifyInstance,
   db: CerebroDatabase,
-  tokenMatches: (sessionId: string, token: string) => boolean,
+  sessionTokenValid: (request: IdRequest) => boolean,
 ): void {
   type Params = { id: string; taskId: string };
   for (const agent of [false, true]) {
     const base = agent ? '/api/session-tasks/:id' : '/api/sessions/:id/tasks';
     const guard = async (request: FastifyRequest<{ Params: Params }>, reply: FastifyReply): Promise<void> => {
-      if (agent) {
-        const token = request.headers['x-cerebro-token'];
-        if (typeof token !== 'string' || !tokenMatches(request.params.id, token)) {
-          await reply.code(403).send({ error: 'Token de session invalide.' });
-          return;
-        }
+      if (agent && !sessionTokenValid(request)) {
+        await reply.code(403).send({ error: 'Token de session invalide.' });
+        return;
       }
       if (!db.getSession(request.params.id)) await reply.code(404).send({ error: 'Session introuvable.' });
     };
@@ -74,9 +65,9 @@ export function registerSessionTaskRoutes(
       return task ?? reply.code(404).send({ error: 'Sous-tâche introuvable dans cette session.' });
     });
     app.post<{ Params: Params }>(base, options, async (request, reply) => {
-      let fields: Partial<TaskFields>;
-      try { fields = parseFields(request.body, true); }
-      catch (cause) { return reply.code(400).send({ error: (cause as Error).message }); }
+      const parsed = await badRequest.orError(reply, () => parseFields(request.body, true));
+      if (!parsed.ok) return parsed.reply;
+      const fields = parsed.value;
       const task: SessionTask = {
         id: randomUUID(), sessionId: request.params.id, title: fields.title!,
         status: fields.status ?? 'todo', note: fields.note ?? '', createdAt: Date.now(), updatedAt: Date.now(),
@@ -88,9 +79,9 @@ export function registerSessionTaskRoutes(
     app.patch<{ Params: Params }>(`${base}/:taskId`, options, async (request, reply) => {
       const current = getSessionTask(db, request.params.id, request.params.taskId);
       if (!current) return reply.code(404).send({ error: 'Sous-tâche introuvable dans cette session.' });
-      let fields: Partial<TaskFields>;
-      try { fields = parseFields(request.body, false); }
-      catch (cause) { return reply.code(400).send({ error: (cause as Error).message }); }
+      const parsed = await badRequest.orError(reply, () => parseFields(request.body, false));
+      if (!parsed.ok) return parsed.reply;
+      const fields = parsed.value;
       const next = { ...current, ...fields, updatedAt: Date.now() };
       db.connection.prepare(`UPDATE session_tasks SET title = ?, status = ?, note = ?, updated_at = ?
         WHERE session_id = ? AND id = ?`).run(next.title, next.status, next.note, next.updatedAt, next.sessionId, next.id);

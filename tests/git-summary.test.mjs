@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, mock, test } from 'node:test';
 import { gitSummary } from '../server/git-summary.ts';
-import { parseGitInfo } from '../web/src/types.ts';
+import { parseGitInfo } from '../shared/types.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'cerebro-git-summary-'));
 process.env.HOME = root;

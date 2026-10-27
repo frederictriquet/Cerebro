@@ -17,7 +17,7 @@ delete process.env.CEREBRO_SLACK_USER;
 const { CerebroDatabase, SessionProtectionError } = await import('../server/db.ts');
 const { SessionManager } = await import('../server/sessions.ts');
 const { ATTACHMENTS_DIR } = await import('../server/config.ts');
-const { parseSession } = await import('../web/src/types.ts');
+const { parseSession } = await import('../shared/types.ts');
 const { UpdateManager } = await import('../server/updates.ts');
 const { PeerSync } = await import('../server/peers.ts');
 const { buildServer } = await import('../server/index.ts');

@@ -1,10 +1,12 @@
 import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import type { CerebroDatabase } from './db.ts';
-import { workspaceAt, type WorkspaceContext, type Workspace } from './provenance.ts';
+import { workspaceAt } from './provenance.ts';
 import { canonicalWorktreePath, assertWorktreeAvailable } from './worktree-gate.ts';
+import { git } from './git.ts';
+import type { Workspace, WorkspaceContext } from '../shared/git.ts';
+import type { EpicWorkspaceOptions } from '../shared/backlog.ts';
+import { errorMessage } from './util.ts';
 
 const contextOf = (workspace: Pick<Workspace, 'mode' | 'path'>): WorkspaceContext => ({ mode: workspace.mode, path: workspace.path });
 const sameContext = (left: WorkspaceContext, right: WorkspaceContext): boolean =>
@@ -96,21 +98,8 @@ function workspaceChoices(db: CerebroDatabase, epicId: string): WorkspaceContext
   return [...choices.values()];
 }
 
-export interface EpicWorkspaceChoice extends WorkspaceContext {
-  branch: string | null;
-  head: string | null;
-  changes: string[] | null;
-  unavailableReason: string | null;
-  sessions: {id: string; title: string}[];
-}
-export interface EpicWorkspaceOptions {
-  conflict: boolean;
-  selected: WorkspaceContext | null;
-  choices: EpicWorkspaceChoice[];
-}
-const execFileAsync = promisify(execFile);
 async function gitInfo(path: string, args: string[]): Promise<string | null> {
-  try { return (await execFileAsync('git', ['--no-optional-locks', '-C', path, ...args], {encoding:'utf8', timeout:5000, maxBuffer:2*1024*1024})).stdout.trimEnd(); }
+  try { return (await git(path, args, {timeout:5000, maxBuffer:2*1024*1024})).trimEnd(); }
   catch { return null; }
 }
 
@@ -125,7 +114,7 @@ export async function epicWorkspaceOptions(db: CerebroDatabase, epicId: string):
   const choices = await Promise.all(workspaceChoices(db, epicId).map(async context => {
     let unavailableReason: string | null = null;
     try { assertEpicWorkspace(db, context); }
-    catch (cause) { unavailableReason = cause instanceof Error ? cause.message : String(cause); }
+    catch (cause) { unavailableReason = errorMessage(cause); }
     const [branch, head, status] = unavailableReason ? [null, null, null] : await Promise.all([
       gitInfo(context.path, ['branch', '--show-current']),
       gitInfo(context.path, ['rev-parse', '--verify', 'HEAD']),

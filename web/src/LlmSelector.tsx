@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { AgentLabel } from './AgentLabel.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { useStore } from './store.tsx';
-import type { AgentInfo, Effort, LaunchSpec } from './types.ts';
+import type { AgentInfo, Effort, SessionDefaults } from '../../shared/types.ts';
 
-export type LlmSelection = Pick<LaunchSpec, 'agent' | 'model' | 'effort'>;
+export type LlmSelection = Pick<SessionDefaults, 'agent' | 'model' | 'effort'>;
 
 // Effort used when none is chosen: `high` when offered, otherwise the first level. Mirror of `defaultEffort` (server/catalog.ts).
 export function defaultEffort(efforts: Effort[]): Effort | null {

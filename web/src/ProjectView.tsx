@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
-import { acquireProjectSlack, getProjectSlack, type ProjectSlackStatus } from './api.ts';
+import { acquireProjectSlack, getProjectSlack } from './api.ts';
 import { Backlog } from './Backlog.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { CodeEditor } from './CodeEditor.tsx';
@@ -15,7 +15,8 @@ import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { useStore } from './store.tsx';
-import type { Project, WorkspaceMode } from './types.ts';
+import type { Project, WorkspaceMode } from '../../shared/types.ts';
+import type { ProjectSlackStatus } from '../../shared/machine.ts';
 
 const PROJECT_COLORS = ['#e5484d', '#f76b15', '#ffc53d', '#46a758', '#12a594', '#0090ff', '#6e56cf', '#d6409f'];
 

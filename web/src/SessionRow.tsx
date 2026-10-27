@@ -9,7 +9,7 @@ import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPrev
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { groupedSessionTitle } from './session-groups.ts';
-import type { Project, Session } from './types.ts';
+import type { Project, Session } from '../../shared/types.ts';
 import { RELEASE_HINT, WorktreeLabel, resumeBlockedReason } from './WorktreeLabel.tsx';
 
 export function SessionRow({

@@ -1,10 +1,10 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useEffect, useRef, useState } from 'react';
-import { api, apiBase } from './api.ts';
+import { api, apiParsed, apiBase } from './api.ts';
 import { Modal } from './Dialog.tsx';
-import type { CommitSettings } from './types.ts';
-import type { AutomaticCommit } from '../../server/automatic-commits.ts';
+import type { CommitSettings } from '../../shared/types.ts';
 import './automatic-commits.css';
+import { parseAutomaticCommit, type AutomaticCommit } from '../../shared/git.ts';
 
 const PHASE_LABEL:Record<AutomaticCommit['phase'],string>={collecting:'Vérification des changements…',drafting:'Rédaction du message par l’IA…',committing:'Création du commit…',pushing:'Push vers les remotes…',finished:'Terminé'};
 interface CommitDialogProps {projectId:string;endpoint?:string;push?:boolean;strategy?:CommitSettings['strategy'];onClose:()=>void;scopeLabel?:string;reviewed?:{snapshotId:string;paths:string[]}}
@@ -33,14 +33,14 @@ function AutomaticCommitRun({projectId,endpoint,push=true,strategy,onClose,scope
     };
     if(apiBase()!==machineBase)return;
     // Reuse the same request in React StrictMode. Reopening also attaches to an active server operation.
-    start.current??=api<AutomaticCommit>(`${path}/auto-commit`,{method:'POST',body:JSON.stringify({requestId,push,strategy,...(review?{reviewed:review}:{})})});
+    start.current??=apiParsed(`${path}/auto-commit`,parseAutomaticCommit,{method:'POST',body:JSON.stringify({requestId,push,strategy,...(review?{reviewed:review}:{})})});
     let id:string|null=null;
     void start.current.then(value=>{id=value.id;show(value);}).catch(cause=>{if(!disposed&&apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));});
     let timer:number|undefined;
     const poll=async():Promise<void>=>{
       if(disposed||apiBase()!==machineBase)return;
       if(id)try{
-        const value=await api<AutomaticCommit>(`/api/git/auto-commits/${id}`);
+        const value=await apiParsed(`/api/git/auto-commits/${id}`, parseAutomaticCommit);
         show(value);
         if(value.finishedAt)return;
       }catch(cause){if(!disposed&&apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}

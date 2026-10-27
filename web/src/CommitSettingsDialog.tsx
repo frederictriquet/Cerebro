@@ -5,7 +5,7 @@ import { useStore } from './store.tsx';
 import { LlmSelector, type LlmSelection } from './LlmSelector.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { MODE_CHIP, MODE_DESCRIPTION } from './format.ts';
-import { MODE_CHOICES, normalizeMode, type Project, type ResolutionSettings } from './types.ts';
+import { MODE_CHOICES, normalizeMode, type Project, type ResolutionSettings } from '../../shared/types.ts';
 import './automatic-commits.css';
 
 export function CommitSettingsDialog({project,onClose}:{project:Project;onClose:()=>void}) {

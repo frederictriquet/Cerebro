@@ -69,7 +69,7 @@ test('new epic sessions keep their original cwd after a preference change and re
   writeFileSync(join(bin,'codex'),`#!/bin/sh\npwd > '${capture}'\nexec /bin/sleep 2\n`,{mode:0o755});
   const previous=process.env.PATH;process.env.PATH=`${bin}:${previous}`;const manager=new SessionManager(f.db);
   try{
-   const session=await manager.create(f.db.getProject(f.project.id),{agent:'codex',prompt:'Corriger'},undefined,undefined,'Correction',{epicId:epic.id});
+   const session=await manager.create(f.db.getProject(f.project.id),{agent:'codex',prompt:'Corriger'},{title:'Correction',epicId:epic.id});
    assert.equal(readFileSync(capture,'utf8').trim(),original.path);
    assert.equal(workspaceFor(f.db,session.id).path,original.path);assert.equal(workspaceFor(f.db,session.id).mode,mode);
    assert.equal(readFileSync(join(workspaceFor(f.db,session.id).path,'feature.txt'),'utf8'),'travail à corriger\n');

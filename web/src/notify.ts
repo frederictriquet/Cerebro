@@ -1,5 +1,5 @@
 import { parseHash, parseMachine } from './route.ts';
-import type { Session } from './types.ts';
+import type { Session } from '../../shared/types.ts';
 
 const MUTE_KEY = 'cerebro.mute';
 const DESKTOP_NOTIF_KEY = 'cerebro.desktopNotif';

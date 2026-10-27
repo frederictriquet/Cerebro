@@ -1,12 +1,9 @@
 import { reviewInstructions } from './review.ts';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import type { CerebroDatabase } from './db.ts';
-import { executeCommitPlan, parseCommitPlan, prepareCommit, selectionDiff, verifySnapshot, type CommitResult, type CommitSelection, type GitSnapshot } from './git-plan.ts';
-import { sessionProvenance, workspaceFor, type Provenance } from './provenance.ts';
-const exec=promisify(execFile);
-export interface SessionGitSnapshot extends GitSnapshot { provenance: Provenance; scopeNotice: string }
-export interface SessionGitContext { mode:'shared'|'isolated'|'removed';projectId:string;projectName:string;path:string }
+import { executeCommitPlan, parseCommitPlan, prepareCommit, selectionDiff, verifySnapshot, type CommitSelection } from './git-plan.ts';
+import { sessionProvenance, sessionWorkspace, workspaceFor } from './provenance.ts';
+import { git } from './git.ts';
+import type { CommitResult, Provenance, SessionGitContext, SessionGitSnapshot } from '../shared/git.ts';
 export function sessionGitContext(db:CerebroDatabase,id:string):SessionGitContext {
   const session=db.getSession(id);const project=session?db.getProject(session.projectId):null;
   if(!session||!project)throw new Error('Session introuvable.');
@@ -17,8 +14,9 @@ export function sessionGitContext(db:CerebroDatabase,id:string):SessionGitContex
 export const INHERITED_WARNING='Contenu copié du projet à la création de la copie, inchangé depuis : ce n’est pas un travail de cette conversation.';
 const scopes=new Map<string,{sessionId:string;provenance:Provenance;uncertain:Set<string>}>();
 export async function prepareSessionGit(db:CerebroDatabase,id:string):Promise<SessionGitSnapshot>{
-  const provenance=await sessionProvenance(db,id);
-  const snapshot=await prepareCommit(provenance.workspace.root,provenance.workspace);
+  const workspace=sessionWorkspace(db,id);
+  const snapshot=await prepareCommit(workspace.root,workspace);
+  const provenance=await sessionProvenance(db,id,snapshot);
   const uncertain=new Set(snapshot.files.filter(f=>!provenance.changes.some(c=>c.path===f.path&&c.certainty==='workspace')).map(f=>f.path));
   for(const [key] of scopes)if(scopes.size>100)scopes.delete(key);
   scopes.set(snapshot.id,{sessionId:id,provenance,uncertain});
@@ -48,8 +46,7 @@ export async function sessionReviewContext(id:string,raw:unknown):Promise<{promp
     const commit=saved.provenance.commits.find(c=>c.hash===oid);
     if(!commit)throw new Error('Commit absent de la provenance préparée.');
     if(commit.certainty==='uncertain'&&!p.acknowledged.includes(oid))throw new Error('Confirmez explicitement le périmètre du commit incertain.');
-    const result=await exec('git',['-C',root,'show','--format=fuller','--binary','--no-ext-diff','--no-textconv',oid],{maxBuffer:4*1024*1024});
-    patches.push(result.stdout);
+    patches.push(await git(root,['show','--format=fuller','--binary','--no-ext-diff','--no-textconv',oid],{maxBuffer:4*1024*1024}));
   }
   if(!patches.length)throw new Error('Choisissez au moins un fichier, hunk ou commit.');
   const context=patches.join('\n');if(Buffer.byteLength(context)>4*1024*1024)throw new Error('Contexte de review trop volumineux.');

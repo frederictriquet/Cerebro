@@ -8,19 +8,13 @@ import {
   type ReactNode,
   type SetStateAction,
 } from 'react';
-import {
-  getMachines,
-  wsUrl,
-  type Compatibility,
-  type MachinesInfo,
-  type RemoteVersionStatus,
-  type VersionInfo,
-} from './api.ts';
+import { getMachines, wsUrl } from './api.ts';
 import { playAlert, readMuted, showAlertNotification, showFindingsNotification } from './notify.ts';
 import { needsAttention } from './format.ts';
 import { goMachine, useMachine } from './route.ts';
 import { useStore } from './store.tsx';
-import { parseEventsMessage, type Session } from './types.ts';
+import { parseEventsMessage, type Session } from '../../shared/types.ts';
+import type { Compatibility, MachinesInfo, RemoteVersionStatus, VersionInfo } from '../../shared/machine.ts';
 
 interface WatchState {
   online: boolean;
@@ -39,9 +33,7 @@ interface MachineWatch {
   hidden: Record<string, WatchState>;
 }
 
-const MACHINE_ID = /^[a-z0-9-]{1,32}$/;
 const MACHINES_REFRESH_MS = 30_000;
-const COMPATIBILITIES: readonly Compatibility[] = ['same', 'compatible', 'incompatible', 'unknown'];
 const MachineWatchContext = createContext<MachineWatch>({ info: null, hidden: {} });
 
 interface AttentionCounts {
@@ -68,40 +60,6 @@ function upsertSession(list: Session[], session: Session): Session[] {
   const next = list.slice();
   next[index] = session;
   return next;
-}
-
-function usableVersion(value: unknown): VersionInfo | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const { version, commit } = value as Partial<Record<keyof VersionInfo, unknown>>;
-  if (typeof version !== 'string') return null;
-  return { version, commit: typeof commit === 'string' ? commit : null };
-}
-
-function usableStatus(value: unknown): RemoteVersionStatus | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const raw = value as Partial<Record<keyof RemoteVersionStatus, unknown>>;
-  const compatibility = COMPATIBILITIES.find((candidate) => candidate === raw.compatibility);
-  if (compatibility === undefined || typeof raw.checkedAt !== 'number') return null;
-  return {
-    version: usableVersion(raw.version),
-    compatibility,
-    reachable: raw.reachable === true,
-    error: typeof raw.error === 'string' ? raw.error : null,
-    checkedAt: raw.checkedAt,
-  };
-}
-
-function usableMachines(data: MachinesInfo): MachinesInfo | null {
-  if (typeof data !== 'object' || data === null) return null;
-  const name = data.local?.name;
-  if (typeof name !== 'string' || !Array.isArray(data.remotes)) return null;
-  const remotes: MachinesInfo['remotes'] = [];
-  for (const remote of data.remotes) {
-    if (typeof remote?.id !== 'string' || typeof remote.name !== 'string') continue;
-    if (remote.id === 'local' || !MACHINE_ID.test(remote.id)) continue;
-    remotes.push({ id: remote.id, name: remote.name, status: usableStatus(remote.status) });
-  }
-  return { local: { name, version: usableVersion(data.local.version) }, remotes };
 }
 
 export function versionLabel(info: VersionInfo): string {
@@ -252,10 +210,9 @@ export function MachineWatchProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     const load = (): void => {
       void getMachines()
-        .then((data) => {
+        .then((parsed) => {
           if (cancelled) return;
-          const parsed = usableMachines(data);
-          if (parsed) setInfo((prev) => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
+          setInfo((prev) => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
         })
         .catch(() => {
           /* pas de sélecteur si la liste est indisponible */

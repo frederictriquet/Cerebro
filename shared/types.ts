@@ -1,3 +1,14 @@
+// Contrat des données échangées entre le serveur, l'UI web et les autres machines : une seule définition
+// des deux côtés, et les parseurs qui valident ce qui arrive d'un autre processus.
+import {
+  asNullableNumber,
+  asNullableString,
+  asNumber,
+  asString,
+  isRecord,
+  parseItems,
+} from './parse.ts';
+
 export type Agent = 'claude' | 'codex' | 'grok';
 export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
@@ -11,60 +22,71 @@ export const MODES: readonly Mode[] = ['auto', 'default', 'acceptEdits', 'plan',
 // Modes offered by the widgets: « default » is not a choice any more (see normalizeMode).
 export const MODE_CHOICES: readonly Mode[] = MODES.filter((mode) => mode !== 'default');
 
-// Mirror of normalizeMode (server/db.ts): a stored « default » is shown and launched as « auto ».
+// No widget offers « default » (agent configuration) any more: it is read as the default mode, « auto ».
 export function normalizeMode(mode: Mode): Mode {
   return mode === 'default' ? 'auto' : mode;
 }
-const EFFORTS: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+export const EFFORTS: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
-// Ce que le formulaire de nouvelle session envoie au serveur.
-export interface LaunchSpec {
+// Réglages de lancement d'une session : ce que le formulaire envoie, et ce que le projet mémorise.
+export interface SessionDefaults {
   agent: Agent;
   mode: Mode;
+  // null: model / effort Cerebro default, resolved by the server (parseTuning).
   model: string | null;
   effort: Effort | null;
   prompt: string;
 }
 
-export const DEFAULT_SESSION_DEFAULTS: Readonly<LaunchSpec> = {
+export const DEFAULT_SESSION_DEFAULTS: Readonly<SessionDefaults> = {
   agent: 'claude', mode: 'auto', model: null, effort: null, prompt: '',
 };
+
 export interface CommitSettings {
   agent: Agent;
   model: string | null;
   effort: Effort | null;
   strategy: 'single' | 'atomic';
 }
-/** Session that separates the starting content of a copy from the conversation's work. */
-export type ResolutionSettings = Pick<LaunchSpec, 'agent' | 'mode' | 'model' | 'effort'>;
+export const DEFAULT_COMMIT_SETTINGS: Readonly<CommitSettings> = { agent: 'claude', model: null, effort: null, strategy: 'single' };
 
+/** Session launched to separate the starting content of a copy from the conversation's work, file by file. */
+export type ResolutionSettings = Pick<SessionDefaults, 'agent' | 'mode' | 'model' | 'effort'>;
+export const DEFAULT_RESOLUTION_SETTINGS: Readonly<ResolutionSettings> = { agent: 'claude', mode: 'auto', model: null, effort: null };
+
+// Agent, model and effort (null: Cerebro default, resolved by parseTuning).
 export interface Llm {
   agent: Agent;
   model: string | null;
   effort: Effort | null;
 }
 
+// Une persona du catalogue de la machine : un angle de réflexion, indépendant de l'agent qui la joue.
 export interface Persona {
   id: string;
   name: string;
   description: string;
   prompt: string;
-  // Fournie par Cerebro (badge « fournie »), modifiable et supprimable.
+  // Fournie par Cerebro : modifiable et supprimable comme les autres, jamais réinsérée.
   builtin: boolean;
   createdAt: number;
   updatedAt: number;
 }
 
+export type PersonaInput = Pick<Persona, 'name' | 'description' | 'prompt'>;
+
+// Un participant à un council : une persona jouée par un agent.
 export interface Participant extends Llm {
   personaId: string;
 }
 
 export interface CouncilSettings {
-  // Agent, modèle et effort par défaut de chaque persona (clé : personaId).
+  // Agent, modèle et effort proposés par défaut pour chaque persona (clé : personaId).
   assignments: Record<string, Llm>;
   // Participants cochés par défaut au lancement.
   defaultPersonaIds: string[];
   chairman: Llm;
+  // Valeur proposée par défaut pour « laisser les conseillers lire le projet ».
   readProject: boolean;
 }
 
@@ -73,16 +95,13 @@ export const MAX_PERSONA_NAME_LENGTH = 80;
 export const MAX_PERSONA_DESCRIPTION_LENGTH = 300;
 export const MAX_PERSONA_PROMPT_LENGTH = 4000;
 export const MIN_PERSONAS = 2;
-// Nombre de conseillers d'un council (bornes du serveur).
+// Nombre de conseillers d'un council.
 export const MIN_ADVISORS = 2;
 export const MAX_ADVISORS = 8;
+export const MAX_COUNCIL_IMAGES = 10;
 
-// Copie figée d'une persona jouée par un agent dans un run.
-export interface Advisor extends Participant {
-  name: string;
-  description: string;
-  prompt: string;
-}
+// Copie figée dans un run : un rapport reste lisible si la persona est modifiée ou supprimée ensuite.
+export interface Advisor extends Participant, PersonaInput {}
 
 export type CouncilStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 export type CouncilPhase = 'answering' | 'reviewing' | 'synthesizing' | 'finished';
@@ -96,9 +115,14 @@ export interface CouncilAnswer {
   finishedAt: number | null;
 }
 
+export interface CouncilRanking {
+  letter: string;
+  reason: string;
+}
+
 export interface CouncilReview {
   advisorId: string;
-  ranking: { letter: string; reason: string }[];
+  ranking: CouncilRanking[];
   blindSpot: string | null;
   missed: string | null;
   error: string | null;
@@ -114,7 +138,8 @@ export interface CouncilSynthesis {
   firstAction: string;
 }
 
-// Image jointe : `n` est le numéro du jeton « [Image #n] » dans la question ou le contexte.
+// Image jointe au lancement : `n` est le numéro du jeton « [Image #n] » placé dans la question ou le contexte,
+// `path` le fichier enregistré sous le dossier des pièces jointes du serveur.
 export interface CouncilImage {
   n: number;
   path: string;
@@ -125,14 +150,17 @@ export interface CouncilRun {
   projectId: string | null;
   origin: 'web' | 'slack';
   question: string;
+  // Contexte collé par l'utilisateur.
   context: string;
+  // Images jointes, transmises à chaque appel (réponses, relectures, synthèse).
   images: CouncilImage[];
   readProject: boolean;
+  // Copies figées au lancement.
   settings: CouncilSettings;
   advisors: Advisor[];
   status: CouncilStatus;
   phase: CouncilPhase;
-  // advisorId -> lettre d'anonymisation.
+  // advisorId -> 'A', 'B'… tirées au hasard pour chaque run.
   letters: Record<string, string>;
   answers: CouncilAnswer[];
   reviews: CouncilReview[];
@@ -142,6 +170,14 @@ export interface CouncilRun {
   finishedAt: number | null;
 }
 
+export interface AggregatedRank {
+  letter: string;
+  advisorId: string;
+  // Rang moyen (1 = meilleur) sur les relectures réussies ; null si aucune ne l'a classée.
+  averageRank: number | null;
+  votes: number;
+}
+
 export const STATUSES: readonly Status[] = ['starting', 'running', 'waiting', 'idle', 'exited'];
 
 export interface Project {
@@ -149,7 +185,7 @@ export interface Project {
   name: string;
   path: string;
   color: string | null;
-  sessionDefaults: LaunchSpec;
+  sessionDefaults: SessionDefaults;
   commitSettings: CommitSettings;
   // null : le projet suit les réglages globaux du council.
   councilSettings: CouncilSettings | null;
@@ -163,6 +199,7 @@ export interface Session {
   projectId: string;
   agent: Agent;
   mode: Mode;
+  // null: model / effort Cerebro default, resolved by parseTuning.
   model: string | null;
   effort: Effort | null;
   prompt: string;
@@ -175,8 +212,11 @@ export interface Session {
   exitCode: number | null;
   createdAt: number;
   updatedAt: number;
+  // Copie de travail isolée de la conversation ; null quand elle travaille dans le dossier du projet.
   worktree: SessionWorktree | null;
+  // Origine conservée même après nettoyage du backlog.
   epic: SessionEpic | null;
+  // Findings publiés qui n’ont pas encore été importés dans le backlog.
   pendingFindings: number;
 }
 
@@ -191,10 +231,11 @@ export interface SessionWorktree {
   branch: string | null;
   removed: boolean;
   removedAt: number | null;
-  /** Retirée par le nettoyage automatique à la fin de la conversation. */
+  /** Removed by the automatic cleanup once the conversation was over. */
   removedAutomatically: boolean;
 }
 
+// Élément du backlog d'un projet : un texte à confier plus tard à une session.
 export interface Task {
   id: string;
   projectId: string;
@@ -202,8 +243,10 @@ export interface Task {
   status: TaskStatus;
   sessionId: string | null;
   sourceSessionId: string | null;
+  // Tâches du même projet à terminer avant de pouvoir lancer celle-ci.
   dependsOn: string[];
   execution: TaskExecution;
+  // Epic du même projet qui regroupe la tâche, ou null.
   epicId: string | null;
   createdAt: number;
   updatedAt: number;
@@ -273,10 +316,6 @@ export type TermServerMessage =
   | { type: 'output'; data: string }
   | { type: 'exit'; exitCode: number | null };
 
-export function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null;
-}
-
 export function isAgent(v: unknown): v is Agent {
   return v === 'claude' || v === 'codex' || v === 'grok';
 }
@@ -285,7 +324,7 @@ export function isMode(v: unknown): v is Mode {
   return (MODES as readonly unknown[]).includes(v);
 }
 
-function isEffort(v: unknown): v is Effort {
+export function isEffort(v: unknown): v is Effort {
   return (EFFORTS as readonly unknown[]).includes(v);
 }
 
@@ -293,26 +332,6 @@ export function isStatus(v: unknown): v is Status {
   return (
     v === 'starting' || v === 'running' || v === 'waiting' || v === 'idle' || v === 'exited'
   );
-}
-
-function asString(v: unknown): string | null {
-  return typeof v === 'string' ? v : null;
-}
-
-function asNumber(v: unknown): number | null {
-  return typeof v === 'number' && Number.isFinite(v) ? v : null;
-}
-
-function asNullableString(v: unknown): string | null | undefined {
-  if (v === null) return null;
-  if (typeof v === 'string') return v;
-  return undefined;
-}
-
-function asNullableNumber(v: unknown): number | null | undefined {
-  if (v === null) return null;
-  if (typeof v === 'number' && Number.isFinite(v)) return v;
-  return undefined;
 }
 
 function parseLlm(v: unknown): Llm | null {
@@ -354,17 +373,13 @@ export function parsePersonaList(v: unknown): Persona[] {
 const COUNCIL_STATUSES: readonly CouncilStatus[] = ['running', 'succeeded', 'failed', 'cancelled', 'interrupted'];
 const COUNCIL_PHASES: readonly CouncilPhase[] = ['answering', 'reviewing', 'synthesizing', 'finished'];
 
-function asText(v: unknown): string | null {
-  return typeof v === 'string' ? v : null;
-}
-
 function parseAdvisor(v: unknown): Advisor | null {
   if (!isRecord(v)) return null;
   const llm = parseLlm(v);
   const personaId = asString(v.personaId);
   const name = asString(v.name);
   if (llm === null || personaId === null || name === null) return null;
-  return { ...llm, personaId, name, description: asText(v.description) ?? '', prompt: asText(v.prompt) ?? '' };
+  return { ...llm, personaId, name, description: asString(v.description) ?? '', prompt: asString(v.prompt) ?? '' };
 }
 
 function parseCouncilAnswer(v: unknown): CouncilAnswer | null {
@@ -372,7 +387,7 @@ function parseCouncilAnswer(v: unknown): CouncilAnswer | null {
   const advisorId = asString(v.advisorId);
   if (advisorId === null) return null;
   return {
-    advisorId, text: asText(v.text), error: asText(v.error),
+    advisorId, text: asString(v.text), error: asString(v.error),
     startedAt: asNumber(v.startedAt) ?? 0, finishedAt: asNumber(v.finishedAt),
   };
 }
@@ -382,10 +397,10 @@ function parseCouncilReview(v: unknown): CouncilReview | null {
   const advisorId = asString(v.advisorId);
   if (advisorId === null) return null;
   const ranking = Array.isArray(v.ranking)
-    ? v.ranking.flatMap((r) => (isRecord(r) && typeof r.letter === 'string' ? [{ letter: r.letter, reason: asText(r.reason) ?? '' }] : []))
+    ? v.ranking.flatMap((r) => (isRecord(r) && typeof r.letter === 'string' ? [{ letter: r.letter, reason: asString(r.reason) ?? '' }] : []))
     : [];
   return {
-    advisorId, ranking, blindSpot: asText(v.blindSpot), missed: asText(v.missed), error: asText(v.error),
+    advisorId, ranking, blindSpot: asString(v.blindSpot), missed: asString(v.missed), error: asString(v.error),
     startedAt: asNumber(v.startedAt) ?? 0, finishedAt: asNumber(v.finishedAt),
   };
 }
@@ -400,14 +415,10 @@ function parseCouncilImage(v: unknown): CouncilImage | null {
 function parseCouncilSynthesis(v: unknown): CouncilSynthesis | null {
   if (!isRecord(v)) return null;
   return {
-    agreements: asText(v.agreements) ?? '', disagreements: asText(v.disagreements) ?? '',
-    blindSpots: asText(v.blindSpots) ?? '', recommendation: asText(v.recommendation) ?? '',
-    firstAction: asText(v.firstAction) ?? '',
+    agreements: asString(v.agreements) ?? '', disagreements: asString(v.disagreements) ?? '',
+    blindSpots: asString(v.blindSpots) ?? '', recommendation: asString(v.recommendation) ?? '',
+    firstAction: asString(v.firstAction) ?? '',
   };
-}
-
-function parseItems<T>(v: unknown, parse: (item: unknown) => T | null): T[] {
-  return Array.isArray(v) ? v.map(parse).filter((item): item is T => item !== null) : [];
 }
 
 export function parseCouncilRun(v: unknown): CouncilRun | null {
@@ -425,10 +436,10 @@ export function parseCouncilRun(v: unknown): CouncilRun | null {
   }
   return {
     id, projectId: asString(v.projectId), origin: v.origin === 'slack' ? 'slack' : 'web', question,
-    context: asText(v.context) ?? '', images: parseItems(v.images, parseCouncilImage), readProject: v.readProject === true, settings,
+    context: asString(v.context) ?? '', images: parseItems(v.images, parseCouncilImage), readProject: v.readProject === true, settings,
     advisors: parseItems(v.advisors, parseAdvisor), status, phase, letters,
     answers: parseItems(v.answers, parseCouncilAnswer), reviews: parseItems(v.reviews, parseCouncilReview),
-    synthesis: parseCouncilSynthesis(v.synthesis), error: asText(v.error), startedAt, finishedAt: asNumber(v.finishedAt),
+    synthesis: parseCouncilSynthesis(v.synthesis), error: asString(v.error), startedAt, finishedAt: asNumber(v.finishedAt),
   };
 }
 
@@ -446,7 +457,7 @@ export function parseProject(v: unknown): Project | null {
   const color = typeof v.color === 'string' && /^#[0-9a-f]{6}$/i.test(v.color) ? v.color : null;
   // Compatibilité avec les machines qui ne mémorisent pas encore les réglages de lancement.
   const saved = isRecord(v.sessionDefaults) ? v.sessionDefaults : {};
-  const sessionDefaults: LaunchSpec = {
+  const sessionDefaults: SessionDefaults = {
     agent: isAgent(saved.agent) ? saved.agent : DEFAULT_SESSION_DEFAULTS.agent,
     mode: isMode(saved.mode) ? saved.mode : DEFAULT_SESSION_DEFAULTS.mode,
     model: typeof saved.model === 'string' ? saved.model : null,

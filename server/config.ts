@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isEnoent } from './util.ts';
 
 // Optional secrets file (e.g. Slack token) so they stay out of the shell profile and the repo.
 const ENV_FILE = join(process.env.CEREBRO_DATA_DIR ?? join(homedir(), '.cerebro'), 'env');
@@ -44,7 +45,7 @@ export function loadRemotes(): RemoteMachine[] {
   try {
     parsed = JSON.parse(readFileSync(REMOTES_FILE, 'utf8')) as unknown;
   } catch (caught) {
-    if ((caught as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    if (isEnoent(caught)) return [];
     console.warn(`[remotes] Impossible de lire ${REMOTES_FILE}:`, caught instanceof Error ? caught.message : caught);
     return [];
   }

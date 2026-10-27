@@ -2,7 +2,7 @@ import { ActivityStatus } from './ActivityStatus.tsx';
 import { useEffect, useId, useState } from 'react';
 import { api } from './api.ts';
 import { GitActions } from './GitActions.tsx';
-import { parseGitInfo, type GitInfo } from './types.ts';
+import { parseGitInfo, type GitInfo } from '../../shared/types.ts';
 
 export function GitStatus({ projectId }: { projectId: string }) {
   const [git, setGit] = useState<GitInfo | null>(null);
@@ -14,7 +14,7 @@ export function GitStatus({ projectId }: { projectId: string }) {
     let cancelled = false;
     const load = async (): Promise<void> => {
       try {
-        const raw = await api<unknown>(`/api/projects/${projectId}/git${expanded ? '?commits=true' : ''}`);
+        const raw = await api(`/api/projects/${projectId}/git${expanded ? '?commits=true' : ''}`);
         const parsed = parseGitInfo(raw);
         if (!parsed) throw new Error('Réponse Git invalide');
         if (!cancelled) {

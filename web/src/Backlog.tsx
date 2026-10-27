@@ -1,8 +1,6 @@
-import type { EpicRun } from '../../server/epic-runner.ts';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { api, clipboardImage, uploadProjectImage } from './api.ts';
+import { api, apiParsed, clipboardImage, uploadProjectImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
-import type { CommandRun, ProjectCommand } from '../../server/commands.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { LaunchSessionDialog } from './Dialog.tsx';
 import { EpicReviewActions, RUN_ACTIVE, useEpicRun } from './EpicReviewActions.tsx';
@@ -11,8 +9,16 @@ import { STATUS_LABEL, WORKSPACE_TARGET, sessionTitle } from './format.ts';
 import { href } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
-import type { Epic, Session, Task } from './types.ts';
+import type { Epic, Session, Task } from '../../shared/types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
+import {
+  parseCommandRuns,
+  parseProjectCommand,
+  parseProjectCommands,
+  type CommandRun,
+  type EpicRun,
+  type ProjectCommand,
+} from '../../shared/backlog.ts';
 
 export function taskTitle(text: string): string {
   return text.split('\n').find((line) => line.trim() !== '')?.trim() ?? text;
@@ -525,7 +531,7 @@ function CommandTasks({
   const refresh = useCallback(async (): Promise<void> => {
     const generation = ++loadGeneration.current;
     try {
-      const list = await api<ProjectCommand[]>(`/api/projects/${projectId}/commands`);
+      const list = await apiParsed(`/api/projects/${projectId}/commands`, parseProjectCommands);
       if (loadGeneration.current !== generation) return;
       setCommands(list);
       setSelected((current) => (list.some((command) => command.id === current) ? current : ''));
@@ -571,7 +577,7 @@ function CommandTasks({
       setError(String(cause));
       return;
     }
-    void api<ProjectCommand>(`/api/projects/${projectId}/commands`, { method: 'POST', body: JSON.stringify(body) })
+    void apiParsed(`/api/projects/${projectId}/commands`, parseProjectCommand, { method: 'POST', body: JSON.stringify(body) })
       .then(async (command) => {
         setError(null);
         await refresh();
@@ -640,7 +646,7 @@ function CommandTasks({
 function CommandRunView({task,onActive}:{task:Task;onActive:(active:boolean)=>void}) {
   const detail=useRef<HTMLDetailsElement>(null);
   const [runs,setRuns]=useState<CommandRun[]>([]);
-  useEffect(()=>{const refresh=async():Promise<void>=>{const runs=await api<CommandRun[]>(`/api/tasks/${task.id}/runs`);setRuns(runs);onActive(runs[0]?.status==='running');};void refresh().catch(()=>{});const timer=window.setInterval(()=>void refresh().catch(()=>{}),1000);return()=>window.clearInterval(timer);},[task.id]);
+  useEffect(()=>{const refresh=async():Promise<void>=>{const runs=await apiParsed(`/api/tasks/${task.id}/runs`, parseCommandRuns);setRuns(runs);onActive(runs[0]?.status==='running');};void refresh().catch(()=>{});const timer=window.setInterval(()=>void refresh().catch(()=>{}),1000);return()=>window.clearInterval(timer);},[task.id]);
   const run=runs[0];
   useEffect(()=>{if(detail.current?.open&&run?.finishedAt)void api(`/api/operations/${encodeURIComponent(run.id)}/seen`,{method:'POST'}).catch(()=>{});},[run?.id,run?.finishedAt]);
   return <details ref={detail} onToggle={e=>{if(e.currentTarget.open&&run?.finishedAt)void api(`/api/operations/${encodeURIComponent(run.id)}/seen`,{method:'POST'}).catch(()=>{});}}><summary>Commande — {run?.status??'non exécutée'}{run?.status==='succeeded'&&task.status!=='done'?' ; travail à valider':''}</summary>

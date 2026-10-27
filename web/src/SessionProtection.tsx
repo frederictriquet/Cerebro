@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useStore } from './store.tsx';
-import type { Session } from './types.ts';
+import type { Session } from '../../shared/types.ts';
 
 export const SESSION_PROTECTED_HINT = 'Session protégée. Décochez sa protection avant de la supprimer.';
 

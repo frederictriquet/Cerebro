@@ -1,17 +1,9 @@
 import { AgentLabel } from './AgentLabel.tsx';
 import { useEffect, useState } from 'react';
-import {
-  getUpdates,
-  getUsage,
-  setAutoUpdate,
-  startUpdate,
-  type AgentAuth,
-  type AgentUpdate,
-  type AgentUsage,
-  type UsageWindow,
-} from './api.ts';
+import { getUpdates, getUsage, setAutoUpdate, startUpdate } from './api.ts';
 import { relativeTime } from './format.ts';
 import { useNow } from './route.ts';
+import type { AgentAuth, AgentUpdate, AgentUsage, UsageWindow } from '../../shared/machine.ts';
 
 /** Why a team login has no gauge: /usage hits the same endpoint and gets no percent. */
 const GROK_USAGE_HINT = [

@@ -2,11 +2,11 @@ import { ActivityStatus } from './ActivityStatus.tsx';
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
-import type { Agent, LaunchSpec } from './types.ts';
+import type { Agent, SessionDefaults } from '../../shared/types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
-import { api, clipboardImage, uploadProjectImage } from './api.ts';
-import type { WorkspaceContext } from '../../server/provenance.ts';
+import { apiParsed, clipboardImage, uploadProjectImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
+import { parseOptionalWorkspaceContext, type WorkspaceContext } from '../../shared/git.ts';
 
 // Modale native : Échap et un clic hors du contenu la ferment.
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
@@ -67,14 +67,14 @@ export function LaunchSessionDialog({
   promptFor?: (agent: Agent) => string;
   submitLabel?: string;
   epicId?: string | null;
-  onLaunch: (spec: LaunchSpec) => Promise<void>;
+  onLaunch: (spec: SessionDefaults) => Promise<void>;
   onClose: () => void;
 }) {
   const [workspace, setWorkspace] = useState<WorkspaceContext | null>(null);
   useEffect(() => {
     let cancelled = false;
     setWorkspace(null);
-    if (epicId) void api<WorkspaceContext | null>(`/api/epics/${epicId}/workspace`).then(value => { if (!cancelled) setWorkspace(value); }).catch(() => {});
+    if (epicId) void apiParsed(`/api/epics/${epicId}/workspace`, parseOptionalWorkspaceContext).then(value => { if (!cancelled) setWorkspace(value); }).catch(() => {});
     return () => { cancelled = true; };
   }, [epicId]);
   const contextLabel = workspace ? workspace.mode === 'isolated' ? 'Poursuivre dans le worktree de l’epic' : 'Poursuivre dans le dossier d’origine de l’epic' : undefined;

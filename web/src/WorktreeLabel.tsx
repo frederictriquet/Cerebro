@@ -1,4 +1,4 @@
-import type { SessionWorktree } from './types.ts';
+import type { SessionWorktree } from '../../shared/types.ts';
 
 const removalDate = (at: number): string => new Date(at).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 

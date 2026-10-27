@@ -1,4 +1,4 @@
-import type { Agent, Mode, Session, Status, WorkspaceMode } from './types.ts';
+import type { Agent, Mode, Session, Status, WorkspaceMode } from '../../shared/types.ts';
 
 // Statut affiché : une session inactive ou terminée depuis plus d'une heure passe « en sommeil »,
 // signe qu'on n'en aura sans doute plus besoin ; ce sont celles que la purge supprime.

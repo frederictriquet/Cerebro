@@ -1,15 +1,24 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { api, apiBase } from './api.ts';
-import type { PreparedReview } from '../../server/review.ts';
+import { api, apiParsed, apiBase } from './api.ts';
 import { Modal } from './Dialog.tsx';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
-import type { SessionGitContext, SessionGitSnapshot } from '../../server/session-git.ts';
-import type { GitInfo } from './types.ts';
-import type { PushOperation, PushRemoteResult } from '../../server/git-push.ts';
+import type { GitInfo } from '../../shared/types.ts';
 import './automatic-commits.css';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
+import {
+  parseOptionalPushOperation,
+  parsePreparedReview,
+  parsePushOperation,
+  parseSessionGitContext,
+  parseSessionGitSnapshot,
+  type PreparedReview,
+  type PushOperation,
+  type PushRemoteResult,
+  type SessionGitContext,
+  type SessionGitSnapshot,
+} from '../../shared/git.ts';
 
 const canPush = (git: GitInfo): boolean => (git.ahead ?? 0) > 0 || (git.hasCommits && !git.hasUpstream);
 
@@ -72,7 +81,7 @@ function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => 
     const poll = async (): Promise<void> => {
       if (!current()) return;
       try {
-        const value = await api<PushOperation | null>(`/api/projects/${projectId}/git/push`);
+        const value = await apiParsed(`/api/projects/${projectId}/git/push`, parseOptionalPushOperation);
         if (!current()) return;
         setOperation(value);
         if (value?.status !== 'running') return;
@@ -81,7 +90,7 @@ function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => 
     };
     if (apiBase() !== machineBase) return;
     // Reuse the same request in React StrictMode; a double submission returns the running operation.
-    start.current ??= api<PushOperation>(`/api/projects/${projectId}/git/push`, { method: 'POST', body: JSON.stringify({ allowDirty: true }) });
+    start.current ??= apiParsed(`/api/projects/${projectId}/git/push`, parsePushOperation, { method: 'POST', body: JSON.stringify({ allowDirty: true }) });
     void start.current.then(value => {
       if (!current()) return;
       setOperation(value);
@@ -112,7 +121,7 @@ function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => 
 function RepoReviewDialog({projectId,onClose}:{projectId:string;onClose:()=>void}) {
   const [review,setReview]=useState<PreparedReview|null>(null);
   const [error,setError]=useState<string|null>(null);
-  useEffect(()=>{void api<PreparedReview>(`/api/projects/${projectId}/git/prepare-review`,{method:'POST'}).then(setReview).catch(cause=>setError(String(cause)));},[projectId]);
+  useEffect(()=>{void apiParsed(`/api/projects/${projectId}/git/prepare-review`,parsePreparedReview,{method:'POST'}).then(setReview).catch(cause=>setError(String(cause)));},[projectId]);
   return <Modal title="Périmètre de code review" onClose={onClose}>
     {!review&&!error?<p><ActivityStatus>Préparation du périmètre de review…</ActivityStatus></p>:null}
     {review?<>
@@ -131,7 +140,7 @@ function SessionReviewDialog({sessionId,projectId,onClose}:{sessionId:string;pro
   const [snapshot,setSnapshot]=useState<SessionGitSnapshot|null>(null);
   const [selection,setSelection]=useState('');
   const [error,setError]=useState<string|null>(null);
-  useEffect(()=>{void api<SessionGitSnapshot>(`/api/sessions/${sessionId}/git/prepare-commit`,{method:'POST'}).then(s=>{
+  useEffect(()=>{void apiParsed(`/api/sessions/${sessionId}/git/prepare-commit`,parseSessionGitSnapshot,{method:'POST'}).then(s=>{
     setSnapshot(s);setSelection(JSON.stringify({snapshotId:s.id,selection:s.files.filter(f=>!f.warnings.length).map(f=>({path:f.path,all:true})),commits:s.provenance.commits.filter(c=>c.certainty==='workspace').map(c=>c.hash),acknowledged:[]},null,2));
   }).catch(cause=>setError(String(cause)));},[sessionId]);
   return <Modal title="Périmètre de review de la session" onClose={onClose}>
@@ -160,7 +169,7 @@ export function SessionGitActions({ sessionId, live: _live }: { sessionId: strin
   const machineBase=apiBase();
   useEffect(()=>{
     let disposed=false;setContext(null);setContextError(null);setOpen(null);
-    void api<SessionGitContext>(`/api/sessions/${sessionId}/git/context`).then(value=>{if(!disposed&&apiBase()===machineBase)setContext(value);})
+    void apiParsed(`/api/sessions/${sessionId}/git/context`, parseSessionGitContext).then(value=>{if(!disposed&&apiBase()===machineBase)setContext(value);})
       .catch(cause=>{if(!disposed&&apiBase()===machineBase)setContextError(cause instanceof Error?cause.message:String(cause));});
     return()=>{disposed=true;};
   },[sessionId,machineBase]);

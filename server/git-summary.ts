@@ -1,10 +1,7 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { git as runGit, parseStatusZ } from './git.ts';
 
-const exec = promisify(execFile);
 const PREVIEW_LIMIT = 50;
-const git = async (path: string, args: string[]): Promise<string> =>
-  (await exec('git', ['-C', path, ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout.trimEnd();
+const git = async (path: string, args: string[]): Promise<string> => (await runGit(path, args)).trimEnd();
 
 export interface GitSummary {
   branch: string | null;
@@ -27,12 +24,12 @@ export async function gitSummary(path: string, includeCommits = false): Promise<
     if (await git(path, ['rev-parse', '--is-inside-work-tree']) !== 'true') return empty;
     const [branch, status, head, upstream] = await Promise.all([
       git(path, ['branch', '--show-current']),
-      git(path, ['status', '--porcelain']),
+      git(path, ['status', '--porcelain', '-z']),
       git(path, ['rev-parse', '--verify', 'HEAD']).catch(() => null),
       git(path, ['rev-parse', '--verify', '@{upstream}']).catch(() => null),
     ]);
     const result: GitSummary = {
-      branch: branch || null, dirty: status === '' ? 0 : status.split(/\r?\n/).length,
+      branch: branch || null, dirty: parseStatusZ(status).length,
       ahead: head ? null : 0, hasCommits: head !== null, hasUpstream: upstream !== null,
     };
     if (head && upstream) {
