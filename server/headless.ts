@@ -7,6 +7,7 @@ import { tuningArgs } from './agent-args.ts';
 import { readCodexConfig } from './codex-config.ts';
 import { jsonlFromEnd } from './jsonl.ts';
 import { killWithEscalation } from './proc.ts';
+import { withoutCerebroVariables } from './agent-env.ts';
 
 /** `none`: no tool at all. `read-only`: the agent may read files below `cwd`, never write nor run anything that mutates. */
 export type HeadlessAccess = 'none' | 'read-only';
@@ -154,9 +155,8 @@ export async function runHeadless(options: HeadlessOptions): Promise<unknown> {
       if(agent==='grok')stdin=undefined;
       args.push(...tuningArgs(agent,{model,effort}));
     }
-    const env={...process.env};
     // Headless agents need CLI authentication, never Cerebro's server secrets or session helpers.
-    for(const key of Object.keys(env))if(key.startsWith('CEREBRO_')||key==='CLAUDECODE')delete env[key];
+    const env=withoutCerebroVariables();delete env.CLAUDECODE;
     const text=await new Promise<string>((accept,reject)=>{
       signal.throwIfAborted();
       const child=spawn(agent,args,{cwd:options.cwd??directory,env,detached:process.platform!=='win32',stdio:['pipe','pipe','pipe']});

@@ -14,26 +14,27 @@ import {
   playAlert,
   readDesktopNotif,
   readMuted,
+  sessionIsWatched,
   showAlertNotification,
   showFindingsNotification,
   updateAttentionIndicators,
   writeDesktopNotif,
   writeMuted,
 } from './notify.ts';
-import { needsAttention } from './format.ts';
+import { attentionCounts } from './format.ts';
+import { openReconnectingSocket } from './reconnectingSocket.ts';
 import {
   parseAgentInfoList,
   parseEpic,
-  parseEpicList,
   parseEventsMessage,
   parseProject,
   parseProjectList,
   parseSession,
   parseSessionList,
   parseTask,
-  parseTaskList,
   type AgentInfo,
   type Epic,
+  type EventsMessage,
   type SessionDefaults,
   type Project,
   type Session,
@@ -50,7 +51,15 @@ export interface Store {
   epics: Epic[];
   agents: AgentInfo[];
   refreshAgents: () => Promise<void>;
+  agentsRefreshing: boolean;
+  agentsRefreshError: string | null;
+  // Abonne un sélecteur : tant qu'il en reste un et qu'aucun agent n'est disponible,
+  // une boucle unique relance refreshAgents toutes les 5 s. Retourne le désabonnement.
+  watchAgents: () => () => void;
   connected: boolean;
+  // Intervalle de relecture des runs d'epic et de commande : null tant que la connexion courante diffuse
+  // leurs événements (ou que son snapshot n'est pas arrivé), RUN_FALLBACK_POLL_MS face à une instance antérieure.
+  runPollMs: number | null;
   // Incrémenté à chaque changement de prise de main Slack entre machines : déclenche un rechargement.
   peersVersion: number;
   muted: boolean;
@@ -75,10 +84,13 @@ export interface Store {
   deleteTask: (id: string) => Promise<void>;
   deleteCompletedBacklog: (projectId: string) => Promise<void>;
   startTask: (id: string, spec: SessionDefaults) => Promise<Session>;
+  /** Lance une tâche « commande » : aucune session, le serveur démarre la commande configurée. */
+  startCommandTask: (id: string) => Promise<void>;
   createEpic: (projectId: string, title: string, description?: string) => Promise<Epic>;
   updateEpic: (id: string, patch: { title?: string; description?: string }) => Promise<Epic>;
   deleteEpic: (id: string) => Promise<void>;
-  startEpic: (id: string, spec: SessionDefaults) => Promise<EpicRun>;
+  /** Sans `spec`, l'epic ne compte que des tâches « commande » : aucun réglage de session. */
+  startEpic: (id: string, spec?: SessionDefaults) => Promise<EpicRun>;
 }
 
 export interface TaskPatch {
@@ -101,6 +113,26 @@ export interface ProjectPatch {
 }
 
 const StoreContext = createContext<Store | null>(null);
+
+export type RunEvent = Extract<EventsMessage, { type: 'epic-run' | 'command-run' }>;
+const runListeners = new Set<(event: RunEvent) => void>();
+
+// Polling de secours des runs face à une machine de même majeure antérieure à leurs événements.
+const RUN_FALLBACK_POLL_MS = 5000;
+
+// Avancement des runs d'epic et de commande, diffusé par /ws/events : remplace leur polling (sauf runPollMs).
+// Les événements manqués pendant une déconnexion se rattrapent en rechargeant quand `connected` repasse à vrai.
+export function useRunEvents(listener: (event: RunEvent) => void): void {
+  const current = useRef(listener);
+  current.current = listener;
+  useEffect(() => {
+    const forward = (event: RunEvent): void => current.current(event);
+    runListeners.add(forward);
+    return () => {
+      runListeners.delete(forward);
+    };
+  }, []);
+}
 
 // L'activité (statut, titre, attention) ne déplace pas une session.
 function sortSessions(list: Session[]): Session[] {
@@ -138,6 +170,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [epics, setEpics] = useState<Epic[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [connected, setConnected] = useState(false);
+  // null : snapshot de la connexion courante pas encore reçu.
+  const [runEvents, setRunEvents] = useState<boolean | null>(null);
   const [peersVersion, setPeersVersion] = useState(0);
   const [muted, setMutedState] = useState<boolean>(() => readMuted());
   const mutedRef = useRef(muted);
@@ -156,36 +190,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     writeDesktopNotif(value);
   }, []);
 
-  useEffect(() => {
-    armNotificationPermission();
-  }, []);
+  useEffect(() => armNotificationPermission(), []);
 
   useEffect(() => {
-    const awaiting = sessions.filter(needsAttention);
-    const waiting = awaiting.filter((s) => s.status === 'waiting').length;
-    updateAttentionIndicators(waiting, awaiting.length - waiting, sessions.reduce((total, session) => total + session.pendingFindings, 0));
+    const { total, waiting, pendingFindings } = attentionCounts(sessions);
+    updateAttentionIndicators(waiting, total - waiting, pendingFindings);
   }, [sessions]);
 
+  // Projets, sessions, tâches et epics arrivent par le snapshot que le serveur
+  // envoie à l'ouverture de /ws/events : un chargement REST concurrent pourrait
+  // écraser un état plus récent. Seuls les agents, absents du snapshot, passent par REST.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const [pRaw, sRaw, tRaw, aRaw, eRaw] = await Promise.all([
-          api('/api/projects'),
-          api('/api/sessions'),
-          api('/api/tasks'),
-          api('/api/agents'),
-          // Serveur antérieur aux epics (machine distante) : aucun.
-          api('/api/epics').catch(() => []),
-        ]);
-        if (cancelled) return;
-        setProjects(parseProjectList(pRaw));
-        setSessions(sortSessions(parseSessionList(sRaw)));
-        setTasks(parseTaskList(tRaw));
-        setEpics(parseEpicList(eRaw));
-        setAgents(parseAgentInfoList(aRaw));
+        const raw = await api('/api/agents');
+        if (!cancelled) setAgents(parseAgentInfoList(raw));
       } catch {
-        /* le snapshot WS prendra le relais */
+        /* liste d'agents vide : refreshAgents permet de réessayer */
       }
     })();
     return () => {
@@ -193,44 +215,41 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  useEffect(() => {
-    let closed = false;
-    let retry = 0;
-    let ws: WebSocket | null = null;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+  const markSeen = useCallback(async (id: string): Promise<void> => {
+    setSessions((list) =>
+      list.map((s) => (s.id === id ? { ...s, attention: false } : s)),
+    );
+    try {
+      await api(`/api/sessions/${id}/seen`, { method: 'POST' });
+    } catch {
+      /* le prochain snapshot corrigera */
+    }
+  }, []);
 
-    const connect = (): void => {
-      if (closed) return;
-      const socket = new WebSocket(wsUrl('/ws/events'));
-      ws = socket;
-      socket.addEventListener('open', () => {
-        retry = 0;
+  useEffect(() => {
+    const socket = openReconnectingSocket(wsUrl('/ws/events'), {
+      onOpen: () => {
+        setRunEvents(null);
         setConnected(true);
-      });
-      socket.addEventListener('message', (ev) => {
-        if (typeof ev.data !== 'string') return;
-        let raw: unknown;
-        try {
-          raw = JSON.parse(ev.data) as unknown;
-        } catch {
-          return;
-        }
+      },
+      onMessage: (raw) => {
         const msg = parseEventsMessage(raw);
         if (!msg) return;
+        // Le serveur diffuse aussi les éléments modifiés par les cascades de la base
+        // (dépendances, epic, session) : ni ce flux ni les actions locales ne les recopient.
         switch (msg.type) {
           case 'snapshot':
             setProjects(msg.projects);
             setSessions(sortSessions(msg.sessions));
             setTasks(msg.tasks);
             setEpics(msg.epics);
+            setRunEvents(msg.runEvents);
             break;
           case 'session':
             setSessions((list) => upsertSession(list, msg.session));
             break;
           case 'session-deleted':
             setSessions((list) => list.filter((s) => s.id !== msg.id));
-            // La base délie la tâche (ON DELETE SET NULL) sans émettre d'événement.
-            setTasks((list) => list.map((t) => (t.sessionId === msg.id ? { ...t, sessionId: null } : t)));
             break;
           case 'task':
             setTasks((list) => upsertTask(list, msg.task));
@@ -240,8 +259,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             break;
           case 'epic':
             setEpics((list) => upsertEpic(list, msg.epic));
-            setSessions((list) => list.map((session) => session.epic?.id === msg.epic.id
-              ? { ...session, epic: { id: msg.epic.id, title: msg.epic.title } } : session));
             break;
           case 'epic-deleted':
             setEpics((list) => list.filter((e) => e.id !== msg.id));
@@ -254,6 +271,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             break;
           case 'alert':
             setSessions((list) => upsertSession(list, msg.session));
+            // Session réellement regardée (affichée et fenêtre focalisée) : l'alerte est vue. Sinon
+            // l'attention reste posée pour « À traiter » et l'alerte Slack différée.
+            if (sessionIsWatched(msg.session.id)) void markSeen(msg.session.id);
             showAlertNotification(msg.session);
             if (!mutedRef.current) playAlert(msg.session.status);
             break;
@@ -262,27 +282,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             showFindingsNotification(msg.session);
             if (!mutedRef.current) playAlert('idle');
             break;
+          case 'epic-run':
+          case 'command-run':
+            setRunEvents(true);
+            for (const listener of runListeners) listener(msg);
+            break;
         }
-      });
-      socket.addEventListener('close', () => {
+      },
+      onClose: () => {
+        setRunEvents(null);
         setConnected(false);
-        if (closed) return;
-        const delay = Math.min(8_000, 400 * 2 ** retry);
-        retry += 1;
-        timer = setTimeout(connect, delay);
-      });
-      socket.addEventListener('error', () => {
-        socket.close();
-      });
-    };
-
-    connect();
+      },
+    });
     return () => {
-      closed = true;
-      if (timer !== undefined) clearTimeout(timer);
-      ws?.close();
+      socket.close();
     };
-  }, []);
+  }, [markSeen]);
 
   const createProject = useCallback(async (name: string, path: string): Promise<Project> => {
     const raw = await api('/api/projects', {
@@ -298,9 +313,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const deleteProject = useCallback(async (id: string): Promise<void> => {
     await api(`/api/projects/${id}`, { method: 'DELETE' });
     setProjects((list) => list.filter((p) => p.id !== id));
-    setSessions((list) => list.filter((s) => s.projectId !== id));
-    setTasks((list) => list.filter((t) => t.projectId !== id));
-    setEpics((list) => list.filter((e) => e.projectId !== id));
   }, []);
 
   const reorderProjects = useCallback(async (ids: string[]): Promise<void> => {
@@ -311,9 +323,41 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setProjects(parseProjectList(raw));
   }, []);
 
-  const refreshAgents = useCallback(async (): Promise<void> => {
-    setAgents(parseAgentInfoList(await api('/api/agents?refresh=1')));
+  const [agentsRefreshing, setAgentsRefreshing] = useState(false);
+  const [agentsRefreshError, setAgentsRefreshError] = useState<string | null>(null);
+  // Rafraîchissement en cours : les appels concurrents le partagent au lieu d'en lancer un autre.
+  const agentsRefreshRef = useRef<Promise<void> | null>(null);
+  const refreshAgents = useCallback((): Promise<void> => {
+    if (agentsRefreshRef.current) return agentsRefreshRef.current;
+    setAgentsRefreshing(true);
+    setAgentsRefreshError(null);
+    const run = (async () => {
+      try {
+        setAgents(parseAgentInfoList(await api('/api/agents?refresh=1')));
+      } catch (error) {
+        setAgentsRefreshError(error instanceof Error ? error.message : String(error));
+        throw error;
+      } finally {
+        agentsRefreshRef.current = null;
+        setAgentsRefreshing(false);
+      }
+    })();
+    agentsRefreshRef.current = run;
+    return run;
   }, []);
+
+  const [agentWatchers, setAgentWatchers] = useState(0);
+  const watchAgents = useCallback(() => {
+    setAgentWatchers((n) => n + 1);
+    return () => setAgentWatchers((n) => n - 1);
+  }, []);
+  const watchingAgents = agentWatchers > 0;
+  const agentsAvailable = agents.some((a) => a.available);
+  useEffect(() => {
+    if (!watchingAgents || agentsAvailable || agentsRefreshing) return;
+    const timer = window.setTimeout(() => void refreshAgents().catch(() => {}), 5000);
+    return () => window.clearTimeout(timer);
+  }, [watchingAgents, agentsAvailable, agentsRefreshing, refreshAgents]);
 
   const createSession = useCallback(
     async (projectId: string, spec: SessionDefaults): Promise<Session> => {
@@ -421,7 +465,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const deleteTask = useCallback(async (id: string): Promise<void> => {
     await api(`/api/tasks/${id}`, { method: 'DELETE' });
-    setTasks((list) => list.filter((t) => t.id !== id).map((t) => (t.dependsOn.includes(id) ? { ...t, dependsOn: t.dependsOn.filter((d) => d !== id) } : t)));
+    setTasks((list) => list.filter((t) => t.id !== id));
   }, []);
 
   const deleteCompletedBacklog = useCallback(async (projectId: string): Promise<void> => {
@@ -430,9 +474,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     );
     const deletedTasks = new Set(taskIds);
     const deletedEpics = new Set(epicIds);
-    setTasks((list) => list.filter((task) => !deletedTasks.has(task.id)).map((task) => ({
-      ...task, dependsOn: task.dependsOn.filter((id) => !deletedTasks.has(id)),
-    })));
+    setTasks((list) => list.filter((task) => !deletedTasks.has(task.id)));
     setEpics((list) => list.filter((epic) => !deletedEpics.has(epic.id)));
   }, []);
 
@@ -452,6 +494,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const startCommandTask = useCallback(async (id: string): Promise<void> => {
+    const raw = await api(`/api/tasks/${id}/start`, { method: 'POST' });
+    const task = parseTask(isRecord(raw) ? raw.task : null);
+    if (task) setTasks((list) => upsertTask(list, task));
+  }, []);
+
   const createEpic = useCallback(async (projectId: string, title: string, description?: string): Promise<Epic> => {
     const raw = await api(`/api/projects/${projectId}/epics`, {
       method: 'POST',
@@ -468,31 +516,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const epic = parseEpic(raw);
     if (!epic) throw new Error('Réponse epic invalide');
     setEpics((list) => upsertEpic(list, epic));
-    setSessions((list) => list.map((session) => session.epic?.id === epic.id
-      ? { ...session, epic: { id: epic.id, title: epic.title } } : session));
     return epic;
   }, []);
 
   const deleteEpic = useCallback(async (id: string): Promise<void> => {
     await api(`/api/epics/${id}`, { method: 'DELETE' });
     setEpics((list) => list.filter((e) => e.id !== id));
-    setTasks((list) => list.map((t) => (t.epicId === id ? { ...t, epicId: null } : t)));
   }, []);
 
-  const startEpic = useCallback(async (id: string, spec: SessionDefaults): Promise<EpicRun> => {
-    return apiParsed(`/api/epics/${id}/start`, parseEpicRun, { method: 'POST', body: JSON.stringify(spec) });
+  const startEpic = useCallback(async (id: string, spec?: SessionDefaults): Promise<EpicRun> => {
+    return apiParsed(`/api/epics/${id}/start`, parseEpicRun, { method: 'POST', body: JSON.stringify(spec ?? {}) });
   }, []);
 
-  const markSeen = useCallback(async (id: string): Promise<void> => {
-    setSessions((list) =>
-      list.map((s) => (s.id === id ? { ...s, attention: false } : s)),
-    );
-    try {
-      await api(`/api/sessions/${id}/seen`, { method: 'POST' });
-    } catch {
-      /* le prochain snapshot corrigera */
-    }
-  }, []);
+  const runPollMs = runEvents === false ? RUN_FALLBACK_POLL_MS : null;
 
   const value = useMemo<Store>(
     () => ({
@@ -502,7 +538,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       epics,
       agents,
       refreshAgents,
+      agentsRefreshing,
+      agentsRefreshError,
+      watchAgents,
       connected,
+      runPollMs,
       peersVersion,
       muted,
       setMuted,
@@ -526,6 +566,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteTask,
       deleteCompletedBacklog,
       startTask,
+      startCommandTask,
       createEpic,
       updateEpic,
       deleteEpic,
@@ -538,7 +579,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       epics,
       agents,
       refreshAgents,
+      agentsRefreshing,
+      agentsRefreshError,
+      watchAgents,
       connected,
+      runPollMs,
       peersVersion,
       muted,
       setMuted,
@@ -562,6 +607,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteTask,
       deleteCompletedBacklog,
       startTask,
+      startCommandTask,
       createEpic,
       updateEpic,
       deleteEpic,

@@ -69,7 +69,12 @@ export class ApiError extends Error {
   }
 }
 
-function errorMessage(parsed: unknown): string | null {
+// Message à afficher pour une erreur interceptée : String(cause) préfixerait « ApiError: » ou « Error: ».
+export function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+function bodyError(parsed: unknown): string | null {
   if (typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
     const err = (parsed as { error: unknown }).error;
     if (typeof err === 'string' && err.length > 0) return err;
@@ -95,7 +100,7 @@ async function request(url: string, local: boolean, init?: RequestInit): Promise
   if (!res.ok) {
     // Un 401 relayé ne doit pas ouvrir l'écran « Token requis » de la machine locale.
     if (res.status === 401 && local) notifyUnauthorized();
-    throw new ApiError(res.status, errorMessage(parsed) ?? res.statusText);
+    throw new ApiError(res.status, bodyError(parsed) ?? res.statusText);
   }
   return parsed;
 }

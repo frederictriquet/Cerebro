@@ -39,6 +39,27 @@ export function needsAttention(session: Pick<Session, 'attention' | 'pendingFind
   return session.attention || session.pendingFindings > 0;
 }
 
+export interface AttentionCounts {
+  /** Sessions réclamant l'attention, tous motifs confondus (voir needsAttention). */
+  total: number;
+  /** Parmi elles, celles en attente d'une réponse ou d'une autorisation. */
+  waiting: number;
+  /** Findings en attente de traitement, toutes sessions confondues. */
+  pendingFindings: number;
+}
+
+// Seul décompte de l'attention : favicon, sidebar, onglets de projet, machines et groupes d'epic doivent concorder.
+export function attentionCounts(sessions: readonly Pick<Session, 'attention' | 'pendingFindings' | 'status'>[]): AttentionCounts {
+  const counts: AttentionCounts = { total: 0, waiting: 0, pendingFindings: 0 };
+  for (const session of sessions) {
+    counts.pendingFindings += session.pendingFindings;
+    if (!needsAttention(session)) continue;
+    counts.total += 1;
+    if (session.status === 'waiting') counts.waiting += 1;
+  }
+  return counts;
+}
+
 export const MODE_CHIP: Record<Mode, string> = {
   auto: '⏵⏵ auto',
   default: 'default',

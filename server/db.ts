@@ -169,10 +169,8 @@ function worktreeFromWorkspace(data: string | null): SessionWorktree | null {
 }
 
 const SESSION_SELECT = `SELECT s.*, w.data AS workspace, COALESCE(e.title, s.epic_title) AS resolved_epic_title,
-  (SELECT COUNT(*) FROM review_reports r, json_each(r.data, '$.findings') f
-    WHERE r.session_id = s.id AND NOT EXISTS (
-      SELECT 1 FROM finding_imports i WHERE i.report_id = r.id AND i.finding_id = json_extract(f.value, '$.id')
-    )) AS pending_findings
+  (SELECT COALESCE(SUM(r.finding_count - (SELECT COUNT(*) FROM finding_imports i WHERE i.report_id = r.id)), 0)
+    FROM review_reports r WHERE r.session_id = s.id) AS pending_findings
   FROM sessions s LEFT JOIN session_workspaces w ON w.session_id = s.id
   LEFT JOIN epics e ON e.id = s.epic_id AND e.project_id = s.project_id`;
 
@@ -202,6 +200,7 @@ function sessionFromRow(row: SessionRow): Session {
 
 export class CerebroDatabase {
   readonly connection: DatabaseSync;
+  private savepoints = 0;
 
   constructor(path = join(DATA_DIR, 'cerebro.db')) {
     this.connection = new DatabaseSync(path);
@@ -275,6 +274,12 @@ export class CerebroDatabase {
       CREATE TABLE IF NOT EXISTS review_reports (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, digest TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL, epic_id TEXT, UNIQUE(session_id,digest));
       CREATE TABLE IF NOT EXISTS finding_imports (report_id TEXT NOT NULL, finding_id TEXT NOT NULL, task_id TEXT NOT NULL, PRIMARY KEY(report_id,finding_id));
     `);
+    // Reports are immutable: their size is stored once so session reads never parse the JSON.
+    const reportColumns = this.connection.prepare('PRAGMA table_info(review_reports)').all() as unknown as { name: string }[];
+    if (!reportColumns.some((column) => column.name === 'finding_count')) {
+      this.connection.exec(`ALTER TABLE review_reports ADD COLUMN finding_count INTEGER NOT NULL DEFAULT 0;
+        UPDATE review_reports SET finding_count = json_array_length(data, '$.findings');`);
+    }
     this.connection.exec(`
       CREATE TABLE IF NOT EXISTS worktree_inventory (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS worktree_operations (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -286,10 +291,30 @@ export class CerebroDatabase {
     this.connection.exec(`
       CREATE TABLE IF NOT EXISTS project_commands (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS operation_results (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS notification_turns (session_id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, ended_at INTEGER, custom_at INTEGER, relayed_at INTEGER, automatic_at INTEGER);
-      CREATE TABLE IF NOT EXISTS epic_runs (id TEXT PRIMARY KEY, epic_id TEXT NOT NULL, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS notification_turns (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, started_at INTEGER NOT NULL, ended_at INTEGER, custom_at INTEGER, relayed_at INTEGER, automatic_at INTEGER, automatic_status TEXT);
+      CREATE TABLE IF NOT EXISTS epic_runs (id TEXT PRIMARY KEY, epic_id TEXT NOT NULL REFERENCES epics(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS epic_workspaces (epic_id TEXT PRIMARY KEY REFERENCES epics(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS command_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, data TEXT NOT NULL);
+    `);
+    const notificationTurnColumns = this.connection.prepare('PRAGMA table_info(notification_turns)').all() as unknown as { name: string }[];
+    if (!notificationTurnColumns.some((column) => column.name === 'automatic_status')) this.connection.exec('ALTER TABLE notification_turns ADD COLUMN automatic_status TEXT');
+    this.cascadeNotificationTurns();
+    this.cascadeEpicRuns();
+    // Colonnes générées depuis le JSON : requêtes ciblées et purge sans parser toute la table.
+    const generated = (table: string, column: string, path: string): void => {
+      const existing = this.connection.prepare(`PRAGMA table_xinfo(${table})`).all() as unknown as { name: string }[];
+      if (!existing.some((c) => c.name === column)) this.connection.exec(`ALTER TABLE ${table} ADD COLUMN ${column} GENERATED ALWAYS AS (json_extract(data,'${path}')) VIRTUAL`);
+    };
+    generated('command_runs', 'status', '$.status');
+    generated('command_runs', 'finished_at', '$.finishedAt');
+    generated('operation_results', 'finished_at', '$.finishedAt');
+    generated('operation_results', 'project_id', '$.projectId');
+    this.connection.exec(`
+      CREATE INDEX IF NOT EXISTS command_runs_task_id ON command_runs(task_id);
+      CREATE INDEX IF NOT EXISTS command_runs_status ON command_runs(status);
+      CREATE INDEX IF NOT EXISTS command_runs_finished_at ON command_runs(finished_at);
+      CREATE INDEX IF NOT EXISTS operation_results_finished_at ON operation_results(finished_at);
+      CREATE INDEX IF NOT EXISTS operation_results_project_id ON operation_results(project_id);
     `);
     // Contextes mémorisés avant la vérification complète des historiques : ils seront recontrôlés.
     this.addColumnIfMissing('epic_workspaces', 'verified', 'INTEGER NOT NULL DEFAULT 0');
@@ -334,36 +359,6 @@ export class CerebroDatabase {
     this.seedPersonas();
     this.convertLegacyCouncilSettings();
     this.allowAutoMode();
-  }
-
-  private savepointDepth = 0;
-
-  // Valide `fn` d'un bloc ; appelée dans une transaction ouverte, elle n'annule que son propre
-  // travail via un SAVEPOINT, et `mode` ne s'applique qu'à la transaction la plus externe.
-  transaction<T>(fn: () => T, mode: 'DEFERRED' | 'IMMEDIATE' = 'DEFERRED'): T {
-    if (!this.connection.isTransaction) {
-      this.connection.exec(`BEGIN ${mode}`);
-      try {
-        const result = fn();
-        this.connection.exec('COMMIT');
-        return result;
-      } catch (error) {
-        if (this.connection.isTransaction) this.connection.exec('ROLLBACK');
-        throw error;
-      }
-    }
-    const name = `cerebro_${++this.savepointDepth}`;
-    this.connection.exec(`SAVEPOINT ${name}`);
-    try {
-      const result = fn();
-      this.connection.exec(`RELEASE ${name}`);
-      return result;
-    } catch (error) {
-      if (this.connection.isTransaction) this.connection.exec(`ROLLBACK TO ${name}; RELEASE ${name}`);
-      throw error;
-    } finally {
-      this.savepointDepth--;
-    }
   }
 
   private hasColumn(table: string, column: string): boolean {
@@ -418,6 +413,42 @@ export class CerebroDatabase {
       const candidates = origin ? [origin] : fromTasks.all(session.id, session.project_id) as { id: string; title: string }[];
       // Aucun rapprochement sur le titre : deux epics peuvent porter le même nom.
       if (candidates.length === 1) save.run(candidates[0].id, candidates[0].title, session.id);
+    }
+  }
+
+  // Les exécutions d'un epic supprimé disparaissent avec lui ; les anciennes bases sans clé étrangère sont reconstruites et purgées.
+  private cascadeEpicRuns(): void {
+    const row = this.connection.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'epic_runs'").get() as { sql: string };
+    if (!/REFERENCES\s+epics/i.test(row.sql)) this.transaction(() => this.connection.exec(`
+      CREATE TABLE epic_runs_new (id TEXT PRIMARY KEY, epic_id TEXT NOT NULL REFERENCES epics(id) ON DELETE CASCADE, data TEXT NOT NULL);
+      INSERT INTO epic_runs_new (rowid, id, epic_id, data) SELECT rowid, id, epic_id, data FROM epic_runs WHERE epic_id IN (SELECT id FROM epics);
+      DROP TABLE epic_runs;
+      ALTER TABLE epic_runs_new RENAME TO epic_runs;
+    `));
+    this.connection.exec('CREATE INDEX IF NOT EXISTS epic_runs_epic_id ON epic_runs(epic_id)');
+  }
+
+  // Anciennes bases : table sans clé étrangère, une ligne survivait à chaque session supprimée.
+  // SQLite ne permet pas d'ajouter une contrainte : on reconstruit la table sans les orphelins.
+  private cascadeNotificationTurns(): void {
+    if ((this.connection.prepare('PRAGMA foreign_key_list(notification_turns)').all() as unknown[]).length > 0) return;
+    this.connection.exec('PRAGMA foreign_keys = OFF');
+    try {
+      this.connection.exec(`
+        BEGIN;
+        CREATE TABLE notification_turns_new (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, started_at INTEGER NOT NULL, ended_at INTEGER, custom_at INTEGER, relayed_at INTEGER, automatic_at INTEGER, automatic_status TEXT);
+        INSERT INTO notification_turns_new (session_id, started_at, ended_at, custom_at, relayed_at, automatic_at, automatic_status)
+          SELECT session_id, started_at, ended_at, custom_at, relayed_at, automatic_at, automatic_status FROM notification_turns
+          WHERE session_id IN (SELECT id FROM sessions);
+        DROP TABLE notification_turns;
+        ALTER TABLE notification_turns_new RENAME TO notification_turns;
+        COMMIT;
+      `);
+    } catch (error) {
+      this.connection.exec('ROLLBACK');
+      throw error;
+    } finally {
+      this.connection.exec('PRAGMA foreign_keys = ON');
     }
   }
 
@@ -582,8 +613,11 @@ export class CerebroDatabase {
     if (this.listProjectSessions(id).some((session) => session.protected)) {
       throw new SessionProtectionError('Ce projet contient des sessions protégées. Décochez leur protection avant de le supprimer.');
     }
-    this.connection.prepare('DELETE FROM council_runs WHERE project_id = ?').run(id);
-    return Number(this.connection.prepare('DELETE FROM projects WHERE id = ?').run(id).changes) > 0;
+    return this.transaction(() => {
+      this.connection.prepare('DELETE FROM council_runs WHERE project_id = ?').run(id);
+      this.connection.prepare('DELETE FROM operation_results WHERE project_id = ?').run(id);
+      return Number(this.connection.prepare('DELETE FROM projects WHERE id = ?').run(id).changes) > 0;
+    });
   }
 
   listSessions(): Session[] {
@@ -731,13 +765,16 @@ export class CerebroDatabase {
     const current = this.getTask(id);
     if (current === null) return null;
     const next = { ...current, ...changes, updatedAt: Date.now() };
-    this.connection.prepare('UPDATE tasks SET text = ?, status = ?, session_id = ?, epic_id = ?, updated_at = ?, execution = ? WHERE id = ?')
-      .run(next.text, next.status, next.sessionId, next.epicId, next.updatedAt, JSON.stringify(next.execution), id);
-    if (changes.dependsOn !== undefined) {
-      this.setTaskDependencies(id, changes.dependsOn);
-      next.dependsOn = this.taskDependencies(id);
-    }
-    return next;
+    // La tâche et ses dépendances changent ensemble.
+    return this.transaction(() => {
+      this.connection.prepare('UPDATE tasks SET text = ?, status = ?, session_id = ?, epic_id = ?, updated_at = ?, execution = ? WHERE id = ?')
+        .run(next.text, next.status, next.sessionId, next.epicId, next.updatedAt, JSON.stringify(next.execution), id);
+      if (changes.dependsOn !== undefined) {
+        this.setTaskDependencies(id, changes.dependsOn);
+        next.dependsOn = this.taskDependencies(id);
+      }
+      return next;
+    });
   }
 
   deleteTask(id: string): boolean {
@@ -794,6 +831,25 @@ export class CerebroDatabase {
   // Les tâches de l'epic restent dans le backlog, sans epic (ON DELETE SET NULL).
   deleteEpic(id: string): boolean {
     return Number(this.connection.prepare('DELETE FROM epics WHERE id = ?').run(id).changes) > 0;
+  }
+
+  // Valide `fn` d'un bloc, ou rien. Appelé dans une transaction déjà ouverte, il pose un SAVEPOINT :
+  // l'échec n'annule que son propre travail et l'appelant décide du sort de l'ensemble.
+  // `fn` doit être synchrone, sinon la validation précéderait ses écritures.
+  transaction<T>(fn: () => T, mode: 'DEFERRED' | 'IMMEDIATE' = 'DEFERRED'): T {
+    const nested = this.connection.isTransaction;
+    const savepoint = `cerebro_${++this.savepoints}`;
+    this.connection.exec(nested ? `SAVEPOINT ${savepoint}` : `BEGIN ${mode}`);
+    try {
+      const result = fn();
+      if (result instanceof Promise) throw new TypeError('db.transaction attend une fonction synchrone');
+      this.connection.exec(nested ? `RELEASE ${savepoint}` : 'COMMIT');
+      return result;
+    } catch (error) {
+      // SQLite a pu annuler la transaction de lui-même (disque plein…) : ne pas masquer l'erreur d'origine.
+      if (this.connection.isTransaction) this.connection.exec(nested ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : 'ROLLBACK');
+      throw error;
+    }
   }
 
   close(): void {

@@ -40,6 +40,12 @@ const FALLBACK: Record<Agent, AgentCatalog> = {
 
 const catalogs: Record<Agent, AgentCatalog> = { ...FALLBACK };
 let pending: Promise<void> | null = null;
+// Première découverte : seule attendue par les routes, les rafraîchissements suivants remplacent le
+// catalogue en arrière-plan sans bloquer les lancements.
+let initial: Promise<void> | null = null;
+// Découverte lancée au moins une fois (démarrage du serveur) ; agents dont le catalogue réel est connu.
+let refreshed = false;
+const discovered = new Set<Agent>();
 
 function sortEfforts(efforts: Effort[]): Effort[] {
   return EFFORTS.filter((e) => efforts.includes(e));
@@ -56,7 +62,8 @@ export function defaultEffort(efforts: Effort[]): Effort | null {
 
 // Interroge la CLI `claude` installée (celle que lancent les sessions) via le SDK : une requête de
 // contrôle, sans message envoyé au modèle. La ligne « default » donne les efforts du modèle par défaut.
-async function discoverClaude(): Promise<AgentCatalog> {
+// Après le délai, session.close() suffit : le SDK ferme stdin puis tue la CLI (SIGTERM, puis SIGKILL).
+export async function discoverClaude(timeoutMs = DISCOVERY_TIMEOUT_MS): Promise<AgentCatalog> {
   const options = await claudeQueryOptions();
   let release = (): void => {};
   const prompt = (async function* () {
@@ -68,7 +75,7 @@ async function discoverClaude(): Promise<AgentCatalog> {
     const infos = await Promise.race([
       session.supportedModels(),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('délai dépassé')), DISCOVERY_TIMEOUT_MS);
+        timer = setTimeout(() => reject(new Error('délai dépassé')), timeoutMs);
       }),
     ]);
     const fallbackDefault = infos.find((info) => info.value === 'default');
@@ -156,17 +163,23 @@ const DISCOVERERS: Partial<Record<Agent, () => Promise<AgentCatalog>>> = {
 };
 
 export function refreshCatalog(): Promise<void> {
-  // Agent non installé : pas de découverte, on garde le repli sans warning.
-  pending ??= getAgentAvailability()
+  // Agent non installé : pas de découverte, on garde le repli sans warning. Redétecte les CLI installées
+  // depuis, ce qui renouvelle aussi le cache des disponibilités.
+  refreshed = true;
+  pending ??= getAgentAvailability(true)
     .then((availability) => Promise.all(Object.entries(DISCOVERERS)
       .filter(([agent]) => availability.some((a) => a.agent === agent && a.available))
       .map(([agent, discover]) => discover()
-        .then((catalog) => { catalogs[agent as Agent] = catalog; })
+        .then((catalog) => {
+          catalogs[agent as Agent] = catalog;
+          discovered.add(agent as Agent);
+        })
         .catch((error: unknown) => {
           console.warn(`Catalogue ${agent} indisponible, liste par défaut : ${errorMessage(error)}`);
         }))))
     .then(() => {})
     .finally(() => { pending = null; });
+  initial ??= pending;
   return pending;
 }
 
@@ -175,10 +188,15 @@ export function startCatalogRefresh(): void {
   setInterval(() => void refreshCatalog(), REFRESH_MS).unref();
 }
 
-/** Catalogue courant ; attend une découverte en cours pour ne pas servir le repli au démarrage. */
+/** Catalogue courant ; attend la première découverte pour ne pas servir le repli au démarrage. */
 export async function getCatalog(): Promise<Record<Agent, AgentCatalog>> {
-  if (pending !== null) await pending;
+  await catalogReady();
   return { ...catalogs };
+}
+
+/** Attend la première découverte : parseTuning valide alors contre le catalogue réel. */
+export async function catalogReady(): Promise<void> {
+  if (initial !== null) await initial;
 }
 
 export function catalogFor(agent: Agent): AgentCatalog {
@@ -187,14 +205,17 @@ export function catalogFor(agent: Agent): AgentCatalog {
 
 // model / effort facultatifs (null ou absents = défaut Cerebro), restreints au catalogue de l'agent.
 // The result is always explicit: null resolves to the catalog default model, then to `defaultEffort`.
+// Tant que la découverte de l'agent n'a pas abouti (en cours ou échouée), le repli est incomplet : un
+// modèle qu'il ne connaît pas (mémorisé, par exemple `fable`) est accepté avec les efforts de l'agent.
+// Sans découverte lancée (hors serveur), le repli fait seul référence.
 export function parseTuning(agent: Agent, body: Record<string, unknown>): Tuning | null {
   const catalog = catalogFor(agent);
   const model = (body.model ?? catalog.defaultModel) as string | null;
   let efforts = catalog.efforts;
   if (model !== null) {
     const choice = catalog.models.find((m) => m.value === model);
-    if (choice === undefined) return null;
-    efforts = choice.efforts;
+    if (choice !== undefined) efforts = choice.efforts;
+    else if (!refreshed || discovered.has(agent) || typeof model !== 'string' || model.trim() === '') return null;
   }
   const effort = body.effort ?? null;
   const level = efforts.find((e) => e === effort);

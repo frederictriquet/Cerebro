@@ -2,12 +2,12 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { parseTuning } from './catalog.ts';
+import { catalogReady, parseTuning } from './catalog.ts';
 import { ATTACHMENTS_DIR } from './config.ts';
 import { importFindings, listReports } from './findings.ts';
 import { currentPush } from './git-push.ts';
 import { sessionProvenance } from './provenance.ts';
-import { prepareSessionGit, executeSessionCommit, sessionReviewContext, sessionGitContext } from './session-git.ts';
+import { sessionGitContext } from './session-git.ts';
 import { startingResolutionPrompt } from './starting-resolution.ts';
 import { WorktreeError } from './worktrees.ts';
 import { normalizeMode } from '../shared/types.ts';
@@ -42,7 +42,7 @@ function saveImage(owner: string, request: FastifyRequest, reply: FastifyReply):
 }
 
 export function registerSessionRoutes(ctx: RouteContext): void {
-  const { app, db, sessions, worktrees, broadcast, requireProject, requireSession, launchSession, launchReview, recordCommit, publishFindings } = ctx;
+  const { app, db, sessions, worktrees, sessionGit, broadcast, requireProject, requireSession, launchSession, launchReview, recordCommit, publishFindings } = ctx;
 
   app.get('/api/sessions', async () => db.listSessions());
 
@@ -54,7 +54,7 @@ export function registerSessionRoutes(ctx: RouteContext): void {
 
   app.post<{ Params: { id: string } }>('/api/sessions/:id/git/prepare-commit', async (request, reply) => {
     if (requireSession(request, reply) === null) return reply;
-    const result = await orError(reply, () => prepareSessionGit(db, request.params.id));
+    const result = await orError(reply, () => sessionGit.prepare(request.params.id));
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.get<{Params:{id:string}}>('/api/sessions/:id/git/context',async(request,reply)=>{
@@ -62,10 +62,12 @@ export function registerSessionRoutes(ctx: RouteContext): void {
     return reply.send(sessionGitContext(db,request.params.id));
   });
   app.post<{ Params: { id: string } }>('/api/sessions/:id/git/commit', async (request, reply) => {
-    if (requireSession(request, reply) === null) return reply;
+    // Projet lu avant l’await : la session peut être supprimée pendant le commit déjà effectué.
+    const session = requireSession(request, reply);
+    if (session === null) return reply;
     const startedAt=Date.now();
-    const result = await orError(reply, () => executeSessionCommit(request.params.id, request.body));
-    if (result.ok) recordCommit(result.value, request.body, db.getSession(request.params.id)!.projectId, request.params.id, startedAt);
+    const result = await orError(reply, () => sessionGit.executeCommit(request.params.id, request.body));
+    if (result.ok) recordCommit(result.value, request.body, session.projectId, request.params.id, startedAt);
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.get<{ Params: { id: string } }>('/api/sessions/:id/git/push', async (request, reply) => {
@@ -77,10 +79,10 @@ export function registerSessionRoutes(ctx: RouteContext): void {
     const session = requireSession(request, reply);
     if (session === null) return reply;
     const body = asRecord(request.body);
-    const result = await orError(reply, () => sessionReviewContext(session.id, body?.selection));
+    const result = await orError(reply, () => sessionGit.reviewContext(session.id, body?.selection));
     if (!result.ok) return result.reply;
     const project = db.getProject(session.projectId)!;
-    return launchReview(reply, project, body?.launch, result.value.prompt, async () => { await sessionReviewContext(session.id, body?.selection); });
+    return launchReview(reply, project, body?.launch, result.value.prompt, async () => { await sessionGit.reviewContext(session.id, body?.selection); });
   });
 
   app.get<{ Params: { id: string } }>('/api/sessions/:id/provenance', async (request, reply) => {
@@ -126,6 +128,7 @@ export function registerSessionRoutes(ctx: RouteContext): void {
 
   // Les fichiers que le retrait automatique du contenu de départ laisse à examiner sont confiés à une session, dans la copie.
   app.post<{ Params: { id: string } }>('/api/worktrees/:id/resolve-starting-content', async (request, reply) => {
+    await catalogReady();
     const resolution = await worktreeConflict.orError(reply, () => worktrees.startingContentResolution(request.params.id));
     if (!resolution.ok) return resolution.reply;
     const {view, workspace, plan} = resolution.value;

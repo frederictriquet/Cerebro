@@ -8,6 +8,7 @@ import {
   isRecord,
   parseItems,
 } from './parse.ts';
+import type { CommandRun, EpicRun } from './backlog.ts';
 
 export type Agent = 'claude' | 'codex' | 'grok';
 export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
@@ -281,6 +282,9 @@ export interface AgentInfo {
 }
 
 export interface GitInfo {
+  // False only outside any Git work tree; `error` reports a repository whose state could not be read.
+  repository: boolean;
+  error?: string;
   branch: string | null;
   dirty: number;
   ahead: number | null;
@@ -295,7 +299,8 @@ export interface GitInfo {
 }
 
 export type EventsMessage =
-  | { type: 'snapshot'; projects: Project[]; sessions: Session[]; tasks: Task[]; epics: Epic[] }
+  // runEvents : l'instance diffuse epic-run et command-run (absent sur une instance antérieure).
+  | { type: 'snapshot'; projects: Project[]; sessions: Session[]; tasks: Task[]; epics: Epic[]; runEvents: boolean }
   | { type: 'session'; session: Session }
   | { type: 'session-deleted'; id: string }
   | { type: 'task'; task: Task }
@@ -305,7 +310,9 @@ export type EventsMessage =
   | { type: 'projects'; projects: Project[] }
   | { type: 'alert'; session: Session }
   | { type: 'findings-available'; session: Session }
-  | { type: 'peers' };
+  | { type: 'peers' }
+  | { type: 'epic-run'; run: EpicRun }
+  | { type: 'command-run'; run: Omit<CommandRun, 'output'> };
 
 export type TermClientMessage =
   | { type: 'input'; data: string }
@@ -647,6 +654,10 @@ export function parseGitInfo(v: unknown): GitInfo | null {
   if (v.hasUpstream !== undefined && typeof v.hasUpstream !== 'boolean') return null;
   const hasCommits = v.hasCommits ?? ahead !== null;
   const hasUpstream = v.hasUpstream ?? ahead !== null;
+  if (v.repository !== undefined && typeof v.repository !== 'boolean') return null;
+  // Serveurs antérieurs : seul le dépôt absent renvoyait une branche nulle.
+  const repository = v.repository ?? branch !== null;
+  const error = typeof v.error === 'string' ? v.error : undefined;
   let pendingCommits: GitInfo['pendingCommits'];
   const preview = v.pendingCommits;
   if (isRecord(preview) && typeof preview.upstream === 'string' && typeof preview.truncated === 'boolean' && Array.isArray(preview.commits)) {
@@ -658,7 +669,14 @@ export function parseGitInfo(v: unknown): GitInfo | null {
     pendingCommits = { upstream: preview.upstream, truncated: preview.truncated, commits };
   }
   const pendingCommitsError = typeof v.pendingCommitsError === 'string' ? v.pendingCommitsError : undefined;
-  return { branch, dirty: v.dirty, ahead, hasCommits, hasUpstream, ...(pendingCommits ? { pendingCommits } : {}), ...(pendingCommitsError ? { pendingCommitsError } : {}) };
+  return { repository, ...(error ? { error } : {}), branch, dirty: v.dirty, ahead, hasCommits, hasUpstream, ...(pendingCommits ? { pendingCommits } : {}), ...(pendingCommitsError ? { pendingCommitsError } : {}) };
+}
+
+// Raison affichée sur le bouton Push désactivé ; null quand un push peut aboutir.
+// Une HEAD détachée n'a ni branche ni upstream, et startPush la refuse toujours.
+export function pushBlockedReason(git: GitInfo): string | null {
+  if (git.branch === null) return 'HEAD détachée : choisissez une branche pour pousser';
+  return (git.ahead ?? 0) > 0 || (git.hasCommits && !git.hasUpstream) ? null : 'Rien à pousser';
 }
 
 export function parseScreenLines(v: unknown): string[] | null {
@@ -712,6 +730,7 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
         sessions: parseSessionList(v.sessions),
         tasks: parseTaskList(v.tasks),
         epics: parseEpicList(v.epics),
+        runEvents: v.runEvents === true,
       };
     case 'session': {
       const session = parseSession(v.session);
@@ -746,6 +765,13 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
     }
     case 'peers':
       return { type: 'peers' };
+    // Runs d'epic et de commande : le serveur et cette interface partagent leur type.
+    case 'epic-run':
+      return isRecord(v.run) && typeof v.run.id === 'string' && typeof v.run.epicId === 'string' && typeof v.run.startedAt === 'number'
+        ? { type: 'epic-run', run: v.run as unknown as EpicRun } : null;
+    case 'command-run':
+      return isRecord(v.run) && typeof v.run.id === 'string' && typeof v.run.taskId === 'string' && typeof v.run.status === 'string'
+        ? { type: 'command-run', run: v.run as unknown as Omit<CommandRun, 'output'> } : null;
     default:
       return null;
   }

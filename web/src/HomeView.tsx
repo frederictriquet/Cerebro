@@ -6,6 +6,7 @@ import { useState, type FormEvent } from 'react';
 import { go, useNow } from './route.ts';
 import { PathInput } from './PathInput.tsx';
 import { useStore } from './store.tsx';
+import { ErrorBoundary } from './ErrorBoundary.tsx';
 import { SessionList } from './SessionList.tsx';
 
 export function HomeView() {
@@ -83,8 +84,12 @@ export function HomeView() {
       {error ? <p className="form-error" role="alert">{error}</p> : null}
 
       <div className="home-panels">
-        <Worktrees />
-        <LlmUsageStats sessions={sessions} now={now} />
+        <ErrorBoundary zone="Copies de travail">
+          <Worktrees />
+        </ErrorBoundary>
+        <ErrorBoundary zone="Statistiques">
+          <LlmUsageStats sessions={sessions} now={now} />
+        </ErrorBoundary>
         <section className="card home-council" aria-label="Council">
           <h2>Council</h2>
           <p className="hint">Soumettez une question à plusieurs conseillers, relus anonymement puis synthétisés.</p>
@@ -95,7 +100,9 @@ export function HomeView() {
           {live.length === 0 ? (
             <p className="empty-hint">Aucune session en cours.</p>
           ) : (
-            <SessionList sessions={live} now={now} showProject onError={setError} />
+            <ErrorBoundary zone="Sessions">
+              <SessionList sessions={live} now={now} showProject onError={setError} />
+            </ErrorBoundary>
           )}
         </section>
       </div>

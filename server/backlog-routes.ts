@@ -110,15 +110,18 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
     const epics = db.listEpics();
     // `epic` : epic de toutes les tâches de l'envoi, existant (identifiant) ou à créer ({ title, description? }).
     let defaultEpic: string | null = null;
-    let newEpic: Record<string, unknown> | null = null;
+    let newEpic: { title: string; description: string } | null = null;
     if (typeof body.epic === 'string') {
       const checked = checkEpic(body.epic, session.projectId, epics);
       if (!checked.ok) return error(reply, 400, checked.message);
       defaultEpic = checked.id;
     } else if (body.epic !== undefined && body.epic !== null) {
-      newEpic = asRecord(body.epic);
-      if (epicTitle(newEpic?.title) === null) return error(reply, 400, EPIC_TITLE_ERROR);
-      if (epicDescription(newEpic?.description) === null) return error(reply, 400, EPIC_DESCRIPTION_ERROR);
+      const raw = asRecord(body.epic);
+      const title = epicTitle(raw?.title);
+      if (title === null) return error(reply, 400, EPIC_TITLE_ERROR);
+      const description = epicDescription(raw?.description);
+      if (description === null) return error(reply, 400, EPIC_DESCRIPTION_ERROR);
+      newEpic = { title, description };
     }
     const items: { text: string; deps: (string | number)[]; epicId: string | null | undefined }[] = [];
     for (const [index, raw] of (body.tasks as unknown[]).entries()) {
@@ -143,20 +146,26 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
       }
       items.push({ text, deps: deps as (string | number)[], epicId });
     }
-    let createdEpic: Epic | null = null;
-    if (newEpic !== null) {
-      const result = createEpic(ctx, session.projectId, { title: newEpic.title, description: newEpic.description }, session.id);
-      if (!result.ok) return error(reply, 400, result.message);
-      createdEpic = result.epic;
-      defaultEpic = result.epic.id;
+    // L'envoi est enregistré d'un bloc et diffusé une fois validé : un échec en cours de route ne laisse rien.
+    let createdEpic: Epic | null;
+    let created: Task[];
+    try {
+      ({ createdEpic, created } = db.transaction(() => {
+        const createdEpic = newEpic === null ? null : db.createEpic(session.projectId, newEpic.title, newEpic.description, session.id);
+        const fallbackEpic = createdEpic?.id ?? defaultEpic;
+        // Les nouvelles tâches ne dépendent que de tâches existantes ou antérieures : pas de cycle possible.
+        const tasks: Task[] = [];
+        for (const { text, deps, epicId } of items) {
+          const task = db.createTask(session.projectId, text, session.id, epicId === undefined ? fallbackEpic : epicId);
+          const dependsOn = deps.map((dep) => typeof dep === 'number' ? (tasks[dep - 1] as Task).id : dep);
+          tasks.push(dependsOn.length === 0 ? task : db.updateTask(task.id, { dependsOn }) ?? task);
+        }
+        return { createdEpic, created: tasks };
+      }));
+    } catch (caught) {
+      return error(reply, 500, caught instanceof Error ? caught.message : 'Impossible d’enregistrer les tâches');
     }
-    // Les nouvelles tâches ne dépendent que de tâches existantes ou antérieures : pas de cycle possible.
-    const created: Task[] = [];
-    for (const { text, deps, epicId } of items) {
-      const task = db.createTask(session.projectId, text, session.id, epicId === undefined ? defaultEpic : epicId);
-      const dependsOn = deps.map((dep) => typeof dep === 'number' ? (created[dep - 1] as Task).id : dep);
-      created.push(dependsOn.length === 0 ? task : db.updateTask(task.id, { dependsOn }) ?? task);
-    }
+    if (createdEpic !== null) broadcast({ type: 'epic', epic: createdEpic });
     for (const task of created) broadcast({ type: 'task', task });
     return reply.code(201).send({
       count: created.length,

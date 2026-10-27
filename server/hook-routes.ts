@@ -1,5 +1,5 @@
-import { appendFileSync } from 'node:fs';
-import { HOOK_LOG, SLACK_ENABLED } from './config.ts';
+import { SLACK_ENABLED } from './config.ts';
+import { appendHookLog } from './hook-log.ts';
 import { handleHook, isHookPayload } from './hooks.ts';
 import { isAgent } from '../shared/types.ts';
 import { asRecord } from './util.ts';
@@ -21,13 +21,13 @@ export function registerHookRoutes(ctx: RouteContext): void {
     if (text === '' || text.length > 3_000) {
       return error(reply, 400, 'Le texte doit contenir entre 1 et 3 000 caractères');
     }
-    appendFileSync(HOOK_LOG, `${JSON.stringify({
+    appendHookLog({
       at: new Date().toISOString(),
       session: session.id,
       agent: session.agent,
       event: 'cerebro-notify',
       payload: { kind: body.kind, text },
-    })}\n`);
+    });
     // Even without Slack, the end of the turn must show as a question in the UI.
     if (body.kind === 'ask') sessions.markAsked(session.id, text);
     if (!SLACK_ENABLED) return error(reply, 503, "Slack n'est pas configuré");
@@ -35,8 +35,8 @@ export function registerHookRoutes(ctx: RouteContext): void {
       return error(reply, 503, "Messages des agents désactivés dans les réglages Slack de Cerebro");
     }
     try {
-      await notifier.agentMessage(session.id, body.kind, text);
-      return reply.send({ ok: true });
+      const outcome = await notifier.agentMessage(session.id, body.kind, text);
+      return reply.send({ ok: true, queued: outcome === 'queued' });
     } catch (caught) {
       console.error('[slack]', caught instanceof Error ? caught.message : caught);
       return error(reply, 502, "Impossible d'envoyer le message Slack");
@@ -53,7 +53,7 @@ export function registerHookRoutes(ctx: RouteContext): void {
     if (session === null) return reply;
     if (body.agent !== session.agent) return error(reply, 400, "L'agent ne correspond pas à la session");
     // Keep a trace of every hook event: invaluable to debug state detection.
-    appendFileSync(HOOK_LOG, `${JSON.stringify({ at: new Date().toISOString(), session: session.id, agent: body.agent, event: body.event, payload: body.payload })}\n`);
+    appendHookLog({ at: new Date().toISOString(), session: session.id, agent: body.agent, event: body.event, payload: body.payload });
     handleHook(sessions, session.id, body.agent, body.event, body.payload);
     return reply.code(204).send();
   });

@@ -31,6 +31,10 @@ function incomingSearch(request: FastifyRequest): string {
   return incomingUrl.search;
 }
 
+// Origine du navigateur : déjà validée par ce serveur, et la machine distante appliquerait sa propre
+// politique, qui ne connaît pas l'adresse de cette interface.
+const BROWSER_HEADERS = ['origin', 'referer'];
+
 function authorization(remote: RemoteMachine): OutgoingHttpHeaders {
   return remote.token === undefined ? {} : { authorization: `Bearer ${remote.token}` };
 }
@@ -47,6 +51,50 @@ function vscodeHeaders(request: FastifyRequest, remote: RemoteMachine, base: Out
   return headers;
 }
 
+// Routes /api relayées vers une machine distante : celles de l'interface. Les routes des agents
+// (hook, notify, backlog, session-tasks), l'authentification et l'échange entre machines restent locales ;
+// une nouvelle route n'est relayée qu'une fois ajoutée ici.
+const RELAYED_API_ROUTES = new Set([
+  'agents',
+  'command-runs',
+  'council',
+  'councils',
+  'epic-runs',
+  'epics',
+  'fs',
+  'git',
+  'operations',
+  'peer/notices',
+  'personas',
+  'projects',
+  'sessions',
+  'slack',
+  'tasks',
+  'updates',
+  'usage',
+  'version',
+  'worktrees',
+]);
+
+/**
+ * `rest` est le chemin brut après /m/<id>/api/. Refuse les séparateurs encodés (%2F, %5C) et les segments
+ * `.`/`..` même encodés, que l'URL amont ou le routeur distant pourraient résoudre autrement, puis filtre
+ * le préfixe décodé sur la liste blanche.
+ */
+export function relayableApiPath(rest: string): boolean {
+  if (/%(2f|5c)/i.test(rest) || rest.includes('\\')) return false;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rest);
+  } catch {
+    return false;
+  }
+  const segments = decoded.split('/');
+  if (segments.some((segment) => segment === '.' || segment === '..')) return false;
+  const [first = '', second] = segments;
+  return RELAYED_API_ROUTES.has(first) || (second !== undefined && RELAYED_API_ROUTES.has(`${first}/${second}`));
+}
+
 export function registerRemoteGateway(app: FastifyInstance, peers: PeerSync): void {
   app.addHook('onRequest', async (request, reply) => {
     const incomingUrl = new URL(request.raw.url ?? request.url, 'http://localhost');
@@ -56,7 +104,7 @@ export function registerRemoteGateway(app: FastifyInstance, peers: PeerSync): vo
       if (isWebSocketUpgrade(request)) return;
       const remote = loadRemotes().find((candidate) => candidate.id === vscode[1]);
       if (remote === undefined) return reply.code(404).send({ error: 'Machine inconnue' });
-      const headers = vscodeHeaders(request, remote, filteredHeaders(request.headers, ['host', 'authorization']));
+      const headers = vscodeHeaders(request, remote, filteredHeaders(request.headers, ['host', 'authorization', ...BROWSER_HEADERS]));
       relayHttp(request, reply, upstreamUrl(remote, `/vscode${vscode[2] ?? '/'}`, incomingUrl.search), headers, {
         unreachable: `Machine ${remote.name} injoignable`,
         unauthorized: `Jeton refusé par ${remote.name}`,
@@ -70,17 +118,9 @@ export function registerRemoteGateway(app: FastifyInstance, peers: PeerSync): vo
     const remote = loadRemotes().find((candidate) => candidate.id === match[1]);
     if (remote === undefined) return reply.code(404).send({ error: 'Machine inconnue' });
     const rest = match[2] ?? '';
-    let decodedRest = rest;
-    try {
-      decodedRest = decodeURIComponent(rest);
-    } catch {
-      // The upstream will return the appropriate error for a malformed path.
-    }
-    if (/^(hook|notify|backlog)\//.test(decodedRest)) {
-      return reply.code(403).send({ error: 'Route non relayée' });
-    }
+    if (!relayableApiPath(rest)) return reply.code(403).send({ error: 'Route non relayée' });
 
-    const headers = { ...filteredHeaders(request.headers, ['host', 'cookie', 'authorization']), ...authorization(remote) };
+    const headers = { ...filteredHeaders(request.headers, ['host', 'cookie', 'authorization', ...BROWSER_HEADERS]), ...authorization(remote) };
     relayHttp(request, reply, upstreamUrl(remote, `/api/${rest}`, incomingSearch(request)), headers, {
       unreachable: `Machine ${remote.name} injoignable`,
       unauthorized: `Jeton refusé par ${remote.name}`,
@@ -114,7 +154,7 @@ export function registerRemoteGateway(app: FastifyInstance, peers: PeerSync): vo
       return;
     }
     const search = new URL(request.raw.url ?? request.url, 'http://localhost').search;
-    const headers = vscodeHeaders(request, remote, websocketHeaders(request.headers, ['authorization']));
+    const headers = vscodeHeaders(request, remote, websocketHeaders(request.headers, ['authorization', ...BROWSER_HEADERS]));
     relayWebSocket(socket, upstreamUrl(remote, `/vscode/${request.params['*']}`, search, true), headers);
   });
 }

@@ -1,12 +1,12 @@
 import { readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { parseTuning } from './catalog.ts';
+import { catalogReady, parseTuning } from './catalog.ts';
 import { validateCouncilSettings } from './council.ts';
-import { prepareCommit, executeCommitPlan } from './git-plan.ts';
+import { assertNoGitOperation, prepareCommit, executeCommitPlan } from './git-plan.ts';
 import { currentPush, startPush } from './git-push.ts';
 import { gitSummary } from './git-summary.ts';
-import { prepareReview, verifyReview, reviewInstructions } from './review.ts';
+import { reviewInstructions } from './review.ts';
 import { AGENTS, isAgent, isMode, normalizeMode, type Agent, type Project } from '../shared/types.ts';
 import { asRecord } from './util.ts';
 import { error } from './routes-util.ts';
@@ -47,7 +47,7 @@ function patchLlmSettings<T extends { agent: Agent }>(
 const TUNING_ERROR = 'Modèle ou effort invalide pour cet agent';
 
 export function registerProjectRoutes(ctx: RouteContext): void {
-  const { app, db, sessions, peers, vscode, broadcast, requireProject, launchReview, recordCommit } = ctx;
+  const { app, db, sessions, peers, vscode, reviews, broadcast, requireProject, launchReview, recordCommit } = ctx;
 
   const broadcastProjects = (): void => broadcast({ type: 'projects', projects: db.listProjects() });
 
@@ -96,9 +96,11 @@ export function registerProjectRoutes(ctx: RouteContext): void {
   });
 
   app.patch<{ Params: { id: string } }>('/api/projects/:id', async (request, reply) => {
+    const body = asRecord(request.body);
+    // Réglages LLM : validés contre le catalogue réel, pas contre le repli du démarrage.
+    if (body !== null && ['sessionDefaults', 'commitSettings', 'resolutionSettings', 'councilSettings'].some(key => key in body)) await catalogReady();
     const project = requireProject(request, reply);
     if (project === null) return reply;
-    const body = asRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps de requête invalide');
 
     const changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'resolutionSettings' | 'councilSettings' | 'workspaceMode'>> = {};
@@ -152,6 +154,7 @@ export function registerProjectRoutes(ctx: RouteContext): void {
     }
     const updated = db.updateProject(project.id, changes);
     if (updated === null) return error(reply, 404, 'Projet introuvable');
+    if (updated.path !== project.path) sessions.forgetInputContexts();
     // Un renommage compte comme une apparition : la machine qui renomme prend la main sur Slack.
     if (updated.name !== project.name) peers.renamed(project.id);
     else if (updated.path !== project.path) void peers.sync();
@@ -162,7 +165,7 @@ export function registerProjectRoutes(ctx: RouteContext): void {
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/prepare-review', async (request, reply) => {
     const project = requireProject(request, reply);
     if (project === null) return reply;
-    const result = await orError(reply, () => prepareReview(project.path));
+    const result = await orError(reply, () => reviews.prepare(project.path));
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/review', async (request, reply) => {
@@ -171,17 +174,18 @@ export function registerProjectRoutes(ctx: RouteContext): void {
     const body = asRecord(request.body);
     if (typeof body?.reviewId !== 'string') return error(reply, 400, 'reviewId requis');
     const id = body.reviewId;
-    const result = await orError(reply, () => verifyReview(project.path, id));
+    const result = await orError(reply, () => reviews.verify(project.path, id));
     if (!result.ok) return result.reply;
     const prepared = result.value;
     return launchReview(reply, project, body.launch, reviewInstructions(prepared.root, {...prepared, context: undefined}, prepared.context),
-      async () => { await verifyReview(project.path, id); });
+      async () => { await reviews.verify(project.path, id); });
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/prepare-commit', async (request, reply) => {
     const project = requireProject(request, reply);
     if (project === null) return reply;
-    const result = await orError(reply, () => prepareCommit(project.path));
+    // Early refusal: a plan prepared during a merge or rebase could not be executed anyway.
+    const result = await orError(reply, async () => { await assertNoGitOperation(project.path); return prepareCommit(project.path); });
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/commit', async (request, reply) => {
@@ -239,9 +243,14 @@ export function registerProjectRoutes(ctx: RouteContext): void {
   });
 
   app.delete<{ Params: { id: string } }>('/api/projects/:id', async (request, reply) => {
+    // La base supprime aussi le backlog du projet (ON DELETE CASCADE) : le relever avant.
+    const taskIds = db.listTasks().filter((task) => task.projectId === request.params.id).map((task) => task.id);
+    const epicIds = db.listEpics().filter((epic) => epic.projectId === request.params.id).map((epic) => epic.id);
     const result = await orError(reply, () => sessions.deleteProject(request.params.id));
     if (!result.ok) return result.reply;
     if (!result.value) return error(reply, 404, 'Projet introuvable');
+    for (const id of taskIds) broadcast({ type: 'task-deleted', id });
+    for (const id of epicIds) broadcast({ type: 'epic-deleted', id });
     broadcastProjects();
     void peers.sync();
     return reply.code(204).send();

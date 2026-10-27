@@ -1,4 +1,4 @@
-import { readdir, stat } from 'node:fs/promises';
+import { open, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Session } from '../shared/types.ts';
@@ -84,9 +84,36 @@ async function files(root: string, depth: number): Promise<string[]> {
 
 interface Roots { claude: string; codex: string; grok: string }
 
+/** Bytes kept from each end of the consumed prefix to detect in-place rewrites. */
+const PROBE = 4096;
+
+interface Parsed {
+  stamp: string;
+  inode: number;
+  size: number;
+  offset: number;
+  /** Bytes [0, min(PROBE, offset)) and [offset - tail.length, offset) as they were parsed. */
+  head: Buffer;
+  tail: Buffer;
+  data: TokenAccumulator;
+}
+
+/** True when the bytes already parsed still read the same on disk at both ends of the prefix. */
+async function prefixUnchanged(path: string, cached: Parsed): Promise<boolean> {
+  const handle = await open(path, 'r');
+  try {
+    for (const [expected, position] of [[cached.head, 0], [cached.tail, cached.offset - cached.tail.length]] as const) {
+      const actual = Buffer.alloc(expected.length);
+      const { bytesRead } = await handle.read(actual, 0, expected.length, position);
+      if (bytesRead !== expected.length || !actual.equals(expected)) return false;
+    }
+    return true;
+  } finally { await handle.close(); }
+}
+
 export class TokenUsageTracker {
   private roots: Roots;
-  private cache = new Map<string, { stamp: string; inode: number; size: number; offset: number; data: TokenAccumulator }>();
+  private cache = new Map<string, Parsed>();
   private pending: Promise<SessionTokenUsage[]> | null = null;
   private last: { key: string; at: number; result: SessionTokenUsage[] } | null = null;
 
@@ -114,14 +141,24 @@ export class TokenUsageTracker {
       const stamp = `${info.ino}:${info.size}:${info.mtimeMs}`;
       const cached = this.cache.get(path);
       if (cached?.stamp === stamp) return cached.data;
-      // CLI journals are append-only. Reuse counters and read only appended bytes; reset on rotation.
-      const append = cached !== undefined && cached.inode === info.ino && info.size > cached.size;
+      // CLI journals are assumed append-only: reuse counters and read only appended bytes. Same inode
+      // and a larger size are not enough, since a file can be rewritten in place (truncate then write)
+      // and grow: also require both ends of the parsed prefix to be unchanged, otherwise reread it all.
+      // A rewrite that keeps both 4 KiB windows identical but alters bytes between them goes unnoticed.
+      const append = cached !== undefined && cached.inode === info.ino && info.size > cached.size
+        && await prefixUnchanged(path, cached);
       const data = append ? cached.data : new TokenAccumulator();
       let offset = append ? cached.offset : 0;
+      let head = append ? cached.head : Buffer.alloc(0);
+      let window = append ? cached.tail : Buffer.alloc(0);
       // A valid last record without a newline is usable. Revisit it after the next append;
       // each provider's accumulator deduplicates it, including streaming Claude messages.
-      if (info.size > offset) offset = await iterateJsonl(path, offset, info.size, (record) => data.accept(agent, record));
-      this.cache.set(path, { stamp, inode: info.ino, size: info.size, offset, data });
+      if (info.size > offset) offset = await iterateJsonl(path, offset, info.size, (record) => data.accept(agent, record), (consumed) => {
+        // Consumed bytes directly follow the previous offset, so both windows stay contiguous.
+        if (head.length < PROBE) head = Buffer.from(Buffer.concat([head, consumed]).subarray(0, PROBE));
+        window = Buffer.from(Buffer.concat([window, consumed]).subarray(-PROBE));
+      });
+      this.cache.set(path, { stamp, inode: info.ino, size: info.size, offset, head, tail: window, data });
       return data;
     } catch { this.cache.delete(path); return null; }
   }

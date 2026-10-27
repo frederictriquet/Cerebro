@@ -4,13 +4,14 @@ import {mkdtempSync,mkdirSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';import {join} from 'node:path';import {after,test} from 'node:test';
 const root=mkdtempSync(join(tmpdir(),'cerebro-session-git-'));process.env.CEREBRO_DATA_DIR=join(root,'data');mkdirSync(process.env.CEREBRO_DATA_DIR);process.env.HOME=root;
 const {CerebroDatabase}=await import('../server/db.ts');const {createWorkspace}=await import('../server/provenance.ts');
-const {prepareSessionGit,executeSessionCommit,sessionReviewContext}=await import('../server/session-git.ts');
+const {SessionGitScopes}=await import('../server/session-git.ts');
 const repo=join(root,'repo');mkdirSync(repo);const git=(p,...a)=>execFileSync('git',['-C',p,...a],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 git(repo,'init','-b','main');git(repo,'config','user.email','test@example.com');git(repo,'config','user.name','Test');
 writeFileSync(join(repo,'shared'),'original\n');writeFileSync(join(repo,'initial'),'original\n');git(repo,'add','.');git(repo,'commit','-m','base');
 writeFileSync(join(repo,'initial'),'preexisting\n');git(repo,'add','initial');
 const db=new CerebroDatabase(':memory:');const project=db.createProject('Demo',repo);
 for(const id of ['a','b','old'])db.createSession({id,projectId:project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:id,status:'exited',agentSessionId:id},'token');
+const scopes=new SessionGitScopes(db);const prepareSessionGit=(_db,id)=>scopes.prepare(id),executeSessionCommit=(id,raw)=>scopes.executeCommit(id,raw),sessionReviewContext=(id,raw)=>scopes.reviewContext(id,raw);
 const a=await createWorkspace(db,'a',project);const b=await createWorkspace(db,'b',project);
 after(()=>{db.close();rmSync(root,{recursive:true,force:true});});
 const plan=(s,path)=>({snapshotId:s.id,commits:[{message:'session',selection:[{path,all:true}]}],acknowledged:[],push:false});
@@ -37,4 +38,11 @@ test('historical sessions require manual confirmation and stale selections are r
   const r=await sessionReviewContext('old',{snapshotId:s.id,selection:[{path:'initial',all:true}],commits:[],acknowledged:['initial']});assert.ok(r.prompt.includes('+preexisting'));
   writeFileSync(join(repo,'initial'),'external\n');
   await assert.rejects(sessionReviewContext('old',{snapshotId:s.id,selection:[{path:'initial',all:true}],commits:[],acknowledged:['initial']}),/obsolète/);
+});
+test('prepared session selections expire and stay private to their store',async()=>{
+  let now=0;const store=new SessionGitScopes(db,{ttlMs:1000,now:()=>now});
+  writeFileSync(join(a.path,'shared'),'expiring\n');const s=await store.prepare('a');
+  await assert.rejects(new SessionGitScopes(db).executeCommit('a',plan(s,'shared')),/expirée/);
+  now=1000;await assert.rejects(store.executeCommit('a',plan(s,'shared')),/expirée/);
+  await assert.rejects(store.reviewContext('a',{snapshotId:s.id,selection:[{path:'shared',all:true}],commits:[],acknowledged:[]}),/expirée/);
 });

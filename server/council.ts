@@ -421,6 +421,7 @@ function rankTable(run: CouncilRun): string {
   ].join('\n');
 }
 
+// The export also renders reviews still in progress, whose fields are null.
 function reviewLines(review: CouncilReview): string[] {
   return [
     ...review.ranking.map((rank, index) => `${index + 1}. ${rank.letter} : ${rank.reason}`),

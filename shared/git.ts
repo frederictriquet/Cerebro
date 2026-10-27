@@ -17,7 +17,7 @@ import { AGENTS, EFFORTS, type CommitSettings } from './types.ts';
 export interface GitHunk { id: string; patch: string }
 export interface GitCandidate { path: string; diff: string; hunks: GitHunk[]; warnings: string[]; blocked: boolean }
 export interface GitSnapshot { root: string; id: string; head: string | null; branch: string | null; fingerprint: string; files: GitCandidate[]; stagedDiff: string; log: string; createdAt: number }
-export interface CommitResult { commits: { hash: string; title: string }[]; exclusions: string[]; error: string | null; pushId: string | null; operationId?:string }
+export interface CommitResult { commits: { hash: string; title: string }[]; exclusions: string[]; error: string | null; pushId: string | null; operationId?:string; blocked?: boolean }
 
 export interface PushRemoteResult {
   remote: string;
@@ -60,7 +60,9 @@ export interface Workspace {
   branch: string | null;
   initialDirty: string[];
   baseline: Record<string, string>;
-  /** Commit holding the files that were already modified in the project when the copy was created. */
+  /** Directory, outside the repository, holding the files that were already modified in the project when the copy was created. */
+  startingCopy?: string;
+  /** Legacy: commit (under refs/cerebro/starting/) that held that content before it was kept out of Git. */
   startingSnapshot?: string;
   sharedIgnored?: string[];
   reason: string;
@@ -120,7 +122,7 @@ const provenanceSchema = object<Provenance>({
     sessionId: string, projectId: optional(string), projectName: optional(string), projectRoot: optional(string),
     targetBranch: optional(nullable(string)), removedAt: optional(number), removedAutomatically: optional(boolean),
     mode: workspaceMode, path: string, root: string, source: string, base: nullable(string), branch: nullable(string),
-    initialDirty: strings, baseline: record(string), startingSnapshot: optional(string), sharedIgnored: optional(strings),
+    initialDirty: strings, baseline: record(string), startingCopy: optional(string), startingSnapshot: optional(string), sharedIgnored: optional(strings),
     reason: string, createdAt: number,
   }),
   changes: array(object<Provenance['changes'][number]>({ path: string, certainty, reason: string })),

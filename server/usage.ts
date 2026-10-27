@@ -8,7 +8,7 @@ import type { Agent } from '../shared/types.ts';
 import type { AgentAuth, AgentUsage, UsageWindow } from '../shared/machine.ts';
 import { codexHome, listCodexRollouts } from './codex-config.ts';
 import { readJsonlTail } from './jsonl.ts';
-import { asRecord, errorMessage } from './util.ts';
+import { asRecord, errorMessage, isEnoent } from './util.ts';
 
 const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 // The endpoint is rate limited: never query it more often than this.
@@ -169,9 +169,23 @@ async function fetchClaude(oauth: Record<string, unknown> | null): Promise<Agent
   return { agent: 'claude', windows, auth: null, updatedAt: new Date().toISOString(), error: null };
 }
 
+/** Runs a filesystem read, returning null when the entry vanished in the meantime (ENOENT). */
+function ignoreMissing<T>(read: () => T): T | null {
+  try {
+    return read();
+  } catch (cause) {
+    if (isEnoent(cause)) return null;
+    throw cause;
+  }
+}
+
 // Rollouts of the most recent days, ordered by last write.
 async function codexRollouts(): Promise<string[]> {
-  const files = (await listCodexRollouts(undefined, CODEX_MAX_FILES)).map((path) => ({ path, mtime: statSync(path).mtimeMs }));
+  // Codex may delete or rename a rollout while we scan: skip it rather than fail the whole read.
+  const files = (await listCodexRollouts(undefined, CODEX_MAX_FILES)).flatMap((path) => {
+    const mtime = ignoreMissing(() => statSync(path).mtimeMs);
+    return mtime === null ? [] : [{ path, mtime }];
+  });
   return files.sort((a, b) => b.mtime - a.mtime).map((f) => f.path);
 }
 
@@ -188,11 +202,11 @@ function codexWindow(value: unknown): UsageWindow | null {
 }
 
 /** Codex only reports its limits inside session rollouts: take the latest token_count event. */
-async function readCodex(): Promise<AgentUsage> {
+export async function readCodex(): Promise<AgentUsage> {
   let latest: { timestamp: string; limits: Record<string, unknown> } | null = null;
   // Newest rollout first: the first rate_limits event found from the end is the latest one.
   for (const path of await codexRollouts()) {
-    for (const record of readJsonlTail(path, CODEX_TAIL_BYTES, '"rate_limits"')) {
+    for (const record of ignoreMissing(() => readJsonlTail(path, CODEX_TAIL_BYTES, '"rate_limits"')) ?? []) {
       const event = asRecord(record);
       const limits = asRecord(asRecord(event?.payload)?.rate_limits);
       if (limits !== null && typeof event?.timestamp === 'string') {

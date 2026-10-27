@@ -3,12 +3,27 @@ import { randomUUID } from 'node:crypto';
 import { prepareCommit, verifySnapshot } from './git-plan.ts';
 import { git as runGit, splitZ } from './git.ts';
 import type { PreparedReview } from '../shared/git.ts';
+import { ExpiringStore, type ExpiringStoreOptions } from './expiring-store.ts';
 const git=async(path:string,args:string[]) => (await runGit(path,args,{maxBuffer:4*1024*1024})).trim();
-const reviews=new Map<string,PreparedReview>();
 export function reviewInstructions(root:string,selection:unknown,context:string):string{
   return `Fais une code review du périmètre immuable préparé par Cerebro ci-dessous. Cherche en priorité les bugs de correction, puis de sécurité et de simplicité. Vérifie chaque finding dans le code environnant, accessible dans ${root}. Ne modifie aucun fichier. Rapporte chaque finding avec gravité, fichier:ligne, problème, scénario concret et correctif attendu. ${FINDING_INSTRUCTIONS} Si une commande de review personnalisée est utilisée, applique ses critères uniquement à ce périmètre ; aucune autre règle automatique de choix du diff ne s’applique.\n\n<perimetre_cerebro>\n${JSON.stringify(selection)}\n</perimetre_cerebro>\n<contexte_git>\n${context}\n</contexte_git>`;
 }
-export async function prepareReview(path:string):Promise<PreparedReview>{
+/** Prepared review scopes, kept until launch: one instance per server. */
+export class ReviewStore {
+  private readonly reviews:ExpiringStore<PreparedReview>;
+  constructor(options:ExpiringStoreOptions={}){this.reviews=new ExpiringStore(options);}
+  async prepare(path:string):Promise<PreparedReview>{
+    const review=await prepareReview(path);this.reviews.set(review.id,review);return review;
+  }
+  async verify(path:string,id:string):Promise<PreparedReview>{
+    const review=this.reviews.get(id);if(!review)throw new Error('Review expirée : préparez son périmètre.');
+    const snapshot=await verifySnapshot(path,review.snapshotId);
+    if(snapshot.root!==review.root||review.upstream!==await git(review.root,['rev-parse','--verify','@{upstream}']).catch(()=>null))throw new Error('Périmètre obsolète : upstream modifié.');
+    if(review.scope==='empty')throw new Error('Aucun changement à relire.');
+    return review;
+  }
+}
+async function prepareReview(path:string):Promise<PreparedReview>{
   const snapshot=await prepareCommit(path);path=snapshot.root;
   const upstream=await git(path,['rev-parse','--verify','@{upstream}']).catch(()=>null);
   const review:PreparedReview={id:randomUUID(),root:path,snapshotId:snapshot.id,scope:'empty',head:snapshot.head,upstream,commits:[],files:[],context:''};
@@ -30,13 +45,5 @@ export async function prepareReview(path:string):Promise<PreparedReview>{
   if(Buffer.byteLength(review.context)>4*1024*1024)throw new Error('Contexte de review trop volumineux.');
   await verifySnapshot(path,snapshot.id);
   if(upstream!==await git(path,['rev-parse','--verify','@{upstream}']).catch(()=>null))throw new Error('Upstream modifié pendant la préparation.');
-  if(reviews.size>=100)reviews.delete(reviews.keys().next().value!);
-  reviews.set(review.id,review);return review;
-}
-export async function verifyReview(path:string,id:string):Promise<PreparedReview>{
-  const review=reviews.get(id);if(!review)throw new Error('Review expirée : préparez son périmètre.');
-  const snapshot=await verifySnapshot(path,review.snapshotId);
-  if(snapshot.root!==review.root||review.upstream!==await git(review.root,['rev-parse','--verify','@{upstream}']).catch(()=>null))throw new Error('Périmètre obsolète : upstream modifié.');
-  if(review.scope==='empty')throw new Error('Aucun changement à relire.');
   return review;
 }

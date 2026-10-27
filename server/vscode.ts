@@ -2,12 +2,12 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import type { OutgoingHttpHeaders } from 'node:http';
-import { createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { withoutCerebroVariables } from './agent-env.ts';
 import { DATA_DIR } from './config.ts';
-import { findProcessesByArgument, processTree, signalProcesses } from './proc.ts';
+import { findProcessesByArgumentAndEnvironment, isAlive, processTree, signalProcesses } from './proc.ts';
 import { filteredHeaders, isWebSocketUpgrade, relayHttp, relayWebSocket, websocketHeaders, withoutCookie } from './proxy.ts';
 
 // VS Code complet, affiché dans une iframe par l'UI et relayé sous /vscode/ (sous /m/<id>/vscode/ par la
@@ -18,8 +18,13 @@ import { filteredHeaders, isWebSocketUpgrade, relayHttp, relayWebSocket, websock
 
 const CLI = process.env.CEREBRO_VSCODE_BIN ?? 'code';
 const SERVERS_DIR = join(process.env.VSCODE_CLI_DATA_DIR ?? join(homedir(), '.vscode', 'cli'), 'serve-web');
-// Argument unique sur la ligne de commande : retrouve nos processus, y compris orphelins.
 const SERVER_DATA_DIR = join(DATA_DIR, 'vscode');
+// Nos serveurs portent SERVER_DATA_DIR en argument et ce marqueur dans leur environnement : on les retrouve,
+// y compris orphelins, sans viser un programme de l'utilisateur dont la ligne de commande nommerait ce dossier.
+const MARKER_NAME = 'CEREBRO_VSCODE_DATA_DIR';
+const MARKER = `${MARKER_NAME}=${SERVER_DATA_DIR}`;
+// Le serveur choisit lui-même son port (`--port 0`) et l'annonce ainsi sur sa sortie standard.
+const LISTENING = /Web UI available at https?:\/\/[^\s/?]+:(\d+)/;
 // Conservé entre redémarrages : une iframe rechargée garde son cookie valide.
 const TOKEN_FILE = join(SERVER_DATA_DIR, 'token');
 const LOOPBACK = '127.0.0.1';
@@ -27,6 +32,8 @@ const LOOPBACK = '127.0.0.1';
 const READY_TIMEOUT_MS = 180_000;
 // Au-delà, l'API répond « pas prêt » et le client réessaie (la passerelle coupe à 10 s).
 const OPEN_WAIT_MS = 5_000;
+// Délai laissé à SIGTERM avant SIGKILL.
+const KILL_GRACE_MS = 3_000;
 
 interface Running {
   port: number;
@@ -35,23 +42,17 @@ interface Running {
 
 export type VscodeOpenResult = { ready: false } | { ready: true; path: string };
 
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, LOOPBACK, () => {
-      const address = server.address();
-      server.close(() => {
-        if (address !== null && typeof address === 'object') resolve(address.port);
-        else reject(new Error('Port introuvable'));
-      });
-    });
-  });
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function killLeftovers(): void {
-  const roots = findProcessesByArgument(SERVER_DATA_DIR);
-  signalProcesses(roots.flatMap((root) => processTree(root.pid)), 'SIGTERM');
+async function killLeftovers(): Promise<void> {
+  const targets = findProcessesByArgumentAndEnvironment(SERVER_DATA_DIR, MARKER).flatMap((root) => processTree(root.pid));
+  if (targets.length === 0) return;
+  signalProcesses(targets, 'SIGTERM');
+  const deadline = Date.now() + KILL_GRACE_MS;
+  while (targets.some(isAlive) && Date.now() < deadline) await delay(100);
+  signalProcesses(targets, 'SIGKILL');
 }
 
 function loadToken(): string {
@@ -86,36 +87,61 @@ function installedServer(): string | null {
 }
 
 // Lance le processus et attend que le serveur réponde (202 tant que `serve-web` télécharge).
-async function run(command: string, args: string[], port: number): Promise<ChildProcess> {
-  const child = spawn(command, args, { stdio: 'ignore' });
+async function run(command: string, args: string[]): Promise<{ child: ChildProcess; port: number }> {
+  const child = spawn(command, [...args, '--port', '0'], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+    env: { ...withoutCerebroVariables(), [MARKER_NAME]: SERVER_DATA_DIR },
+  });
   const failed = new Promise<never>((_, reject) => {
     child.once('error', (caught) => reject(new Error(`Lancement de « ${command} » impossible : ${caught.message}`)));
     child.once('exit', (code) => reject(new Error(`« ${command} » s'est arrêté (code ${code ?? '?'})`)));
   });
   failed.catch(() => {});
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('VS Code ne répond pas')), READY_TIMEOUT_MS);
+  });
+  expired.catch(() => {});
+
+  // La sortie reste lue ensuite, sinon le serveur bloquerait sur un tube plein.
+  const listening = new Promise<number>((resolve) => {
+    let output = '';
+    const onData = (chunk: Buffer): void => {
+      output = (output + chunk.toString()).slice(-4096);
+      const match = LISTENING.exec(output);
+      if (match === null) return;
+      output = '';
+      child.stdout?.off('data', onData).resume();
+      resolve(Number(match[1]));
+    };
+    child.stdout?.on('data', onData);
+  });
 
   const deadline = Date.now() + READY_TIMEOUT_MS;
   const ready = (async () => {
+    const port = await listening;
     while (Date.now() < deadline) {
       try {
         const res = await fetch(`http://${LOOPBACK}:${port}/`, { redirect: 'manual' });
         await res.body?.cancel();
-        if (res.status !== 202) return;
+        if (res.status !== 202) return port;
       } catch {
         // Pas encore à l'écoute.
       }
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await delay(500);
     }
     throw new Error('VS Code ne répond pas');
   })();
+  ready.catch(() => {});
 
   try {
-    await Promise.race([ready, failed]);
+    return { child, port: await Promise.race([ready, failed, expired]) };
   } catch (caught) {
-    killLeftovers();
+    await killLeftovers();
     throw caught;
+  } finally {
+    clearTimeout(timer);
   }
-  return child;
 }
 
 export class VscodeServer {
@@ -150,38 +176,34 @@ export class VscodeServer {
     return { ready: true, path: `/vscode/?${query.toString()}` };
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.starting = null;
-    killLeftovers();
+    await killLeftovers();
   }
 
   private async start(): Promise<Running> {
-    killLeftovers();
+    await killLeftovers();
     mkdirSync(SERVER_DATA_DIR, { recursive: true });
     const common = ['--accept-server-license-terms', '--server-data-dir', SERVER_DATA_DIR];
 
     if (installedServer() === null) {
       // Premier lancement : `code serve-web` télécharge le serveur, puis on l'arrête.
-      const port = await freePort();
-      await run(CLI, ['serve-web', '--host', LOOPBACK, '--port', String(port), '--without-connection-token', ...common], port);
-      killLeftovers();
+      await run(CLI, ['serve-web', '--host', LOOPBACK, '--without-connection-token', ...common]);
+      await killLeftovers();
     }
     const server = installedServer();
     if (server === null) throw new Error(`Serveur VS Code introuvable dans ${SERVERS_DIR}`);
 
-    const port = await freePort();
     const token = loadToken();
-    const child = await run(
+    const { child, port } = await run(
       server,
       [
         '--host', LOOPBACK,
-        '--port', String(port),
         '--connection-token', token,
         '--disable-telemetry',
         '--disable-workspace-trust',
         ...common,
       ],
-      port,
     );
     const started = this.starting;
     // Serveur mort : le prochain accès en relance un.

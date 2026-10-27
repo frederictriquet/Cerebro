@@ -18,8 +18,9 @@ export function sessionPath(resource) {
 }
 
 // `init.body` est encodé en JSON. Une réponse en erreur lève une Error portant le message `error` du
-// serveur (sinon le statut HTTP) ; une réponse 204 renvoie null.
-export async function request(path, { method = 'GET', body } = {}) {
+// serveur (sinon le statut HTTP, ou `tooLarge` pour un 413) ; une réponse 204 renvoie null. Un proxy
+// peut répondre en HTML : une réponse illisible lève une erreur qui garde le statut HTTP.
+export async function request(path, { method = 'GET', body, tooLarge } = {}) {
   requireSession();
   const response = await fetch(`${CEREBRO_URL.replace(/\/+$/, '')}${path}`, {
     method,
@@ -30,26 +31,28 @@ export async function request(path, { method = 'GET', body } = {}) {
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
   });
-  if (!response.ok) {
-    let message = `Erreur HTTP ${response.status}`;
-    try {
-      const payload = await response.json();
-      if (typeof payload === 'object' && payload !== null && typeof payload.error === 'string') message = payload.error;
-    } catch {
-      // Keep the HTTP status when the server did not return JSON.
-    }
-    if (response.status === 413) message = 'envoi trop volumineux : découpez-le en plusieurs appels';
-    throw new Error(message);
+  if (response.status === 204) return null;
+  const text = await response.text();
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    // Keep the HTTP status when the server did not return JSON.
   }
-  return response.status === 204 ? null : response.json();
+  if (!response.ok) {
+    if (response.status === 413 && tooLarge !== undefined) throw new Error(tooLarge);
+    throw new Error(typeof payload?.error === 'string' ? payload.error : `Erreur HTTP ${response.status}`);
+  }
+  if (payload === undefined) throw new Error(`Réponse illisible du serveur (HTTP ${response.status}).`);
+  return payload;
 }
 
-// Exécute la commande et rapporte toute erreur sur stderr, préfixée du nom de la commande.
-export async function run(command, main) {
+// Exécute la commande et rapporte toute erreur sur stderr, préfixée du nom de la commande sauf `prefix: false`.
+export async function run(command, main, { prefix = true } = {}) {
   try {
     await main();
   } catch (error) {
-    process.stderr.write(`${command} : ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`${prefix ? `${command} : ` : ''}${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   }
 }

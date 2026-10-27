@@ -8,7 +8,7 @@ const root=mkdtempSync(join(tmpdir(),'cerebro-shared-workspace-'));
 process.env.HOME=root;process.env.CEREBRO_DATA_DIR=join(root,'data');process.env.CODEX_HOME=join(root,'codex');
 const {CerebroDatabase}=await import('../server/db.ts');
 const {createWorkspace,sessionProvenance,workspaceFor}=await import('../server/provenance.ts');
-const {sessionGitContext,prepareSessionGit}=await import('../server/session-git.ts');
+const {sessionGitContext,SessionGitScopes}=await import('../server/session-git.ts');
 const {SessionManager}=await import('../server/sessions.ts');
 const git=(path,...args)=>execFileSync('git',['-C',path,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 after(()=>rmSync(root,{recursive:true,force:true}));
@@ -33,7 +33,7 @@ test('project shared mode keeps the exact integration directory, staged edits, u
  assert.equal(git(f.repo,'branch','--show-current'),'feature/long-lived');assert.equal(git(f.repo,'worktree','list','--porcelain'),listing);assert.equal(git(f.repo,'show-ref'),refs);assert.deepEqual(readFileSync(join(f.repo,'.git/index')),index);
  assert.equal(readFileSync(join(f.repo,'untracked'),'utf8'),'user work\n');
  const provenance=await sessionProvenance(f.db,'first');assert.deepEqual(provenance.changes,[]);assert.deepEqual(provenance.commits,[]);assert.equal(sessionGitContext(f.db,'first').mode,'shared');
- const snapshot=await prepareSessionGit(f.db,'first');assert.ok(snapshot.files.every(file=>file.warnings.length));assert.match(snapshot.scopeNotice,/Dossier partagé/);
+ const snapshot=await new SessionGitScopes(f.db).prepare('first');assert.ok(snapshot.files.every(file=>file.warnings.length));assert.match(snapshot.scopeNotice,/Dossier partagé/);
 }));
 test('shared mode survives restart and session deletion never removes the long-lived branch or its commits',async()=>fixture(async f=>{
  f.db.updateProject(f.project.id,{workspaceMode:'shared'});f.session('long-lived');await createWorkspace(f.db,'long-lived',f.project);

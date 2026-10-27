@@ -21,7 +21,7 @@ export function parseReport(raw:unknown):FindingReport{
 export function saveReport(db:CerebroDatabase,sessionId:string,raw:unknown):SavedReport{
   if(!db.getSession(sessionId))throw new Error('Session introuvable.');
   const report=parseReport(raw);const digest=createHash('sha256').update(JSON.stringify(report)).digest('hex');
-  db.connection.prepare('INSERT OR IGNORE INTO review_reports (id,session_id,digest,data,created_at) VALUES (?,?,?,?,?)').run(randomUUID(),sessionId,digest,JSON.stringify(report),Date.now());
+  db.connection.prepare('INSERT OR IGNORE INTO review_reports (id,session_id,digest,data,created_at,finding_count) VALUES (?,?,?,?,?,?)').run(randomUUID(),sessionId,digest,JSON.stringify(report),Date.now(),report.findings.length);
   return listReports(db,sessionId).find(r=>createHash('sha256').update(JSON.stringify({title:r.title,findings:r.findings})).digest('hex')===digest)!;
 }
 export function listReports(db:CerebroDatabase,sessionId:string):SavedReport[]{

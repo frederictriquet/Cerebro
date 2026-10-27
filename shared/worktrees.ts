@@ -86,6 +86,8 @@ export interface WorktreeView extends WorktreeRecord {
   targetDirty: number | null;
   /** Files that merging the copy's commits with the target would leave in conflict; null when not computed. */
   integrationConflicts: string[] | null;
+  /** Limits of the conflict forecast, when it only approximates Git's merge. */
+  integrationNote: string | null;
   /** Files still in conflict while a merge is in progress in the copy. */
   conflicts: string[];
 }
@@ -179,7 +181,7 @@ const worktreeView = object<WorktreeView>({
     count: number, files: strings, inheritedCount: number, needsReviewCount: number,
   })),
   startingContent: nullable(array(object<StartingContent>({ path: string, state: startingState, origin: nullable(origin), separable: boolean }))),
-  targetDirty: nullable(number), integrationConflicts: nullable(strings), conflicts: strings,
+  targetDirty: nullable(number), integrationConflicts: nullable(strings), integrationNote: nullable(string), conflicts: strings,
 });
 
 const step = object<StartingContentStep>({

@@ -1,3 +1,4 @@
+import { catalogReady } from './catalog.ts';
 import { assertEpicWorkspace, epicWorkspace, epicWorkspaceOptions, withEpicWorkspace } from './epic-workspace.ts';
 import { epicReviewInstructions, epicReviewScope, isReviewTask, reviewTaskText } from './epic-review.ts';
 import { isActiveRun } from '../shared/backlog.ts';
@@ -37,10 +38,14 @@ export function createEpic(ctx: RouteContext, projectId: string, body: Record<st
   if (!Array.isArray(rawIds) || !rawIds.every((id) => typeof id === 'string' && own.has(id))) {
     return { ok: false, message: 'taskIds doit lister des tâches de ce projet' };
   }
-  const epic = ctx.db.createEpic(projectId, title, description, sourceSessionId);
-  ctx.broadcast({ type: 'epic', epic });
   const taskIds = [...new Set(rawIds as string[])];
-  for (const id of taskIds) ctx.db.updateTask(id, { epicId: epic.id });
+  // Rien n'est diffusé avant que l'epic et le rangement des tâches soient validés ensemble.
+  const epic = ctx.db.transaction(() => {
+    const epic = ctx.db.createEpic(projectId, title, description, sourceSessionId);
+    for (const id of taskIds) ctx.db.updateTask(id, { epicId: epic.id });
+    return epic;
+  });
+  ctx.broadcast({ type: 'epic', epic });
   ctx.broadcastTasks(taskIds);
   return { ok: true, epic, taskIds };
 }
@@ -62,6 +67,10 @@ export function updateEpic(ctx: RouteContext, id: string, body: Record<string, u
   const epic = ctx.db.updateEpic(id, changes);
   if (epic === null) return { ok: false, status: 404, message: 'Epic introuvable' };
   ctx.broadcast({ type: 'epic', epic });
+  // Les sessions conservent le titre de leur epic d'origine : diffuser le titre renommé.
+  for (const session of ctx.db.listSessions()) {
+    if (session.epic?.id === id) ctx.broadcast({ type: 'session', session });
+  }
   return { ok: true, epic };
 }
 
@@ -117,6 +126,7 @@ export function registerEpicRoutes(ctx: RouteContext): void {
     return conflict.attempt(reply,()=>withEpicWorkspace(db,request.params.id,async()=>epicRunner.selectWorkspace(request.params.id,path)));
   });
   app.post<{ Params: { id: string } }>('/api/epics/:id/start', async (request, reply) => {
+    await catalogReady();
     const epic = requireEpic(request, reply);
     if (epic === null) return reply;
     const body=asRecord(request.body)??{};
@@ -126,6 +136,7 @@ export function registerEpicRoutes(ctx: RouteContext): void {
   });
   // Code review du travail d'une epic terminée, arrêtée ou échouée : une session rejoint le worktree des étapes.
   app.post<{ Params: { id: string } }>('/api/epics/:id/review', async (request, reply) => {
+    await catalogReady();
     const epic = requireEpic(request, reply);
     if (epic === null) return reply;
     const run = epicRunner.list(epic.id)[0];

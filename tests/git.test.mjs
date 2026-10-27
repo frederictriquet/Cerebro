@@ -61,7 +61,7 @@ test('tue le groupe de processus au-delà du délai', async () => {
   const failure = await git(repo, ['-c', `alias.lent=!sh -c 'echo $$ > "${pidFile}"; exec sleep 30'`, 'lent'], { timeout: 300 }).catch(cause => cause);
   assert.ok(failure instanceof GitError);
   assert.equal(failure.code, null);
-  assert.match(failure.message, /délai/);
+  assert.match(failure.message, /interrompue après/);
   assert.ok(Date.now() - started < 5000);
   const pid = Number(readFileSync(pidFile, 'utf8'));
   for (let i = 0; i < 50 && alive(pid); i++) await new Promise(resolve => setTimeout(resolve, 20));
@@ -72,7 +72,7 @@ test('interrompt une sortie trop volumineuse', async () => {
   const repo = fixture();
   const failure = await git(repo, ['-c', 'alias.gros=!head -c 300000 /dev/zero', 'gros'], { maxBuffer: 100_000 }).catch(cause => cause);
   assert.ok(failure instanceof GitError);
-  assert.match(failure.message, /trop volumineux/);
+  assert.match(failure.message, /trop volumineuse/);
 });
 
 test('variante synchrone', () => {

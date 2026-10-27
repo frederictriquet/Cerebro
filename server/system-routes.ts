@@ -88,7 +88,11 @@ export function registerSystemRoutes(ctx: RouteContext): void {
   app.patch('/api/slack', async (request, reply) => {
     const body = asRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps invalide');
-    const result = await orError(reply, async () => notifier.updateSettings(body));
+    const result = await orError(reply, async () => {
+      const settings = notifier.updateSettings(body);
+      if (settings !== null) await notifier.settingsSaved();
+      return settings;
+    });
     if (!result.ok) return result.reply;
     if (result.value === null) return error(reply, 400, 'Réglages Slack invalides');
     return reply.send(notifier.status());

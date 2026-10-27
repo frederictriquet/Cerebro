@@ -15,8 +15,10 @@ await run('cerebro-notify', async () => {
     text = text.trim();
   }
 
-  await request(sessionPath('notify'), { method: 'POST', body: { kind: ask ? 'ask' : 'notify', text } });
+  const result = await request(sessionPath('notify'), { method: 'POST', body: { kind: ask ? 'ask' : 'notify', text } });
+  // Older servers answer without `queued`.
+  const delivery = result?.queued === true ? 'en file (limite de débit Slack), envoi automatique dès la fin de la fenêtre' : 'envoyé sur Slack';
   process.stdout.write(ask
-    ? "Question envoyée sur Slack. Termine ton tour maintenant : la réponse arrivera comme prochain message de l'utilisateur.\n"
-    : 'Message envoyé sur Slack.\n');
+    ? `Question : ${delivery}. Termine ton tour maintenant : la réponse arrivera comme prochain message de l'utilisateur.\n`
+    : `Message ${delivery}.\n`);
 });

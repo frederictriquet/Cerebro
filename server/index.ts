@@ -1,4 +1,3 @@
-import { timingSafeEqual } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +19,12 @@ import { onPushComplete } from './git-push.ts';
 import { installGrokHook } from './hooks.ts';
 import { PeerSync } from './peers.ts';
 import { workspaceFor } from './provenance.ts';
+import { secretMatches } from './secret-compare.ts';
+import { startHeartbeat } from './ws-heartbeat.ts';
+import { originAllowed } from './origin.ts';
+import { LOGGER_OPTIONS } from './log-redaction.ts';
+import { ReviewStore } from './review.ts';
+import { SessionGitScopes } from './session-git.ts';
 import { assertLoopbackPortFree } from './ports.ts';
 import { registerRemoteGateway } from './remotes.ts';
 import { SessionManager } from './sessions.ts';
@@ -38,11 +43,10 @@ import { registerBacklogRoutes } from './backlog-routes.ts';
 import { registerHookRoutes } from './hook-routes.ts';
 import { registerSystemRoutes } from './system-routes.ts';
 
+const HISTORY_RETENTION_MS = 30 * 86_400_000;
+
 function tokenMatches(candidate: string | undefined): boolean {
-  if (BIND_TOKEN === undefined || candidate === undefined) return false;
-  const expected = Buffer.from(BIND_TOKEN);
-  const actual = Buffer.from(candidate);
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
+  return secretMatches(BIND_TOKEN, candidate);
 }
 
 function cookieValue(header: string | undefined, name: string): string | undefined {
@@ -76,18 +80,30 @@ function requestQueryToken(query: unknown): string | undefined {
 }
 
 export async function buildServer(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: true, forceCloseConnections: true });
+  const app = Fastify({ logger: LOGGER_OPTIONS, forceCloseConnections: true });
   const db = new CerebroDatabase();
   const sessions = new SessionManager(db);
   const commands = new CommandExecutor(db);
-  commands.initialize();
+  const interruptedRuns = commands.initialize();
   const eventSockets = new Set<WebSocket>();
+  const eventHeartbeat = startHeartbeat();
   const broadcast = (event: unknown): void => {
     for (const socket of eventSockets) sendSocket(socket, event);
   };
   const peers = new PeerSync(db, () => broadcast({ type: 'peers' }));
   const notifier = new SlackNotifier(sessions, db, peers);
   const vscode = new VscodeServer();
+  const reviews = new ReviewStore();
+  const sessionGit = new SessionGitScopes(db);
+  // Au-delà de 30 jours, résultats d’opérations et runs terminés ne servent plus : la purge borne les tables.
+  const purgeHistory = (): void => {
+    const before = Date.now() - HISTORY_RETENTION_MS;
+    try { notifier.operations.purge(before); commands.purge(before); }
+    catch (cause) { app.log.error(cause, 'Purge de l’historique impossible'); }
+  };
+  purgeHistory();
+  const purgeTimer = setInterval(purgeHistory, 86_400_000);
+  purgeTimer.unref();
 
   installGrokHook();
   await sessions.initialize();
@@ -95,6 +111,8 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.addHook('onRequest', async (request, reply) => {
     const queryToken = requestQueryToken(request.query);
+    const explicitToken = tokenMatches(queryToken) || tokenMatches(bearerToken(request.headers.authorization));
+    if (!originAllowed(request, explicitToken)) return error(reply, 403, 'Origine refusée');
     if (BIND_TOKEN !== undefined && request.url.split('?', 1)[0] === '/' && tokenMatches(queryToken)) {
       reply.header('set-cookie', tokenCookie(request));
     }
@@ -108,9 +126,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       && !path.startsWith('/api/backlog/')) || path.startsWith('/ws/') || path.startsWith('/m/')
       || path === '/vscode' || path.startsWith('/vscode/');
     if (BIND_TOKEN === undefined || !protectedRoute) return;
-    const authorized = tokenMatches(queryToken)
-      || tokenMatches(bearerToken(request.headers.authorization))
-      || tokenMatches(cookieValue(request.headers.cookie, 'cerebro_token'));
+    const authorized = explicitToken || tokenMatches(cookieValue(request.headers.cookie, 'cerebro_token'));
     if (!authorized) return error(reply, 401, 'Token requis');
   });
 
@@ -127,10 +143,12 @@ export async function buildServer(): Promise<FastifyInstance> {
   registerVscodeRelay(app, vscode);
 
   app.addHook('onClose', async () => {
+    clearInterval(purgeTimer);
+    eventHeartbeat.stop();
     peers.stop();
     notifier.stop();
     unsubscribePush();
-    vscode.stop();
+    await vscode.stop();
     await automaticCommits.shutdown();
     await councils.shutdown();
     await worktrees.shutdown();
@@ -141,7 +159,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   const worktrees=registerWorktreeRoutes(app,db);
-  const automaticCommits=registerAutomaticCommitRoutes(app,db,worktrees);
+  const automaticCommits=registerAutomaticCommitRoutes(app,db,worktrees,sessionGit);
   registerPersonaRoutes(app, db);
   const councils=registerCouncilRoutes(app,db);
   sessions.withProjectDeletion=(id,remove)=>councils.withProjectDeletion(id,remove);
@@ -175,18 +193,25 @@ export async function buildServer(): Promise<FastifyInstance> {
   // Copies whose conversation ended while the server was down, or before automatic cleanup existed.
   void worktrees.resumeAutomaticCleanup();
   commands.onChange = run => {
+    epicRunner.commandChanged(run);
     epicRunner.poke();
     const task = db.getTask(run.taskId);
     if(task&&run.finishedAt!==null)notifier.operations.record({id:run.id,projectId:task.projectId,sessionId:null,kind:'command',ok:run.status==='succeeded',summary:`${run.command.name} : ${run.status}, code ${run.exitCode??'inconnu'}${run.error?` ; ${run.error}`:''} ; clôture du travail distincte.`,startedAt:run.startedAt,finishedAt:run.finishedAt});
     if (task) broadcast({type:'task',task});
+    // Without its output (up to 1 MiB): an open view fetches it through /api/tasks/:id/runs.
+    broadcast({type:'command-run',run:{...run,output:undefined}});
   };
+  // Runs cut short by the previous shutdown: broadcast and recorded like any other ending.
+  for (const run of interruptedRuns) commands.onChange(run);
   sessions.onEvent((event) => {
+    // Sessions, their copies and project folders all feed the recovery of an epic's folder.
+    epicRunner.sessionChanged(event);
     epicRunner.poke();
     if (event.type === 'turn-complete') return;
     broadcast(event);
   });
 
-  const context = createRouteContext({ app, db, sessions, commands, notifier, peers, vscode, epicRunner, worktrees, broadcast });
+  const context = createRouteContext({ app, db, sessions, commands, notifier, peers, vscode, epicRunner, worktrees, reviews, sessionGit, broadcast });
   registerSessionTaskRoutes(app, db, context.sessionTokenValid);
   registerSystemRoutes(context);
   registerProjectRoutes(context);
@@ -198,12 +223,15 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.get('/ws/events', { websocket: true }, (socket) => {
     eventSockets.add(socket);
+    eventHeartbeat.watch(socket);
     sendSocket(socket, {
       type: 'snapshot',
       projects: db.listProjects(),
       sessions: db.listSessions(),
       tasks: db.listTasks(),
       epics: db.listEpics(),
+      // Annonce les événements epic-run et command-run : sans ce champ (instance antérieure), l'UI les relit périodiquement.
+      runEvents: true,
     });
     socket.on('close', () => eventSockets.delete(socket));
   });
@@ -235,12 +263,12 @@ const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fil
 if (isMain) {
   startServer().then((app) => {
     let closing = false;
-    const shutdown = async (): Promise<void> => {
+    const shutdown = async (code = 0): Promise<void> => {
       if (closing) return;
       closing = true;
       try {
         await app.close();
-        process.exit(0);
+        process.exit(code);
       } catch (caught) {
         const message = caught instanceof Error ? caught.stack ?? caught.message : String(caught);
         process.stderr.write(`${message}\n`);
@@ -249,6 +277,18 @@ if (isMain) {
     };
     process.once('SIGINT', () => void shutdown());
     process.once('SIGTERM', () => void shutdown());
+    // Dernier filet : une promesse rejetée sans gestionnaire est journalisée sans arrêter le serveur ;
+    // une exception synchrone laisse un état incertain, le serveur s'arrête alors proprement.
+    process.on('unhandledRejection', (reason) => {
+      process.stderr.write(`${new Date().toISOString()} Promesse rejetée non gérée : ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}\n`);
+    });
+    process.on('uncaughtException', (caught) => {
+      process.stderr.write(`${new Date().toISOString()} Exception non gérée, arrêt du serveur : ${caught.stack ?? caught.message}\n`);
+      process.exitCode = 1;
+      // Une fermeture bloquée ne doit pas laisser un serveur à moitié arrêté.
+      setTimeout(() => process.exit(1), 10_000).unref();
+      void shutdown(1);
+    });
   }).catch((caught: unknown) => {
     const message = caught instanceof Error ? caught.stack ?? caught.message : String(caught);
     process.stderr.write(`${message}\n`);

@@ -23,19 +23,30 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
   const attention = sessions.filter(needsAttention);
   const activeSessionId = route.kind === 'session' ? route.sessionId : null;
 
+  const mounted = useRef(true);
   useEffect(() => {
-    let cancelled = false;
-    void getSlackStatus()
-      .then((status) => {
-        if (!cancelled) setSlack(status);
-      })
-      .catch(() => {
-        /* endpoint missing or Slack unconfigured: pill stays off */
-      });
+    mounted.current = true;
     return () => {
-      cancelled = true;
+      mounted.current = false;
     };
   }, []);
+  const loadSlack = (open = false) => {
+    void getSlackStatus()
+      .then((status) => {
+        if (!mounted.current) return;
+        setSlack(status);
+        if (open) setShowSlack(true);
+      })
+      .catch(() => {
+        /* endpoint missing or transient error: retried on WS reconnect or on click */
+      });
+  };
+
+  // Tant que le statut manque, on retente au montage et à chaque reconnexion WS.
+  const slackLoaded = slack !== null;
+  useEffect(() => {
+    if (!slackLoaded) loadSlack();
+  }, [connected, slackLoaded]);
 
   return (
     <aside className="sidebar" id="sidebar">
@@ -48,16 +59,21 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
           type="button"
           className={`slack-pill ${slack?.enabled ? 'on' : 'off'}`}
           aria-expanded={showSlack}
-          disabled={slack === null}
-          title={slack?.enabled ? 'Réglages des notifications Slack' : 'Slack non configuré (voir README)'}
-          onClick={() => setShowSlack(!showSlack)}
+          title={
+            slack === null
+              ? 'Statut Slack indisponible : cliquer pour réessayer'
+              : slack.enabled
+                ? 'Réglages des notifications Slack'
+                : 'Slack non configuré (voir README)'
+          }
+          onClick={() => (slack === null ? loadSlack(true) : setShowSlack(!showSlack))}
         >
           Slack
         </button>
         <button
           type="button"
           className={`btn-mute${muted ? ' off' : ''}`}
-          aria-pressed={muted}
+          aria-pressed={!muted}
           title={muted ? 'Activer le son' : 'Couper le son'}
           onClick={() => setMuted(!muted)}
         >
@@ -66,7 +82,7 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
         <button
           type="button"
           className={`btn-mute${desktopNotif ? '' : ' off'}`}
-          aria-pressed={!desktopNotif}
+          aria-pressed={desktopNotif}
           title={
             desktopNotif
               ? 'Couper les notifications système (toaster du bureau et son de l’OS)'

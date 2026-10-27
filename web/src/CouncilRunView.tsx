@@ -1,10 +1,11 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { api, ApiError, apiBase, cancelCouncil, councilExportUrl, councilImageUrl, getCouncil } from './api.ts';
 import { readDraft, writeDraft, type DraftImage } from './drafts.ts';
 import { Markdown } from './Markdown.tsx';
 import { go, href } from './route.ts';
 import { useStore } from './store.tsx';
+import { usePolling } from './usePolling.ts';
 import type {
   Advisor,
   AggregatedRank,
@@ -426,37 +427,29 @@ export function CouncilRunView({ councilId }: { councilId: string }) {
   const [cancelling, setCancelling] = useState(false);
   const [now, setNow] = useState(Date.now);
 
+  // Interrogé chaque seconde jusqu'à la fin du council (ou sa disparition), jamais pour une autre machine que celle d'origine.
+  const finished = run !== null && run.finishedAt !== null;
+  const fetchRun = useCallback(() => getCouncil(councilId), [councilId]);
+  usePolling(fetchRun, missing || finished || apiBase() !== machineBase ? null : 1000, {
+    onData: (value) => {
+      setRun(value);
+      setError(null);
+    },
+    onError: (cause) => {
+      if (cause instanceof ApiError && cause.status === 404) setMissing(true);
+      else setError(message(cause));
+    },
+  });
   useEffect(() => {
-    let disposed = false;
-    let timer: number | undefined;
-    const poll = async (): Promise<void> => {
-      if (disposed || apiBase() !== machineBase) return;
-      try {
-        const value = await getCouncil(councilId);
-        if (disposed) return;
-        setRun(value);
-        setError(null);
-        if (value.finishedAt !== null) {
-          // Rapport affiché : le résultat ne doit plus être notifié.
-          void api(`/api/operations/${encodeURIComponent(`council:${value.id}`)}/seen`, { method: 'POST' }).catch(() => {});
-          return;
-        }
-      } catch (cause) {
-        if (disposed) return;
-        if (cause instanceof ApiError && cause.status === 404) {
-          setMissing(true);
-          return;
-        }
-        setError(message(cause));
-      }
-      timer = window.setTimeout(() => void poll(), 1000);
-    };
-    void poll();
-    return () => {
-      disposed = true;
-      window.clearTimeout(timer);
-    };
-  }, [councilId, machineBase]);
+    setRun(null);
+    setMissing(false);
+    setError(null);
+  }, [councilId]);
+  // Rapport affiché : le résultat ne doit plus être notifié.
+  const finishedId = finished ? run.id : null;
+  useEffect(() => {
+    if (finishedId !== null) void api(`/api/operations/${encodeURIComponent(`council:${finishedId}`)}/seen`, { method: 'POST' }).catch(() => {});
+  }, [finishedId]);
 
   const running = run !== null && run.finishedAt === null;
   useEffect(() => {

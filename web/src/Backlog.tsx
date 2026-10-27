@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { api, apiParsed, clipboardImage, uploadProjectImage } from './api.ts';
+import { api, apiParsed, clipboardImage, errorMessage, uploadProjectImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { LaunchSessionDialog } from './Dialog.tsx';
@@ -8,7 +8,8 @@ import { EpicWorkspacePicker } from './EpicWorkspacePicker.tsx';
 import { STATUS_LABEL, WORKSPACE_TARGET, sessionTitle } from './format.ts';
 import { href } from './route.ts';
 import { StatusDot } from './StatusDot.tsx';
-import { useStore } from './store.tsx';
+import { useRunEvents, useStore } from './store.tsx';
+import { usePolling } from './usePolling.ts';
 import type { Epic, Session, Task } from '../../shared/types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
 import {
@@ -91,7 +92,7 @@ function taskPill(task: Task, session: Session | undefined, blocked: boolean): {
 }
 
 export function Backlog({ projectId }: { projectId: string }) {
-  const { tasks, epics, sessions, createTask, createEpic, startTask, startEpic, deleteCompletedBacklog } = useStore();
+  const { tasks, epics, sessions, createTask, createEpic, startTask, startCommandTask, startEpic, deleteCompletedBacklog } = useStore();
   const own = tasks.filter((t) => t.projectId === projectId);
   const ownEpics = epics.filter((e) => e.projectId === projectId);
   const epicIds = new Set(ownEpics.map((e) => e.id));
@@ -178,7 +179,10 @@ export function Backlog({ projectId }: { projectId: string }) {
       launching={launching.has(task.id)}
       session={sessions.find((s) => s.id === task.sessionId)}
       source={sessions.find((s) => s.id === task.sourceSessionId)}
-      onStart={() => { if(task.execution?.type==='command') void api(`/api/tasks/${task.id}/start`,{method:'POST'}).catch(cause=>setError(String(cause))); else setStarting(task); }}
+      onStart={() => {
+        if (task.execution?.type !== 'command') setStarting(task);
+        else if (!launching.has(task.id)) void launch(task.id, () => startCommandTask(task.id)).catch(() => {});
+      }}
       onError={setError}
     />
   );
@@ -317,7 +321,12 @@ export function Backlog({ projectId }: { projectId: string }) {
           showDone={showDone}
           launching={launching.has(epic.id)}
           renderTask={renderTask}
-          onStart={(prompt) => { const members=own.filter(t=>t.epicId===epic.id&&t.status!=='done');if(members.every(t=>t.execution?.type==='command'))void api(`/api/epics/${epic.id}/start`,{method:'POST',body:'{}'}).catch(cause=>setError(String(cause)));else setStartingEpic({ epic, prompt }); }}
+          onStart={(prompt) => {
+            const members = own.filter((t) => t.epicId === epic.id && t.status !== 'done');
+            // Un epic fait uniquement de commandes démarre sans réglages de session.
+            if (!members.every((t) => t.execution?.type === 'command')) setStartingEpic({ epic, prompt });
+            else if (!launching.has(epic.id)) void launch(epic.id, () => startEpic(epic.id)).catch(() => {});
+          }}
           onError={setError}
         />
       ))}
@@ -396,7 +405,7 @@ function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (
     setPending(true);
     void api(`/api/epic-runs/${run.id}/auto-validation`, { method: 'PATCH', body: JSON.stringify({ enabled }) })
       .then(() => { setError(null); return onChanged(); })
-      .catch((cause: unknown) => setError(String(cause)))
+      .catch((cause: unknown) => setError(errorMessage(cause)))
       .finally(() => setPending(false));
   };
   const action = (name: 'stop' | 'resume' | 'validate'): void => {
@@ -410,12 +419,13 @@ function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (
         setError(null);
         return onChanged();
       })
-      .catch((cause: unknown) => setError(String(cause)))
+      .catch((cause: unknown) => setError(errorMessage(cause)))
       .finally(() => setPending(false));
   };
   const needsAction = RUN_NEEDS_ACTION.includes(run.status);
   const awaitingValidation = run.status === 'waiting-validation' && run.currentTaskId !== null;
-  const results = Object.entries(run.results);
+  // Champs absents des machines distantes antérieures.
+  const results = Object.entries(run.results ?? {});
   return (
     <div className="epic-run">
       <details
@@ -424,7 +434,7 @@ function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (
         }}
       >
         <summary>
-          Ordonnanceur : <span className={`epic-run-status ${run.status}`}>{RUN_STATUS_LABEL[run.status]}</span> — {results.length}/{run.order.length} résultat{results.length > 1 ? 's' : ''}
+          Ordonnanceur : <span className={`epic-run-status ${run.status}`}>{RUN_STATUS_LABEL[run.status]}</span> — {results.length}/{run.order?.length ?? 0} résultat{results.length > 1 ? 's' : ''}
         </summary>
         <p>Étape courante : {run.currentTaskId ? taskLabel(run.currentTaskId) : 'aucune'}</p>
         <p>Espace : {run.contextRoot}</p>
@@ -448,6 +458,7 @@ function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (
       ) : null}
       {run.workspaceConflict ? <EpicWorkspacePicker epicId={run.epicId} onResolved={async () => { setError(null); await onChanged(); }} /> : null}
       {needsAction && run.error && !run.workspaceConflict ? <p className="epic-run-reason">{run.error}</p> : null}
+      {run.workspaceError && !run.workspaceConflict && run.workspaceError !== run.error ? <p className="epic-run-reason">{run.workspaceError}</p> : null}
       {awaitingValidation ? (
         <p className="epic-run-reason">
           Étape à valider : {taskLabel(run.currentTaskId!)}. Vérifiez le résultat et les critères de la tâche,
@@ -566,7 +577,7 @@ function CommandTasks({
         setText('');
         setError(null);
       })
-      .catch((cause: unknown) => setError(String(cause)));
+      .catch((cause: unknown) => setError(errorMessage(cause)));
   };
 
   const saveCommand = (): void => {
@@ -574,7 +585,7 @@ function CommandTasks({
     try {
       body = JSON.parse(raw);
     } catch (cause) {
-      setError(String(cause));
+      setError(errorMessage(cause));
       return;
     }
     void apiParsed(`/api/projects/${projectId}/commands`, parseProjectCommand, { method: 'POST', body: JSON.stringify(body) })
@@ -583,7 +594,7 @@ function CommandTasks({
         await refresh();
         setSelected(command.id);
       })
-      .catch((cause: unknown) => setError(String(cause)));
+      .catch((cause: unknown) => setError(errorMessage(cause)));
   };
 
   const commandConfig = (
@@ -644,12 +655,24 @@ function CommandTasks({
   );
 }
 function CommandRunView({task,onActive}:{task:Task;onActive:(active:boolean)=>void}) {
+  const {connected,runPollMs}=useStore();
   const detail=useRef<HTMLDetailsElement>(null);
+  const [open,setOpen]=useState(false);
   const [runs,setRuns]=useState<CommandRun[]>([]);
-  useEffect(()=>{const refresh=async():Promise<void>=>{const runs=await apiParsed(`/api/tasks/${task.id}/runs`, parseCommandRuns);setRuns(runs);onActive(runs[0]?.status==='running');};void refresh().catch(()=>{});const timer=window.setInterval(()=>void refresh().catch(()=>{}),1000);return()=>window.clearInterval(timer);},[task.id]);
   const run=runs[0];
+  // Statut suivi par les événements command-run (sans la sortie), ou relu toutes les runPollMs face à une machine qui ne les diffuse pas ;
+  // la sortie n'est relue que détail ouvert, chaque seconde tant que la commande tourne.
+  const fetchRuns=useCallback(()=>apiParsed(`/api/tasks/${task.id}/runs`, parseCommandRuns),[task.id]);
+  const refresh=usePolling(fetchRuns,open&&run?.status==='running'?1000:runPollMs,{onData:list=>{setRuns(list);onActive(list[0]?.status==='running');}});
+  useEffect(()=>{if(connected)void refresh();},[connected,refresh]);
+  useRunEvents(event=>{
+    if(event.type!=='command-run'||event.run.taskId!==task.id)return;
+    setRuns(list=>list[0]?.id===event.run.id?[{...list[0],...event.run},...list.slice(1)]:[{...event.run,output:''},...list]);
+    onActive(event.run.status==='running');
+    if(event.run.status!=='running')void refresh();
+  });
   useEffect(()=>{if(detail.current?.open&&run?.finishedAt)void api(`/api/operations/${encodeURIComponent(run.id)}/seen`,{method:'POST'}).catch(()=>{});},[run?.id,run?.finishedAt]);
-  return <details ref={detail} onToggle={e=>{if(e.currentTarget.open&&run?.finishedAt)void api(`/api/operations/${encodeURIComponent(run.id)}/seen`,{method:'POST'}).catch(()=>{});}}><summary>Commande — {run?.status??'non exécutée'}{run?.status==='succeeded'&&task.status!=='done'?' ; travail à valider':''}</summary>
+  return <details ref={detail} onToggle={e=>{setOpen(e.currentTarget.open);if(e.currentTarget.open)void refresh();if(e.currentTarget.open&&run?.finishedAt)void api(`/api/operations/${encodeURIComponent(run.id)}/seen`,{method:'POST'}).catch(()=>{});}}><summary>Commande — {run?.status??'non exécutée'}{run?.status==='succeeded'&&task.status!=='done'?' ; travail à valider':''}</summary>
     {run?<><p>{run.command.executable} {JSON.stringify(run.command.args)} — {run.cwd}</p><p>Code : {run.exitCode??'—'} ; durée : {Math.floor(((run.finishedAt??Date.now())-run.startedAt)/1000)} s</p><pre>{run.output}</pre>{run.error?<p className="form-error">{run.error}</p>:null}{run.status==='running'?<button className="btn" onClick={()=>void api(`/api/command-runs/${run.id}/stop`,{method:'POST'})}>Arrêter la commande</button>:null}</>:null}
     <p className="hint">Un code de sortie nul décrit l’exécution. La clôture du travail reste une validation explicite.</p>
   </details>;

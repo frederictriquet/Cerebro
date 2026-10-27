@@ -1,5 +1,5 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
 import type { Agent, SessionDefaults } from '../../shared/types.ts';
@@ -11,6 +11,7 @@ import { parseOptionalWorkspaceContext, type WorkspaceContext } from '../../shar
 // Modale native : Échap et un clic hors du contenu la ferment.
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -33,6 +34,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
     <dialog
       ref={ref}
       className="modal"
+      aria-labelledby={titleId}
       onMouseDown={(e) => {
         // Le backdrop et la barre de défilement ont tous deux le <dialog> pour cible :
         // seul un clic hors de son rectangle vient du backdrop.
@@ -44,7 +46,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
       }}
     >
       <div className="modal-body">
-        <h2>{title}</h2>
+        <h2 id={titleId}>{title}</h2>
         {children}
       </div>
     </dialog>
@@ -113,6 +115,18 @@ export function AddTaskDialog({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const images = useImageAttachments((image) => uploadProjectImage(targetId, image));
+  const onImageError = (failed: string, message: string): void => {
+    setText((current) => removeToken(current, failed));
+    setError(`Image non envoyée : ${message}`);
+  };
+
+  // Les images vivent dans le dossier du projet qui les a reçues (supprimé avec lui) :
+  // changer de backlog les renvoie vers le nouveau projet.
+  const changeTarget = (next: string): void => {
+    if (next === targetId) return;
+    setTargetId(next);
+    images.reupload((image) => uploadProjectImage(next, image), onImageError);
+  };
 
   const add = async (): Promise<void> => {
     if (busy || images.pending || text.trim() === '') return;
@@ -152,10 +166,7 @@ export function AddTaskDialog({
             e.preventDefault();
             if (busy) return;
             const { selectionStart, selectionEnd } = e.currentTarget;
-            const token = images.add(image, (failed, message) => {
-              setText((current) => removeToken(current, failed));
-              setError(`Image non envoyée : ${message}`);
-            });
+            const token = images.add(image, onImageError);
             setText((current) => insertToken(current, selectionStart, selectionEnd, token));
           }}
           onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -176,7 +187,7 @@ export function AddTaskDialog({
         {projects.length > 1 ? (
           <label className="task-form-project">
             Backlog du projet
-            <select value={targetId} disabled={busy || images.pending} onChange={(e) => setTargetId(e.target.value)}>
+            <select value={targetId} disabled={busy || images.pending} onChange={(e) => changeTarget(e.target.value)}>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}

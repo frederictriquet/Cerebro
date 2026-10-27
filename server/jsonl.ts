@@ -38,8 +38,9 @@ export function readJsonlTail(path: string, maxBytes: number, hint?: string): Ge
  * Streams the records of a JSONL file between bytes `start` (included) and `end` (excluded), in order;
  * malformed records are skipped. A last record without its newline is still passed to `accept`, but the
  * returned offset stops just past the last newline, so that record is read again once the file grows.
+ * `consumed` receives, in order, the bytes the returned offset moves past.
  */
-export async function iterateJsonl(path: string, start: number, end: number, accept: (record: unknown) => void): Promise<number> {
+export async function iterateJsonl(path: string, start: number, end: number, accept: (record: unknown) => void, consumed?: (bytes: Buffer) => void): Promise<number> {
   let offset = start;
   if (end <= start) return offset;
   const stream = createReadStream(path, { start, end: end - 1 });
@@ -63,6 +64,7 @@ export async function iterateJsonl(path: string, start: number, end: number, acc
         offset += newline - from + 1;
         from = newline + 1;
       }
+      if (from > 0) consumed?.(tail.subarray(0, from));
       tail = Buffer.from(tail.subarray(from));
     }
     if (tail.length > 0) parse(tail);

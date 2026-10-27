@@ -35,7 +35,7 @@ test('councilSlackText posts the synthesis essentials and the report link',()=>{
 
 const db=new CerebroDatabase(':memory:');const manager=new SessionManager(db);
 let general=true;let owns=true;
-const peers={ready:Promise.resolve(),owns:()=>owns,setSlackPoster:()=>{},generalResponder:()=>general,knownRemotely:()=>false,conflictMachines:()=>[],conflictResponder:()=>true,activePeerProjects:()=>[]};
+const peers={ready:Promise.resolve(),owns:()=>owns,setSlackPoster:()=>{},generalResponder:()=>general,knownRemotely:()=>false,unreachableMachines:()=>[],conflictMachines:()=>[],conflictResponder:()=>true,activePeerProjects:()=>[]};
 const notifier=new SlackNotifier(manager,db,peers);const councils=new CouncilRuns(db);notifier.councils=councils;
 const repo=join(root,'repo');mkdirSync(repo);const project=db.createProject('Acme Platform',repo);
 const calls=[];let fail=false;

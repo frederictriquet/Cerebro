@@ -72,4 +72,5 @@ async function main() {
   }
 }
 
-await run('cerebro-tasks', main);
+// Errors print without the command name, as before the shared client.
+await run('cerebro-tasks', main, { prefix: false });

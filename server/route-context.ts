@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type WebSocket from 'ws';
 import type { CommandExecutor } from './commands.ts';
-import { parseTuning } from './catalog.ts';
+import { catalogReady, parseTuning } from './catalog.ts';
 import { CouncilError } from './council-runner.ts';
 import { resolveSessionDefaults, SessionProtectionError, type CerebroDatabase } from './db.ts';
 import type { EpicRunner } from './epic-runner.ts';
@@ -11,6 +11,8 @@ import type { SessionManager } from './sessions.ts';
 import type { SlackNotifier } from './slack.ts';
 import type { VscodeServer } from './vscode.ts';
 import type { WorktreeManager } from './worktrees.ts';
+import type { ReviewStore } from './review.ts';
+import type { SessionGitScopes } from './session-git.ts';
 import { isAgent, isMode, type Epic, type Project, type Session, type SessionDefaults, type Task } from '../shared/types.ts';
 import type { CommitResult } from '../shared/git.ts';
 import { asRecord } from './util.ts';
@@ -38,6 +40,8 @@ export interface RouteServices {
   vscode: VscodeServer;
   epicRunner: EpicRunner;
   worktrees: WorktreeManager;
+  reviews: ReviewStore;
+  sessionGit: SessionGitScopes;
   broadcast: (event: unknown) => void;
 }
 
@@ -89,18 +93,26 @@ export function createRouteContext(services: RouteServices) {
   };
 
   // Omitted fields inherit the project's last choices; null resets to the Cerebro default (parseTuning).
+  // `remember` replaces rawBody as the form settings to keep when the prompt embeds generated instructions.
+  // The launched prompt is not remembered: only the project's « Nouvelle session » form edits it (PATCH).
   const launchSession = async (
     reply: FastifyReply,
     project: Project,
     rawBody: unknown,
     respond: (session: Session) => unknown,
     validate?: () => Promise<void>,
-    epicId: string | null = null,
+    { epicId = null, remember }: { epicId?: string | null; remember?: unknown } = {},
   ): Promise<FastifyReply> => {
+    await catalogReady();
     const defaults = parseSessionDefaults(project.sessionDefaults, rawBody);
     if (defaults === null) return error(reply, 400, 'Paramètres de session invalides pour cet agent');
+    const remembered = remember === undefined ? null : parseSessionDefaults(project.sessionDefaults, remember);
     try {
-      const session = await sessions.create(project, defaults, { validate, epicId });
+      const session = await sessions.create(project, defaults, { validate, epicId, rememberDefaults: remember === undefined, rememberPrompt: false });
+      if (remembered !== null) {
+        const { prompt: _prompt, ...settings } = remembered;
+        sessions.rememberDefaults(project.id, settings);
+      }
       return reply.code(201).send(respond(session));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'Impossible de lancer la session';
@@ -111,7 +123,7 @@ export function createRouteContext(services: RouteServices) {
   // Session de review : les consignes de review suivent le prompt saisi au lancement.
   const launchReview = (reply: FastifyReply, project: Project, rawLaunch: unknown, instructions: string, validate: () => Promise<void>): Promise<FastifyReply> => {
     const launch = asRecord(rawLaunch) ?? {};
-    return launchSession(reply, project, { ...launch, prompt: `${typeof launch.prompt === 'string' ? launch.prompt : ''}\n\n${instructions}` }, (session) => session, validate);
+    return launchSession(reply, project, { ...launch, prompt: `${typeof launch.prompt === 'string' ? launch.prompt : ''}\n\n${instructions}` }, (session) => session, validate, { remember: launch });
   };
 
   // Commit lancé depuis l'interface : l'opération est rattachée au plan (snapshotId) et rejoint le journal.

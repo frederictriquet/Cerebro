@@ -56,7 +56,7 @@ const DEPENDENCY_LINE = /^after\s*:\s*(.*)$/i;
 const EPIC_LINE = /^epic\s*:\s*(\S+)\s*$/i;
 
 function call(method, suffix, body) {
-  return request(`${sessionPath('backlog')}${suffix}`, { method, body });
+  return request(`${sessionPath('backlog')}${suffix}`, { method, body, tooLarge: 'envoi trop volumineux : découpez-le en plusieurs appels' });
 }
 
 function firstLine(text) {

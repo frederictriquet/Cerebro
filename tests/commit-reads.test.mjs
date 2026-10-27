@@ -14,7 +14,7 @@ writeFileSync(join(bin,'git'),`#!/bin/sh\ncase " $* " in *" ls-files "*"--cached
 process.env.PATH=`${bin}:${process.env.PATH}`;
 const {CerebroDatabase}=await import('../server/db.ts');
 const {AutomaticCommits}=await import('../server/automatic-commits.ts');
-const {prepareSessionGit,executeSessionCommit}=await import('../server/session-git.ts');
+const {SessionGitScopes}=await import('../server/session-git.ts');
 const {createWorkspace}=await import('../server/provenance.ts');
 const git=(path,...args)=>execFileSync('git',['-C',path,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 const reads=()=>readFileSync(log,'utf8').split('\n').filter(Boolean).length;
@@ -27,11 +27,11 @@ test('an automatic commit of an isolated session reads the worktree once per che
  const db=new CerebroDatabase(join(root,'db.sqlite'));const project=db.createProject('Project',repo);const manager=new AutomaticCommits(db);
  try{
   const id=randomUUID();db.createSession({id,projectId:project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Step',status:'exited',agentSessionId:'fake'},'token');
-  const workspace=await createWorkspace(db,id,project);
+  const workspace=await createWorkspace(db,id,project);const scopes=new SessionGitScopes(db);
   writeFileSync(join(workspace.root,'file'),'changed\n');writeFileSync(join(workspace.root,'new'),'new\n');
   manager.propose=async input=>({commits:input.files.map(file=>({message:`change ${file.path}`,paths:[file.path]}))});
   const context={scope:`sessions/${id}`,path:workspace.root,projectId:project.id,sessionId:id,settings:{agent:'codex',model:null,effort:null,strategy:'atomic'},
-   prepare:()=>prepareSessionGit(db,id),execute:plan=>executeSessionCommit(id,plan)};
+   prepare:()=>scopes.prepare(id),execute:plan=>scopes.executeCommit(id,plan)};
   writeFileSync(log,'');
   const operation=await manager.start(context,randomUUID(),false);
   let result;for(let i=0;i<500&&(result=manager.get(operation.id)).status==='running';i++)await new Promise(resolve=>setTimeout(resolve,10));

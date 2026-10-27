@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { CerebroDatabase } from './db.ts';
-import { executeCommitPlan, prepareCommit, reviewedDiffs, verifySnapshot, type CommitPlan } from './git-plan.ts';
+import { assertNoGitOperation, executeCommitPlan, GitOperationInProgress, prepareCommit, reviewedDiffs, verifySnapshot, type CommitPlan } from './git-plan.ts';
 import { currentPush, startPush } from './git-push.ts';
 import { draftCommits, parseCommitProposal, type ProposalContext } from './commit-proposal.ts';
 import { assertWorktreeAvailable, canonicalWorktreePath } from './worktree-gate.ts';
@@ -9,6 +9,7 @@ import { INHERITED_WARNING } from './session-git.ts';
 import { repositoryRoot } from './git.ts';
 import type { CommitSettings } from '../shared/types.ts';
 import type { AutomaticCommit, CommitResult, GitSnapshot } from '../shared/git.ts';
+import { errorMessage } from './util.ts';
 
 export interface AutomaticCommitContext {
   scope:string;path:string;projectId:string|null;sessionId:string|null;settings:CommitSettings;
@@ -33,8 +34,9 @@ export class AutomaticCommits {
   private save(operation:AutomaticCommit):void{this.db.connection.prepare('INSERT INTO automatic_commits VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(operation.id,JSON.stringify(operation));}
   /** Raw answer of the agent, checked once by `execute`. */
   async propose(context:ProposalContext,signal:AbortSignal):Promise<unknown>{return draftCommits(context,signal);}
-  private idle(path:string):void{
+  private async idle(path:string):Promise<void>{
     assertWorktreeAvailable(path);
+    await assertNoGitOperation(path);
     // Its own operation is a running automatic commit of this repository: only sessions and commands block it.
     const activity=repositoryActivity(this.db,path);
     if(activity.sessions.some(session=>sessionBusy(session.status)))throw new CommitBlocked('Une session utilise encore ce dépôt. Attendez la fin de son tour avant de commiter.');
@@ -72,7 +74,7 @@ export class AutomaticCommits {
   private async execute(context:AutomaticCommitContext,operation:AutomaticCommit,signal:AbortSignal):Promise<void>{
     const phase=(value:AutomaticCommit['phase']):void=>{signal.throwIfAborted();operation.phase=value;this.save(operation);};
     try {
-      this.idle(operation.path);signal.throwIfAborted();
+      await this.idle(operation.path);signal.throwIfAborted();
       if((await currentPush(operation.path))?.status==='running')throw new CommitBlocked('Un push est déjà en cours dans ce dépôt.');
       const snapshot=await (context.prepare?.()??prepareCommit(operation.path));signal.throwIfAborted();
       const shown=operation.reviewed?reviewedDiffs(operation.reviewed.snapshotId,operation.path):null;
@@ -95,15 +97,15 @@ export class AutomaticCommits {
         phase('drafting');
         const input={settings:operation.settings,files:eligible,log:snapshot.log};
         const proposal=parseCommitProposal(await this.propose(input,signal),input);
-        signal.throwIfAborted();this.idle(operation.path);await verifySnapshot(operation.path,snapshot.id);signal.throwIfAborted();
+        signal.throwIfAborted();await this.idle(operation.path);await verifySnapshot(operation.path,snapshot.id);signal.throwIfAborted();
         const plan:CommitPlan={snapshotId:snapshot.id,push:false,acknowledged,commits:proposal.commits.map(step=>({message:step.message,selection:step.paths.map(path=>({path,all:true}))}))};
         phase('committing');
         const result=await (context.execute?.(plan)??executeCommitPlan(operation.path,plan));
         operation.commits=result.commits;this.save(operation);
-        if(result.error)throw new Error(result.error);
+        if(result.error)throw result.blocked?new GitOperationInProgress(result.error):new Error(result.error);
       }
       if(operation.push){
-        phase('pushing');this.idle(operation.path);
+        phase('pushing');await this.idle(operation.path);
         // The snapshot already checked the tree (a snapshot with only excluded files is blocked above), and
         // shared dependency links stay untracked on purpose, so a raw `git status` check would refuse them.
         operation.pushOperation=structuredClone(await startPush(operation.path,{allowDirty:true,expectedHead:operation.commits.at(-1)?.hash??snapshot.head,expectedBranch:snapshot.branch}));this.save(operation);
@@ -117,8 +119,8 @@ export class AutomaticCommits {
       }
       operation.status='succeeded';
     }catch(cause){
-      operation.status=signal.aborted?'cancelled':cause instanceof CommitBlocked?'blocked':'failed';
-      operation.error=signal.aborted?'Préparation annulée.':cause instanceof Error?cause.message:String(cause);
+      operation.status=signal.aborted?'cancelled':cause instanceof CommitBlocked||cause instanceof GitOperationInProgress?'blocked':'failed';
+      operation.error=signal.aborted?'Préparation annulée.':errorMessage(cause);
     }finally{
       operation.phase='finished';operation.finishedAt=Date.now();this.save(operation);this.onComplete(operation);
     }

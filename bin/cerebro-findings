@@ -7,4 +7,4 @@ await run('cerebro-findings',async()=>{
   let body='';for await(const chunk of process.stdin){body+=chunk;if(Buffer.byteLength(body)>1024*1024)throw new Error('Rapport trop volumineux.');}
   const result=await request(`${sessionPath('backlog')}/findings`,{method:'POST',body:JSON.parse(body)});
   process.stdout.write(`Rapport ${result.id} enregistré ; sélection disponible dans la session.\n`);
-});
+},{prefix:false});

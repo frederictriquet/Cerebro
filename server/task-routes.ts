@@ -64,7 +64,8 @@ export function registerTaskRoutes(ctx: RouteContext): void {
   app.delete<{ Params: { id: string } }>('/api/projects/:id/backlog/completed', async (request, reply) => {
     if (requireProject(request, reply) === null) return reply;
     const projectId = request.params.id;
-    if (db.listTasks().some((task) => task.projectId === projectId && task.status === 'done' && commands.active(task.id))) {
+    const activeTaskIds = commands.activeTaskIds();
+    if (db.listTasks().some((task) => task.projectId === projectId && task.status === 'done' && activeTaskIds.has(task.id))) {
       return error(reply, 409, 'Arrêtez les commandes avant de supprimer leurs tâches.');
     }
     const { taskIds, epicIds, dependentIds } = db.deleteCompletedBacklog(projectId);
@@ -137,6 +138,8 @@ export function registerTaskRoutes(ctx: RouteContext): void {
     return reply.code(204).send();
   });
 
+  // Tâches LLM dont la session est en cours de création : deux POST concurrents n'en lancent qu'une.
+  const launchingTasks = new Set<string>();
   // Confie la tâche à une nouvelle session ; le prompt peut différer du texte (édité avant lancement).
   app.post<{ Params: { id: string } }>('/api/tasks/:id/start', async (request, reply) => {
     const task = db.getTask(request.params.id);
@@ -161,12 +164,22 @@ export function registerTaskRoutes(ctx: RouteContext): void {
         return {task:db.getTask(task.id),run};
       }, 202);
     }
+    // Comme commands.start : une tâche terminée ne se relance pas, et « Relancer » n'est permis
+    // qu'une fois la session précédente arrêtée (sinon elle serait détachée de la tâche).
+    if (task.status === 'done') return error(reply, 409, 'Tâche déjà terminée : rouvrez-la avant de la relancer.');
+    const previous = task.sessionId === null ? null : db.getSession(task.sessionId);
+    if (launchingTasks.has(task.id) || (task.status === 'started' && previous !== null && previous.status !== 'exited')) {
+      return error(reply, 409, 'Tâche déjà en cours : arrêtez sa session avant de la relancer.');
+    }
     const checked = await conflict.orError(reply, () => { const context=task.epicId?epicWorkspace(db,task.epicId):null;if(context)assertEpicWorkspace(db,context); });
     if (!checked.ok) return checked.reply;
-    return launchSession(reply, project, request.body, (session) => {
-      const updated = db.updateTask(task.id, { status: 'started', sessionId: session.id });
-      if (updated !== null) broadcast({ type: 'task', task: updated });
-      return { task: updated, session };
-    }, undefined, task.epicId);
+    launchingTasks.add(task.id);
+    try {
+      return await launchSession(reply, project, request.body, (session) => {
+        const updated = db.updateTask(task.id, { status: 'started', sessionId: session.id });
+        if (updated !== null) broadcast({ type: 'task', task: updated });
+        return { task: updated, session };
+      }, undefined, { epicId: task.epicId });
+    } finally { launchingTasks.delete(task.id); }
   });
 }

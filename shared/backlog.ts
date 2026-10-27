@@ -19,6 +19,8 @@ export interface EpicRun {
   baseHead?:string|null;
   workspace?:WorkspaceContext|null;
   workspaceConflict?:boolean;
+  // Why the epic's folder cannot be resolved from its history (computed when listed, never stored); start/resume fail on it.
+  workspaceError?:string|null;
 }
 
 // Exécutions qui occupent encore l'epic : en cours, en attente de validation ou bloquées.
@@ -74,7 +76,7 @@ const epicRun = object<EpicRun>({
   error: nullable(string), startedAt: number, updatedAt: number,
   waitingSince: optional(nullable(number)), validationReason: optional(nullable(string)), autoValidate: optional(boolean),
   blockReason: optional(nullable(literal('session-waiting'))), baseHead: optional(nullable(string)),
-  workspace: optional(nullable(workspaceContextSchema)), workspaceConflict: optional(boolean),
+  workspace: optional(nullable(workspaceContextSchema)), workspaceConflict: optional(boolean), workspaceError: optional(nullable(string)),
 });
 
 export const parseEpicRun = parser(epicRun);

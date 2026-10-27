@@ -27,10 +27,10 @@ export function readDraft(key: string): Draft | null {
   }
 }
 
-/** Enregistre (ou efface si le prompt est vide) ; renvoie un message d'erreur si le stockage échoue. */
+/** Enregistre (ou efface si le prompt est vide et sans image) ; renvoie un message d'erreur si le stockage échoue. */
 export function writeDraft(key: string, draft: Draft): string | null {
   try {
-    if (draft.prompt.trim() === '') localStorage.removeItem(PREFIX + key);
+    if (draft.prompt.trim() === '' && draft.images.length === 0) localStorage.removeItem(PREFIX + key);
     else localStorage.setItem(PREFIX + key, JSON.stringify(draft));
     return null;
   } catch (err) {
