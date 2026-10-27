@@ -173,7 +173,7 @@ test('Slack hérite des réglages, préserve le prompt du formulaire et mémoris
   const db = new CerebroDatabase(':memory:');
   const manager = new SessionManager(db);
   const peers = {
-    ready: Promise.resolve(), generalResponder: () => true, knownRemotely: () => false,
+    ready: Promise.resolve(), generalResponder: () => true, knownRemotely: () => false, unreachableMachines: () => [],
     conflictMachines: () => [], owns: () => true,
   };
   const notifier = new SlackNotifier(manager, db, peers);

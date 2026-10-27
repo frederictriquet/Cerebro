@@ -771,7 +771,10 @@ councils produisent leurs notifications en code, avec durée et statut effectif.
 Un council lancé depuis le web hors projet est notifié par la machine qui l'exécute,
 même si une autre machine traite les commandes générales Slack. Un council lancé
 depuis Slack répond dans son fil, sans notification séparée. Un résultat est marqué
-notifié uniquement après confirmation de l'envoi par Slack. Le succès
+notifié uniquement après confirmation de l'envoi par Slack ; un envoi en erreur
+(429, réseau, délai dépassé) est retenté après 30 s, 2 min puis 10 min tant que le
+résultat n'est ni vu ni notifié et date de moins de 24 h, puis au prochain
+redémarrage dans cette même fenêtre. Le succès
 d'une commande ou la fin d'un tour n'attestent pas la validation du travail.
 Les préférences existantes s'appliquent : résultats réussis via **idle**, échecs ou
 blocages via **waiting**, délai configurable et choix de la machine répondante.

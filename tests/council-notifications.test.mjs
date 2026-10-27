@@ -91,6 +91,7 @@ test('a web council outside projects posts once from its machine even when anoth
   }
 });
 
+// The 30 s in-process retry is covered by operation-results-retry.test.mjs; a restart also redelivers.
 test('a failed Slack post stays unacknowledged and retries from the same machine after restart', async t => {
   t.mock.method(PeerSync.prototype, 'generalResponder', () => false);
   const errors = [];

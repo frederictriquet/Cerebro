@@ -19,6 +19,10 @@ const ID_FILE = join(DATA_DIR, 'instance-id');
 const STATE_FILE = join(DATA_DIR, 'peers.json');
 const SYNC_INTERVAL_MS = 15_000;
 const SYNC_TIMEOUT_MS = 5_000;
+// Un dépôt sur un montage réseau figé peut bloquer git indéfiniment.
+const GIT_TIMEOUT_MS = 5_000;
+// Garde-fou d'un tour complet : sans lui, un tour bloqué figerait sync(), ready et les commandes Slack.
+const RUN_SYNC_TIMEOUT_MS = 60_000;
 const PEER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_NOTICES = 50;
 // Pair encore joignable : vu lors des dernières synchronisations.
@@ -207,10 +211,24 @@ function loadInstanceId(): string {
   return id;
 }
 
+/** Résout `fallback()` si `promise` n'a pas abouti dans le délai. */
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: () => T): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback()), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 async function gitOrigin(path: string): Promise<string | null> {
   try {
-    const result = await execFileAsync('git', ['-C', path, 'remote', 'get-url', 'origin']);
-    return normalizeOrigin(result.stdout);
+    // Le processus tué peut garder ses flux ouverts (sommeil non interruptible) : la course garantit le repli.
+    const result = await withTimeout(
+      execFileAsync('git', ['-C', path, 'remote', 'get-url', 'origin'], { timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL' }),
+      GIT_TIMEOUT_MS,
+      () => null,
+    );
+    return result === null ? null : normalizeOrigin(result.stdout);
   } catch {
     return null;
   }
@@ -265,8 +283,12 @@ export class PeerSync {
   /** Lance une synchronisation (ou attend celle en cours). */
   sync(): Promise<void> {
     if (this.syncing === null) {
-      this.syncing = this.runSync().finally(() => {
+      this.syncing = withTimeout(this.runSync(), RUN_SYNC_TIMEOUT_MS, () => {
+        console.warn(`[peers] synchronisation interrompue après ${RUN_SYNC_TIMEOUT_MS / 1_000} s`);
+      }).finally(() => {
         this.syncing = null;
+        // Même interrompu, le tour libère ceux qui attendent : origins inconnus plutôt que blocage.
+        this.markReady();
         this.markSynced();
       });
     }
@@ -343,14 +365,19 @@ export class PeerSync {
       .every((match) => this.instanceId < match.id);
   }
 
-  /** Un pair connaît-il un projet désigné par ce nom (exact, ou aussi par préfixe comme les commandes Slack) ? */
+  /** Un pair actif connaît-il un projet désigné par ce nom (exact, ou aussi par préfixe comme les commandes Slack) ? */
   knownRemotely(projectName: string, exact: boolean): boolean {
-    const name = normalizeProjectName(projectName);
-    return Object.entries(this.state.peers).some(([id, peer]) => id !== this.instanceId
-      && peer.projects.some((project) => {
-        const candidate = normalizeProjectName(project.name);
-        return exact ? candidate === name : candidate.startsWith(name);
-      }));
+    const active = new Set(this.activePeers());
+    return this.peersKnowing(projectName, exact).some((id) => active.has(id));
+  }
+
+  /** Machines injoignables (pairs gardés mais inactifs) qui connaissent un projet désigné par ce nom. */
+  unreachableMachines(projectName: string, exact: boolean): string[] {
+    const active = new Set(this.activePeers());
+    const machines = this.peersKnowing(projectName, exact)
+      .filter((id) => !active.has(id))
+      .map((id) => this.state.peers[id]?.machine ?? id);
+    return [...new Set(machines)].sort();
   }
 
   /** Cette machine traite-t-elle les commandes Slack générales (aide, liste, questions « ? », messages non reconnus) ? */
@@ -503,6 +530,16 @@ export class PeerSync {
       result.push({ id, machine: peer.machine, sameRepository: origin != null && project.origin === origin });
     }
     return result;
+  }
+
+  private peersKnowing(projectName: string, exact: boolean): string[] {
+    const name = normalizeProjectName(projectName);
+    return Object.entries(this.state.peers)
+      .filter(([id, peer]) => id !== this.instanceId && peer.projects.some((project) => {
+        const candidate = normalizeProjectName(project.name);
+        return exact ? candidate === name : candidate.startsWith(name);
+      }))
+      .map(([id]) => id);
   }
 
   private activePeers(): string[] {

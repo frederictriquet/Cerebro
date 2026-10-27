@@ -387,13 +387,14 @@ export class CerebroDatabase {
     this.connection.exec(`
       CREATE TABLE IF NOT EXISTS project_commands (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS operation_results (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS notification_turns (session_id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, ended_at INTEGER, custom_at INTEGER, relayed_at INTEGER, automatic_at INTEGER);
+      CREATE TABLE IF NOT EXISTS notification_turns (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, started_at INTEGER NOT NULL, ended_at INTEGER, custom_at INTEGER, relayed_at INTEGER, automatic_at INTEGER, automatic_status TEXT);
       CREATE TABLE IF NOT EXISTS epic_runs (id TEXT PRIMARY KEY, epic_id TEXT NOT NULL, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS epic_workspaces (epic_id TEXT PRIMARY KEY REFERENCES epics(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS command_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, data TEXT NOT NULL);
     `);
     const notificationTurnColumns = this.connection.prepare('PRAGMA table_info(notification_turns)').all() as unknown as { name: string }[];
     if (!notificationTurnColumns.some((column) => column.name === 'automatic_status')) this.connection.exec('ALTER TABLE notification_turns ADD COLUMN automatic_status TEXT');
+    this.cascadeNotificationTurns();
     // Contextes mémorisés avant la vérification complète des historiques : ils seront recontrôlés.
     const epicWorkspaceColumns = this.connection.prepare('PRAGMA table_info(epic_workspaces)').all() as unknown as { name: string }[];
     if (!epicWorkspaceColumns.some((column) => column.name === 'verified')) this.connection.exec('ALTER TABLE epic_workspaces ADD COLUMN verified INTEGER NOT NULL DEFAULT 0');
@@ -506,6 +507,30 @@ export class CerebroDatabase {
       const candidates = origin ? [origin] : fromTasks.all(session.id, session.project_id) as { id: string; title: string }[];
       // Aucun rapprochement sur le titre : deux epics peuvent porter le même nom.
       if (candidates.length === 1) save.run(candidates[0].id, candidates[0].title, session.id);
+    }
+  }
+
+  // Anciennes bases : table sans clé étrangère, une ligne survivait à chaque session supprimée.
+  // SQLite ne permet pas d'ajouter une contrainte : on reconstruit la table sans les orphelins.
+  private cascadeNotificationTurns(): void {
+    if ((this.connection.prepare('PRAGMA foreign_key_list(notification_turns)').all() as unknown[]).length > 0) return;
+    this.connection.exec('PRAGMA foreign_keys = OFF');
+    try {
+      this.connection.exec(`
+        BEGIN;
+        CREATE TABLE notification_turns_new (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, started_at INTEGER NOT NULL, ended_at INTEGER, custom_at INTEGER, relayed_at INTEGER, automatic_at INTEGER, automatic_status TEXT);
+        INSERT INTO notification_turns_new (session_id, started_at, ended_at, custom_at, relayed_at, automatic_at, automatic_status)
+          SELECT session_id, started_at, ended_at, custom_at, relayed_at, automatic_at, automatic_status FROM notification_turns
+          WHERE session_id IN (SELECT id FROM sessions);
+        DROP TABLE notification_turns;
+        ALTER TABLE notification_turns_new RENAME TO notification_turns;
+        COMMIT;
+      `);
+    } catch (error) {
+      this.connection.exec('ROLLBACK');
+      throw error;
+    } finally {
+      this.connection.exec('PRAGMA foreign_keys = ON');
     }
   }
 
@@ -686,6 +711,7 @@ export class CerebroDatabase {
       throw new SessionProtectionError('Ce projet contient des sessions protégées. Décochez leur protection avant de le supprimer.');
     }
     this.connection.prepare('DELETE FROM council_runs WHERE project_id = ?').run(id);
+    this.connection.prepare("DELETE FROM operation_results WHERE json_extract(data, '$.projectId') = ?").run(id);
     return Number(this.connection.prepare('DELETE FROM projects WHERE id = ?').run(id).changes) > 0;
   }
 

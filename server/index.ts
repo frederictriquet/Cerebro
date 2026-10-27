@@ -1115,7 +1115,11 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.patch('/api/slack', async (request, reply) => {
     const body = bodyRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps invalide');
-    const result = await orError(reply, async () => notifier.updateSettings(body));
+    const result = await orError(reply, async () => {
+      const settings = notifier.updateSettings(body);
+      if (settings !== null) await notifier.settingsSaved();
+      return settings;
+    });
     if (!result.ok) return result.reply;
     if (result.value === null) return error(reply, 400, 'Réglages Slack invalides');
     return reply.send(notifier.status());
@@ -1150,8 +1154,8 @@ export async function buildServer(): Promise<FastifyInstance> {
       return error(reply, 503, "Messages des agents désactivés dans les réglages Slack de Cerebro");
     }
     try {
-      await notifier.agentMessage(session.id, body.kind, text);
-      return reply.send({ ok: true });
+      const outcome = await notifier.agentMessage(session.id, body.kind, text);
+      return reply.send({ ok: true, queued: outcome === 'queued' });
     } catch (caught) {
       console.error('[slack]', caught instanceof Error ? caught.message : caught);
       return error(reply, 502, "Impossible d'envoyer le message Slack");
