@@ -378,6 +378,40 @@ test('secret scanning excludes content before writing any blob; simultaneous exe
     const results = await Promise.allSettled([planner.executeCommitPlan(repo, p), planner.executeCommitPlan(repo, p)]);
     assert.equal(results.filter((r) => r.status === 'fulfilled' && r.value.error === null).length, 1);
   }));
+test('a blocked file is committed only with an override naming a snapshot that showed its exact diff', async () =>
+  fixture(async (repo) => {
+    writeFileSync(join(repo, 'fixture'), `x\nAPI_KEY=sk-proj-${'0123456789abcdefghijklmnopqrstuvwxyz'}\n`);
+    const s = await planner.prepareCommit(repo);
+    const file = s.files.find((f) => f.path === 'fixture');
+    assert.equal(file.blocked, true);
+    assert.deepEqual(file.secrets, [{ line: 2, kind: 'openai', excerpt: 'sk-p…wxyz' }]);
+    const commit = { message: 'test fixture', selection: [one('fixture')] };
+    // A snapshot of another repository is foreign: its review proves nothing here.
+    await fixture(async (other) => {
+      writeFileSync(join(other, 'fixture'), readFileSync(join(repo, 'fixture')));
+      const foreign = await planner.prepareCommit(other);
+      const refused = await planner.executeCommitPlan(repo, {
+        ...plan(s, [commit]),
+        overrides: [{ path: 'fixture', snapshotId: foreign.id }],
+      });
+      assert.match(refused.error, /dérogation absente ou diff modifié/);
+    });
+    const unknown = await planner.prepareCommit(repo);
+    const refused = await planner.executeCommitPlan(repo, {
+      ...plan(unknown, [commit]),
+      overrides: [{ path: 'fixture', snapshotId: 'unknown' }],
+    });
+    assert.match(refused.error, /dérogation absente/);
+    assert.equal(git(repo, 'log', '-1', '--format=%s'), 'initial');
+    const fresh = await planner.prepareCommit(repo);
+    const r = await planner.executeCommitPlan(repo, {
+      ...plan(fresh, [commit]),
+      overrides: [{ path: 'fixture', snapshotId: s.id }],
+    });
+    assert.equal(r.error, null, JSON.stringify(r));
+    assert.deepEqual(r.overridden, ['fixture']);
+    assert.equal(git(repo, 'log', '-1', '--format=%s'), 'test fixture');
+  }));
 test('snapshots and workspace leases belong to the planner that holds them', async () =>
   fixture(async (repo) => {
     writeFileSync(join(repo, 'file'), 'changed\n');

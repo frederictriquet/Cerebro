@@ -207,6 +207,9 @@ export async function buildServer(
         summary:
           [
             ...operation.commits.map((commit) => `${commit.hash} ${commit.title}`),
+            operation.commits.length && operation.overridden.length
+              ? `Inclus malgré un secret détecté (dérogation) : ${operation.overridden.join(', ')}`
+              : '',
             operation.error ?? '',
             operation.pushOperation ? `Push : ${operation.pushOperation.status}` : '',
           ]

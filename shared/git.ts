@@ -18,11 +18,21 @@ export interface GitHunk {
   id: string;
   patch: string;
 }
+/** Warning of a candidate whose diff holds a recognized secret (`GitCandidate.blocked`). */
+export const SECRET_WARNING = 'Secret détecté : exclu.';
+/** A pattern the secret scanner recognized on an added line; `excerpt` keeps only the first and last characters. */
+export interface GitSecret {
+  line: number;
+  kind: 'private-key' | 'aws' | 'github' | 'openai';
+  excerpt: string;
+}
 export interface GitCandidate {
   path: string;
   diff: string;
   hunks: GitHunk[];
   warnings: string[];
+  secrets: GitSecret[];
+  /** A secret was recognized: excluded unless an explicit override names this exact diff. */
   blocked: boolean;
 }
 export interface GitSnapshot {
@@ -39,6 +49,8 @@ export interface GitSnapshot {
 export interface CommitResult {
   commits: { hash: string; title: string }[];
   exclusions: string[];
+  /** Files committed despite a detected secret, on an explicit override of their exact diff. */
+  overridden?: string[];
   error: string | null;
   pushId: string | null;
   operationId?: string;
@@ -140,14 +152,19 @@ export interface AutomaticCommit {
   phase: 'collecting' | 'drafting' | 'committing' | 'pushing' | 'finished';
   files: string[];
   exclusions: { path: string; reason: string }[];
+  /** Files included despite a detected secret: the user declared their reviewed diff a false positive. */
+  overridden: string[];
   commits: CommitResult['commits'];
   pushOperation: PushOperation | null;
   error: string | null;
   startedAt: number;
   finishedAt: number | null;
   needsProjectScope: boolean;
-  /** Files the user reviewed in a diff snapshot; included despite warnings only while that diff is unchanged. */
-  reviewed?: { snapshotId: string; paths: string[] };
+  /**
+   * Files the user reviewed in a diff snapshot; included despite warnings only while that diff is unchanged.
+   * `secrets` lists those also declared false positives of the secret scanner, under the same condition.
+   */
+  reviewed?: { snapshotId: string; paths: string[]; secrets?: string[] };
 }
 
 const strings = array(string);
@@ -171,6 +188,13 @@ const gitSnapshotFields = {
       diff: string,
       hunks: array(object<GitHunk>({ id: string, patch: string })),
       warnings: strings,
+      secrets: array(
+        object<GitSecret>({
+          line: number,
+          kind: literal('private-key', 'aws', 'github', 'openai'),
+          excerpt: string,
+        }),
+      ),
       blocked: boolean,
     }),
   ),
@@ -283,12 +307,19 @@ export const parseAutomaticCommit = parser(
     phase: literal('collecting', 'drafting', 'committing', 'pushing', 'finished'),
     files: strings,
     exclusions: array(object<AutomaticCommit['exclusions'][number]>({ path: string, reason: string })),
+    overridden: strings,
     commits: commitsSchema,
     pushOperation: nullable(pushOperationSchema),
     error: nullable(string),
     startedAt: number,
     finishedAt: nullable(number),
     needsProjectScope: boolean,
-    reviewed: optional(object<NonNullable<AutomaticCommit['reviewed']>>({ snapshotId: string, paths: strings })),
+    reviewed: optional(
+      object<NonNullable<AutomaticCommit['reviewed']>>({
+        snapshotId: string,
+        paths: strings,
+        secrets: optional(strings),
+      }),
+    ),
   }),
 );

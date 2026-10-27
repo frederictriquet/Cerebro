@@ -141,6 +141,8 @@ export interface Confirmation {
 export interface Reviewed {
   snapshotId: string;
   paths: string[];
+  /** Blocked files declared false positives of the secret scanner, in the same snapshot. */
+  secrets: string[];
 }
 
 export type Resolver = Pick<Session, 'id' | 'title'>;

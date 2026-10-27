@@ -345,6 +345,73 @@ test('a reviewed diff lifts its warning only while unchanged, and never for a de
       /examinés invalide/,
     );
   }));
+test('a detected secret is committed only on its own override of the exact diff shown', async () =>
+  fixture(async (f) => {
+    const token = `sk-proj-${'0123456789abcdefghijklmnopqrstuvwxyz'}`;
+    writeFileSync(join(f.repo, 'key.txt'), `API_KEY=${token}\n`);
+    writeFileSync(join(f.repo, '.env'), `OPENAI=${token}\n`);
+    const shown = await f.services.git.prepareCommit(f.repo);
+    const key = shown.files.find((file) => file.path === 'key.txt');
+    assert.equal(key.blocked, true);
+    assert.deepEqual(key.secrets, [{ line: 1, kind: 'openai', excerpt: 'sk-p…wxyz' }]);
+    assert.ok(!JSON.stringify(key.secrets).includes(token));
+    let sent = '';
+    f.manager.proposeCommits = async (input) => {
+      sent = JSON.stringify(input);
+      return { commits: [{ message: 'test: fixture token', paths: input.files.map((file) => file.path) }] };
+    };
+    // Reviewed as an ordinary warning only: still excluded, nothing sent to the model.
+    let result = await f.finish(
+      await f.manager.start(f.context, randomUUID(), false, { snapshotId: shown.id, paths: ['key.txt'] }),
+    );
+    assert.equal(result.status, 'blocked');
+    assert.equal(sent, '');
+    assert.deepEqual(result.overridden, []);
+    assert.match(result.exclusions.find((file) => file.path === 'key.txt').reason, /dérogation absente/);
+    // A file name warning needs both boxes: the override alone leaves `.env` out.
+    result = await f.finish(
+      await f.manager.start(f.context, randomUUID(), false, {
+        snapshotId: shown.id,
+        paths: [],
+        secrets: ['key.txt', '.env'],
+      }),
+    );
+    assert.equal(result.status, 'succeeded', result.error);
+    assert.deepEqual(result.files, ['key.txt']);
+    assert.deepEqual(result.overridden, ['key.txt']);
+    assert.ok(sent.includes(token));
+    assert.equal(git(f.repo, 'show', '--format=', '--name-only', 'HEAD'), 'key.txt');
+    assert.match(result.exclusions.find((file) => file.path === '.env').reason, /Fichier pouvant contenir des secrets/);
+    assert.doesNotMatch(result.exclusions.find((file) => file.path === '.env').reason, /Secret détecté/);
+    assert.deepEqual(f.manager.get(result.id).overridden, ['key.txt']);
+    // Edited after the review: excluded again.
+    writeFileSync(join(f.repo, 'key.txt'), `API_KEY=${token}\nOTHER=${token}\n`);
+    const before = git(f.repo, 'rev-parse', 'HEAD');
+    result = await f.finish(
+      await f.manager.start(f.context, randomUUID(), false, {
+        snapshotId: shown.id,
+        paths: ['.env'],
+        secrets: ['key.txt', '.env'],
+      }),
+    );
+    assert.deepEqual(result.overridden, ['.env']);
+    assert.deepEqual(result.files, ['.env']);
+    assert.match(result.exclusions.find((file) => file.path === 'key.txt').reason, /Modifié depuis votre examen/);
+    assert.notEqual(git(f.repo, 'rev-parse', 'HEAD'), before);
+    // Shown again, then the snapshot expires (a restart forgets every snapshot): excluded again.
+    const again = await f.services.git.prepareCommit(f.repo);
+    await f.restart();
+    result = await f.finish(
+      await f.manager.start(f.context, randomUUID(), false, { snapshotId: again.id, paths: [], secrets: ['key.txt'] }),
+    );
+    assert.equal(result.status, 'blocked');
+    assert.deepEqual(result.overridden, []);
+    assert.match(result.exclusions[0].reason, /Secret détecté : dérogation absente.*Examen expiré/);
+    await assert.rejects(
+      f.manager.start(f.context, randomUUID(), false, { snapshotId: again.id, paths: [], secrets: 'key.txt' }),
+      /examinés invalide/,
+    );
+  }));
 test('unknown session attribution requires intervention and never calls the model', async () =>
   fixture(async (f) => {
     const id = randomUUID();

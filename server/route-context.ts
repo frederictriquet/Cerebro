@@ -187,7 +187,16 @@ export function createRouteContext(services: RouteServices) {
       sessionId,
       kind: 'commit',
       ok: !result.error,
-      summary: result.error ?? result.commits.map((c) => `${c.hash} ${c.title}`).join(' ; '),
+      summary:
+        result.error ??
+        [
+          ...result.commits.map((c) => `${c.hash} ${c.title}`),
+          result.overridden?.length
+            ? `Inclus malgré un secret détecté (dérogation) : ${result.overridden.join(', ')}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' ; '),
       startedAt,
       finishedAt: Date.now(),
     });

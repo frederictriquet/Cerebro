@@ -22,7 +22,7 @@ interface CommitDialogProps {
   strategy?: CommitSettings['strategy'];
   onClose: () => void;
   scopeLabel?: string;
-  reviewed?: { snapshotId: string; paths: string[] };
+  reviewed?: AutomaticCommit['reviewed'];
 }
 export function AutomaticCommitDialog(props: CommitDialogProps) {
   const [useProject, setUseProject] = useState(false);
@@ -217,6 +217,25 @@ function AutomaticCommitRun({
               ))}
             </ul>
           </details>
+        ) : null}
+        {operation?.overridden.length ? (
+          <div>
+            <p>
+              {plural(
+                operation.overridden.length,
+                'fichier inclus malgré la détection d’un secret',
+                'fichiers inclus malgré la détection d’un secret',
+              )}{' '}
+              (dérogation explicite sur le diff examiné) :
+            </p>
+            <ul>
+              {operation.overridden.map((path) => (
+                <li key={path}>
+                  <code>{path}</code>
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : null}
         {operation?.files.length || operation?.pushOperation ? (
           <details>

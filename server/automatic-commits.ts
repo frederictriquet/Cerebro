@@ -1,5 +1,11 @@
 import type { CerebroDatabase } from './db.ts';
-import { assertNoGitOperation, GitOperationInProgress, type CommitPlan } from './git-plan.ts';
+import {
+  assertNoGitOperation,
+  GitOperationInProgress,
+  reviewWarnings,
+  SECRET_EXCLUSION,
+  type CommitPlan,
+} from './git-plan.ts';
 import { draftCommits, parseCommitProposal, type ProposalContext } from './commit-proposal.ts';
 import type { Services } from './services.ts';
 import { canonicalWorktreePath } from './worktree-gate.ts';
@@ -7,7 +13,7 @@ import { repositoryActivity, sessionBusy } from './repository-activity.ts';
 import { INHERITED_WARNING } from './session-git.ts';
 import { repositoryRoot } from './git.ts';
 import type { CommitSettings } from '../shared/types.ts';
-import type { AutomaticCommit, CommitResult, GitSnapshot, SessionGitSnapshot } from '../shared/git.ts';
+import type { AutomaticCommit, CommitResult, GitCandidate, GitSnapshot, SessionGitSnapshot } from '../shared/git.ts';
 import { errorMessage } from './util.ts';
 
 export interface AutomaticCommitContext {
@@ -45,7 +51,7 @@ export class AutomaticCommits {
   list(): AutomaticCommit[] {
     return (
       this.db.connection.prepare('SELECT data FROM automatic_commits ORDER BY rowid DESC').all() as { data: string }[]
-    ).map((row) => JSON.parse(row.data));
+    ).map((row) => ({ overridden: [], ...JSON.parse(row.data) }));
   }
   get(id: string): AutomaticCommit | null {
     return this.list().find((operation) => operation.id === id) ?? null;
@@ -86,7 +92,9 @@ export class AutomaticCommits {
       review !== undefined &&
       (typeof review?.snapshotId !== 'string' ||
         !Array.isArray(review.paths) ||
-        !review.paths.every((path) => typeof path === 'string'))
+        !review.paths.every((path) => typeof path === 'string') ||
+        (review.secrets !== undefined &&
+          (!Array.isArray(review.secrets) || !review.secrets.every((path) => typeof path === 'string'))))
     )
       throw new Error('Sélection des fichiers examinés invalide.');
     const path = canonicalWorktreePath(await repositoryRoot(context.path));
@@ -136,13 +144,22 @@ export class AutomaticCommits {
       phase: 'collecting',
       files: [],
       exclusions: [],
+      overridden: [],
       commits: [],
       pushOperation: null,
       error: null,
       startedAt: Date.now(),
       finishedAt: null,
       needsProjectScope: false,
-      ...(review ? { reviewed: { snapshotId: review.snapshotId, paths: [...new Set(review.paths)] } } : {}),
+      ...(review
+        ? {
+            reviewed: {
+              snapshotId: review.snapshotId,
+              paths: [...new Set(review.paths)],
+              ...(review.secrets ? { secrets: [...new Set(review.secrets)] } : {}),
+            },
+          }
+        : {}),
     };
     this.db.transaction(() => {
       this.save(operation);
@@ -184,21 +201,28 @@ export class AutomaticCommits {
       const shown = operation.reviewed
         ? this.services.git.reviewedDiffs(operation.reviewed.snapshotId, operation.path)
         : null;
-      // A secret is never acknowledged; other warnings yield to a review of this exact diff.
+      const unchanged = (file: GitCandidate): boolean => shown?.get(file.path) === file.diff;
+      // Warnings yield to a review of this exact diff; a detected secret only to its own, separate override.
       const acknowledged = snapshot.files
         .filter(
-          (file) =>
-            !file.blocked &&
-            file.warnings.length &&
-            operation.reviewed?.paths.includes(file.path) &&
-            shown?.get(file.path) === file.diff,
+          (file) => reviewWarnings(file).length && operation.reviewed?.paths.includes(file.path) && unchanged(file),
         )
         .map((file) => file.path);
+      const overridden = snapshot.files
+        .filter((file) => file.blocked && operation.reviewed?.secrets?.includes(file.path) && unchanged(file))
+        .map((file) => file.path);
       const eligible = snapshot.files.filter(
-        (file) => !file.blocked && (!file.warnings.length || acknowledged.includes(file.path)),
+        (file) =>
+          (!file.blocked || overridden.includes(file.path)) &&
+          (!reviewWarnings(file).length || acknowledged.includes(file.path)),
       );
-      const staleReview = (path: string): string | null =>
-        !operation.reviewed?.paths.includes(path)
+      // A review or override given for this file that no longer applies: the snapshot expired or the diff moved.
+      const staleReview = (file: GitCandidate): string | null =>
+        unchanged(file) ||
+        !(
+          (reviewWarnings(file).length && operation.reviewed?.paths.includes(file.path)) ||
+          (file.blocked && operation.reviewed?.secrets?.includes(file.path))
+        )
           ? null
           : !shown
             ? 'Examen expiré : réaffichez les diffs puis recommencez.'
@@ -208,10 +232,17 @@ export class AutomaticCommits {
         .map((file) => ({
           path: file.path,
           reason:
-            [...file.warnings, ...(file.blocked ? [] : [staleReview(file.path) ?? ''])].filter(Boolean).join(' ; ') ||
-            'Fichier exclu par le scanner.',
+            [
+              file.blocked && !overridden.includes(file.path) ? SECRET_EXCLUSION : '',
+              ...(acknowledged.includes(file.path) ? [] : reviewWarnings(file)),
+              staleReview(file) ?? '',
+            ]
+              .filter(Boolean)
+              .join(' ; ') || 'Fichier exclu par le scanner.',
         }));
       operation.files = eligible.map((file) => file.path);
+      // An override whose file still waits for its ordinary review commits nothing.
+      operation.overridden = overridden.filter((path) => operation.files.includes(path));
       this.save(operation);
       if (snapshot.files.length && !eligible.length) {
         const mode = snapshot.provenance?.workspace.mode;
@@ -236,6 +267,7 @@ export class AutomaticCommits {
           snapshotId: snapshot.id,
           push: false,
           acknowledged,
+          overrides: operation.overridden.map((path) => ({ path, snapshotId: operation.reviewed!.snapshotId })),
           commits: proposal.commits.map((step) => ({
             message: step.message,
             selection: step.paths.map((path) => ({ path, all: true })),

@@ -623,6 +623,20 @@ tous les secrets. L'API de commit propre à une session historique refuse de dev
 son périmètre ; la fenêtre permet alors de choisir explicitement l'action sur le
 projet entier, sans quitter la conversation.
 
+Un faux positif du scanner (jeton factice dans un test, clé d'exemple) peut être
+inclus par une dérogation explicite. Dans les diffs d'une copie de travail, un
+fichier « secret détecté » liste les motifs reconnus (ligne, type, extrait masqué)
+et propose une case distincte, décochée par défaut et confirmée par une boîte de
+dialogue : « Ce n'est pas un secret réel (donnée de test, exemple) : inclure malgré
+la détection ». La dérogation vaut pour ce fichier, pour le diff exact affiché et
+pour les commits lancés depuis cet affichage : si le fichier change ou si l'examen
+expire (une heure), il est de nouveau exclu. Un fichier qui porte aussi un autre avertissement (`.env`,
+`credentials`, `id_rsa`…) exige en plus la case « Examiné ». Une fois incluse, la
+dérogation transmet ce diff au modèle qui rédige le message et le commit part avec le
+push suivant ; elle est rappelée dans la fenêtre du commit et dans le journal des
+opérations. Le scanner ne prétend toujours pas détecter tous les secrets : sans
+dérogation, rien ne change.
+
 Seule la rédaction et le regroupement des messages demandent une inférence.
 L'agent reçoit les diffs éligibles et les conventions du log, sans accès en écriture
 au projet. La réponse structurée est vérifiée : chaque fichier doit apparaître
@@ -635,7 +649,9 @@ une opération inachevée est indiquée comme interrompue, sans rejeu automatiqu
 
 L'API de plans explicites reste disponible (`prepare-commit`, `commit`) pour
 un plan fourni sans inférence : `snapshotId`, `commits:[{message,selection}]`,
-`acknowledged` et `push`. Une sélection vaut `{path,all:true}` ou
+`acknowledged`, `overrides` (facultatif, `[{path,snapshotId}]` : dérogation au
+scanner de secrets, valable seulement si ce snapshot a montré exactement le diff
+actuel du fichier) et `push`. Une sélection vaut `{path,all:true}` ou
 `{path,hunks:[identifiants]}`. Un plan expire après une heure ou un redémarrage ;
 tout changement de HEAD, de l'index ou du worktree impose une nouvelle collecte.
 Une seconde exécution est refusée.
