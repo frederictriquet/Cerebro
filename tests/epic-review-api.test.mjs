@@ -11,7 +11,7 @@ mkdirSync(process.env.CEREBRO_DATA_DIR);
 const {CerebroDatabase}=await import('../server/db.ts');
 const {createWorkspace,createWorkspaceInContext,joinWorkspace,workspaceFor}=await import('../server/provenance.ts');
 const {epicWorkspace,rememberEpicWorkspace}=await import('../server/epic-workspace.ts');
-const {SessionManager}=await import('../server/sessions.ts');
+const {SessionManager}=await import('../server/sessions.ts');const {EpicRunner}=await import('../server/epic-runner.ts');
 const {PeerSync}=await import('../server/peers.ts');const {UpdateManager}=await import('../server/updates.ts');
 const {buildServer}=await import('../server/index.ts');
 mock.method(UpdateManager.prototype,'start',()=>{});mock.method(PeerSync.prototype,'sync',async function(){this.markReady();this.markSynced();});
@@ -123,7 +123,10 @@ test('ambiguous epics expose their copies and accept only an explicit available 
   assert.equal((await send('POST',url,{path:root})).statusCode,409);
   assert.equal((await send('POST',url,{path:missing.path})).statusCode,409);
   assert.equal(db.connection.prepare('SELECT verified FROM epic_workspaces WHERE epic_id=?').get(epic.id).verified,0);
-  run.status='running';save();assert.equal((await send('POST',url,{path:workspace.path})).statusCode,409);run.status='blocked';save();
+  // The runner's timer would tick this fake run and block it again: freeze it so only the refusal is tested.
+  const frozen=mock.method(EpicRunner.prototype,'poke',()=>{});
+  try{run.status='running';save();assert.equal((await send('POST',url,{path:workspace.path})).statusCode,409);}
+  finally{run.status='blocked';save();frozen.mock.restore();}
   db.updateSession(shared.id,{status:'running'});assert.equal((await send('POST',url,{path:workspace.path})).statusCode,409);db.updateSession(shared.id,{status:'exited'});
   db.updateSession(shared.id,{status:'idle'});db.updateTask(pending.id,{sessionId:shared.id});
   assert.equal((await send('POST',url,{path:workspace.path})).statusCode,409);
