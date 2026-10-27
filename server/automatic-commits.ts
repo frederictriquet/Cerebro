@@ -50,7 +50,7 @@ export class AutomaticCommits {
       const cwd=workspaceFor(this.db,session.id)?.root??this.db.getProject(session.projectId)?.path;
       if(cwd&&inside(path,cwd)&&['starting','running','waiting'].includes(session.status))throw new CommitBlocked('Une session utilise encore ce dépôt. Attendez la fin de son tour avant de commiter.');
     }
-    for(const row of this.db.connection.prepare('SELECT data FROM command_runs').all() as {data:string}[]){
+    for(const row of this.db.connection.prepare("SELECT data FROM command_runs WHERE status='running'").all() as {data:string}[]){
       const run=JSON.parse(row.data);if(run.status==='running'&&inside(path,run.cwd))throw new CommitBlocked('Une commande utilise encore ce dépôt. Attendez sa fin avant de commiter.');
     }
   }
@@ -72,9 +72,7 @@ export class AutomaticCommits {
     const active=this.active.get(path);
     if(active){if(active.operation.scope!==context.scope||active.operation.push!==push||active.operation.settings.strategy!==effectiveStrategy)throw new Error('Un commit est déjà en préparation dans ce dépôt.');remember(active.operation.id);return active.operation;}
     const operation:AutomaticCommit={id,scope:context.scope,path,projectId:context.projectId,sessionId:context.sessionId,settings:{...context.settings,strategy:effectiveStrategy},push,status:'running',phase:'collecting',files:[],exclusions:[],commits:[],pushOperation:null,error:null,startedAt:Date.now(),finishedAt:null,needsProjectScope:false,...(review?{reviewed:{snapshotId:review.snapshotId,paths:[...new Set(review.paths)]}}:{})};
-    this.db.connection.exec('BEGIN IMMEDIATE');
-    try{this.save(operation);remember(operation.id);this.db.connection.exec('COMMIT');}
-    catch(cause){this.db.connection.exec('ROLLBACK');throw cause;}
+    this.db.transaction(()=>{this.save(operation);remember(operation.id);},'IMMEDIATE');
     const abort=new AbortController();
     const done=Promise.resolve().then(()=>this.execute(context,operation,abort.signal)).finally(()=>this.active.delete(path));
     this.active.set(path,{operation,abort,done});return operation;

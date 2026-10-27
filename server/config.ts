@@ -9,7 +9,26 @@ if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const HOST = process.env.CEREBRO_HOST ?? '127.0.0.1';
-export const PORT = Number(process.env.CEREBRO_PORT ?? 4317);
+export const DEFAULT_PORT = 4317;
+
+// Strict: Number() would turn '', '12abc' or '4317.5' into 0/NaN/a float and listen() would then pick a random port or fail obscurely.
+export function parsePort(value: string | undefined): number {
+  if (value === undefined) return DEFAULT_PORT;
+  const port = /^\d+$/.test(value) ? Number(value) : NaN;
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`CEREBRO_PORT invalide : « ${value} » (entier entre 1 et 65535 attendu)`);
+  }
+  return port;
+}
+
+export const PORT = (() => {
+  try {
+    return parsePort(process.env.CEREBRO_PORT);
+  } catch (caught) {
+    console.error(`[config] ${(caught as Error).message}`);
+    process.exit(1);
+  }
+})();
 export const BIND_TOKEN = process.env.CEREBRO_BIND_TOKEN;
 export const KILL_ON_EXIT = process.env.CEREBRO_KILL_ON_EXIT === '1';
 export const DATA_DIR = process.env.CEREBRO_DATA_DIR ?? join(homedir(), '.cerebro');

@@ -376,7 +376,7 @@ export class WorktreeManager {
       const cwd = workspace?.path ?? this.db.getProject(session.projectId)?.path;
       if (cwd && within(path, canonicalWorktreePath(cwd)) && (removing ? session.status !== 'exited' : !['idle','exited'].includes(session.status))) reasons.push(`Session ${session.title} (${session.status}).`);
     }
-    for (const row of this.db.connection.prepare('SELECT data FROM command_runs').all() as {data:string}[]) {
+    for (const row of this.db.connection.prepare("SELECT data FROM command_runs WHERE status='running'").all() as {data:string}[]) {
       const run = JSON.parse(row.data);
       if (run.status === 'running' && within(path, canonicalWorktreePath(run.cwd))) reasons.push('Une commande utilise ce worktree.');
     }
@@ -421,11 +421,7 @@ export class WorktreeManager {
       if(!record.removedAt||record.autoCleanup?.status!=='removed')throw new WorktreeError('Seules les copies déjà nettoyées peuvent être retirées de l’historique.');
       return record;
     });
-    this.db.connection.exec('BEGIN');
-    try {
-      for(const record of selected)store(this.db,{...record,historyDeletedAt:Date.now()});
-      this.db.connection.exec('COMMIT');
-    } catch(cause) {this.db.connection.exec('ROLLBACK');throw cause;}
+    this.db.transaction(()=>{for(const record of selected)store(this.db,{...record,historyDeletedAt:Date.now()});});
   }
   async get(id: string): Promise<WorktreeView> { await this.sync(); return this.inspect(this.record(id)); }
   private async inspect(record: WorktreeRecord, ownOperation?: string): Promise<WorktreeView> {

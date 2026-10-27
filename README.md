@@ -47,7 +47,7 @@ dont le journal global peut être purgé indépendamment des sessions.
 | Variable | Valeur par défaut | Rôle |
 |---|---:|---|
 | `CEREBRO_HOST` | `127.0.0.1` | Adresse d'écoute du serveur. |
-| `CEREBRO_PORT` | `4317` | Port HTTP et WebSocket. |
+| `CEREBRO_PORT` | `4317` | Port HTTP et WebSocket (entier entre 1 et 65535 ; une valeur invalide arrête le démarrage). |
 | `CEREBRO_DATA_DIR` | `~/.cerebro` | Base SQLite, sockets des holders, journaux de terminal et `hooks.jsonl`. |
 | `CEREBRO_BIND_TOKEN` | non défini | Protège les API et WebSockets lorsqu'un accès réseau est nécessaire. |
 | `CEREBRO_KILL_ON_EXIT` | non défini | Avec la valeur `1`, tue les agents lorsque le serveur s'arrête (ancien comportement). |
@@ -193,7 +193,9 @@ Cerebro combine plusieurs signaux, car les trois agents ne publient pas les mêm
 - Codex utilise son callback `notify` et les notifications terminal OSC 9. Les fils
   auxiliaires, notamment ceux de génération de titre, sont filtrés.
 - L'écran du terminal est inspecté pour repérer les dialogues de confiance, menus
-  numérotés et confirmations `y/n` que les hooks ne remontent pas.
+  numérotés et confirmations `y/n` que les hooks ne remontent pas. Pour Claude et
+  Codex, seules les dernières lignes sous la zone de saisie comptent : un texte du
+  transcript (sortie de `cat`, diff, prompt réaffiché) ne passe pas pour un dialogue.
 - Après 20 secondes sans sortie, une session encore marquée active devient inactive
   par heuristique. Ce signal de secours ne déclenche pas d'alerte.
 - Une session inactive ou terminée depuis plus d'une heure passe « en sommeil ».
@@ -505,7 +507,9 @@ Vérifiez d'abord que l'exécutable de l'agent est présent avec `which claude`,
 `$CEREBRO_DATA_DIR/logs/` (par défaut `~/.cerebro/logs/`). Le journal
 `$CEREBRO_DATA_DIR/hooks.jsonl` contient chaque événement reçu avec son agent, son
 type et sa charge utile ; c'est la source principale pour diagnostiquer une attente
-non détectée. Avec systemd, consultez aussi les logs avec :
+non détectée. Il tourne par taille : au-delà de 20 Mo, il est renommé en
+`hooks.jsonl.1` (les archives précédentes glissent vers `.2` puis `.3`) et la plus
+ancienne est supprimée, soit au plus 80 Mo au total. Avec systemd, consultez aussi les logs avec :
 
 ```sh
 journalctl --user -u cerebro.service -f

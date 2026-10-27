@@ -9,6 +9,7 @@ interface Lease { paths: string[]; queued: (() => void)[] }
 const leases = new Set<Lease>();
 const overlaps = (left: string, right: string): boolean => left === right || left.startsWith(right + sep) || right.startsWith(left + sep);
 function leaseFor(path: string): Lease | undefined {
+  if (!leases.size) return undefined;
   const absolute = canonicalWorktreePath(path);
   return [...leases].find(lease => lease.paths.some(root => overlaps(root, absolute)));
 }

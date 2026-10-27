@@ -63,6 +63,10 @@ function run(configPath: string): void {
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
     appendFileSync(holderLogPath, `${new Date().toISOString()} ${message}\n`, { mode: 0o600 });
   };
+  // The server replays the terminal log as soon as it sees the exit record: write it only once the log is flushed.
+  const recordExit = (exitCode: number, signal: number | undefined): void => {
+    writeFileSync(exitPath, `${JSON.stringify({ exitCode, signal, at: Date.now() })}\n`, { mode: 0o600 });
+  };
 
   let config: HolderConfig;
   try {
@@ -71,8 +75,7 @@ function run(configPath: string): void {
     config = parsed;
   } catch (error) {
     report(error);
-    terminalLog.end();
-    writeFileSync(exitPath, `${JSON.stringify({ exitCode: 1, signal: 0, at: Date.now() })}\n`, { mode: 0o600 });
+    terminalLog.end(() => recordExit(1, 0));
     removeFile(configPath);
     return;
   }
@@ -103,8 +106,7 @@ function run(configPath: string): void {
     terminal.dispose();
     // The terminal log is what the UI replays for an exited session: show the failure there.
     const message = error instanceof Error ? error.message : String(error);
-    terminalLog.end(`\x1b[31mImpossible de lancer « ${config.cmd} » : ${message}\x1b[0m\r\n`);
-    writeFileSync(exitPath, `${JSON.stringify({ exitCode: 1, signal: 0, at: Date.now() })}\n`, { mode: 0o600 });
+    terminalLog.end(`\x1b[31mImpossible de lancer « ${config.cmd} » : ${message}\x1b[0m\r\n`, () => recordExit(1, 0));
     return;
   }
 
@@ -112,12 +114,12 @@ function run(configPath: string): void {
   let cols = config.cols;
   let rows = config.rows;
   let exited = false;
+  // Set once the exit record is on disk: clients connecting before that must still receive the exit message.
+  let exitRecorded = false;
   let forceKillTimer: NodeJS.Timeout | null = null;
   let exitCleanupTimer: NodeJS.Timeout | null = null;
   let finishing = false;
   let finalized = false;
-  let finalizeRequested = false;
-  let terminalLogFinished = false;
   let clientReady = false;
   let pendingClientMessages: unknown[] = [];
   // Everything the agent spawned: child.kill() alone only reaches the agent itself.
@@ -129,10 +131,6 @@ function run(configPath: string): void {
 
   const finalize = (): void => {
     if (finalized) return;
-    if (!terminalLogFinished) {
-      finalizeRequested = true;
-      return;
-    }
     finalized = true;
     if (exitCleanupTimer !== null) clearTimeout(exitCleanupTimer);
     signalProcesses(collectTree(), 'SIGKILL');
@@ -216,7 +214,7 @@ function run(configPath: string): void {
       clientReady = true;
       for (const message of pendingClientMessages) send(socket, message);
       pendingClientMessages = [];
-      if (exited) {
+      if (exitRecorded) {
         socket.end();
         finish();
       }
@@ -243,7 +241,7 @@ function run(configPath: string): void {
         clientReady = false;
         pendingClientMessages = [];
       }
-      if (exited) finish();
+      if (exitRecorded) finish();
     });
   });
   server.on('error', (error) => {
@@ -266,17 +264,16 @@ function run(configPath: string): void {
     // Leftovers (background jobs, detached helpers) get a chance to stop before finalize() kills them.
     signalProcesses(collectTree(), 'SIGTERM');
     terminalLog.end(() => {
-      terminalLogFinished = true;
-      if (finalizeRequested) finalize();
+      recordExit(exitCode, signal);
+      exitRecorded = true;
+      sendToClient({ type: 'exit', exitCode, signal });
+      if (clientReady) {
+        client?.end();
+        finish();
+      } else if (client === null) {
+        finish();
+      }
     });
-    writeFileSync(exitPath, `${JSON.stringify({ exitCode, signal, at: Date.now() })}\n`, { mode: 0o600 });
-    sendToClient({ type: 'exit', exitCode, signal });
-    if (clientReady) {
-      client?.end();
-      finish();
-    } else if (client === null) {
-      finish();
-    }
   });
 
   server.listen(socketPath);

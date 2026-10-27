@@ -48,7 +48,7 @@ interface Session {
   prompt: string;           // prompt initial (peut être vide)
   title: string;            // = 60 premiers caractères du prompt, ou "<agent> session"
   status: Status;
-  attention: boolean;       // true quand passe à waiting/idle via un signal fiable ; remis à false quand l'utilisateur ouvre la session
+  attention: boolean;       // true quand passe à waiting/idle via un signal fiable ; remis à false quand l'utilisateur ouvre la session ou que l'agent reprend (retour à running)
   attentionReason: string | null;  // ex. "Permission demandée : Bash", "Question", "Tour terminé"
   agentSessionId: string | null;   // id côté agent, pour reprendre (resume)
   exitCode: number | null;
@@ -150,7 +150,7 @@ Signaux fiables (→ `attention=true` + diffusion `alert` sur les transitions ve
 - `SessionStart` (grok) : capture `payload.session_id` dans agentSessionId s'il est présent.
 - Ne pas déclencher une nouvelle alerte si le statut et la raison n'ont pas changé.
 
-Retour à `running` (sans alerte, `attention` inchangé) :
+Retour à `running` (sans alerte ; `attention=false` et `attentionReason=null`, même si la session n'a jamais été ouverte : la demande a été traitée ailleurs — Slack, autre terminal — et rien ne reste à faire) :
 - `UserPromptSubmit`, `PostToolUse` ;
 - une entrée utilisateur contenant `\r` alors que le statut est `waiting` ou `idle`.
 
@@ -195,8 +195,8 @@ Thème sombre, sobre, dense. Routage par hash : `#/` accueil, `#/p/<projectId>`,
 # Lot 2 (ajouts après tests de bout en bout)
 
 Déjà fait (ne pas casser) : détection à l'écran des dialogues (`inspectScreen` dans sessions.ts : dialogues de
-confiance, menus numérotés, y/n → `waiting` avec la question comme raison), dédoublonnage des alertes, filtrage des
-fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jsonl`,
+confiance, menus numérotés, y/n → `waiting` avec la question comme raison ; en buffer normal, seules les 15 dernières lignes non vides sous la dernière ligne de saisie `❯`/`›` sont examinées), dédoublonnage des alertes, filtrage des
+fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jsonl` (rotation à 20 Mo, 3 archives `.1`…`.3`, `server/hook-log.ts`),
 `GET /api/sessions/:id/screen` → `{lines: string[]}` (dernières lignes texte de l'écran vivant, `[]` si la session est terminée).
 
 ## Serveur (codex)
@@ -313,7 +313,7 @@ du workspace peuvent fonctionner : tester si possible avec `CEREBRO_DATA_DIR=./.
 - `POST .../git/prepare-review`, `POST .../git/review` : périmètre calculé/capturé en code, raisonnement confié à l'agent.
 - `/api/sessions/:id/provenance`, `/api/sessions/:id/git/*` : espace persisté et sélection explicite, y compris pour les sessions arrêtées.
 - `/api/sessions/:id/findings`, `.../:report/import` : rapports structurés et import idempotent en epic/tâches ; publication agent via `cerebro-findings`. L’import accepte `{selected,epicId?}` : un identifiant cible un epic du même projet, `null` crée un nouvel epic, l’absence de choix utilise l’epic d’origine de la session ou crée un epic. Le premier import fixe la destination du rapport pour les imports partiels et les reprises. Les nouvelles tâches dépendent des étapes déjà présentes dans l’epic cible ; les liens entre findings d’un même rapport restent ceux de `dependsOn`.
-- `Task.execution` vaut `{type:"llm"}` par défaut (migration et compatibilité distante), ou `{type:"command",commandId,completion}`. Les commandes configurées dans `/api/projects/:id/commands` créent des opérations `/api/tasks/:id/runs`, sans Session factice.
+- `Task.execution` vaut `{type:"llm"}` par défaut (migration et compatibilité distante), ou `{type:"command",commandId,completion}`. Les commandes configurées dans `/api/projects/:id/commands` créent des opérations `/api/tasks/:id/runs`, sans Session factice. `POST /api/tasks/:id/start` refuse (409) une tâche `done`, quel que soit son exécuteur ; pour une tâche LLM, il refuse aussi un lancement concurrent ou une relance tant que la session liée n’est pas `exited` (« Relancer » ne détache jamais une session active).
 - `POST /api/epics/:id/start` renvoie désormais une exécution d'epic, pas une Session. `/api/epics/:id/runs` et `/api/epic-runs/:id/{stop,resume}` suivent l'étape persistée. Seule la tâche courante est started ; --done demeure compatible, idle/exited ne valent jamais done.
 - Les anciens epics ayant utilisé plusieurs dossiers exposent `workspaceConflict` sur leurs exécutions. `GET /api/epics/:id/workspace-options` décrit leurs copies (branche, HEAD, fichiers modifiés et sessions), sans résoudre l’ambiguïté. `POST /api/epics/:id/workspace` avec `{path}` fixe explicitement un dossier attesté et disponible, lorsque les étapes sont arrêtées. Le choix ne déplace aucun fichier, ne valide aucune tâche et ne reprend pas l’exécution. Il persiste après redémarrage ; une étape interrompue ailleurs est relancée dans le dossier choisi.
 - Les sessions créées automatiquement par une epic reçoivent les instructions de leur tâche sans modifier les réglages ni le prompt mémorisés du formulaire « Nouvelle session » du projet.
