@@ -1,4 +1,4 @@
-import { assertWorktreeAvailable } from './worktree-gate.ts';
+import type { WorktreeGate } from './worktree-gate.ts';
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -22,13 +22,6 @@ export interface PushOperation {
   error: string | null;
   remotes: PushRemoteResult[];
 }
-const listeners = new Set<(path: string, operation: PushOperation) => void>();
-export function onPushComplete(listener: (path: string, operation: PushOperation) => void): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-}
-const active = new Map<string, PushOperation>();
-const latest = new Map<string, PushOperation>();
 const git = async (path: string, args: string[]): Promise<string> =>
   (await exec('git', ['-C', path, ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout.trim();
 
@@ -36,44 +29,63 @@ const git = async (path: string, args: string[]): Promise<string> =>
 async function keyFor(path: string): Promise<string> {
   return git(path, ['rev-parse', '--absolute-git-dir']);
 }
-export async function currentPush(path: string): Promise<PushOperation | null> {
-  return latest.get(await keyFor(path)) ?? null;
-}
 
-/** Returns an existing operation on double submission; validation happens inside the lock. */
 interface PushOptions {
   allowDirty?: boolean;
   expectedHead?: string | null;
   expectedBranch?: string | null;
 }
-export async function startPush(path: string, options: PushOptions = {}): Promise<PushOperation> {
-  const key = await keyFor(path);
-  assertWorktreeAvailable(path);
-  const existing = active.get(key);
-  if (existing) return existing;
-  const op: PushOperation = {
-    id: randomUUID(),
-    branch: null,
-    head: null,
-    status: 'running',
-    startedAt: Date.now(),
-    finishedAt: null,
-    error: null,
-    remotes: [],
-  };
-  active.set(key, op);
-  latest.set(key, op);
-  void execute(path, op, options)
-    .catch((cause: unknown) => {
-      op.error = cause instanceof Error ? cause.message : String(cause);
-      op.status = 'failed';
-    })
-    .finally(() => {
-      op.finishedAt = Date.now();
-      active.delete(key);
-      for (const listener of listeners) listener(path, op);
-    });
-  return op;
+
+/** Push operations of a server, at most one running per repository. */
+export class GitPushes {
+  private readonly listeners = new Set<(path: string, operation: PushOperation) => void>();
+  private readonly active = new Map<string, PushOperation>();
+  private readonly latest = new Map<string, PushOperation>();
+  private readonly gate: WorktreeGate;
+
+  constructor(gate: WorktreeGate) {
+    this.gate = gate;
+  }
+
+  onComplete(listener: (path: string, operation: PushOperation) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  async current(path: string): Promise<PushOperation | null> {
+    return this.latest.get(await keyFor(path)) ?? null;
+  }
+
+  /** Returns an existing operation on double submission; validation happens inside the lock. */
+  async start(path: string, options: PushOptions = {}): Promise<PushOperation> {
+    const key = await keyFor(path);
+    this.gate.assertAvailable(path);
+    const existing = this.active.get(key);
+    if (existing) return existing;
+    const op: PushOperation = {
+      id: randomUUID(),
+      branch: null,
+      head: null,
+      status: 'running',
+      startedAt: Date.now(),
+      finishedAt: null,
+      error: null,
+      remotes: [],
+    };
+    this.active.set(key, op);
+    this.latest.set(key, op);
+    void execute(path, op, options)
+      .catch((cause: unknown) => {
+        op.error = cause instanceof Error ? cause.message : String(cause);
+        op.status = 'failed';
+      })
+      .finally(() => {
+        op.finishedAt = Date.now();
+        this.active.delete(key);
+        for (const listener of this.listeners) listener(path, op);
+      });
+    return op;
+  }
 }
 
 async function execute(path: string, op: PushOperation, options: PushOptions): Promise<void> {

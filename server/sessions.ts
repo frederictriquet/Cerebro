@@ -23,7 +23,6 @@ import type { Agent, Mode, Project, Session, SessionDefaults } from './db.ts';
 import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError } from './db.ts';
 import type { AgentQuestion } from './questions.ts';
 import { archiveSessionWorktree } from './worktrees.ts';
-import { assertWorktreeAvailable, deferWorktreeInput } from './worktree-gate.ts';
 import {
   createWorkspace,
   createWorkspaceInContext,
@@ -33,7 +32,7 @@ import {
   type Workspace,
   type WorkspaceContext,
 } from './provenance.ts';
-import { assertEpicWorkspace, epicWorkspace, rememberEpicWorkspace, withEpicWorkspace } from './epic-workspace.ts';
+import type { Services } from './services.ts';
 import { findProcessesByArgument, isAlive, processTree, signalProcesses } from './proc.ts';
 
 // @xterm/headless is CommonJS at runtime despite exposing ESM-shaped typings.
@@ -203,6 +202,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export class SessionManager {
   readonly db: CerebroDatabase;
+  readonly services: Services;
   private readonly runtimes = new Map<string, Runtime>();
   private readonly deleting = new Set<string>();
   private readonly questions = new Map<string, AgentQuestion[]>();
@@ -215,8 +215,9 @@ export class SessionManager {
   /** Stop project-scoped background work and prevent new starts until removal finishes. */
   withProjectDeletion: (id: string, remove: () => Promise<void>) => Promise<void> = async (_id, remove) => remove();
 
-  constructor(db: CerebroDatabase) {
+  constructor(db: CerebroDatabase, services: Services) {
     this.db = db;
+    this.services = services;
   }
 
   async initialize(): Promise<void> {
@@ -272,7 +273,7 @@ export class SessionManager {
   ): Promise<Session> {
     const create = (): Promise<Session> =>
       this.createInContext(project, overrides, validate, contextPath, title, options);
-    return options.epicId ? withEpicWorkspace(this.db, options.epicId, create) : create();
+    return options.epicId ? this.services.epicWorkspaces.withPreparation(options.epicId, create) : create();
   }
 
   private async createInContext(
@@ -286,15 +287,15 @@ export class SessionManager {
     const current = this.db.getProject(project.id);
     if (current === null) throw new Error('Projet introuvable');
     // An explicit workspace (a copy to repair) is joined whatever the project's current preference.
-    const context = options.epicId ? epicWorkspace(this.db, options.epicId) : (options.workspace ?? null);
-    if (options.epicId && context) assertEpicWorkspace(this.db, context);
+    const context = options.epicId ? this.services.epicWorkspaces.current(options.epicId) : (options.workspace ?? null);
+    if (options.epicId && context) this.services.epicWorkspaces.assert(context);
     // Automated launches must not replace the user's form settings with generated instructions.
     const defaults =
       options.rememberDefaults === false
         ? resolveSessionDefaults(current.sessionDefaults, overrides)
         : this.rememberDefaults(project.id, overrides);
     const path = context?.path ?? (current.workspaceMode === 'shared' ? current.path : (contextPath ?? current.path));
-    assertWorktreeAvailable(path);
+    this.services.gate.assertAvailable(path);
     // A context inside an existing copy (next epic step) reuses it instead of copying the copy.
     const joined =
       context || current.workspaceMode === 'shared' || !contextPath ? null : workspaceAt(this.db, contextPath);
@@ -337,7 +338,7 @@ export class SessionManager {
           ? 'La copie de travail de cette conversation a été nettoyée automatiquement à sa fin, car elle ne contenait rien à conserver. La conversation reste consultable mais ne peut plus être reprise : Cerebro ne la reprend pas dans le dossier du projet.'
           : 'Le worktree a été supprimé ; la conversation reste consultable mais ne peut plus être reprise dans cet espace.',
       );
-    assertWorktreeAvailable(workspace?.path ?? project.path);
+    this.services.gate.assertAvailable(workspace?.path ?? project.path);
     const tuning = { model: oldSession.model, effort: oldSession.effort };
     return this.launch(
       project,
@@ -409,10 +410,11 @@ export class SessionManager {
               : await createWorkspace(this.db, id, project);
       cwd = workspace?.path ?? project.path;
       if (workspace?.removedAt) throw new Error('Le worktree de cette conversation a été supprimé.');
-      if (epicId && workspace) rememberEpicWorkspace(this.db, epicId, { path: workspace.path, mode: workspace.mode });
-      assertWorktreeAvailable(cwd);
+      if (epicId && workspace)
+        this.services.epicWorkspaces.remember(epicId, { path: workspace.path, mode: workspace.mode });
+      this.services.gate.assertAvailable(cwd);
       if (validate) await validate();
-      assertWorktreeAvailable(cwd);
+      this.services.gate.assertAvailable(cwd);
       if (!existsSync(cwd)) throw new Error(`Espace de session introuvable : ${cwd}`);
     } catch (cause) {
       this.finishSession(id, 1);
@@ -820,7 +822,7 @@ export class SessionManager {
     const cwd = workspaceFor(this.db, id)?.path ?? (origin ? this.db.getProject(origin.projectId)?.path : undefined);
     if (
       cwd &&
-      deferWorktreeInput(cwd, () => {
+      this.services.gate.deferInput(cwd, () => {
         this.writeInput(id, data);
       })
     )

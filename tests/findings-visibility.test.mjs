@@ -10,6 +10,7 @@ const root = mkdtempSync(join(tmpdir(), 'cerebro-findings-visibility-'));
 process.env.CEREBRO_DATA_DIR = root;
 const { CerebroDatabase } = await import('../server/db.ts');
 const { SessionManager } = await import('../server/sessions.ts');
+const { createServices } = await import('../server/services.ts');
 const { importFindings, saveReport } = await import('../server/findings.ts');
 const { parseEventsMessage, parseSession } = await import('../web/src/types.ts');
 const { isAwaiting, isDormant, needsAttention } = await import('../web/src/format.ts');
@@ -61,7 +62,7 @@ test('all session lists expose existing unimported findings across viewing, part
     assert.equal(db.listSessions().find((item) => item.id === session.id).pendingFindings, 3);
     assert.equal(db.listProjectSessions(project.id).find((item) => item.id === session.id).pendingFindings, 3);
     assert.equal(db.getSession(other.id).pendingFindings, 0);
-    const manager = new SessionManager(db);
+    const manager = new SessionManager(db, createServices(db));
     manager.seen(session.id);
     assert.equal(db.getSession(session.id).pendingFindings, 3);
     assert.equal(needsAttention(db.getSession(session.id)), true);
@@ -91,7 +92,7 @@ test('a review with pending findings stays visible and is excluded from the dorm
     const ordinary = createSession(db, project);
     const report = saveReport(db, review.id, { title: 'Review', findings: [finding('a')] });
     db.connection.exec('UPDATE sessions SET updated_at = 0');
-    const manager = new SessionManager(db);
+    const manager = new SessionManager(db, createServices(db));
     const deleted = [];
     t.mock.method(manager, 'delete', async (id) => {
       deleted.push(id);

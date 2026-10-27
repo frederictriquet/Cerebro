@@ -43,6 +43,9 @@ const {
 const { CouncilRuns, ANSWER_TIMEOUT_MS, REVIEW_TIMEOUT_MS, SYNTHESIS_TIMEOUT_MS } =
   await import('../server/council-runner.ts');
 const { SessionManager } = await import('../server/sessions.ts');
+const { Catalog } = await import('../server/catalog.ts');
+const catalog = new Catalog();
+const { createServices } = await import('../server/services.ts');
 const { UpdateManager } = await import('../server/updates.ts');
 const { PeerSync } = await import('../server/peers.ts');
 const { buildServer } = await import('../server/index.ts');
@@ -479,7 +482,7 @@ test('export Markdown : synthèse, avis, relectures puis classement', () => {
 
 test('réglages par défaut : toutes les personas cochées, agents en tourniquet', () => {
   const personas = BUILTIN_IDS.map((id) => persona(id));
-  const defaults = defaultCouncilSettings(personas, ['codex', 'grok']);
+  const defaults = defaultCouncilSettings(catalog, personas, ['codex', 'grok']);
   assert.deepEqual(defaults.defaultPersonaIds, BUILTIN_IDS);
   assert.deepEqual(
     BUILTIN_IDS.map((id) => defaults.assignments[id].agent),
@@ -489,18 +492,20 @@ test('réglages par défaut : toutes les personas cochées, agents en tourniquet
   assert.ok(Object.values(defaults.assignments).every((llm) => llm.model === null && llm.effort === 'high'));
   assert.equal(defaults.readProject, true);
   assert.equal(defaults.chairman.agent, 'codex');
-  assert.deepEqual(defaultCouncilSettings(personas, AGENTS).chairman, {
+  assert.deepEqual(defaultCouncilSettings(catalog, personas, AGENTS).chairman, {
     agent: 'claude',
     model: 'opus',
     effort: 'high',
   });
-  assert.ok(Object.values(defaultCouncilSettings(personas, []).assignments).every((llm) => llm.agent === 'claude'));
+  assert.ok(
+    Object.values(defaultCouncilSettings(catalog, personas, []).assignments).every((llm) => llm.agent === 'claude'),
+  );
   // Au-delà de 8 personas, seules les 8 premières sont cochées.
   const many = Array.from({ length: MAX_ADVISORS + 2 }, (_, i) => persona(`p${i}`));
-  assert.equal(defaultCouncilSettings(many, AGENTS).defaultPersonaIds.length, MAX_ADVISORS);
+  assert.equal(defaultCouncilSettings(catalog, many, AGENTS).defaultPersonaIds.length, MAX_ADVISORS);
   // Les réglages par défaut passent leur propre validation.
   // Validation : l'effort absent devient explicite (high, proposé par codex et grok).
-  const validated = validateCouncilSettings(defaults, personas, ['codex', 'grok']);
+  const validated = validateCouncilSettings(catalog, defaults, personas, ['codex', 'grok']);
   assert.equal(validated.error, undefined);
   assert.ok(Object.values(validated.settings.assignments).every((llm) => llm.effort === 'high'));
 });
@@ -663,7 +668,7 @@ test('conversion des réglages au format advisors[] (global et projet)', () => {
     });
     assert.equal(db.getProject(untouched.id).councilSettings, null);
     // Les réglages convertis sont valides.
-    assert.ok(validateCouncilSettings(db.getSetting('council'), personas, AGENTS).settings);
+    assert.ok(validateCouncilSettings(catalog, db.getSetting('council'), personas, AGENTS).settings);
   } finally {
     db.close();
   }
@@ -677,6 +682,7 @@ test('conversion des réglages au format advisors[] (global et projet)', () => {
 
   // Un seul conseiller : complété jusqu'à deux participants par défaut avec le catalogue.
   const single = convertLegacyCouncilSettings(
+    catalog,
     { advisors: [{ name: 'Seul', persona: 'Prompt Seul', agent: 'claude' }] },
     [persona('p1'), persona('p2')],
     7,
@@ -697,7 +703,7 @@ test('aller-retour des réglages globaux et de la surcharge projet', () => {
   const path = join(root, 'roundtrip.db');
   let db = new CerebroDatabase(path);
   assert.equal(db.getSetting('council'), null);
-  db.putSetting('council', defaultCouncilSettings(db.listPersonas(), AGENTS));
+  db.putSetting('council', defaultCouncilSettings(catalog, db.listPersonas(), AGENTS));
   db.putSetting('council', settings);
   const project = db.createProject('Projet', root);
   assert.deepEqual(db.updateProject(project.id, { councilSettings: settings }).councilSettings, settings);
@@ -823,11 +829,12 @@ test('runs du council : une sauvegarde tardive ne recrée pas de rapport pour un
 
 test('validation des réglages du council', () => {
   const personas = BUILTIN_IDS.map((id) => persona(id));
-  const error = (raw, agents = AGENTS) => validateCouncilSettings(raw, personas, agents).error;
+  const error = (raw, agents = AGENTS) => validateCouncilSettings(catalog, raw, personas, agents).error;
 
   // Normalisation : champs inconnus ignorés, model/effort absents = null, readProject absent = true.
   assert.deepEqual(
     validateCouncilSettings(
+      catalog,
       {
         assignments: { contrarian: { agent: 'codex', extra: 1 } },
         defaultPersonaIds: ['contrarian', 'executor'],
@@ -845,7 +852,7 @@ test('validation des réglages du council', () => {
       },
     },
   );
-  assert.deepEqual(validateCouncilSettings(settings, personas, AGENTS), { settings });
+  assert.deepEqual(validateCouncilSettings(catalog, settings, personas, AGENTS), { settings });
 
   for (const raw of [
     null,
@@ -863,8 +870,12 @@ test('validation des réglages du council', () => {
   assert.match(error({ ...settings, defaultPersonaIds: ['contrarian'] }), /2 à 8/);
   const many = Array.from({ length: MAX_ADVISORS + 1 }, (_, i) => persona(`p${i}`));
   assert.match(
-    validateCouncilSettings({ ...settings, defaultPersonaIds: many.map((p) => p.id) }, [...personas, ...many], AGENTS)
-      .error,
+    validateCouncilSettings(
+      catalog,
+      { ...settings, defaultPersonaIds: many.map((p) => p.id) },
+      [...personas, ...many],
+      AGENTS,
+    ).error,
     /2 à 8/,
   );
   assert.match(error({ ...settings, defaultPersonaIds: ['contrarian', 'absent'] }), /inconnu/);
@@ -890,7 +901,7 @@ test('validation des réglages du council', () => {
 test('résolution des participants d’un run', () => {
   const personas = BUILTIN_IDS.map((id) => persona(id));
   const advisor = (id, llm) => ({ personaId: id, ...llm, name: id, description: '', prompt: `Prompt ${id}` });
-  const resolve = (requested, agents) => resolveParticipants(settings, personas, requested, agents);
+  const resolve = (requested, agents) => resolveParticipants(catalog, settings, personas, requested, agents);
 
   // Sans demande : participants par défaut avec leurs assignations.
   assert.deepEqual(resolve(), {
@@ -941,6 +952,7 @@ test('résolution des participants d’un run', () => {
   // Une persona par défaut supprimée du catalogue est ignorée : il n'en reste qu'une.
   assert.match(
     resolveParticipants(
+      catalog,
       settings,
       personas.filter((p) => p.id !== 'outsider'),
     ).error,
@@ -1105,7 +1117,7 @@ function fakeInvoke(calls, fail = () => false) {
 }
 
 function councilRuns(db, calls, fail) {
-  const runs = new CouncilRuns(db);
+  const runs = new CouncilRuns(db, catalog);
   runs.invoke = fakeInvoke(calls, fail);
   runs.availableAgents = async () => AGENTS;
   const completed = [];
@@ -1377,7 +1389,7 @@ test('council : supprimer un projet annule et attend ses appels dans chaque phas
       );
       const calls = [];
       const { runs, completed } = councilRuns(db, calls);
-      const manager = new SessionManager(db);
+      const manager = new SessionManager(db, createServices(db));
       manager.withProjectDeletion = (id, remove) => runs.withProjectDeletion(id, remove);
       const reached = Promise.withResolvers();
       const releaseCalls = Promise.withResolvers();

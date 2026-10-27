@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { Catalog } from './catalog.ts';
 import { DATA_DIR } from './config.ts';
 import { convertLegacyCouncilSettings, DEFAULT_PERSONAS, isLegacyCouncilSettings, withoutPersona } from './council.ts';
 import type { CouncilRun, CouncilSettings, Persona, PersonaInput } from './council.ts';
@@ -420,6 +421,17 @@ export class CerebroDatabase {
     this.connection.exec(
       'CREATE TABLE IF NOT EXISTS session_workspaces (session_id TEXT PRIMARY KEY, data TEXT NOT NULL)',
     );
+    // Bumped by every write to session_workspaces, whichever code path writes it: caches derived from the table key on it.
+    this.connection.exec(`
+      CREATE TABLE IF NOT EXISTS table_versions (name TEXT PRIMARY KEY, version INTEGER NOT NULL);
+      INSERT OR IGNORE INTO table_versions (name, version) VALUES ('session_workspaces', 0);
+      CREATE TRIGGER IF NOT EXISTS session_workspaces_inserted AFTER INSERT ON session_workspaces
+        BEGIN UPDATE table_versions SET version = version + 1 WHERE name = 'session_workspaces'; END;
+      CREATE TRIGGER IF NOT EXISTS session_workspaces_updated AFTER UPDATE ON session_workspaces
+        BEGIN UPDATE table_versions SET version = version + 1 WHERE name = 'session_workspaces'; END;
+      CREATE TRIGGER IF NOT EXISTS session_workspaces_deleted AFTER DELETE ON session_workspaces
+        BEGIN UPDATE table_versions SET version = version + 1 WHERE name = 'session_workspaces'; END;
+    `);
     const taskColumns = this.connection.prepare('PRAGMA table_info(tasks)').all() as unknown as { name: string }[];
     if (!taskColumns.some((column) => column.name === 'epic_id')) {
       this.connection.exec('ALTER TABLE tasks ADD COLUMN epic_id TEXT REFERENCES epics(id) ON DELETE SET NULL');
@@ -532,10 +544,11 @@ export class CerebroDatabase {
   }
 
   // Réglages enregistrés au format `advisors[]` (conseillers embarqués) : passage au catalogue de personas.
+  // Runs when the database opens, before any discovery: models resolve against the fallback lists.
   private convertLegacyCouncilSettings(): void {
     const convert = (raw: unknown): CouncilSettings | null => {
       if (!isLegacyCouncilSettings(raw)) return null;
-      const { settings, created } = convertLegacyCouncilSettings(raw, this.listPersonas());
+      const { settings, created } = convertLegacyCouncilSettings(new Catalog(), raw, this.listPersonas());
       const insert = this.connection.prepare(
         'INSERT INTO personas (id, name, description, prompt, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
       );

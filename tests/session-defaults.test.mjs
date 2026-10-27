@@ -18,11 +18,12 @@ delete process.env.CEREBRO_SLACK_USER;
 
 const { CerebroDatabase, DEFAULT_SESSION_DEFAULTS } = await import('../server/db.ts');
 const { SessionManager } = await import('../server/sessions.ts');
+const { createServices } = await import('../server/services.ts');
 const { EpicRunner } = await import('../server/epic-runner.ts');
 const { CommandExecutor } = await import('../server/commands.ts');
 const { SlackNotifier } = await import('../server/slack.ts');
 const { buildAgentCommand } = await import('../server/agents.ts');
-const { catalogFor } = await import('../server/catalog.ts');
+const { Catalog } = await import('../server/catalog.ts');
 const { UpdateManager } = await import('../server/updates.ts');
 const { PeerSync } = await import('../server/peers.ts');
 const { buildServer } = await import('../server/index.ts');
@@ -35,11 +36,13 @@ const saved = {
   effort: 'xhigh',
   prompt: 'Prompt mémorisé\nDeuxième ligne',
 };
-catalogFor('codex').models.push({
-  value: saved.model,
-  label: saved.model,
-  description: '',
-  efforts: ['high', 'xhigh'],
+// Modèle codex découvert, comme le fournirait `codex debug models`.
+const catalog = new Catalog({
+  codex: {
+    models: [{ value: saved.model, label: saved.model, description: '', efforts: ['high', 'xhigh'] }],
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    defaultModel: null,
+  },
 });
 mock.method(UpdateManager.prototype, 'start', () => {});
 mock.method(PeerSync.prototype, 'sync', async function () {
@@ -136,7 +139,7 @@ test('création avec champs omis, remplacement du prompt et remise au défaut ex
   try {
     const project = db.createProject('Projet', root);
     db.setSessionDefaults(project.id, saved);
-    const manager = new SessionManager(db);
+    const manager = new SessionManager(db, createServices(db));
     const events = [];
     manager.onEvent((event) => events.push(event));
     // Le Project en mémoire précède l'enregistrement des réglages : la base fait foi.
@@ -166,9 +169,9 @@ test('création avec champs omis, remplacement du prompt et remise au défaut ex
 
 test('les étapes automatiques d’une epic préservent le formulaire et transmettent leur prompt aux sessions', async () => {
   const db = new CerebroDatabase(':memory:');
-  const manager = new SessionManager(db);
-  const commands = new CommandExecutor(db);
-  const runner = new EpicRunner(db, manager, commands, () => {});
+  const manager = new SessionManager(db, createServices(db));
+  const commands = new CommandExecutor(db, manager.services.gate);
+  const runner = new EpicRunner(db, manager, commands, () => {}, manager.services.epicWorkspaces);
   const events = [];
   manager.onEvent((event) => events.push(event));
   try {
@@ -216,7 +219,7 @@ test('les étapes automatiques d’une epic préservent le formulaire et transme
 
 test('Slack hérite des réglages, préserve le prompt du formulaire et mémorise un changement explicite d’agent', async () => {
   const db = new CerebroDatabase(':memory:');
-  const manager = new SessionManager(db);
+  const manager = new SessionManager(db, createServices(db));
   const peers = {
     ready: Promise.resolve(),
     generalResponder: () => true,
@@ -275,7 +278,7 @@ test('Slack hérite des réglages, préserve le prompt du formulaire et mémoris
 });
 
 test('API : réglages avant lancement, rechargement, backlog et validation des changements', async () => {
-  let app = await buildServer();
+  let app = await buildServer({ catalog });
   const send = (method, url, payload) => app.inject({ method, url, ...(payload === undefined ? {} : { payload }) });
   try {
     let response = await send('POST', '/api/projects', { name: 'API', path: root });
@@ -285,7 +288,7 @@ test('API : réglages avant lancement, rechargement, backlog et validation des c
     assert.equal(response.statusCode, 200);
     assert.deepEqual(parseProject(response.json()).sessionDefaults, saved);
     await app.close();
-    app = await buildServer();
+    app = await buildServer({ catalog });
     response = await send('GET', '/api/projects');
     assert.deepEqual(response.json().find((p) => p.id === id).sessionDefaults, saved);
 
@@ -342,7 +345,7 @@ test('API commit plan executes without launching an agent', async () => {
   git('config', 'user.email', 'test@example.com');
   git('config', 'user.name', 'Test');
   writeFileSync(join(repo, 'file'), 'new\n');
-  const app = await buildServer();
+  const app = await buildServer({ catalog });
   try {
     const project = (
       await app.inject({ method: 'POST', url: '/api/projects', payload: { name: 'Git API', path: repo } })
@@ -371,7 +374,7 @@ test('API commit plan executes without launching an agent', async () => {
 });
 
 test('API command tasks never launch an agent and preserve the explicit validation distinction', async () => {
-  const app = await buildServer();
+  const app = await buildServer({ catalog });
   try {
     const p = (
       await app.inject({ method: 'POST', url: '/api/projects', payload: { name: 'Commands', path: root } })
@@ -417,7 +420,7 @@ test('API command tasks never launch an agent and preserve the explicit validati
 });
 
 test('API epic scheduler persists the current step and remains compatible with backlog --done', async () => {
-  let app = await buildServer();
+  let app = await buildServer({ catalog });
   const send = (method, url, payload) => app.inject({ method, url, ...(payload === undefined ? {} : { payload }) });
   try {
     const p = (await send('POST', '/api/projects', { name: 'Scheduled', path: root })).json();
@@ -442,7 +445,7 @@ test('API epic scheduler persists the current step and remains compatible with b
       title: epic.title,
     });
     await app.close();
-    app = await buildServer();
+    app = await buildServer({ catalog });
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(launches.length, before + 1);
     const done = await app.inject({
@@ -462,7 +465,7 @@ test('API epic scheduler persists the current step and remains compatible with b
 });
 
 test('API task launches retain their epic through retry and backlog cleanup', async () => {
-  const app = await buildServer();
+  const app = await buildServer({ catalog });
   const send = (method, url, payload) => app.inject({ method, url, ...(payload === undefined ? {} : { payload }) });
   try {
     const project = (await send('POST', '/api/projects', { name: 'Session epic', path: root })).json();

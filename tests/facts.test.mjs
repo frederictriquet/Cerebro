@@ -16,6 +16,7 @@ const { answerFactQuestion, parseFactQuery, renderFacts } = await import('../ser
 const { collectMachines } = await import('../server/state.ts');
 const { SlackNotifier } = await import('../server/slack.ts');
 const { SessionManager } = await import('../server/sessions.ts');
+const { createServices } = await import('../server/services.ts');
 const db = new CerebroDatabase(':memory:');
 const project = db.createProject('Demo', root);
 const other = db.createProject('Autre', root);
@@ -111,7 +112,7 @@ test('each supported factual Slack route replies without an agent or SDK request
   // A mistakenly invoked LLM fallback cannot find Claude (or launch an actual model).
   const originalPath = process.env.PATH;
   process.env.PATH = root;
-  const notifier = new SlackNotifier(new SessionManager(db), db, {
+  const notifier = new SlackNotifier(new SessionManager(db, createServices(db)), db, {
     ready: Promise.resolve(),
     generalResponder: () => true,
   });

@@ -8,9 +8,9 @@ import { promisify } from 'node:util';
 import type { CerebroDatabase } from './db.ts';
 import type { CommitSettings } from './db.ts';
 import type { Workspace } from './provenance.ts';
-import { currentPush } from './git-push.ts';
 import { sharedDependencyLinks } from './git-plan.ts';
-import { assertWorktreeAvailable, canonicalWorktreePath, lockWorktrees } from './worktree-gate.ts';
+import type { Services } from './services.ts';
+import { canonicalWorktreePath } from './worktree-gate.ts';
 import { workspaceFileSignature } from './workspace-files.ts';
 
 const exec = promisify(execFile);
@@ -438,6 +438,7 @@ function changedFiles(status: string): string[] {
 
 export class WorktreeManager {
   private db: CerebroDatabase;
+  private services: Services;
   private syncing: Promise<string[]> | null = null;
   private listings = new Map<string, Promise<WorktreeInventory>>();
   private plans = new Map<string, { id: string; kind: 'merge' | 'remove'; fingerprint: string; expires: number }>();
@@ -453,8 +454,9 @@ export class WorktreeManager {
   private cleanupQueued = new Set<string>();
   /** Sessions whose copy was just removed: their `worktree` field changed. */
   onSessionsChanged: (ids: string[]) => void = () => {};
-  constructor(db: CerebroDatabase) {
+  constructor(db: CerebroDatabase, services: Services) {
     this.db = db;
+    this.services = services;
     for (const operation of this.operations())
       if (operation.status === 'running') {
         operation.status = 'interrupted';
@@ -852,7 +854,8 @@ export class WorktreeManager {
         );
       if (entry.locked || existsSync(join(gitDir, 'index.lock')))
         commonBlockers.push('Worktree ou index verrouillé par Git.');
-      if ((await currentPush(record.path))?.status === 'running') commonBlockers.push('Un push est en cours.');
+      if ((await this.services.pushes.current(record.path))?.status === 'running')
+        commonBlockers.push('Un push est en cours.');
       view.removeBlockers = [...commonBlockers, ...this.activity(record.path, true)];
       if (view.ahead === null || view.ahead > 0)
         view.removeBlockers.push('Des commits restent à intégrer, ou leur intégration ne peut pas être vérifiée.');
@@ -950,7 +953,7 @@ export class WorktreeManager {
     if (!view.targets.some((target) => target.branch === branch))
       throw new WorktreeError('Choisissez une branche ouverte dans un autre worktree.', 400);
     if (view.operation?.status === 'running') throw new WorktreeError('Une opération utilise ce worktree.');
-    assertWorktreeAvailable(view.path);
+    this.services.gate.assertAvailable(view.path);
     const record = this.record(id);
     record.targetBranch = branch;
     store(this.db, record);
@@ -1150,7 +1153,8 @@ export class WorktreeManager {
     if (view.operation?.status === 'running') throw new WorktreeError('Une opération utilise ce worktree.');
     const busy = this.activity(view.path, false);
     if (busy.length) throw new WorktreeError(busy.join('\n'));
-    if ((await currentPush(view.path))?.status === 'running') throw new WorktreeError('Un push est en cours.');
+    if ((await this.services.pushes.current(view.path))?.status === 'running')
+      throw new WorktreeError('Un push est en cours.');
   }
   /**
    * Merges the target into the copy, so conflicts are resolved in the copy rather than in the target's folder.
@@ -1166,7 +1170,7 @@ export class WorktreeManager {
       );
     if (!view.targetHead || !view.behind)
       throw new WorktreeError('La copie contient déjà tous les commits de la cible.');
-    const release = lockWorktrees([view.path]);
+    const release = this.services.gate.lock([view.path]);
     try {
       const message = `Copie : intégrer ${branchLabel(view.targetBranch)}`;
       const clean = await git(view.path, ['merge', '--no-ff', '--no-commit', '-m', message, view.targetHead]).then(
@@ -1187,7 +1191,7 @@ export class WorktreeManager {
     const view = await this.get(id);
     await this.assertEditable(view);
     if (!view.mergeInProgress) throw new WorktreeError('Aucune mise à jour en cours dans cette copie.');
-    const release = lockWorktrees([view.path]);
+    const release = this.services.gate.lock([view.path]);
     try {
       await git(view.path, ['merge', '--abort']);
       return await this.inspect(this.record(id));
@@ -1200,7 +1204,7 @@ export class WorktreeManager {
     const view = await this.get(id);
     await this.assertEditable(view);
     if (!view.mergeInProgress) throw new WorktreeError('Aucune mise à jour en cours dans cette copie.');
-    const release = lockWorktrees([view.path]);
+    const release = this.services.gate.lock([view.path]);
     try {
       const remaining: string[] = [];
       for (const file of view.conflicts) {
@@ -1491,7 +1495,7 @@ export class WorktreeManager {
     const busy = this.activity(view.path, false);
     if (busy.length) throw new WorktreeError(busy.join('\n'));
     const workspace = this.startingWorkspace(view);
-    const release = lockWorktrees([view.path]);
+    const release = this.services.gate.lock([view.path]);
     const temporary = await mkdtemp(join(tmpdir(), 'cerebro-starting-'));
     try {
       const plan = await this.planStartingContent(view, workspace, temporary, confirmed);
@@ -1630,7 +1634,10 @@ export class WorktreeManager {
     const blockers = kind === 'merge' ? view.mergeBlockers : view.removeBlockers;
     if (blockers.length) throw new WorktreeError(blockers.join('\n'));
     if (this.plans.get(token as string) !== plan) throw new WorktreeError('Sélection déjà utilisée.');
-    const release = lockWorktrees([view.path, ...(kind === 'merge' && view.targetPath ? [view.targetPath] : [])]);
+    const release = this.services.gate.lock([
+      view.path,
+      ...(kind === 'merge' && view.targetPath ? [view.targetPath] : []),
+    ]);
     this.plans.delete(token as string);
     const operation: WorktreeOperation = {
       id: randomUUID(),

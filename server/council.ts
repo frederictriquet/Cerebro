@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AGENTS } from './agents.ts';
-import { parseTuning } from './catalog.ts';
+import type { Catalog } from './catalog.ts';
 import type { Agent, Effort } from './db.ts';
 
 // Une persona du catalogue de la machine : un angle de réflexion, indépendant de l'agent qui la joue.
@@ -158,23 +158,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function parseLlm(raw: Record<string, unknown>, agents: readonly Agent[], label: string): Llm | string {
+function parseLlm(
+  catalog: Catalog,
+  raw: Record<string, unknown>,
+  agents: readonly Agent[],
+  label: string,
+): Llm | string {
   if (!agents.includes(raw.agent as Agent)) return `${label} : agent inconnu ou indisponible`;
   const agent = raw.agent as Agent;
   if ((raw.model ?? null) !== null && typeof raw.model !== 'string') return `${label} : modèle invalide`;
-  const tuning = parseTuning(agent, { model: raw.model ?? null, effort: raw.effort ?? null });
+  const tuning = catalog.parseTuning(agent, { model: raw.model ?? null, effort: raw.effort ?? null });
   if (tuning === null) return `${label} : modèle ou effort invalide pour cet agent`;
   return { agent, ...tuning };
 }
 
 // Agent without an explicit choice: its Cerebro default model and effort, as parseTuning resolves them.
-function defaultLlm(agent: Agent): Llm {
-  const tuning = parseTuning(agent, {});
+function defaultLlm(catalog: Catalog, agent: Agent): Llm {
+  const tuning = catalog.parseTuning(agent, {});
   return { agent, model: tuning?.model ?? null, effort: tuning?.effort ?? null };
 }
 
-function defaultChairman(agents: readonly Agent[]): Llm {
-  return defaultLlm(agents.length === 0 || agents.includes('claude') ? 'claude' : agents[0]!);
+function defaultChairman(catalog: Catalog, agents: readonly Agent[]): Llm {
+  return defaultLlm(catalog, agents.length === 0 || agents.includes('claude') ? 'claude' : agents[0]!);
 }
 
 // Complète les participants par défaut avec les premières personas du catalogue jusqu'au minimum.
@@ -189,6 +194,7 @@ function withMinimum(ids: string[], personas: readonly Persona[]): string[] {
 
 // Toutes les personas cochées, réparties en tourniquet sur les agents disponibles ; le chairman est claude.
 export function defaultCouncilSettings(
+  catalog: Catalog,
   personas: readonly Persona[],
   availableAgents: readonly Agent[],
 ): CouncilSettings {
@@ -196,16 +202,17 @@ export function defaultCouncilSettings(
   const selected = personas.slice(0, MAX_ADVISORS);
   return {
     assignments: Object.fromEntries(
-      personas.map((persona, index) => [persona.id, defaultLlm(agents[index % agents.length]!)]),
+      personas.map((persona, index) => [persona.id, defaultLlm(catalog, agents[index % agents.length]!)]),
     ),
     defaultPersonaIds: selected.map((persona) => persona.id),
-    chairman: defaultChairman(agents),
+    chairman: defaultChairman(catalog, agents),
     readProject: true,
   };
 }
 
 // Valide et normalise des réglages reçus du client ; `agents` : agents acceptés (connus ou disponibles).
 export function validateCouncilSettings(
+  catalog: Catalog,
   raw: unknown,
   personas: readonly Persona[],
   agents: readonly Agent[],
@@ -220,7 +227,7 @@ export function validateCouncilSettings(
     if (persona === undefined) return { error: `Persona inconnue : ${personaId}` };
     const label = `Persona « ${persona.name} »`;
     if (!isRecord(entry)) return { error: `${label} : réglage invalide` };
-    const llm = parseLlm(entry, agents, label);
+    const llm = parseLlm(catalog, entry, agents, label);
     if (typeof llm === 'string') return { error: llm };
     assignments[personaId] = llm;
   }
@@ -233,7 +240,7 @@ export function validateCouncilSettings(
   if (defaultPersonaIds.length < MIN_ADVISORS || defaultPersonaIds.length > MAX_ADVISORS) {
     return { error: `Un council compte de ${MIN_ADVISORS} à ${MAX_ADVISORS} conseillers` };
   }
-  const chairman = parseLlm(raw.chairman, agents, 'Chairman');
+  const chairman = parseLlm(catalog, raw.chairman, agents, 'Chairman');
   if (typeof chairman === 'string') return { error: chairman };
   return { settings: { assignments, defaultPersonaIds, chairman, readProject: raw.readProject !== false } };
 }
@@ -241,6 +248,7 @@ export function validateCouncilSettings(
 // Participants d'un run : ceux demandés (agent/modèle/effort facultatifs), sinon les participants par
 // défaut ; un participant sans agent prend l'assignation de sa persona, à défaut l'agent du chairman.
 export function resolveParticipants(
+  catalog: Catalog,
   settings: CouncilSettings,
   personas: readonly Persona[],
   requested?: unknown,
@@ -262,8 +270,8 @@ export function resolveParticipants(
     if (persona === undefined) return { error: `${label} : persona inconnue` };
     if (advisors.some((advisor) => advisor.personaId === persona.id)) return { error: `${label} : persona en double` };
     let llm: Llm | string;
-    if ((entry.agent ?? null) !== null) llm = parseLlm(entry, agents, label);
-    else llm = settings.assignments[persona.id] ?? defaultLlm(settings.chairman.agent);
+    if ((entry.agent ?? null) !== null) llm = parseLlm(catalog, entry, agents, label);
+    else llm = settings.assignments[persona.id] ?? defaultLlm(catalog, settings.chairman.agent);
     if (typeof llm === 'string') return { error: llm };
     advisors.push({
       personaId: persona.id,
@@ -360,38 +368,39 @@ export function isLegacyCouncilSettings(raw: unknown): raw is Record<string, unk
 // Réglages enregistrés avant le catalogue (conseillers embarqués `advisors[]`) : chaque texte de persona
 // absent du catalogue y est ajouté, puis les conseillers deviennent assignments + participants par défaut.
 export function convertLegacyCouncilSettings(
+  catalog: Catalog,
   raw: Record<string, unknown> & { advisors: unknown[] },
   personas: readonly Persona[],
   now = Date.now(),
 ): { settings: CouncilSettings; created: Persona[] } {
-  const catalog = [...personas];
+  const known = [...personas];
   const created: Persona[] = [];
   const assignments: Record<string, Llm> = {};
   const defaultPersonaIds: string[] = [];
   for (const entry of raw.advisors) {
     if (!isRecord(entry) || typeof entry.persona !== 'string' || entry.persona.trim() === '') continue;
     const prompt = entry.persona.trim().slice(0, MAX_PERSONA_PROMPT_LENGTH);
-    let persona = catalog.find((candidate) => candidate.prompt.trim() === prompt);
+    let persona = known.find((candidate) => candidate.prompt.trim() === prompt);
     if (persona === undefined) {
       const name =
         typeof entry.name === 'string' && entry.name.trim() !== ''
           ? entry.name.trim().slice(0, MAX_PERSONA_NAME_LENGTH)
           : 'Conseiller';
       persona = { id: randomUUID(), name, description: '', prompt, builtin: false, createdAt: now, updatedAt: now };
-      catalog.push(persona);
+      known.push(persona);
       created.push(persona);
     }
-    const llm = parseLlm(entry, AGENTS, '');
-    assignments[persona.id] = typeof llm === 'string' ? defaultLlm('claude') : llm;
+    const llm = parseLlm(catalog, entry, AGENTS, '');
+    assignments[persona.id] = typeof llm === 'string' ? defaultLlm(catalog, 'claude') : llm;
     if (!defaultPersonaIds.includes(persona.id) && defaultPersonaIds.length < MAX_ADVISORS)
       defaultPersonaIds.push(persona.id);
   }
-  const chairman = isRecord(raw.chairman) ? parseLlm(raw.chairman, AGENTS, '') : '';
+  const chairman = isRecord(raw.chairman) ? parseLlm(catalog, raw.chairman, AGENTS, '') : '';
   return {
     settings: {
       assignments,
-      defaultPersonaIds: withMinimum(defaultPersonaIds, catalog),
-      chairman: typeof chairman === 'string' ? defaultChairman(AGENTS) : chairman,
+      defaultPersonaIds: withMinimum(defaultPersonaIds, known),
+      chairman: typeof chairman === 'string' ? defaultChairman(catalog, AGENTS) : chairman,
       readProject: raw.readProject !== false,
     },
     created,

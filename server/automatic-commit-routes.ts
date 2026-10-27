@@ -2,16 +2,17 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { AutomaticCommits, type AutomaticCommitContext } from './automatic-commits.ts';
 import { DEFAULT_COMMIT_SETTINGS, type CerebroDatabase } from './db.ts';
 import { workspaceFor } from './provenance.ts';
-import { prepareCommit } from './git-plan.ts';
-import { executeSessionCommit, prepareSessionGit, sessionGitContext } from './session-git.ts';
+import type { Services } from './services.ts';
+import { sessionGitContext } from './session-git.ts';
 import { WorktreeError, type WorktreeManager } from './worktrees.ts';
 
 export function registerAutomaticCommitRoutes(
   app: FastifyInstance,
   db: CerebroDatabase,
   worktrees: WorktreeManager,
+  services: Services,
 ): AutomaticCommits {
-  const manager = new AutomaticCommits(db);
+  const manager = new AutomaticCommits(db, services);
   const attempt = async (reply: FastifyReply, run: () => Promise<unknown>, status = 200): Promise<unknown> => {
     try {
       return reply.code(status).send(await run());
@@ -46,8 +47,8 @@ export function registerAutomaticCommitRoutes(
         projectId: project.id,
         sessionId: id,
         settings: project.commitSettings,
-        prepare: () => prepareSessionGit(db, id),
-        execute: (plan) => executeSessionCommit(id, plan),
+        prepare: () => services.sessionGit.prepare(id),
+        execute: (plan) => services.sessionGit.executeCommit(id, plan),
       };
     },
     worktrees: async (id) => {
@@ -64,12 +65,12 @@ export function registerAutomaticCommitRoutes(
         settings: project?.commitSettings ?? view.commitSettings ?? { ...DEFAULT_COMMIT_SETTINGS },
       };
       if (view.session) {
-        context.prepare = () => prepareSessionGit(db, view.session!.id);
-        context.execute = (plan) => executeSessionCommit(view.session!.id, plan);
+        context.prepare = () => services.sessionGit.prepare(view.session!.id);
+        context.execute = (plan) => services.sessionGit.executeCommit(view.session!.id, plan);
       } else if (view.sessionId) {
         const workspace = workspaceFor(db, view.sessionId);
         context.prepare = async () => {
-          const snapshot = await prepareCommit(view.path, workspace ?? view);
+          const snapshot = await services.git.prepareCommit(view.path, workspace ?? view);
           return {
             ...snapshot,
             files: snapshot.files.map((file) =>

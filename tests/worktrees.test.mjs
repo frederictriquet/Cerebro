@@ -23,7 +23,7 @@ const { CerebroDatabase } = await import('../server/db.ts');
 const { createWorkspace, joinWorkspace, sessionProvenance, workspaceFor } = await import('../server/provenance.ts');
 const { WorktreeManager, rememberWorktree } = await import('../server/worktrees.ts');
 const { SessionManager } = await import('../server/sessions.ts');
-const { assertWorktreeAvailable, deferWorktreeInput, lockWorktrees } = await import('../server/worktree-gate.ts');
+const { createServices } = await import('../server/services.ts');
 const git = (path, ...args) =>
   execFileSync('git', ['-C', path, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -63,7 +63,8 @@ async function fixture(run, initialDirty = false) {
     'token',
   );
   const workspace = await createWorkspace(db, id, project);
-  let manager = new WorktreeManager(db);
+  let services = createServices(db);
+  let manager = new WorktreeManager(db, services);
   assert.equal(lstatSync(join(workspace.path, 'node_modules')).isSymbolicLink(), true);
   const view = async () => {
     const listing = await manager.list(project.id);
@@ -103,11 +104,15 @@ async function fixture(run, initialDirty = false) {
     get manager() {
       return manager;
     },
+    get services() {
+      return services;
+    },
     restart: async () => {
       await manager.shutdown();
       db.close();
       db = new CerebroDatabase(join(directory, 'db.sqlite'));
-      manager = new WorktreeManager(db);
+      services = createServices(db);
+      manager = new WorktreeManager(db, services);
     },
   };
   try {
@@ -204,7 +209,7 @@ test('deleting a conversation and then its project retains files and globally di
   fixture(async (f) => {
     writeFileSync(join(f.workspace.path, 'uncommitted'), 'valuable\n');
     f.commit();
-    const sessions = new SessionManager(f.db);
+    const sessions = new SessionManager(f.db, f.services);
     await sessions.delete(f.id);
     let list = await f.manager.list(f.project.id);
     let own = list.worktrees.find((w) => w.sessionId === f.id);
@@ -326,7 +331,7 @@ test('removal requires integration, no local/ignored files and no live session; 
     const result = (await f.manager.list()).worktrees;
     assert.ok(!result.some((w) => w.id === own.id));
     assert.equal(f.db.getSession(f.id).title, 'Conversation');
-    const sessions = new SessionManager(f.db);
+    const sessions = new SessionManager(f.db, f.services);
     await assert.rejects(sessions.resume(f.id), /supprimé/);
   }));
 
@@ -334,7 +339,7 @@ test('an integrated orphan can remove its shared dependency link without touchin
   fixture(async (f) => {
     const own = await f.view();
     f.db.updateSession(f.id, { status: 'exited' });
-    await new SessionManager(f.db).delete(f.id);
+    await new SessionManager(f.db, f.services).delete(f.id);
     assert.equal(f.db.getSession(f.id), null);
     assert.equal(lstatSync(join(own.path, 'node_modules')).isSymbolicLink(), true);
     const plan = await f.manager.prepare(own.id, 'remove');
@@ -360,10 +365,10 @@ test('merges serialize actions, defer interactive input, and obey hooks', async 
     const own = await f.view();
     const p = await f.manager.prepare(own.id, 'merge');
     const operation = await f.manager.start(own.id, 'merge', p.token);
-    assert.throws(() => assertWorktreeAvailable(own.path), /opération Git/);
+    assert.throws(() => f.services.gate.assertAvailable(own.path), /opération Git/);
     let delivered = false;
     assert.equal(
-      deferWorktreeInput(own.path, () => {
+      f.services.gate.deferInput(own.path, () => {
         delivered = true;
       }),
       true,
@@ -373,7 +378,7 @@ test('merges serialize actions, defer interactive input, and obey hooks', async 
     assert.equal(result.status, 'failed');
     assert.match(result.output, /refused/);
     assert.equal(delivered, true);
-    assert.doesNotThrow(() => assertWorktreeAvailable(own.path));
+    assert.doesNotThrow(() => f.services.gate.assertAvailable(own.path));
   }));
 
 test('target branch is explicit and never follows an unrelated checkout automatically', async () =>
@@ -440,7 +445,7 @@ test('resume after merge keeps the same conversation and cwd (fake CLI, no model
     writeFileSync(join(bin, 'codex'), `#!/bin/sh\npwd > '${captured}'\nexec /bin/sleep 2\n`, { mode: 0o755 });
     const previous = process.env.PATH;
     process.env.PATH = `${bin}:${previous}`;
-    const sessions = new SessionManager(f.db);
+    const sessions = new SessionManager(f.db, f.services);
     try {
       const resumed = await sessions.resume(f.id);
       assert.equal(resumed.id, f.id);
@@ -464,7 +469,7 @@ test('legacy session workspace records are backfilled before deletion and retain
     f.db.connection.prepare('UPDATE session_workspaces SET data=? WHERE session_id=?').run(JSON.stringify(old), f.id);
     f.db.updateSession(f.id, { title: 'Renamed conversation' });
     f.db.updateProject(f.project.id, { name: 'Renamed project' });
-    await new SessionManager(f.db).deleteProject(f.project.id);
+    await new SessionManager(f.db, f.services).deleteProject(f.project.id);
     await f.restart();
     const own = (await f.manager.list()).worktrees.find((w) => w.sessionId === f.id);
     assert.ok(own);
@@ -507,7 +512,7 @@ test('unavailable registered worktrees remain visible when their conversation is
     const moved = f.workspace.root + '-temporarily-moved';
     renameSync(f.workspace.root, moved);
     try {
-      await new SessionManager(f.db).delete(f.id);
+      await new SessionManager(f.db, f.services).delete(f.id);
       const own = (await f.manager.list()).worktrees.find((w) => w.sessionId === f.id);
       assert.ok(own);
       assert.equal(own.session, null);
@@ -523,9 +528,9 @@ test('symlink aliases cannot bypass activity checks or the worktree lease', asyn
   fixture(async (f) => {
     const alias = join(root, randomUUID() + '-alias');
     symlinkSync(f.workspace.root, alias, 'dir');
-    const release = lockWorktrees([f.workspace.root]);
+    const release = f.services.gate.lock([f.workspace.root]);
     try {
-      assert.throws(() => assertWorktreeAvailable(alias), /opération Git/);
+      assert.throws(() => f.services.gate.assertAvailable(alias), /opération Git/);
     } finally {
       release();
     }
@@ -557,7 +562,7 @@ test('inherited dirty files and ignored dependencies are not presented as new co
     assert.deepEqual(own.changesSinceCreation.files, ['file', 'new']);
     assert.equal(own.changesSinceCreation.needsReviewCount, 1);
     const index = readFileSync(join(f.repo, '.git/index'));
-    await new SessionManager(f.db).delete(f.id);
+    await new SessionManager(f.db, f.services).delete(f.id);
     await f.restart();
     own = await f.view();
     assert.equal(own.session, null);
@@ -611,7 +616,7 @@ test('an epic copy shared by several steps stays one entry and its removal reach
     assert.equal(existsSync(own.path), false);
     assert.ok(workspaceFor(f.db, f.id).removedAt);
     assert.ok(workspaceFor(f.db, step).removedAt);
-    await assert.rejects(new SessionManager(f.db).resume(step), /supprimé/);
+    await assert.rejects(new SessionManager(f.db, f.services).resume(step), /supprimé/);
   }));
 test('discarding the inherited content restores only files untouched since the copy, then integration proceeds', async () =>
   fixture(async (f) => {
@@ -640,7 +645,7 @@ test('discarding the inherited content restores only files untouched since the c
 
 // Automatic cleanup at the end of a conversation. The server wires SessionManager.onSessionReleased to releaseSession.
 function wire(f) {
-  const sessions = new SessionManager(f.db);
+  const sessions = new SessionManager(f.db, f.services);
   const released = [];
   sessions.onSessionReleased = (id, root) => released.push(f.manager.releaseSession(id, root));
   return { sessions, settled: () => Promise.all(released) };
@@ -829,7 +834,7 @@ test('local edits, unintegrated commits, ignored files and concurrent uses block
     await joinWorkspace(f.db, step, f.workspace);
     await kept(/Session Next step/);
     f.db.updateSession(step, { status: 'exited' });
-    const release = lockWorktrees([own.path]);
+    const release = f.services.gate.lock([own.path]);
     try {
       await kept(/opération Git/);
     } finally {
@@ -965,7 +970,7 @@ test('removing the starting content keeps only the work done since the copy, fou
     assert.deepEqual(own.startingContent, []);
     // The conversation's change is now attributed to the copy and can be committed automatically.
     assert.equal(
-      (await sessionProvenance(f.db, f.id)).changes.find((change) => change.path === 'doc').certainty,
+      (await sessionProvenance(f.db, f.services.git, f.id)).changes.find((change) => change.path === 'doc').certainty,
       'workspace',
     );
   }, projectWithEditedDocument(true)));
@@ -995,7 +1000,7 @@ test('when the target received the starting content, the copy is first updated w
     assert.equal(git(copy, 'rev-list', '--parents', '-n', '1', 'HEAD').split(' ').length, 3);
     assert.equal(git(copy, 'rev-parse', 'HEAD^1'), before);
     assert.deepEqual(git(copy, 'diff', '--name-only', 'HEAD').split('\n'), ['doc']);
-    const provenance = await sessionProvenance(f.db, f.id);
+    const provenance = await sessionProvenance(f.db, f.services.git, f.id);
     assert.doesNotMatch(provenance.warning, /incertaine/);
     assert.equal(provenance.changes.find((change) => change.path === 'doc').certainty, 'workspace');
     git(copy, 'commit', '-qam', 'conversation');
@@ -1052,7 +1057,7 @@ test('a file whose starting content was already taken out is settled unchanged a
     assert.deepEqual(own.startingContent, []);
     assert.equal(own.changesSinceCreation.needsReviewCount, 0);
     assert.equal(
-      (await sessionProvenance(f.db, f.id)).changes.find((change) => change.path === 'doc').certainty,
+      (await sessionProvenance(f.db, f.services.git, f.id)).changes.find((change) => change.path === 'doc').certainty,
       'workspace',
     );
   }, projectWithEditedDocument()));
@@ -1103,7 +1108,7 @@ test('conflicts with the target are forecast, then resolved in the copy by updat
     assert.equal(own.mergeInProgress, false);
     assert.equal(own.behind, 0);
     assert.equal(own.dirty, 0);
-    assert.doesNotMatch((await sessionProvenance(f.db, f.id)).warning, /incertaine/);
+    assert.doesNotMatch((await sessionProvenance(f.db, f.services.git, f.id)).warning, /incertaine/);
     assert.equal((await f.merge()).status, 'succeeded');
     assert.equal(readFileSync(join(f.repo, 'file'), 'utf8'), 'session and project work\n');
   }));

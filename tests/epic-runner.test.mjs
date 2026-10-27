@@ -8,12 +8,16 @@ const root = mkdtempSync(join(tmpdir(), 'cerebro-epic-'));
 process.env.CEREBRO_DATA_DIR = root;
 const { CerebroDatabase, DEFAULT_SESSION_DEFAULTS } = await import('../server/db.ts');
 const { CommandExecutor } = await import('../server/commands.ts');
+const { WorktreeGate } = await import('../server/worktree-gate.ts');
+const { EpicWorkspaces } = await import('../server/epic-workspace.ts');
 const { EpicRunner, taskOrder } = await import('../server/epic-runner.ts');
 async function fixture(run) {
   const db = new CerebroDatabase(':memory:');
   const project = db.createProject('Demo', root);
   const epic = db.createEpic(project.id, 'Epic', 'Context', null);
-  const commands = new CommandExecutor(db);
+  const gate = new WorktreeGate();
+  const commands = new CommandExecutor(db, gate);
+  const workspaces = new EpicWorkspaces(db, gate);
   const launches = [];
   const sessions = {
     async create(p, options, validate, contextPath, title = 'step') {
@@ -29,7 +33,7 @@ async function fixture(run) {
       return true;
     },
   };
-  let runner = new EpicRunner(db, sessions, commands, () => {});
+  let runner = new EpicRunner(db, sessions, commands, () => {}, workspaces);
   const task = (name, execution = { type: 'llm' }) => db.createTask(project.id, name, null, epic.id, execution);
   const command = (script, completion = 'manual') => {
     const c = commands.configure(project.id, {
@@ -67,7 +71,7 @@ async function fixture(run) {
       },
       restart: async () => {
         await runner.shutdown();
-        runner = new EpicRunner(db, sessions, commands, () => {});
+        runner = new EpicRunner(db, sessions, commands, () => {}, workspaces);
       },
     });
   } finally {

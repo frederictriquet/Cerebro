@@ -7,7 +7,7 @@ import { DATA_DIR } from './config.ts';
 import type { CerebroDatabase, Project } from './db.ts';
 import { rememberWorktree } from './worktrees.ts';
 import { canonicalWorktreePath } from './worktree-gate.ts';
-import { prepareCommit } from './git-plan.ts';
+import type { GitPlanner } from './git-plan.ts';
 import { workspaceFileSignature } from './workspace-files.ts';
 const exec = promisify(execFile);
 const git = async (path: string, args: string[], index?: string): Promise<string> =>
@@ -371,7 +371,11 @@ export function historicalWorkspace(sessionId: string, path: string): Workspace 
   };
 }
 
-export async function sessionProvenance(db: CerebroDatabase, sessionId: string): Promise<Provenance> {
+export async function sessionProvenance(
+  db: CerebroDatabase,
+  planner: GitPlanner,
+  sessionId: string,
+): Promise<Provenance> {
   const session = db.getSession(sessionId);
   if (!session) throw new Error('Session introuvable.');
   const project = db.getProject(session.projectId)!;
@@ -379,7 +383,7 @@ export async function sessionProvenance(db: CerebroDatabase, sessionId: string):
   const warning =
     'Le périmètre décrit un espace de travail, pas l’auteur des modifications. Toute édition humaine ou externe dans cet espace doit être vérifiée explicitement. Les changements initiaux ne sont pas attribués à la session.';
   if (workspace.mode !== 'isolated') return { workspace, changes: [], commits: [], warning };
-  const snapshot = await prepareCommit(workspace.root, workspace);
+  const snapshot = await planner.prepareCommit(workspace.root, workspace);
   const current = await manifest(workspace.root, workspace.sharedIgnored);
   const changed = snapshot.files.filter((f) => workspace.baseline[f.path] !== current[f.path]);
   const branchMatches = await git(workspace.root, ['symbolic-ref', '--short', 'HEAD']).then(

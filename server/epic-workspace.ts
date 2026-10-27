@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { CerebroDatabase } from './db.ts';
 import { workspaceAt, type WorkspaceContext, type Workspace } from './provenance.ts';
-import { canonicalWorktreePath, assertWorktreeAvailable } from './worktree-gate.ts';
+import { canonicalWorktreePath, type WorktreeGate } from './worktree-gate.ts';
 
 const contextOf = (workspace: Pick<Workspace, 'mode' | 'path'>): WorkspaceContext => ({
   mode: workspace.mode,
@@ -12,22 +12,6 @@ const contextOf = (workspace: Pick<Workspace, 'mode' | 'path'>): WorkspaceContex
 });
 const sameContext = (left: WorkspaceContext, right: WorkspaceContext): boolean =>
   left.mode === right.mode && canonicalWorktreePath(left.path) === canonicalWorktreePath(right.path);
-
-export function rememberEpicWorkspace(
-  db: CerebroDatabase,
-  epicId: string,
-  context: WorkspaceContext,
-): WorkspaceContext {
-  db.connection
-    .prepare('INSERT OR IGNORE INTO epic_workspaces (epic_id,data,verified) VALUES (?,?,1)')
-    .run(epicId, JSON.stringify(context));
-  const saved = JSON.parse(
-    (db.connection.prepare('SELECT data FROM epic_workspaces WHERE epic_id=?').get(epicId) as { data: string }).data,
-  ) as WorkspaceContext;
-  if (!sameContext(saved, context))
-    throw new Error('Le dossier de cette étape diffère du dossier d’origine de l’epic. Aucun agent lancé.');
-  return saved;
-}
 
 // Only the context fields are extracted: full provenance records carry large file manifests.
 const CONTEXT_COLUMNS = "json_extract(data,'$.mode') AS mode, json_extract(data,'$.path') AS path";
@@ -38,36 +22,16 @@ function sessionContext(db: CerebroDatabase, sessionId: string): WorkspaceContex
   );
 }
 
-// Provenance records keep their folder once written (later updates only mark removals): scan them again only when rows change.
-const inventories = new WeakMap<
-  CerebroDatabase,
-  { key: string; contexts: (WorkspaceContext & { canonical: string })[] }
->();
-function provenanceContexts(db: CerebroDatabase): (WorkspaceContext & { canonical: string })[] {
-  const { total, last } = db.connection
-    .prepare('SELECT COUNT(*) AS total, MAX(rowid) AS last FROM session_workspaces')
-    .get() as { total: number; last: number | null };
-  const key = `${total}:${last}`;
-  const cached = inventories.get(db);
-  if (cached?.key === key) return cached.contexts;
-  const contexts = (
-    db.connection
-      .prepare(`SELECT ${CONTEXT_COLUMNS} FROM session_workspaces ORDER BY rowid`)
-      .all() as unknown as WorkspaceContext[]
-  ).map((workspace) => ({ ...contextOf(workspace), canonical: canonicalWorktreePath(workspace.path) }));
-  inventories.set(db, { key, contexts });
-  return contexts;
-}
+type InventoryEntry = WorkspaceContext & { canonical: string };
 
 /** Every folder attested by the epic's runs, sessions and commands, whichever source came first. */
-function historyContexts(db: CerebroDatabase, epicId: string): WorkspaceContext[] {
+function historyContexts(db: CerebroDatabase, epicId: string, inventory: () => InventoryEntry[]): WorkspaceContext[] {
   const epic = db.getEpic(epicId);
   if (!epic) return [];
   const project = db.getProject(epic.projectId)!;
   // Only legacy runs and commands without a known folder need the whole provenance inventory.
-  const metadata = () => provenanceContexts(db);
   const at = (path: string): WorkspaceContext | undefined =>
-    metadata().find((workspace) => workspace.canonical === canonicalWorktreePath(path));
+    inventory().find((workspace) => workspace.canonical === canonicalWorktreePath(path));
   const runs = (
     db.connection.prepare('SELECT data FROM epic_runs WHERE epic_id=? ORDER BY rowid').all(epicId) as { data: string }[]
   ).map(
@@ -118,7 +82,7 @@ function historyContexts(db: CerebroDatabase, epicId: string): WorkspaceContext[
     const attested = contexts.find((context) => ranIn(context.path));
     const owner = attested
       ? undefined
-      : metadata().find((workspace) => workspace.mode === 'isolated' && ranIn(workspace.canonical));
+      : inventory().find((workspace) => workspace.mode === 'isolated' && ranIn(workspace.canonical));
     if (attested) contexts.push(attested);
     else if (owner) contexts.push(contextOf(owner));
     else if (ranIn(project.path)) contexts.push({ path: project.path, mode: 'shared' });
@@ -143,13 +107,13 @@ function assertSingleFolder(contexts: WorkspaceContext[]): void {
   if (folders.length > 1) throw new EpicWorkspaceConflict(folders);
 }
 
-function workspaceChoices(db: CerebroDatabase, epicId: string): WorkspaceContext[] {
+function workspaceChoices(db: CerebroDatabase, epicId: string, inventory: () => InventoryEntry[]): WorkspaceContext[] {
   const saved = db.connection.prepare('SELECT data FROM epic_workspaces WHERE epic_id=?').get(epicId) as
     { data: string } | undefined;
   const choices = new Map<string, WorkspaceContext>();
   for (const context of [
     ...(saved ? [JSON.parse(saved.data) as WorkspaceContext] : []),
-    ...historyContexts(db, epicId),
+    ...historyContexts(db, epicId, inventory),
   ]) {
     const key = canonicalWorktreePath(context.path);
     if (!choices.has(key) || choices.get(key)!.mode === 'unknown') choices.set(key, contextOf(context));
@@ -184,124 +148,161 @@ async function gitInfo(path: string, args: string[]): Promise<string | null> {
   }
 }
 
-/** Inspect every attested copy without resolving an ambiguous history. */
-export async function epicWorkspaceOptions(db: CerebroDatabase, epicId: string): Promise<EpicWorkspaceOptions> {
-  let selected: WorkspaceContext | null = null;
-  let conflict = false;
-  try {
-    selected = epicWorkspace(db, epicId);
-  } catch (cause) {
-    if (!(cause instanceof EpicWorkspaceConflict)) throw cause;
-    conflict = true;
-  }
-  const sessions = db
-    .listSessions()
-    .filter((session) => session.epic?.id === epicId)
-    .map((session) => ({ session, context: sessionContext(db, session.id) }));
-  const choices = await Promise.all(
-    workspaceChoices(db, epicId).map(async (context) => {
-      let unavailableReason: string | null = null;
-      try {
-        assertEpicWorkspace(db, context);
-      } catch (cause) {
-        unavailableReason = cause instanceof Error ? cause.message : String(cause);
-      }
-      const [branch, head, status] = unavailableReason
-        ? [null, null, null]
-        : await Promise.all([
-            gitInfo(context.path, ['branch', '--show-current']),
-            gitInfo(context.path, ['rev-parse', '--verify', 'HEAD']),
-            gitInfo(context.path, ['status', '--porcelain', '--untracked-files=normal']),
-          ]);
-      return {
-        ...context,
-        branch: branch || null,
-        head,
-        changes: status === null ? null : status ? status.split('\n') : [],
-        unavailableReason,
-        sessions: sessions
-          .filter(
-            (item) => item.context && canonicalWorktreePath(item.context.path) === canonicalWorktreePath(context.path),
-          )
-          .map(({ session }) => ({
-            id: session.id,
-            title: session.title ?? session.prompt.split('\n')[0] ?? 'Session',
-          })),
-      };
-    }),
-  );
-  return { conflict, selected, choices };
-}
+/** Folders of a server's epics, with the caches and preparation queue that go with them. */
+export class EpicWorkspaces {
+  private readonly db: CerebroDatabase;
+  private readonly gate: WorktreeGate;
+  private readonly preparations = new Map<string, Promise<unknown>>();
+  private inventoryCache: { version: number; contexts: InventoryEntry[] } | null = null;
 
-/** An explicit choice is authoritative for future steps; it never moves files or rewrites execution history. */
-export function selectEpicWorkspace(db: CerebroDatabase, epicId: string, path: string): WorkspaceContext {
-  const saved = db.connection.prepare('SELECT data,verified FROM epic_workspaces WHERE epic_id=?').get(epicId) as
-    { data: string; verified: number } | undefined;
-  if (saved?.verified) {
-    const context = JSON.parse(saved.data) as WorkspaceContext;
-    if (canonicalWorktreePath(context.path) !== canonicalWorktreePath(path))
-      throw new Error('Le dossier de cet epic est déjà fixé.');
-    assertEpicWorkspace(db, context);
-    return context;
+  constructor(db: CerebroDatabase, gate: WorktreeGate) {
+    this.db = db;
+    this.gate = gate;
   }
-  const context = workspaceChoices(db, epicId).find(
-    (choice) => canonicalWorktreePath(choice.path) === canonicalWorktreePath(path),
-  );
-  if (!context) throw new Error('Choisissez un dossier attesté dans l’historique de cet epic.');
-  assertEpicWorkspace(db, context);
-  db.connection
-    .prepare(
-      'INSERT INTO epic_workspaces (epic_id,data,verified) VALUES (?,?,1) ON CONFLICT(epic_id) DO UPDATE SET data=excluded.data,verified=1',
-    )
-    .run(epicId, JSON.stringify(context));
-  return context;
-}
 
-/** Recover old epics from persisted execution/provenance, never from the project's current preference. */
-export function epicWorkspace(db: CerebroDatabase, epicId: string): WorkspaceContext | null {
-  const saved = db.connection.prepare('SELECT data,verified FROM epic_workspaces WHERE epic_id=?').get(epicId) as
-    { data: string; verified: number } | undefined;
-  if (saved?.verified) return JSON.parse(saved.data) as WorkspaceContext;
-  const contexts = historyContexts(db, epicId);
-  if (saved) {
-    // Remembered by an earlier, incomplete recovery: it only becomes authoritative once the whole history agrees.
-    const context = JSON.parse(saved.data) as WorkspaceContext;
-    assertSingleFolder([context, ...contexts]);
-    db.connection.prepare('UPDATE epic_workspaces SET verified=1 WHERE epic_id=?').run(epicId);
-    return context;
+  // Provenance records keep their folder once written (later updates only mark removals): scan them again only
+  // when the table's version, bumped by triggers on every write, changes.
+  private inventory(): InventoryEntry[] {
+    const { version } = this.db.connection
+      .prepare("SELECT version FROM table_versions WHERE name='session_workspaces'")
+      .get() as { version: number };
+    if (this.inventoryCache?.version === version) return this.inventoryCache.contexts;
+    const contexts = (
+      this.db.connection
+        .prepare(`SELECT ${CONTEXT_COLUMNS} FROM session_workspaces ORDER BY rowid`)
+        .all() as unknown as WorkspaceContext[]
+    ).map((workspace) => ({ ...contextOf(workspace), canonical: canonicalWorktreePath(workspace.path) }));
+    this.inventoryCache = { version, contexts };
+    return contexts;
   }
-  if (!contexts.length) return null;
-  assertSingleFolder(contexts);
-  return rememberEpicWorkspace(db, epicId, contexts.find((context) => context.mode !== 'unknown') ?? contexts[0]);
-}
 
-export function assertEpicWorkspace(db: CerebroDatabase, context: WorkspaceContext): void {
-  if (context.mode === 'isolated' && !workspaceAt(db, context.path))
-    throw new Error('Le worktree de l’epic est introuvable ou a été retiré : impossible de poursuivre son travail.');
-  try {
-    if (!statSync(context.path).isDirectory()) throw new Error();
-  } catch {
-    throw new Error(
-      `Le ${context.mode === 'isolated' ? 'worktree' : 'dossier de travail'} de l’epic est introuvable : impossible de poursuivre son travail.`,
+  remember(epicId: string, context: WorkspaceContext): WorkspaceContext {
+    this.db.connection
+      .prepare('INSERT OR IGNORE INTO epic_workspaces (epic_id,data,verified) VALUES (?,?,1)')
+      .run(epicId, JSON.stringify(context));
+    const saved = JSON.parse(
+      (this.db.connection.prepare('SELECT data FROM epic_workspaces WHERE epic_id=?').get(epicId) as { data: string })
+        .data,
+    ) as WorkspaceContext;
+    if (!sameContext(saved, context))
+      throw new Error('Le dossier de cette étape diffère du dossier d’origine de l’epic. Aucun agent lancé.');
+    return saved;
+  }
+
+  /** Inspect every attested copy without resolving an ambiguous history. */
+  async options(epicId: string): Promise<EpicWorkspaceOptions> {
+    let selected: WorkspaceContext | null = null;
+    let conflict = false;
+    try {
+      selected = this.current(epicId);
+    } catch (cause) {
+      if (!(cause instanceof EpicWorkspaceConflict)) throw cause;
+      conflict = true;
+    }
+    const sessions = this.db
+      .listSessions()
+      .filter((session) => session.epic?.id === epicId)
+      .map((session) => ({ session, context: sessionContext(this.db, session.id) }));
+    const choices = await Promise.all(
+      workspaceChoices(this.db, epicId, () => this.inventory()).map(async (context) => {
+        let unavailableReason: string | null = null;
+        try {
+          this.assert(context);
+        } catch (cause) {
+          unavailableReason = cause instanceof Error ? cause.message : String(cause);
+        }
+        const [branch, head, status] = unavailableReason
+          ? [null, null, null]
+          : await Promise.all([
+              gitInfo(context.path, ['branch', '--show-current']),
+              gitInfo(context.path, ['rev-parse', '--verify', 'HEAD']),
+              gitInfo(context.path, ['status', '--porcelain', '--untracked-files=normal']),
+            ]);
+        return {
+          ...context,
+          branch: branch || null,
+          head,
+          changes: status === null ? null : status ? status.split('\n') : [],
+          unavailableReason,
+          sessions: sessions
+            .filter(
+              (item) =>
+                item.context && canonicalWorktreePath(item.context.path) === canonicalWorktreePath(context.path),
+            )
+            .map(({ session }) => ({
+              id: session.id,
+              title: session.title ?? session.prompt.split('\n')[0] ?? 'Session',
+            })),
+        };
+      }),
     );
+    return { conflict, selected, choices };
   }
-  assertWorktreeAvailable(context.path);
-}
 
-// Only preparation is serialized; an established workspace is shared by the epic's steps.
-const preparations = new WeakMap<CerebroDatabase, Map<string, Promise<unknown>>>();
-export async function withEpicWorkspace<T>(db: CerebroDatabase, epicId: string, action: () => Promise<T>): Promise<T> {
-  let pending = preparations.get(db);
-  if (!pending) {
-    pending = new Map();
-    preparations.set(db, pending);
+  /** An explicit choice is authoritative for future steps; it never moves files or rewrites execution history. */
+  select(epicId: string, path: string): WorkspaceContext {
+    const saved = this.db.connection
+      .prepare('SELECT data,verified FROM epic_workspaces WHERE epic_id=?')
+      .get(epicId) as { data: string; verified: number } | undefined;
+    if (saved?.verified) {
+      const context = JSON.parse(saved.data) as WorkspaceContext;
+      if (canonicalWorktreePath(context.path) !== canonicalWorktreePath(path))
+        throw new Error('Le dossier de cet epic est déjà fixé.');
+      this.assert(context);
+      return context;
+    }
+    const context = workspaceChoices(this.db, epicId, () => this.inventory()).find(
+      (choice) => canonicalWorktreePath(choice.path) === canonicalWorktreePath(path),
+    );
+    if (!context) throw new Error('Choisissez un dossier attesté dans l’historique de cet epic.');
+    this.assert(context);
+    this.db.connection
+      .prepare(
+        'INSERT INTO epic_workspaces (epic_id,data,verified) VALUES (?,?,1) ON CONFLICT(epic_id) DO UPDATE SET data=excluded.data,verified=1',
+      )
+      .run(epicId, JSON.stringify(context));
+    return context;
   }
-  const previous = pending.get(epicId) ?? Promise.resolve();
-  const operation = previous.catch(() => {}).then(action);
-  pending.set(epicId, operation);
-  try {
-    return await operation;
-  } finally {
-    if (pending.get(epicId) === operation) pending.delete(epicId);
+
+  /** Recover old epics from persisted execution/provenance, never from the project's current preference. */
+  current(epicId: string): WorkspaceContext | null {
+    const saved = this.db.connection
+      .prepare('SELECT data,verified FROM epic_workspaces WHERE epic_id=?')
+      .get(epicId) as { data: string; verified: number } | undefined;
+    if (saved?.verified) return JSON.parse(saved.data) as WorkspaceContext;
+    const contexts = historyContexts(this.db, epicId, () => this.inventory());
+    if (saved) {
+      // Remembered by an earlier, incomplete recovery: it only becomes authoritative once the whole history agrees.
+      const context = JSON.parse(saved.data) as WorkspaceContext;
+      assertSingleFolder([context, ...contexts]);
+      this.db.connection.prepare('UPDATE epic_workspaces SET verified=1 WHERE epic_id=?').run(epicId);
+      return context;
+    }
+    if (!contexts.length) return null;
+    assertSingleFolder(contexts);
+    return this.remember(epicId, contexts.find((context) => context.mode !== 'unknown') ?? contexts[0]);
+  }
+
+  assert(context: WorkspaceContext): void {
+    if (context.mode === 'isolated' && !workspaceAt(this.db, context.path))
+      throw new Error('Le worktree de l’epic est introuvable ou a été retiré : impossible de poursuivre son travail.');
+    try {
+      if (!statSync(context.path).isDirectory()) throw new Error();
+    } catch {
+      throw new Error(
+        `Le ${context.mode === 'isolated' ? 'worktree' : 'dossier de travail'} de l’epic est introuvable : impossible de poursuivre son travail.`,
+      );
+    }
+    this.gate.assertAvailable(context.path);
+  }
+
+  // Only preparation is serialized; an established workspace is shared by the epic's steps.
+  withPreparation<T>(epicId: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.preparations.get(epicId) ?? Promise.resolve();
+    const operation = previous.catch(() => {}).then(action);
+    this.preparations.set(epicId, operation);
+    return operation.finally(() => {
+      if (this.preparations.get(epicId) === operation) this.preparations.delete(epicId);
+    });
   }
 }

@@ -3,14 +3,7 @@ import type { CerebroDatabase, SessionDefaults, Task } from './db.ts';
 import type { CommandExecutor } from './commands.ts';
 import type { SessionManager } from './sessions.ts';
 import { workspaceFor, type WorkspaceContext } from './provenance.ts';
-import {
-  assertEpicWorkspace,
-  EpicWorkspaceConflict,
-  epicWorkspace,
-  rememberEpicWorkspace,
-  selectEpicWorkspace,
-  withEpicWorkspace,
-} from './epic-workspace.ts';
+import { EpicWorkspaceConflict, type EpicWorkspaces } from './epic-workspace.ts';
 import { epicReviewInstructions, epicReviewScope, isReviewTask } from './epic-review.ts';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
@@ -91,6 +84,7 @@ export class EpicRunner {
   private db: CerebroDatabase;
   private sessions: SessionManager;
   private commands: CommandExecutor;
+  private workspaces: EpicWorkspaces;
   private broadcast: (event: unknown) => void;
   private busy = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
@@ -101,10 +95,12 @@ export class EpicRunner {
     sessions: SessionManager,
     commands: CommandExecutor,
     broadcast: (event: unknown) => void,
+    workspaces: EpicWorkspaces,
   ) {
     this.db = db;
     this.sessions = sessions;
     this.commands = commands;
+    this.workspaces = workspaces;
     this.broadcast = broadcast;
   }
   initialize(): void {
@@ -136,7 +132,7 @@ export class EpicRunner {
       if (!contexts.has(run.epicId)) {
         let context: WorkspaceContext | null | undefined;
         try {
-          context = epicWorkspace(this.db, run.epicId);
+          context = this.workspaces.current(run.epicId);
         } catch (cause) {
           if (cause instanceof EpicWorkspaceConflict) conflicts.add(run.epicId);
         }
@@ -194,8 +190,8 @@ export class EpicRunner {
     if (!order.length) throw new Error('Aucune tâche ouverte.');
     const project = this.db.getProject(epic.projectId)!;
     const previous = runs[0];
-    const workspace = epicWorkspace(this.db, epicId);
-    if (workspace) assertEpicWorkspace(this.db, workspace);
+    const workspace = this.workspaces.current(epicId);
+    if (workspace) this.workspaces.assert(workspace);
     const contextRoot = workspace?.path ?? project.path;
     // A later run (for example review fixes) continues the work and keeps its original review base.
     const baseHead =
@@ -292,7 +288,7 @@ export class EpicRunner {
         .some((session) => session.epic?.id === epicId && ['starting', 'running', 'waiting'].includes(session.status))
     )
       throw new Error('Arrêtez les étapes encore actives avant de choisir le dossier de l’epic.');
-    const context = selectEpicWorkspace(this.db, epicId, path);
+    const context = this.workspaces.select(epicId, path);
     for (const run of runs)
       if (run.status === 'blocked' && run.error?.includes('Cet epic a utilisé plusieurs dossiers de travail')) {
         run.workspace = context;
@@ -312,9 +308,9 @@ export class EpicRunner {
       (r) => r.id !== id && ['running', 'waiting-validation', 'blocked'].includes(r.status),
     );
     if (another) throw new Error('Une autre exécution est active.');
-    const workspace = epicWorkspace(this.db, run.epicId);
+    const workspace = this.workspaces.current(run.epicId);
     if (workspace) {
-      assertEpicWorkspace(this.db, workspace);
+      this.workspaces.assert(workspace);
       run.workspace = workspace;
       run.contextRoot = workspace.path;
     }
@@ -558,11 +554,11 @@ export class EpicRunner {
     run.stepStartedAt = Date.now();
     this.save(run);
     if (next.execution.type === 'command') {
-      const operation = await withEpicWorkspace(this.db, run.epicId, async () => {
-        const workspace = epicWorkspace(this.db, run.epicId) ?? { path: run.contextRoot, mode: 'shared' as const };
-        assertEpicWorkspace(this.db, workspace);
+      const operation = await this.workspaces.withPreparation(run.epicId, async () => {
+        const workspace = this.workspaces.current(run.epicId) ?? { path: run.contextRoot, mode: 'shared' as const };
+        this.workspaces.assert(workspace);
         const operation = await this.commands.start(next.id, workspace.path);
-        run.workspace = rememberEpicWorkspace(this.db, run.epicId, workspace);
+        run.workspace = this.workspaces.remember(run.epicId, workspace);
         run.contextRoot = workspace.path;
         return operation;
       });
@@ -592,7 +588,7 @@ export class EpicRunner {
             this.changeTask(next.id, { sessionId: pending.id });
             const workspace = workspaceFor(this.db, pending.id);
             if (workspace) {
-              run.workspace = rememberEpicWorkspace(this.db, run.epicId, {
+              run.workspace = this.workspaces.remember(run.epicId, {
                 path: workspace.path,
                 mode: workspace.mode,
               });

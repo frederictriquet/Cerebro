@@ -21,6 +21,8 @@ server/agents.ts          construction des lignes de commande par agent
 server/sessions.ts        SessionManager : PTY, terminal headless, statut, logs
 server/hooks.ts           installation du hook global grok + interprétation des événements de hook
 server/index.ts           fastify : API REST, websockets, fichiers statiques web/dist
+server/services.ts        état en mémoire d'un serveur (baux de worktree, snapshots et verrous de commit, pushes, reviews,
+                          catalogue des modèles, dossiers d'epic), instancié par buildServer et injecté ; aucun état global de module
 bin/cerebro-hook.mjs      relais de hook (JS pur, sans dépendance)
 web/vite.config.ts        root = web/, build -> web/dist, proxy /api et /ws (ws: true) vers 127.0.0.1:4317
 web/index.html

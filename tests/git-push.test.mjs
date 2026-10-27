@@ -4,7 +4,10 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { startPush } from '../server/git-push.ts';
+import { GitPushes } from '../server/git-push.ts';
+import { WorktreeGate } from '../server/worktree-gate.ts';
+
+const pushes = new GitPushes(new WorktreeGate());
 
 const git = (path, ...args) =>
   execFileSync('git', ['-C', path, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -46,24 +49,24 @@ test('push sets origin upstream, publishes each remote, preserves HEAD, index an
     const origin = remote('origin');
     const backup = remote('backup');
     const before = integrity(repo);
-    const op = await wait(await startPush(repo));
+    const op = await wait(await pushes.start(repo));
     assert.equal(op.status, 'succeeded', JSON.stringify(op));
     assert.equal(git(repo, 'rev-parse', '--abbrev-ref', '@{upstream}'), 'origin/main');
     for (const path of [origin, backup]) assert.equal(git(path, 'rev-parse', 'main'), before.head);
     assert.deepEqual(integrity(repo), before);
     git(repo, 'config', 'push.default', 'nothing');
-    assert.equal((await wait(await startPush(repo))).status, 'succeeded');
+    assert.equal((await wait(await pushes.start(repo))).status, 'succeeded');
   }));
 
 test('sole remote becomes upstream; ambiguous remotes and missing remotes are explicit failures', async () =>
   fixture(async ({ repo, remote }) => {
-    assert.match((await wait(await startPush(repo))).error, /Aucun remote/);
+    assert.match((await wait(await pushes.start(repo))).error, /Aucun remote/);
     const one = remote('one');
-    assert.equal((await wait(await startPush(repo))).status, 'succeeded');
+    assert.equal((await wait(await pushes.start(repo))).status, 'succeeded');
     assert.equal(git(repo, 'rev-parse', '--abbrev-ref', '@{upstream}'), 'one/main');
     git(repo, 'branch', '--unset-upstream');
     remote('two');
-    const op = await wait(await startPush(repo));
+    const op = await wait(await pushes.start(repo));
     assert.match(op.error, /Plusieurs remotes/);
     assert.deepEqual(op.remotes, []);
     assert.equal(git(one, 'rev-parse', 'main'), git(repo, 'rev-parse', 'HEAD'));
@@ -75,7 +78,7 @@ test('rejected remote does not prevent the next remote; hooks remain enabled', a
     const origin = remote('origin');
     writeFileSync(join(rejected, 'hooks/pre-receive'), '#!/bin/sh\necho rejected >&2\nexit 1\n', { mode: 0o755 });
     const before = integrity(repo);
-    let op = await wait(await startPush(repo));
+    let op = await wait(await pushes.start(repo));
     assert.deepEqual(
       op.remotes.map((r) => [r.remote, r.status]),
       [
@@ -85,7 +88,7 @@ test('rejected remote does not prevent the next remote; hooks remain enabled', a
     );
     assert.equal(git(origin, 'rev-parse', 'main'), before.head);
     writeFileSync(join(repo, '.git/hooks/pre-push'), '#!/bin/sh\necho hook-failed >&2\nexit 1\n', { mode: 0o755 });
-    op = await wait(await startPush(repo));
+    op = await wait(await pushes.start(repo));
     assert.ok(op.remotes.every((r) => r.status === 'failed' && r.output.includes('hook-failed')));
     assert.deepEqual(integrity(repo), before);
   }));
@@ -93,17 +96,17 @@ test('rejected remote does not prevent the next remote; hooks remain enabled', a
 test('concurrent starts share operation; real dirty state is rejected without index mutations', async () =>
   fixture(async ({ repo, remote }) => {
     remote('origin');
-    const [a, b] = await Promise.all([startPush(repo), startPush(repo)]);
+    const [a, b] = await Promise.all([pushes.start(repo), pushes.start(repo)]);
     assert.equal(a.id, b.id);
     await wait(a);
     writeFileSync(join(repo, 'file'), 'changed\n');
     git(repo, 'add', 'file');
     const before = integrity(repo);
-    const op = await wait(await startPush(repo));
+    const op = await wait(await pushes.start(repo));
     assert.match(op.error, /changements/);
     assert.deepEqual(integrity(repo), before);
     // The header « Push » button only sends existing commits and leaves uncommitted files alone.
-    const allowed = await wait(await startPush(repo, { allowDirty: true }));
+    const allowed = await wait(await pushes.start(repo, { allowDirty: true }));
     assert.equal(allowed.status, 'succeeded', JSON.stringify(allowed));
     assert.deepEqual(integrity(repo), before);
   }));

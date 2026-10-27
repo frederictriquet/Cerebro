@@ -11,7 +11,11 @@ mkdirSync(process.env.CEREBRO_DATA_DIR);
 const { CerebroDatabase } = await import('../server/db.ts');
 const { createWorkspace, joinWorkspace, sessionProvenance, workspaceAt, workspaceFor } =
   await import('../server/provenance.ts');
-const { prepareCommit } = await import('../server/git-plan.ts');
+const { GitPlanner } = await import('../server/git-plan.ts');
+const { GitPushes } = await import('../server/git-push.ts');
+const { WorktreeGate } = await import('../server/worktree-gate.ts');
+const gate = new WorktreeGate();
+const planner = new GitPlanner(gate, new GitPushes(gate));
 const repo = join(root, 'repo');
 mkdirSync(repo);
 const git = (path, ...args) =>
@@ -75,10 +79,10 @@ test('new workspaces preserve initial context and index without changing the pro
     assert.ok(ws.initialDirty.includes('initial'));
   }
   assert.deepEqual(readFileSync(join(repo, '.git/index')), index);
-  const { changes, workspace } = await sessionProvenance(db, 'a');
+  const { changes, workspace } = await sessionProvenance(db, planner, 'a');
   assert.deepEqual(changes, []);
   assert.ok(
-    !(await prepareCommit(workspace.root, workspace)).files.some((file) => file.path === 'node_modules'),
+    !(await planner.prepareCommit(workspace.root, workspace)).files.some((file) => file.path === 'node_modules'),
     'shared dependency link stays out of the commit plan',
   );
 });
@@ -88,8 +92,8 @@ test('two sessions edit distinct then shared files, original human edits never e
   writeFileSync(join(a.path, 'shared'), 'a\n');
   writeFileSync(join(b.path, 'shared'), 'b\n');
   writeFileSync(join(repo, 'first'), 'human\n');
-  let pa = await sessionProvenance(db, 'a');
-  const pb = await sessionProvenance(db, 'b');
+  let pa = await sessionProvenance(db, planner, 'a');
+  const pb = await sessionProvenance(db, planner, 'b');
   assert.deepEqual(
     pa.changes.map((c) => c.path),
     ['first', 'shared'],
@@ -100,7 +104,7 @@ test('two sessions edit distinct then shared files, original human edits never e
   );
   assert.equal(readFileSync(join(a.path, 'first'), 'utf8'), 'session a\n');
   writeFileSync(join(a.path, 'initial'), 'session after initial\n');
-  pa = await sessionProvenance(db, 'a');
+  pa = await sessionProvenance(db, planner, 'a');
   assert.equal(pa.changes.find((c) => c.path === 'initial').certainty, 'uncertain');
   assert.match(pa.warning, /humaine ou externe/);
 });
@@ -111,11 +115,11 @@ test('commits remain attributable by isolated branch across restart and historic
   db.close();
   db = new CerebroDatabase(join(root, 'test.db'));
   assert.equal(workspaceFor(db, 'a').path, a.path);
-  const pa = await sessionProvenance(db, 'a');
+  const pa = await sessionProvenance(db, planner, 'a');
   assert.equal(pa.commits[0].hash, oid);
   assert.equal(pa.commits[0].certainty, 'workspace');
   session('historical');
-  const old = await sessionProvenance(db, 'historical');
+  const old = await sessionProvenance(db, planner, 'historical');
   assert.equal(old.workspace.mode, 'unknown');
   assert.deepEqual(old.changes, []);
   assert.deepEqual(old.commits, []);
@@ -123,10 +127,10 @@ test('commits remain attributable by isolated branch across restart and historic
 });
 test('commits in the source and switching an isolated branch do not invent session attribution', async () => {
   git(repo, 'commit', '--only', 'initial', '-m', 'human source');
-  const pa = await sessionProvenance(db, 'a');
+  const pa = await sessionProvenance(db, planner, 'a');
   assert.ok(pa.commits.every((c) => c.title !== 'human source'));
   git(b.path, 'checkout', '--detach');
-  const pb = await sessionProvenance(db, 'b');
+  const pb = await sessionProvenance(db, planner, 'b');
   assert.deepEqual(pb.commits, []);
   assert.ok(pb.changes.every((c) => c.certainty === 'uncertain'));
 });
@@ -145,11 +149,11 @@ test('a later epic step joins the first copy and inherits its uncommitted work a
   assert.equal(workspaceAt(db, first.path).sessionId, 'step1', 'the copy stays owned by the first step');
   writeFileSync(join(first.path, 'shared'), 'step two\n');
   assert.deepEqual(
-    (await sessionProvenance(db, 'step2')).changes.map((change) => change.path),
+    (await sessionProvenance(db, planner, 'step2')).changes.map((change) => change.path),
     ['shared'],
   );
   assert.deepEqual(
-    (await sessionProvenance(db, 'step1')).changes.map((change) => change.path),
+    (await sessionProvenance(db, planner, 'step1')).changes.map((change) => change.path),
     ['second', 'shared'],
   );
 });

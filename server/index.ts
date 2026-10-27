@@ -9,13 +9,6 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type WebSocket from 'ws';
 import { EpicRunner } from './epic-runner.ts';
-import {
-  assertEpicWorkspace,
-  epicWorkspace,
-  epicWorkspaceOptions,
-  rememberEpicWorkspace,
-  withEpicWorkspace,
-} from './epic-workspace.ts';
 import { epicReviewInstructions, epicReviewScope, isReviewTask, reviewTaskText } from './epic-review.ts';
 import { CommandExecutor } from './commands.ts';
 import { registerWorktreeRoutes } from './worktree-routes.ts';
@@ -26,7 +19,7 @@ import { registerPersonaRoutes } from './persona-routes.ts';
 import { registerCouncilRoutes } from './council-routes.ts';
 import { CouncilError } from './council-runner.ts';
 import { AGENTS, getAgentAvailability } from './agents.ts';
-import { getCatalog, parseTuning, refreshCatalog, startCatalogRefresh } from './catalog.ts';
+import type { Catalog } from './catalog.ts';
 import { validateCouncilSettings } from './council.ts';
 import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
 import { CerebroDatabase, normalizeMode, resolveSessionDefaults, SessionProtectionError } from './db.ts';
@@ -43,14 +36,13 @@ import type {
   TaskExecution,
   TaskStatus,
 } from './db.ts';
-import { prepareCommit, executeCommitPlan } from './git-plan.ts';
-import { currentPush, startPush, onPushComplete } from './git-push.ts';
 import { gitSummary } from './git-summary.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
 import { incompatibleMessage, PeerSync, syncPayloadFrom } from './peers.ts';
 import { importFindings, listReports, saveReport } from './findings.ts';
-import { prepareReview, verifyReview, reviewInstructions } from './review.ts';
-import { prepareSessionGit, executeSessionCommit, sessionReviewContext, sessionGitContext } from './session-git.ts';
+import { reviewInstructions } from './review.ts';
+import { sessionGitContext } from './session-git.ts';
+import { createServices } from './services.ts';
 import { sessionProvenance, workspaceFor } from './provenance.ts';
 import { assertLoopbackPortFree } from './ports.ts';
 import { registerRemoteGateway } from './remotes.ts';
@@ -174,7 +166,7 @@ function bodyRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function parseSessionDefaults(defaults: SessionDefaults, value: unknown): SessionDefaults | null {
+function parseSessionDefaults(catalog: Catalog, defaults: SessionDefaults, value: unknown): SessionDefaults | null {
   const body = bodyRecord(value);
   if (
     body === null ||
@@ -184,7 +176,7 @@ function parseSessionDefaults(defaults: SessionDefaults, value: unknown): Sessio
   )
     return null;
   const resolved = resolveSessionDefaults(defaults, body as Partial<SessionDefaults>);
-  const tuning = parseTuning(resolved.agent, { ...resolved });
+  const tuning = catalog.parseTuning(resolved.agent, { ...resolved });
   return tuning === null ? null : { ...resolved, ...tuning };
 }
 
@@ -243,11 +235,23 @@ function sendSocket(socket: WebSocket, message: unknown): void {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
 }
 
-export async function buildServer(): Promise<FastifyInstance> {
+/**
+ * `catalog`: model lists to start from (fallback lists by default).
+ * `refreshCatalog`: discover the installed CLIs' models now and hourly, until the server closes.
+ */
+export async function buildServer(
+  options: { catalog?: Catalog; refreshCatalog?: boolean } = {},
+): Promise<FastifyInstance> {
   const app = Fastify({ logger: true, forceCloseConnections: true });
   const db = new CerebroDatabase();
-  const sessions = new SessionManager(db);
-  const commands = new CommandExecutor(db);
+  const services = createServices(db, options.catalog);
+  const { catalog, epicWorkspaces, git, pushes, reviews, sessionGit } = services;
+  if (options.refreshCatalog) {
+    const stopRefresh = catalog.startRefresh();
+    app.addHook('onClose', async () => stopRefresh());
+  }
+  const sessions = new SessionManager(db, services);
+  const commands = new CommandExecutor(db, services.gate);
   commands.initialize();
   const eventSockets = new Set<WebSocket>();
   const peers = new PeerSync(db, () => {
@@ -316,11 +320,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     for (const socket of eventSockets) sendSocket(socket, event);
   };
 
-  const worktrees = registerWorktreeRoutes(app, db);
+  const worktrees = registerWorktreeRoutes(app, db, services);
   registerSessionTaskRoutes(app, db, (id, token) => sessions.tokenMatches(id, token));
-  const automaticCommits = registerAutomaticCommitRoutes(app, db, worktrees);
+  const automaticCommits = registerAutomaticCommitRoutes(app, db, worktrees, services);
   registerPersonaRoutes(app, db);
-  const councils = registerCouncilRoutes(app, db);
+  const councils = registerCouncilRoutes(app, db, catalog);
   sessions.withProjectDeletion = (id, remove) => councils.withProjectDeletion(id, remove);
   notifier.councils = councils;
   councils.onComplete = (run) => {
@@ -358,7 +362,7 @@ export async function buildServer(): Promise<FastifyInstance> {
         finishedAt: operation.finishedAt ?? Date.now(),
       });
   };
-  const epicRunner = new EpicRunner(db, sessions, commands, broadcast);
+  const epicRunner = new EpicRunner(db, sessions, commands, broadcast, epicWorkspaces);
   epicRunner.onResult = (run) => {
     notifier.operations.record({
       id: `epic:${run.id}:${run.status}`,
@@ -376,7 +380,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     // Copies held back while the epic ran become eligible once it ends.
     if (run.status !== 'blocked') void worktrees.resumeAutomaticCleanup(run.projectId);
   };
-  const unsubscribePush = onPushComplete((path, operation) => {
+  const unsubscribePush = pushes.onComplete((path, operation) => {
     if (automaticCommits.list().some((commit) => commit.pushOperation?.id === operation.id)) return;
     let project = db.listProjects().find((p) => resolve(p.path) === resolve(path));
     let source: Session | undefined;
@@ -542,7 +546,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       changes.color = body.color === null ? null : body.color.toLowerCase();
     }
     if ('sessionDefaults' in body) {
-      const defaults = parseSessionDefaults(project.sessionDefaults, body.sessionDefaults);
+      const defaults = parseSessionDefaults(catalog, project.sessionDefaults, body.sessionDefaults);
       if (defaults === null) return error(reply, 400, 'Paramètres de session invalides pour cet agent');
       changes.sessionDefaults = defaults;
     }
@@ -563,7 +567,7 @@ export async function buildServer(): Promise<FastifyInstance> {
         ...patch,
         agent,
       } as CommitSettings;
-      const tuning = parseTuning(agent, { ...resolved });
+      const tuning = catalog.parseTuning(agent, { ...resolved });
       if (!tuning) return error(reply, 400, 'Modèle ou effort invalide pour cet agent');
       changes.commitSettings = { ...resolved, ...tuning };
     }
@@ -571,7 +575,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       // null : le projet revient aux réglages globaux.
       if (body.councilSettings === null) changes.councilSettings = null;
       else {
-        const result = validateCouncilSettings(body.councilSettings, db.listPersonas(), AGENTS);
+        const result = validateCouncilSettings(catalog, body.councilSettings, db.listPersonas(), AGENTS);
         if ('error' in result) return error(reply, 400, result.error);
         changes.councilSettings = result.settings;
       }
@@ -593,7 +597,7 @@ export async function buildServer(): Promise<FastifyInstance> {
         ...patch,
         agent,
       } as ResolutionSettings;
-      const tuning = parseTuning(agent, { ...resolved });
+      const tuning = catalog.parseTuning(agent, { ...resolved });
       if (!tuning) return error(reply, 400, 'Modèle ou effort invalide pour cet agent');
       changes.resolutionSettings = { ...resolved, mode: normalizeMode(resolved.mode), ...tuning };
     }
@@ -610,7 +614,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/prepare-review', async (request, reply) => {
     const project = db.getProject(request.params.id);
     if (!project) return error(reply, 404, 'Projet introuvable');
-    const result = await orError(reply, () => prepareReview(project.path));
+    const result = await orError(reply, () => reviews.prepare(project.path));
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/review', async (request, reply) => {
@@ -619,7 +623,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     const body = bodyRecord(request.body);
     if (typeof body?.reviewId !== 'string') return error(reply, 400, 'reviewId requis');
     const id = body.reviewId;
-    const result = await orError(reply, () => verifyReview(project.path, id));
+    const result = await orError(reply, () => reviews.verify(project.path, id));
     if (!result.ok) return result.reply;
     const launch = bodyRecord(body.launch) ?? {};
     const prepared = result.value;
@@ -632,7 +636,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       },
       (s) => s,
       async () => {
-        await verifyReview(project.path, id);
+        await reviews.verify(project.path, id);
       },
     );
   });
@@ -640,14 +644,14 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/prepare-commit', async (request, reply) => {
     const project = db.getProject(request.params.id);
     if (project === null) return error(reply, 404, 'Projet introuvable');
-    const result = await orError(reply, () => prepareCommit(project.path));
+    const result = await orError(reply, () => git.prepareCommit(project.path));
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/commit', async (request, reply) => {
     const project = db.getProject(request.params.id);
     if (project === null) return error(reply, 404, 'Projet introuvable');
     const startedAt = Date.now();
-    const result = await orError(reply, () => executeCommitPlan(project.path, request.body));
+    const result = await orError(reply, () => git.executeCommitPlan(project.path, request.body));
     if (result.ok) {
       const id = `commit:${String(bodyRecord(request.body)?.snapshotId)}`;
       result.value.operationId = id;
@@ -668,7 +672,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.get<{ Params: { id: string } }>('/api/projects/:id/git/push', async (request, reply) => {
     const project = db.getProject(request.params.id);
     if (project === null) return error(reply, 404, 'Projet introuvable');
-    const result = await orError(reply, () => currentPush(project.path));
+    const result = await orError(reply, () => pushes.current(project.path));
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/push', async (request, reply) => {
@@ -676,7 +680,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (project === null) return error(reply, 404, 'Projet introuvable');
     // Pushing only sends existing commits: uncommitted files may stay when the caller says so.
     const result = await orError(reply, () =>
-      startPush(project.path, { allowDirty: bodyRecord(request.body)?.allowDirty === true }),
+      pushes.start(project.path, { allowDirty: bodyRecord(request.body)?.allowDirty === true }),
     );
     return result.ok ? reply.code(202).send(result.value) : result.reply;
   });
@@ -766,7 +770,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.post<{ Params: { id: string } }>('/api/sessions/:id/git/prepare-commit', async (request, reply) => {
     if (db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');
-    const result = await orError(reply, () => prepareSessionGit(db, request.params.id));
+    const result = await orError(reply, () => sessionGit.prepare(request.params.id));
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.get<{ Params: { id: string } }>('/api/sessions/:id/git/context', async (request, reply) => {
@@ -776,7 +780,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post<{ Params: { id: string } }>('/api/sessions/:id/git/commit', async (request, reply) => {
     if (db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');
     const startedAt = Date.now();
-    const result = await orError(reply, () => executeSessionCommit(request.params.id, request.body));
+    const result = await orError(reply, () => sessionGit.executeCommit(request.params.id, request.body));
     if (result.ok) {
       const id = `commit:${String(bodyRecord(request.body)?.snapshotId)}`;
       result.value.operationId = id;
@@ -794,15 +798,15 @@ export async function buildServer(): Promise<FastifyInstance> {
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.get<{ Params: { id: string } }>('/api/sessions/:id/git/push', async (request, reply) => {
-    const provenance = await orError(reply, () => sessionProvenance(db, request.params.id));
+    const provenance = await orError(reply, () => sessionProvenance(db, git, request.params.id));
     if (!provenance.ok) return provenance.reply;
-    return reply.send(await currentPush(provenance.value.workspace.root));
+    return reply.send(await pushes.current(provenance.value.workspace.root));
   });
   app.post<{ Params: { id: string } }>('/api/sessions/:id/git/review', async (request, reply) => {
     const session = db.getSession(request.params.id);
     if (!session) return error(reply, 404, 'Session introuvable');
     const body = bodyRecord(request.body);
-    const result = await orError(reply, () => sessionReviewContext(session.id, body?.selection));
+    const result = await orError(reply, () => sessionGit.reviewContext(session.id, body?.selection));
     if (!result.ok) return result.reply;
     const project = db.getProject(session.projectId)!;
     const launch = bodyRecord(body?.launch) ?? {};
@@ -812,14 +816,14 @@ export async function buildServer(): Promise<FastifyInstance> {
       { ...launch, prompt: `${typeof launch.prompt === 'string' ? launch.prompt : ''}\n\n${result.value.prompt}` },
       (session) => session,
       async () => {
-        await sessionReviewContext(session.id, body?.selection);
+        await sessionGit.reviewContext(session.id, body?.selection);
       },
     );
   });
 
   app.get<{ Params: { id: string } }>('/api/sessions/:id/provenance', async (request, reply) => {
     if (db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');
-    const result = await orError(reply, () => sessionProvenance(db, request.params.id));
+    const result = await orError(reply, () => sessionProvenance(db, git, request.params.id));
     return result.ok ? reply.send(result.value) : result.reply;
   });
 
@@ -889,7 +893,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     validate?: () => Promise<void>,
     epicId: string | null = null,
   ): Promise<FastifyReply> => {
-    const defaults = parseSessionDefaults(project.sessionDefaults, rawBody);
+    const defaults = parseSessionDefaults(catalog, project.sessionDefaults, rawBody);
     if (defaults === null) return error(reply, 400, 'Paramètres de session invalides pour cet agent');
     try {
       const session = await sessions.create(project, defaults, validate, undefined, undefined, { epicId });
@@ -1107,22 +1111,22 @@ export async function buildServer(): Promise<FastifyInstance> {
       try {
         const start = async () => {
           const context = task.epicId
-            ? (epicWorkspace(db, task.epicId) ?? { path: project.path, mode: 'shared' as const })
+            ? (epicWorkspaces.current(task.epicId) ?? { path: project.path, mode: 'shared' as const })
             : null;
-          if (context) assertEpicWorkspace(db, context);
+          if (context) epicWorkspaces.assert(context);
           const run = await commands.start(task.id, context?.path);
-          if (task.epicId && context) rememberEpicWorkspace(db, task.epicId, context);
+          if (task.epicId && context) epicWorkspaces.remember(task.epicId, context);
           return run;
         };
-        const run = await (task.epicId ? withEpicWorkspace(db, task.epicId, start) : start());
+        const run = await (task.epicId ? epicWorkspaces.withPreparation(task.epicId, start) : start());
         return reply.code(202).send({ task: db.getTask(task.id), run });
       } catch (cause) {
         return error(reply, 409, String(cause));
       }
     }
     try {
-      const context = task.epicId ? epicWorkspace(db, task.epicId) : null;
-      if (context) assertEpicWorkspace(db, context);
+      const context = task.epicId ? epicWorkspaces.current(task.epicId) : null;
+      if (context) epicWorkspaces.assert(context);
     } catch (cause) {
       return error(reply, 409, String(cause));
     }
@@ -1169,7 +1173,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.get<{ Params: { id: string } }>('/api/epics/:id/workspace', async (request, reply) => {
     if (!db.getEpic(request.params.id)) return error(reply, 404, 'Epic introuvable');
     try {
-      return reply.send(epicWorkspace(db, request.params.id));
+      return reply.send(epicWorkspaces.current(request.params.id));
     } catch (cause) {
       return error(reply, 409, String(cause));
     }
@@ -1177,7 +1181,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.get<{ Params: { id: string } }>('/api/epics/:id/workspace-options', async (request, reply) => {
     if (!db.getEpic(request.params.id)) return error(reply, 404, 'Epic introuvable');
     try {
-      return reply.send(await epicWorkspaceOptions(db, request.params.id));
+      return reply.send(await epicWorkspaces.options(request.params.id));
     } catch (cause) {
       return error(reply, 409, cause instanceof Error ? cause.message : String(cause));
     }
@@ -1189,7 +1193,9 @@ export async function buildServer(): Promise<FastifyInstance> {
       return error(reply, 400, 'Le chemin du dossier est requis.');
     try {
       return reply.send(
-        await withEpicWorkspace(db, request.params.id, async () => epicRunner.selectWorkspace(request.params.id, path)),
+        await epicWorkspaces.withPreparation(request.params.id, async () =>
+          epicRunner.selectWorkspace(request.params.id, path),
+        ),
       );
     } catch (cause) {
       return error(reply, 409, cause instanceof Error ? cause.message : String(cause));
@@ -1199,7 +1205,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     const epic = db.getEpic(request.params.id);
     if (!epic) return error(reply, 404, 'Epic introuvable');
     const body = bodyRecord(request.body) ?? {};
-    const options = parseSessionDefaults(db.getProject(epic.projectId)!.sessionDefaults, {
+    const options = parseSessionDefaults(catalog, db.getProject(epic.projectId)!.sessionDefaults, {
       ...body,
       prompt: typeof body.prompt === 'string' ? body.prompt : '',
     });
@@ -1220,15 +1226,15 @@ export async function buildServer(): Promise<FastifyInstance> {
       return error(reply, 409, 'Epic en cours : attendez la fin de l’exécution ou arrêtez-la avant la review.');
     const project = db.getProject(epic.projectId)!;
     const body = bodyRecord(request.body) ?? {};
-    const defaults = parseSessionDefaults(project.sessionDefaults, {
+    const defaults = parseSessionDefaults(catalog, project.sessionDefaults, {
       ...body,
       prompt: typeof body.prompt === 'string' ? body.prompt : '',
     });
     if (!defaults) return error(reply, 400, 'Réglages de session invalides');
     let scope;
     try {
-      const workspace = epicWorkspace(db, epic.id);
-      if (workspace) assertEpicWorkspace(db, workspace);
+      const workspace = epicWorkspaces.current(epic.id);
+      if (workspace) epicWorkspaces.assert(workspace);
       scope = await epicReviewScope(db, { ...run, workspace, contextRoot: workspace?.path ?? run.contextRoot });
     } catch (cause) {
       return error(reply, 409, cause instanceof Error ? cause.message : String(cause));
@@ -1265,7 +1271,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (!project)
       return error(reply, 409, 'Le projet de cette copie a été retiré : aucune session ne peut y être lancée.');
     const settings = { ...project.resolutionSettings, mode: normalizeMode(project.resolutionSettings.mode) };
-    const tuning = parseTuning(settings.agent, { ...settings });
+    const tuning = catalog.parseTuning(settings.agent, { ...settings });
     if (!tuning)
       return error(
         reply,
@@ -1416,9 +1422,9 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.get<{ Querystring: { refresh?: string } }>('/api/agents', async (request) => {
     // Rafraîchissement demandé : redécouvre le catalogue d'un agent installé depuis le démarrage.
-    if (request.query.refresh === '1') await refreshCatalog();
-    const [availability, catalog] = await Promise.all([getAgentAvailability(), getCatalog()]);
-    return availability.map((info) => ({ ...info, ...catalog[info.agent] }));
+    if (request.query.refresh === '1') await catalog.refresh();
+    const [availability, catalogs] = await Promise.all([getAgentAvailability(), catalog.get()]);
+    return availability.map((info) => ({ ...info, ...catalogs[info.agent] }));
   });
 
   const usage = new UsageTracker();
@@ -1860,8 +1866,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 
 export async function startServer(): Promise<FastifyInstance> {
   await assertLoopbackPortFree(HOST, PORT, 'Serveur Cerebro');
-  const app = await buildServer();
-  startCatalogRefresh();
+  const app = await buildServer({ refreshCatalog: true });
   await app.listen({ host: HOST, port: PORT });
   return app;
 }

@@ -1,10 +1,10 @@
-import { assertWorktreeAvailable, canonicalWorktreePath } from './worktree-gate.ts';
+import { canonicalWorktreePath, type WorktreeGate } from './worktree-gate.ts';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdtemp, open, readFile, readlink, rename, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { startPush } from './git-push.ts';
+import type { GitPushes } from './git-push.ts';
 
 const LIMIT = 4 * 1024 * 1024;
 const EMPTY = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -61,8 +61,6 @@ interface Saved {
   branch: string | null;
   used: boolean;
 }
-const snapshots = new Map<string, Saved>();
-const locks = new Set<string>();
 
 async function git(path: string, args: string[], index?: string, input?: string | Buffer): Promise<string> {
   return new Promise((accept, reject) => {
@@ -188,104 +186,6 @@ export async function sharedDependencyLinks(
   return active;
 }
 
-/** `shared` describes the workspace whose dependency links (seen by Git as untracked files) stay out of the plan. */
-export async function prepareCommit(path: string, shared?: SharedDependencies | null): Promise<GitSnapshot> {
-  path = (await git(path, ['rev-parse', '--show-toplevel'])).trim();
-  const links = await sharedDependencyLinks(shared, path);
-  await git(path, ['mktree'], undefined, '');
-  const before = {
-    branch: await branch(path),
-    head: await head(path),
-    work: await workHash(path),
-    index: await indexHash(path),
-  };
-  if ((await git(path, ['ls-files', '-u'])).trim()) throw new Error('Conflits Git non résolus.');
-  const directory = await mkdtemp(join(tmpdir(), 'cerebro-collect-'));
-  const temporaryIndex = join(directory, 'index');
-  const originalIndex = await readFile(await indexPath(path)).catch((cause) => {
-    if (cause.code === 'ENOENT') return null;
-    throw cause;
-  });
-  if (originalIndex) await writeFile(temporaryIndex, originalIndex);
-  else await git(path, ['read-tree', '--empty'], temporaryIndex);
-  // A freshly written copy otherwise makes racily-clean entries look older than
-  // the index: Git can miss same-size changes with identical cached timestamps.
-  // An old, nonzero timestamp (Git ignores zero) forces content checks without
-  // touching the real index.
-  await utimes(temporaryIndex, 1, 1);
-  try {
-    const untracked = new Set(
-      (await git(path, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean),
-    );
-    const changed = (
-      await git(path, ['diff', '--name-only', '--no-renames', '-z', before.head ?? EMPTY], temporaryIndex)
-    )
-      .split('\0')
-      .filter(Boolean);
-    const paths = [...new Set([...changed, ...untracked])]
-      .filter((file) => !links.some((link) => file === link || file.startsWith(`${link}/`)))
-      .sort();
-    if (paths.length > 500) throw new Error('Plus de 500 fichiers : réduisez le périmètre.');
-    const files: GitCandidate[] = [];
-    let bytes = 0;
-    for (const file of paths) {
-      // No git add: preparation must not even store secret blobs in Git's object database.
-      const diff = untracked.has(file)
-        ? await git(
-            path,
-            ['diff', '--no-index', '--binary', '--no-ext-diff', '--no-textconv', '--', '/dev/null', file],
-            temporaryIndex,
-          )
-        : await git(
-            path,
-            ['diff', '--binary', '--no-ext-diff', '--no-textconv', '--no-renames', before.head ?? EMPTY, '--', file],
-            temporaryIndex,
-          );
-      bytes += Buffer.byteLength(diff);
-      if (bytes > LIMIT) throw new Error('Plan trop volumineux (4 Mio).');
-      files.push({ path: file, diff, hunks: hunks(diff), ...scan(file, diff) });
-    }
-    if (
-      before.branch !== (await branch(path)) ||
-      before.head !== (await head(path)) ||
-      before.work !== (await workHash(path)) ||
-      before.index !== (await indexHash(path))
-    )
-      throw new Error(
-        `État Git modifié pendant la collecte : recommencez. HEAD=${before.head !== (await head(path))} work=${before.work !== (await workHash(path))} index=${before.index !== (await indexHash(path))}`,
-      );
-    const snapshot: GitSnapshot = {
-      root: path,
-      id: randomUUID(),
-      branch: before.branch,
-      head: before.head,
-      fingerprint: hash(JSON.stringify(before)),
-      files,
-      stagedDiff: await git(
-        path,
-        ['diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv', before.head ?? EMPTY],
-        temporaryIndex,
-      ),
-      log: before.head ? await git(path, ['log', '-15', '--format=%h %s']) : '',
-      createdAt: Date.now(),
-    };
-    // Bound retained state and expire unused plans after one hour.
-    for (const [id, saved] of snapshots) if (saved.snapshot.createdAt < Date.now() - 3_600_000) snapshots.delete(id);
-    if (snapshots.size >= 100) snapshots.delete(snapshots.keys().next().value!);
-    snapshots.set(snapshot.id, {
-      path,
-      snapshot,
-      work: before.work,
-      index: before.index,
-      branch: before.branch,
-      used: false,
-    });
-    return snapshot;
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-}
-
 export function parseCommitPlan(value: unknown): CommitPlan {
   const p = value as CommitPlan;
   if (
@@ -388,161 +288,6 @@ async function mergedIndex(
   }
 }
 
-export async function executeCommitPlan(path: string, raw: unknown): Promise<CommitResult> {
-  const plan = parseCommitPlan(raw);
-  const saved = snapshots.get(plan.snapshotId);
-  const top = (await git(path, ['rev-parse', '--show-toplevel'])).trim();
-  if (!saved || saved.path !== top || saved.used)
-    throw new Error('Plan absent, expiré ou déjà exécuté : préparez une nouvelle sélection.');
-  path = top;
-  assertWorktreeAvailable(path);
-  const index = await indexPath(path);
-  if (locks.has(index)) throw new Error('Un commit est déjà en cours dans ce dépôt.');
-  locks.add(index);
-  let lock: Awaited<ReturnType<typeof open>> | null = null;
-  const dir = await mkdtemp(join(tmpdir(), 'cerebro-execute-'));
-  const result: CommitResult = { commits: [], exclusions: [], error: null, pushId: null };
-  try {
-    lock = await open(`${index}.lock`, 'wx');
-    assertWorktreeAvailable(path);
-    if (
-      saved.branch !== (await branch(path)) ||
-      saved.snapshot.head !== (await head(path)) ||
-      saved.work !== (await workHash(path)) ||
-      saved.index !== (await indexHash(path))
-    )
-      throw new Error('État Git obsolète : préparez un nouveau plan.');
-    const selectedPaths = new Set(plan.commits.flatMap((step) => step.selection.map((s) => s.path)));
-    result.exclusions = saved.snapshot.files.flatMap((f) => {
-      if (!selectedPaths.has(f.path)) return [f.path];
-      const selections = plan.commits.flatMap((c) => c.selection).filter((s) => s.path === f.path);
-      if (selections.some((s) => s.all)) return [];
-      const selectedHunks = new Set(selections.flatMap((s) => s.hunks ?? []));
-      return f.hunks.filter((h) => !selectedHunks.has(h.id)).map((h) => `${f.path} (hunk ${h.id})`);
-    });
-    let base = saved.snapshot.head ?? EMPTY;
-    const original = join(dir, 'original');
-    const bytes = await readFile(index).catch((cause) => {
-      if (cause.code === 'ENOENT') return null;
-      throw cause;
-    });
-    if (bytes) await writeFile(original, bytes);
-    else await git(path, ['read-tree', '--empty'], original);
-    let staged = (await git(path, ['write-tree'], original)).trim();
-    const prepared: { tree: string; index: string; merged: string; message: string }[] = [];
-    for (const [n, step] of plan.commits.entries()) {
-      const temporary = join(dir, `commit-${n}`);
-      await git(path, ['read-tree', base], temporary);
-      for (const selection of step.selection) {
-        const file = saved.snapshot.files.find((f) => f.path === selection.path);
-        if (!file) throw new Error(`Fichier absent de la sélection collectée : ${selection.path}`);
-        if (file.blocked) throw new Error(`Secret détecté, fichier exclu : ${file.path}`);
-        if (file.warnings.length && !plan.acknowledged.includes(file.path))
-          throw new Error(`Vérification explicite requise : ${file.path}`);
-        let patch = file.diff;
-        if (!selection.all) {
-          const hunks = selection.hunks!.map((id) => file.hunks.find((h) => h.id === id));
-          if (hunks.some((h) => !h)) throw new Error(`Hunk inconnu : ${file.path}`);
-          // Reuse one header and keep the original hunk order.
-          const wanted = new Set(selection.hunks);
-          patch = file.hunks
-            .filter((h) => wanted.has(h.id))
-            .map((h) => h.patch)
-            .join('');
-        }
-        // --3way rebases later hunks on the commits already prepared from this snapshot.
-        await git(path, ['apply', '--cached', '--3way', '--whitespace=nowarn'], temporary, patch);
-      }
-      const tree = (await git(path, ['write-tree'], temporary)).trim();
-      const baseTree = (await git(path, ['rev-parse', `${base}^{tree}`])).trim();
-      if (tree === baseTree) throw new Error('Commit vide dans le plan.');
-      const merged = join(dir, `merged-${n}`);
-      await mergedIndex(path, base, tree, staged, merged, dir);
-      prepared.push({ tree, index: temporary, merged, message: step.message });
-      staged = (await git(path, ['write-tree'], merged)).trim();
-      base = tree;
-    }
-    // Everything, including index preservation, is checked before the first mutation.
-    if (
-      saved.branch !== (await branch(path)) ||
-      saved.snapshot.head !== (await head(path)) ||
-      saved.work !== (await workHash(path)) ||
-      saved.index !== (await indexHash(path))
-    )
-      throw new Error('État Git obsolète avant exécution.');
-    saved.used = true;
-    let expectedHead = saved.snapshot.head;
-    let expectedIndex = saved.index;
-    for (const step of prepared) {
-      assertWorktreeAvailable(path);
-      if (
-        saved.branch !== (await branch(path)) ||
-        (await head(path)) !== expectedHead ||
-        saved.work !== (await workHash(path)) ||
-        expectedIndex !== (await indexHash(path))
-      )
-        throw new Error('Modifications concurrentes : exécution interrompue.');
-      await git(path, ['commit', '--file=-'], step.index, step.message);
-      const oid = (await head(path))!;
-      const actualTree = (await git(path, ['rev-parse', 'HEAD^{tree}'])).trim();
-      const parents = (await git(path, ['rev-list', '--parents', '-n', '1', oid])).trim().split(' ').slice(1);
-      if (parents.join(' ') !== (expectedHead ?? ''))
-        throw new Error(
-          `Parent inattendu pour ${oid} : modification concurrente des références, vérification manuelle requise.`,
-        );
-      result.commits.push({ hash: oid, title: (await git(path, ['log', '-1', '--format=%s'])).trim() });
-      if (actualTree !== step.tree)
-        throw new Error(
-          `Le hook a modifié la sélection du commit ${oid} ; index préexistant conservé, vérification manuelle requise.`,
-        );
-      // Atomic replacement under the real index lock, never a git add/reset on unrelated paths.
-      const mergedBytes = await readFile(step.merged);
-      expectedIndex = hash(mergedBytes);
-      await writeFile(`${index}.lock`, mergedBytes);
-      await rename(`${index}.lock`, index);
-      await lock.close();
-      lock = null;
-      lock = await open(`${index}.lock`, 'wx');
-      assertWorktreeAvailable(path);
-      if (expectedIndex !== (await indexHash(path)))
-        throw new Error('L’index a changé entre deux commits : exécution interrompue.');
-      expectedHead = oid;
-      if (saved.work !== (await workHash(path)))
-        throw new Error('Le worktree a changé pendant le commit (hook ou édition externe) : vérification requise.');
-    }
-  } catch (cause) {
-    result.error = cause instanceof Error ? cause.message : String(cause);
-  } finally {
-    if (lock) {
-      await lock.close();
-      await rm(`${index}.lock`, { force: true });
-    }
-    await rm(dir, { recursive: true, force: true });
-    locks.delete(index);
-  }
-  if (!result.error && plan.push) result.pushId = (await startPush(path, { allowDirty: true })).id;
-  return result;
-}
-
-export async function verifySnapshot(path: string, id: string): Promise<GitSnapshot> {
-  const saved = snapshots.get(id);
-  const top = (await git(path, ['rev-parse', '--show-toplevel'])).trim();
-  if (!saved || saved.path !== top) throw new Error('Sélection absente ou expirée.');
-  if (
-    saved.branch !== (await branch(top)) ||
-    saved.snapshot.head !== (await head(top)) ||
-    saved.work !== (await workHash(top)) ||
-    saved.index !== (await indexHash(top))
-  )
-    throw new Error('Sélection obsolète : HEAD, index ou worktree a changé.');
-  return saved.snapshot;
-}
-/** Diffs shown to the user by a still-retained snapshot of `root`, so a later plan can prove a file was reviewed as is. */
-export function reviewedDiffs(id: string, root: string): Map<string, string> | null {
-  const saved = snapshots.get(id);
-  if (!saved || canonicalWorktreePath(saved.path) !== canonicalWorktreePath(root)) return null;
-  return new Map(saved.snapshot.files.map((file) => [file.path, file.diff]));
-}
 export function selectionDiff(snapshot: GitSnapshot, selections: CommitSelection[]): string {
   const validated = parseCommitPlan({
     snapshotId: snapshot.id,
@@ -563,4 +308,272 @@ export function selectionDiff(snapshot: GitSnapshot, selections: CommitSelection
         .join('');
     })
     .join('\n');
+}
+
+/** Prepared snapshots and commit locks of a server: a plan can only execute a snapshot this planner prepared. */
+export class GitPlanner {
+  private readonly snapshots = new Map<string, Saved>();
+  private readonly locks = new Set<string>();
+  private readonly gate: WorktreeGate;
+  private readonly pushes: GitPushes;
+
+  constructor(gate: WorktreeGate, pushes: GitPushes) {
+    this.gate = gate;
+    this.pushes = pushes;
+  }
+
+  /** `shared` describes the workspace whose dependency links (seen by Git as untracked files) stay out of the plan. */
+  async prepareCommit(path: string, shared?: SharedDependencies | null): Promise<GitSnapshot> {
+    path = (await git(path, ['rev-parse', '--show-toplevel'])).trim();
+    const links = await sharedDependencyLinks(shared, path);
+    await git(path, ['mktree'], undefined, '');
+    const before = {
+      branch: await branch(path),
+      head: await head(path),
+      work: await workHash(path),
+      index: await indexHash(path),
+    };
+    if ((await git(path, ['ls-files', '-u'])).trim()) throw new Error('Conflits Git non résolus.');
+    const directory = await mkdtemp(join(tmpdir(), 'cerebro-collect-'));
+    const temporaryIndex = join(directory, 'index');
+    const originalIndex = await readFile(await indexPath(path)).catch((cause) => {
+      if (cause.code === 'ENOENT') return null;
+      throw cause;
+    });
+    if (originalIndex) await writeFile(temporaryIndex, originalIndex);
+    else await git(path, ['read-tree', '--empty'], temporaryIndex);
+    // A freshly written copy otherwise makes racily-clean entries look older than
+    // the index: Git can miss same-size changes with identical cached timestamps.
+    // An old, nonzero timestamp (Git ignores zero) forces content checks without
+    // touching the real index.
+    await utimes(temporaryIndex, 1, 1);
+    try {
+      const untracked = new Set(
+        (await git(path, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean),
+      );
+      const changed = (
+        await git(path, ['diff', '--name-only', '--no-renames', '-z', before.head ?? EMPTY], temporaryIndex)
+      )
+        .split('\0')
+        .filter(Boolean);
+      const paths = [...new Set([...changed, ...untracked])]
+        .filter((file) => !links.some((link) => file === link || file.startsWith(`${link}/`)))
+        .sort();
+      if (paths.length > 500) throw new Error('Plus de 500 fichiers : réduisez le périmètre.');
+      const files: GitCandidate[] = [];
+      let bytes = 0;
+      for (const file of paths) {
+        // No git add: preparation must not even store secret blobs in Git's object database.
+        const diff = untracked.has(file)
+          ? await git(
+              path,
+              ['diff', '--no-index', '--binary', '--no-ext-diff', '--no-textconv', '--', '/dev/null', file],
+              temporaryIndex,
+            )
+          : await git(
+              path,
+              ['diff', '--binary', '--no-ext-diff', '--no-textconv', '--no-renames', before.head ?? EMPTY, '--', file],
+              temporaryIndex,
+            );
+        bytes += Buffer.byteLength(diff);
+        if (bytes > LIMIT) throw new Error('Plan trop volumineux (4 Mio).');
+        files.push({ path: file, diff, hunks: hunks(diff), ...scan(file, diff) });
+      }
+      if (
+        before.branch !== (await branch(path)) ||
+        before.head !== (await head(path)) ||
+        before.work !== (await workHash(path)) ||
+        before.index !== (await indexHash(path))
+      )
+        throw new Error(
+          `État Git modifié pendant la collecte : recommencez. HEAD=${before.head !== (await head(path))} work=${before.work !== (await workHash(path))} index=${before.index !== (await indexHash(path))}`,
+        );
+      const snapshot: GitSnapshot = {
+        root: path,
+        id: randomUUID(),
+        branch: before.branch,
+        head: before.head,
+        fingerprint: hash(JSON.stringify(before)),
+        files,
+        stagedDiff: await git(
+          path,
+          ['diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv', before.head ?? EMPTY],
+          temporaryIndex,
+        ),
+        log: before.head ? await git(path, ['log', '-15', '--format=%h %s']) : '',
+        createdAt: Date.now(),
+      };
+      // Bound retained state and expire unused plans after one hour.
+      for (const [id, saved] of this.snapshots)
+        if (saved.snapshot.createdAt < Date.now() - 3_600_000) this.snapshots.delete(id);
+      if (this.snapshots.size >= 100) this.snapshots.delete(this.snapshots.keys().next().value!);
+      this.snapshots.set(snapshot.id, {
+        path,
+        snapshot,
+        work: before.work,
+        index: before.index,
+        branch: before.branch,
+        used: false,
+      });
+      return snapshot;
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  async executeCommitPlan(path: string, raw: unknown): Promise<CommitResult> {
+    const plan = parseCommitPlan(raw);
+    const saved = this.snapshots.get(plan.snapshotId);
+    const top = (await git(path, ['rev-parse', '--show-toplevel'])).trim();
+    if (!saved || saved.path !== top || saved.used)
+      throw new Error('Plan absent, expiré ou déjà exécuté : préparez une nouvelle sélection.');
+    path = top;
+    this.gate.assertAvailable(path);
+    const index = await indexPath(path);
+    if (this.locks.has(index)) throw new Error('Un commit est déjà en cours dans ce dépôt.');
+    this.locks.add(index);
+    let lock: Awaited<ReturnType<typeof open>> | null = null;
+    const dir = await mkdtemp(join(tmpdir(), 'cerebro-execute-'));
+    const result: CommitResult = { commits: [], exclusions: [], error: null, pushId: null };
+    try {
+      lock = await open(`${index}.lock`, 'wx');
+      this.gate.assertAvailable(path);
+      if (
+        saved.branch !== (await branch(path)) ||
+        saved.snapshot.head !== (await head(path)) ||
+        saved.work !== (await workHash(path)) ||
+        saved.index !== (await indexHash(path))
+      )
+        throw new Error('État Git obsolète : préparez un nouveau plan.');
+      const selectedPaths = new Set(plan.commits.flatMap((step) => step.selection.map((s) => s.path)));
+      result.exclusions = saved.snapshot.files.flatMap((f) => {
+        if (!selectedPaths.has(f.path)) return [f.path];
+        const selections = plan.commits.flatMap((c) => c.selection).filter((s) => s.path === f.path);
+        if (selections.some((s) => s.all)) return [];
+        const selectedHunks = new Set(selections.flatMap((s) => s.hunks ?? []));
+        return f.hunks.filter((h) => !selectedHunks.has(h.id)).map((h) => `${f.path} (hunk ${h.id})`);
+      });
+      let base = saved.snapshot.head ?? EMPTY;
+      const original = join(dir, 'original');
+      const bytes = await readFile(index).catch((cause) => {
+        if (cause.code === 'ENOENT') return null;
+        throw cause;
+      });
+      if (bytes) await writeFile(original, bytes);
+      else await git(path, ['read-tree', '--empty'], original);
+      let staged = (await git(path, ['write-tree'], original)).trim();
+      const prepared: { tree: string; index: string; merged: string; message: string }[] = [];
+      for (const [n, step] of plan.commits.entries()) {
+        const temporary = join(dir, `commit-${n}`);
+        await git(path, ['read-tree', base], temporary);
+        for (const selection of step.selection) {
+          const file = saved.snapshot.files.find((f) => f.path === selection.path);
+          if (!file) throw new Error(`Fichier absent de la sélection collectée : ${selection.path}`);
+          if (file.blocked) throw new Error(`Secret détecté, fichier exclu : ${file.path}`);
+          if (file.warnings.length && !plan.acknowledged.includes(file.path))
+            throw new Error(`Vérification explicite requise : ${file.path}`);
+          let patch = file.diff;
+          if (!selection.all) {
+            const hunks = selection.hunks!.map((id) => file.hunks.find((h) => h.id === id));
+            if (hunks.some((h) => !h)) throw new Error(`Hunk inconnu : ${file.path}`);
+            // Reuse one header and keep the original hunk order.
+            const wanted = new Set(selection.hunks);
+            patch = file.hunks
+              .filter((h) => wanted.has(h.id))
+              .map((h) => h.patch)
+              .join('');
+          }
+          // --3way rebases later hunks on the commits already prepared from this snapshot.
+          await git(path, ['apply', '--cached', '--3way', '--whitespace=nowarn'], temporary, patch);
+        }
+        const tree = (await git(path, ['write-tree'], temporary)).trim();
+        const baseTree = (await git(path, ['rev-parse', `${base}^{tree}`])).trim();
+        if (tree === baseTree) throw new Error('Commit vide dans le plan.');
+        const merged = join(dir, `merged-${n}`);
+        await mergedIndex(path, base, tree, staged, merged, dir);
+        prepared.push({ tree, index: temporary, merged, message: step.message });
+        staged = (await git(path, ['write-tree'], merged)).trim();
+        base = tree;
+      }
+      // Everything, including index preservation, is checked before the first mutation.
+      if (
+        saved.branch !== (await branch(path)) ||
+        saved.snapshot.head !== (await head(path)) ||
+        saved.work !== (await workHash(path)) ||
+        saved.index !== (await indexHash(path))
+      )
+        throw new Error('État Git obsolète avant exécution.');
+      saved.used = true;
+      let expectedHead = saved.snapshot.head;
+      let expectedIndex = saved.index;
+      for (const step of prepared) {
+        this.gate.assertAvailable(path);
+        if (
+          saved.branch !== (await branch(path)) ||
+          (await head(path)) !== expectedHead ||
+          saved.work !== (await workHash(path)) ||
+          expectedIndex !== (await indexHash(path))
+        )
+          throw new Error('Modifications concurrentes : exécution interrompue.');
+        await git(path, ['commit', '--file=-'], step.index, step.message);
+        const oid = (await head(path))!;
+        const actualTree = (await git(path, ['rev-parse', 'HEAD^{tree}'])).trim();
+        const parents = (await git(path, ['rev-list', '--parents', '-n', '1', oid])).trim().split(' ').slice(1);
+        if (parents.join(' ') !== (expectedHead ?? ''))
+          throw new Error(
+            `Parent inattendu pour ${oid} : modification concurrente des références, vérification manuelle requise.`,
+          );
+        result.commits.push({ hash: oid, title: (await git(path, ['log', '-1', '--format=%s'])).trim() });
+        if (actualTree !== step.tree)
+          throw new Error(
+            `Le hook a modifié la sélection du commit ${oid} ; index préexistant conservé, vérification manuelle requise.`,
+          );
+        // Atomic replacement under the real index lock, never a git add/reset on unrelated paths.
+        const mergedBytes = await readFile(step.merged);
+        expectedIndex = hash(mergedBytes);
+        await writeFile(`${index}.lock`, mergedBytes);
+        await rename(`${index}.lock`, index);
+        await lock.close();
+        lock = null;
+        lock = await open(`${index}.lock`, 'wx');
+        this.gate.assertAvailable(path);
+        if (expectedIndex !== (await indexHash(path)))
+          throw new Error('L’index a changé entre deux commits : exécution interrompue.');
+        expectedHead = oid;
+        if (saved.work !== (await workHash(path)))
+          throw new Error('Le worktree a changé pendant le commit (hook ou édition externe) : vérification requise.');
+      }
+    } catch (cause) {
+      result.error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      if (lock) {
+        await lock.close();
+        await rm(`${index}.lock`, { force: true });
+      }
+      await rm(dir, { recursive: true, force: true });
+      this.locks.delete(index);
+    }
+    if (!result.error && plan.push) result.pushId = (await this.pushes.start(path, { allowDirty: true })).id;
+    return result;
+  }
+
+  async verifySnapshot(path: string, id: string): Promise<GitSnapshot> {
+    const saved = this.snapshots.get(id);
+    const top = (await git(path, ['rev-parse', '--show-toplevel'])).trim();
+    if (!saved || saved.path !== top) throw new Error('Sélection absente ou expirée.');
+    if (
+      saved.branch !== (await branch(top)) ||
+      saved.snapshot.head !== (await head(top)) ||
+      saved.work !== (await workHash(top)) ||
+      saved.index !== (await indexHash(top))
+    )
+      throw new Error('Sélection obsolète : HEAD, index ou worktree a changé.');
+    return saved.snapshot;
+  }
+  /** Diffs shown to the user by a still-retained snapshot of `root`, so a later plan can prove a file was reviewed as is. */
+  reviewedDiffs(id: string, root: string): Map<string, string> | null {
+    const saved = this.snapshots.get(id);
+    if (!saved || canonicalWorktreePath(saved.path) !== canonicalWorktreePath(root)) return null;
+    return new Map(saved.snapshot.files.map((file) => [file.path, file.diff]));
+  }
 }

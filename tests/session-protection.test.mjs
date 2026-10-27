@@ -16,6 +16,7 @@ delete process.env.CEREBRO_SLACK_USER;
 
 const { CerebroDatabase, SessionProtectionError } = await import('../server/db.ts');
 const { SessionManager } = await import('../server/sessions.ts');
+const { createServices } = await import('../server/services.ts');
 const { ATTACHMENTS_DIR } = await import('../server/config.ts');
 const { parseSession } = await import('../web/src/types.ts');
 const { UpdateManager } = await import('../server/updates.ts');
@@ -91,7 +92,7 @@ test('protected sessions reject deletion before stopping processes or removing a
     const project = db.createProject('Projet', root);
     const session = createSession(db, project, 'running');
     createSession(db, project);
-    const manager = new SessionManager(db);
+    const manager = new SessionManager(db, createServices(db));
     const stop = t.mock.method(manager, 'stopProcesses', async () => {});
     const released = t.mock.fn();
     manager.onSessionReleased = released;
@@ -125,7 +126,7 @@ test('purge skips protected idle/exited sessions, active sessions and recent ses
   const db = new CerebroDatabase(':memory:');
   try {
     const project = db.createProject('Projet', root);
-    const manager = new SessionManager(db);
+    const manager = new SessionManager(db, createServices(db));
     const stop = t.mock.method(manager, 'stopProcesses', async () => {});
     const kept = [];
     const removed = [];
@@ -166,7 +167,7 @@ for (const deletion of ['session', 'project']) {
     try {
       const project = db.createProject('Projet', root);
       const session = createSession(db, project);
-      const manager = new SessionManager(db);
+      const manager = new SessionManager(db, createServices(db));
       let rejectStop;
       t.mock.method(
         manager,

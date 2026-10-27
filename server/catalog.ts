@@ -44,9 +44,6 @@ const FALLBACK: Record<Agent, AgentCatalog> = {
   grok: { models: [], efforts: ['low', 'medium', 'high', 'xhigh'], defaultModel: null },
 };
 
-const catalogs: Record<Agent, AgentCatalog> = { ...FALLBACK };
-let pending: Promise<void> | null = null;
-
 function isEffort(value: unknown): value is Effort {
   return EFFORT_ORDER.includes(value as Effort);
 }
@@ -214,61 +211,73 @@ const DISCOVERERS: Partial<Record<Agent, () => Promise<AgentCatalog>>> = {
   grok: discoverGrok,
 };
 
-export function refreshCatalog(): Promise<void> {
-  // Agent non installé : pas de découverte, on garde le repli sans warning.
-  pending ??= getAgentAvailability()
-    .then((availability) =>
-      Promise.all(
-        Object.entries(DISCOVERERS)
-          .filter(([agent]) => availability.some((a) => a.agent === agent && a.available))
-          .map(([agent, discover]) =>
-            discover()
-              .then((catalog) => {
-                catalogs[agent as Agent] = catalog;
-              })
-              .catch((error: unknown) => {
-                console.warn(
-                  `Catalogue ${agent} indisponible, liste par défaut : ${error instanceof Error ? error.message : String(error)}`,
-                );
-              }),
-          ),
-      ),
-    )
-    .then(() => {})
-    .finally(() => {
-      pending = null;
-    });
-  return pending;
-}
+/**
+ * Model and effort choices of the installed CLIs. Until a discovery succeeds, an agent keeps its fallback list:
+ * a fresh catalog, as built for a migration or a test, answers the same way whatever the timing.
+ */
+export class Catalog {
+  private readonly catalogs: Record<Agent, AgentCatalog>;
+  private pending: Promise<void> | null = null;
 
-export function startCatalogRefresh(): void {
-  void refreshCatalog();
-  setInterval(() => void refreshCatalog(), REFRESH_MS).unref();
-}
-
-/** Catalogue courant ; attend une découverte en cours pour ne pas servir le repli au démarrage. */
-export async function getCatalog(): Promise<Record<Agent, AgentCatalog>> {
-  if (pending !== null) await pending;
-  return { ...catalogs };
-}
-
-export function catalogFor(agent: Agent): AgentCatalog {
-  return catalogs[agent];
-}
-
-// model / effort facultatifs (null ou absents = défaut Cerebro), restreints au catalogue de l'agent.
-// The result is always explicit: null resolves to the catalog default model, then to `defaultEffort`.
-export function parseTuning(agent: Agent, body: Record<string, unknown>): Tuning | null {
-  const catalog = catalogFor(agent);
-  const model = (body.model ?? catalog.defaultModel) as string | null;
-  let efforts = catalog.efforts;
-  if (model !== null) {
-    const choice = catalog.models.find((m) => m.value === model);
-    if (choice === undefined) return null;
-    efforts = choice.efforts;
+  /** `known`: lists replacing the fallback of some agents, as a discovery would. */
+  constructor(known: Partial<Record<Agent, AgentCatalog>> = {}) {
+    this.catalogs = { ...FALLBACK, ...known };
   }
-  const effort = body.effort ?? null;
-  const level = efforts.find((e) => e === effort);
-  if (effort !== null && level === undefined) return null;
-  return { model, effort: level ?? defaultEffort(efforts) };
+
+  refresh(): Promise<void> {
+    // Agent non installé : pas de découverte, on garde le repli sans warning.
+    this.pending ??= getAgentAvailability()
+      .then((availability) =>
+        Promise.all(
+          Object.entries(DISCOVERERS)
+            .filter(([agent]) => availability.some((a) => a.agent === agent && a.available))
+            .map(([agent, discover]) =>
+              discover()
+                .then((catalog) => {
+                  this.catalogs[agent as Agent] = catalog;
+                })
+                .catch((error: unknown) => {
+                  console.warn(
+                    `Catalogue ${agent} indisponible, liste par défaut : ${error instanceof Error ? error.message : String(error)}`,
+                  );
+                }),
+            ),
+        ),
+      )
+      .then(() => {})
+      .finally(() => {
+        this.pending = null;
+      });
+    return this.pending;
+  }
+
+  /** Refreshes now, then hourly; returns the function stopping the periodic refresh. */
+  startRefresh(): () => void {
+    void this.refresh();
+    const timer = setInterval(() => void this.refresh(), REFRESH_MS).unref();
+    return () => clearInterval(timer);
+  }
+
+  /** Catalogue courant ; attend une découverte en cours pour ne pas servir le repli au démarrage. */
+  async get(): Promise<Record<Agent, AgentCatalog>> {
+    if (this.pending !== null) await this.pending;
+    return { ...this.catalogs };
+  }
+
+  // model / effort facultatifs (null ou absents = défaut Cerebro), restreints au catalogue de l'agent.
+  // The result is always explicit: null resolves to the catalog default model, then to `defaultEffort`.
+  parseTuning(agent: Agent, body: Record<string, unknown>): Tuning | null {
+    const catalog = this.catalogs[agent];
+    const model = (body.model ?? catalog.defaultModel) as string | null;
+    let efforts = catalog.efforts;
+    if (model !== null) {
+      const choice = catalog.models.find((m) => m.value === model);
+      if (choice === undefined) return null;
+      efforts = choice.efforts;
+    }
+    const effort = body.effort ?? null;
+    const level = efforts.find((e) => e === effort);
+    if (effort !== null && level === undefined) return null;
+    return { model, effort: level ?? defaultEffort(efforts) };
+  }
 }

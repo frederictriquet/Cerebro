@@ -1,4 +1,4 @@
-import { assertWorktreeAvailable } from './worktree-gate.ts';
+import type { WorktreeGate } from './worktree-gate.ts';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -29,14 +29,16 @@ export interface CommandRun {
 }
 export class CommandExecutor {
   private db: CerebroDatabase;
+  private gate: WorktreeGate;
   private live = new Map<
     string,
     { child: ChildProcess; timer: NodeJS.Timeout; killTimer?: NodeJS.Timeout; run: CommandRun; stopping: boolean }
   >();
   private starting = new Set<string>();
   onChange: (run: CommandRun) => void = () => {};
-  constructor(db: CerebroDatabase) {
+  constructor(db: CerebroDatabase, gate: WorktreeGate) {
     this.db = db;
+    this.gate = gate;
   }
   initialize(): void {
     for (const run of this.listRuns())
@@ -143,7 +145,7 @@ export class CommandExecutor {
         throw new Error('Le répertoire de commande doit rester dans le projet.');
       if (this.db.getTask(taskId)?.dependsOn.some((id) => this.db.getTask(id)?.status !== 'done'))
         throw new Error('Dépendance devenue non satisfaite.');
-      assertWorktreeAvailable(cwd);
+      this.gate.assertAvailable(cwd);
       const run: CommandRun = {
         id: randomUUID(),
         taskId,

@@ -2,18 +2,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { sep } from 'node:path';
 import type { CerebroDatabase, CommitSettings } from './db.ts';
-import {
-  executeCommitPlan,
-  prepareCommit,
-  reviewedDiffs,
-  verifySnapshot,
-  type CommitPlan,
-  type CommitResult,
-  type GitSnapshot,
-} from './git-plan.ts';
-import { currentPush, startPush, type PushOperation } from './git-push.ts';
+import { type CommitPlan, type CommitResult, type GitSnapshot } from './git-plan.ts';
+import type { PushOperation } from './git-push.ts';
 import { parseCommitProposal, proposeCommits, type ProposalContext, type CommitProposal } from './commit-proposal.ts';
-import { assertWorktreeAvailable, canonicalWorktreePath } from './worktree-gate.ts';
+import type { Services } from './services.ts';
+import { canonicalWorktreePath } from './worktree-gate.ts';
 import { workspaceFor } from './provenance.ts';
 import { INHERITED_WARNING } from './session-git.ts';
 
@@ -56,11 +49,13 @@ const inside = (root: string, path: string): boolean => {
 
 export class AutomaticCommits {
   private db: CerebroDatabase;
+  private services: Services;
   private active = new Map<string, { operation: AutomaticCommit; abort: AbortController; done: Promise<void> }>();
   private closed = false;
   onComplete: (operation: AutomaticCommit) => void = () => {};
-  constructor(db: CerebroDatabase) {
+  constructor(db: CerebroDatabase, services: Services) {
     this.db = db;
+    this.services = services;
     for (const operation of this.list())
       if (operation.status === 'running') {
         operation.status = 'interrupted';
@@ -88,7 +83,7 @@ export class AutomaticCommits {
     return proposeCommits(context, signal);
   }
   private idle(path: string): void {
-    assertWorktreeAvailable(path);
+    this.services.gate.assertAvailable(path);
     for (const session of this.db.listSessions()) {
       const cwd = workspaceFor(this.db, session.id)?.root ?? this.db.getProject(session.projectId)?.path;
       if (cwd && inside(path, cwd) && ['starting', 'running', 'waiting'].includes(session.status))
@@ -214,11 +209,13 @@ export class AutomaticCommits {
     try {
       this.idle(operation.path);
       signal.throwIfAborted();
-      if ((await currentPush(operation.path))?.status === 'running')
+      if ((await this.services.pushes.current(operation.path))?.status === 'running')
         throw new CommitBlocked('Un push est déjà en cours dans ce dépôt.');
-      const snapshot = await (context.prepare?.() ?? prepareCommit(operation.path));
+      const snapshot = await (context.prepare?.() ?? this.services.git.prepareCommit(operation.path));
       signal.throwIfAborted();
-      const shown = operation.reviewed ? reviewedDiffs(operation.reviewed.snapshotId, operation.path) : null;
+      const shown = operation.reviewed
+        ? this.services.git.reviewedDiffs(operation.reviewed.snapshotId, operation.path)
+        : null;
       // A secret is never acknowledged; other warnings yield to a review of this exact diff.
       const acknowledged = snapshot.files
         .filter(
@@ -266,7 +263,7 @@ export class AutomaticCommits {
         const proposal = parseCommitProposal(await this.propose(input, signal), input);
         signal.throwIfAborted();
         this.idle(operation.path);
-        await verifySnapshot(operation.path, snapshot.id);
+        await this.services.git.verifySnapshot(operation.path, snapshot.id);
         signal.throwIfAborted();
         const plan: CommitPlan = {
           snapshotId: snapshot.id,
@@ -278,7 +275,7 @@ export class AutomaticCommits {
           })),
         };
         phase('committing');
-        const result = await (context.execute?.(plan) ?? executeCommitPlan(operation.path, plan));
+        const result = await (context.execute?.(plan) ?? this.services.git.executeCommitPlan(operation.path, plan));
         operation.commits = result.commits;
         this.save(operation);
         if (result.error) throw new Error(result.error);
@@ -289,7 +286,7 @@ export class AutomaticCommits {
         // The snapshot already checked the tree (a snapshot with only excluded files is blocked above), and
         // shared dependency links stay untracked on purpose, so a raw `git status` check would refuse them.
         operation.pushOperation = structuredClone(
-          await startPush(operation.path, {
+          await this.services.pushes.start(operation.path, {
             allowDirty: true,
             expectedHead: operation.commits.at(-1)?.hash ?? snapshot.head,
             expectedBranch: snapshot.branch,
@@ -298,7 +295,7 @@ export class AutomaticCommits {
         this.save(operation);
         while (operation.pushOperation.status === 'running') {
           await new Promise((resolve) => setTimeout(resolve, 200));
-          const latest = await currentPush(operation.path);
+          const latest = await this.services.pushes.current(operation.path);
           if (!latest || latest.id !== operation.pushOperation.id)
             throw new Error('Le résultat du push n’est plus disponible ; vérifiez les remotes.');
           operation.pushOperation = structuredClone(latest);

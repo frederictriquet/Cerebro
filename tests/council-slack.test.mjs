@@ -11,8 +11,10 @@ process.env.CEREBRO_SLACK_USER = 'test';
 process.env.CEREBRO_PUBLIC_URL = 'http://cerebro.test/';
 const { CerebroDatabase } = await import('../server/db.ts');
 const { SessionManager } = await import('../server/sessions.ts');
+const { createServices } = await import('../server/services.ts');
 const { SlackNotifier, parseCouncilCommand, councilSlackText } = await import('../server/slack.ts');
 const { CouncilRuns } = await import('../server/council-runner.ts');
+const { Catalog } = await import('../server/catalog.ts');
 const { ANSWER_SCHEMA, REVIEW_SCHEMA } = await import('../server/council.ts');
 const { PUBLIC_URL } = await import('../server/config.ts');
 const base = PUBLIC_URL.replace(/\/+$/, '');
@@ -93,7 +95,7 @@ test('councilSlackText posts the synthesis essentials and the report link', () =
 });
 
 const db = new CerebroDatabase(':memory:');
-const manager = new SessionManager(db);
+const manager = new SessionManager(db, createServices(db));
 let general = true;
 let owns = true;
 const peers = {
@@ -107,7 +109,7 @@ const peers = {
   activePeerProjects: () => [],
 };
 const notifier = new SlackNotifier(manager, db, peers);
-const councils = new CouncilRuns(db);
+const councils = new CouncilRuns(db, new Catalog());
 notifier.councils = councils;
 const repo = join(root, 'repo');
 mkdirSync(repo);

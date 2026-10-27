@@ -7,8 +7,9 @@ const root = mkdtempSync(join(tmpdir(), 'cerebro-commands-'));
 process.env.CEREBRO_DATA_DIR = root;
 const { CerebroDatabase } = await import('../server/db.ts');
 const { CommandExecutor } = await import('../server/commands.ts');
+const { WorktreeGate } = await import('../server/worktree-gate.ts');
 let db = new CerebroDatabase(join(root, 'test.db'));
-let executor = new CommandExecutor(db);
+let executor = new CommandExecutor(db, new WorktreeGate());
 const project = db.createProject('Demo', root);
 const configure = (script, timeoutSeconds = 10) =>
   executor.configure(project.id, {
@@ -71,7 +72,7 @@ test('restart preserves logs and marks unfinished commands interrupted without r
     .run(interrupted.id, task.id, JSON.stringify(interrupted));
   db.close();
   db = new CerebroDatabase(join(root, 'test.db'));
-  executor = new CommandExecutor(db);
+  executor = new CommandExecutor(db, new WorktreeGate());
   executor.initialize();
   const run = executor.listRuns(task.id)[0];
   assert.equal(run.status, 'interrupted');

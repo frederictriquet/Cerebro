@@ -10,8 +10,9 @@ process.env.CEREBRO_DATA_DIR = join(root, 'data');
 process.env.CODEX_HOME = join(root, 'codex');
 const { CerebroDatabase } = await import('../server/db.ts');
 const { createWorkspace, sessionProvenance, workspaceFor } = await import('../server/provenance.ts');
-const { sessionGitContext, prepareSessionGit } = await import('../server/session-git.ts');
+const { sessionGitContext } = await import('../server/session-git.ts');
 const { SessionManager } = await import('../server/sessions.ts');
+const { createServices } = await import('../server/services.ts');
 const git = (path, ...args) =>
   execFileSync('git', ['-C', path, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -96,11 +97,12 @@ test('project shared mode keeps the exact integration directory, staged edits, u
     assert.equal(git(f.repo, 'show-ref'), refs);
     assert.deepEqual(readFileSync(join(f.repo, '.git/index')), index);
     assert.equal(readFileSync(join(f.repo, 'untracked'), 'utf8'), 'user work\n');
-    const provenance = await sessionProvenance(f.db, 'first');
+    const services = createServices(f.db);
+    const provenance = await sessionProvenance(f.db, services.git, 'first');
     assert.deepEqual(provenance.changes, []);
     assert.deepEqual(provenance.commits, []);
     assert.equal(sessionGitContext(f.db, 'first').mode, 'shared');
-    const snapshot = await prepareSessionGit(f.db, 'first');
+    const snapshot = await services.sessionGit.prepare('first');
     assert.ok(snapshot.files.every((file) => file.warnings.length));
     assert.match(snapshot.scopeNotice, /Dossier partagé/);
   }));
@@ -115,7 +117,7 @@ test('shared mode survives restart and session deletion never removes the long-l
     f.restart();
     assert.equal(f.db.getProject(f.project.id).workspaceMode, 'shared');
     assert.equal(workspaceFor(f.db, 'long-lived').path, f.repo);
-    await new SessionManager(f.db).delete('long-lived');
+    await new SessionManager(f.db, createServices(f.db)).delete('long-lived');
     assert.equal(git(f.repo, 'rev-parse', 'feature/long-lived'), tip);
     assert.equal(git(f.repo, 'worktree', 'list', '--porcelain').split('worktree ').length - 1, 1);
     f.session('next');
@@ -136,7 +138,7 @@ test('resuming a shared conversation keeps its directory even after the project 
     writeFileSync(join(bin, 'codex'), `#!/bin/sh\npwd > '${capture}'\nexec /bin/sleep 2\n`, { mode: 0o755 });
     const previous = process.env.PATH;
     process.env.PATH = `${bin}:${previous}`;
-    const manager = new SessionManager(f.db);
+    const manager = new SessionManager(f.db, createServices(f.db));
     try {
       await manager.resume('resume');
       assert.equal(readFileSync(capture, 'utf8').trim(), f.repo);
@@ -199,7 +201,7 @@ test('new epic sessions keep their original cwd after a preference change and re
       writeFileSync(join(bin, 'codex'), `#!/bin/sh\npwd > '${capture}'\nexec /bin/sleep 2\n`, { mode: 0o755 });
       const previous = process.env.PATH;
       process.env.PATH = `${bin}:${previous}`;
-      const manager = new SessionManager(f.db);
+      const manager = new SessionManager(f.db, createServices(f.db));
       try {
         const session = await manager.create(
           f.db.getProject(f.project.id),

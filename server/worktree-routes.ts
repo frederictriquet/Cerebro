@@ -1,12 +1,10 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { CerebroDatabase } from './db.ts';
 import { WorktreeError, WorktreeManager } from './worktrees.ts';
-import { prepareCommit, executeCommitPlan, verifySnapshot } from './git-plan.ts';
-import { currentPush } from './git-push.ts';
-import { assertWorktreeAvailable } from './worktree-gate.ts';
+import type { Services } from './services.ts';
 
-export function registerWorktreeRoutes(app: FastifyInstance, db: CerebroDatabase): WorktreeManager {
-  const manager = new WorktreeManager(db);
+export function registerWorktreeRoutes(app: FastifyInstance, db: CerebroDatabase, services: Services): WorktreeManager {
+  const manager = new WorktreeManager(db, services);
   const attempt = async (reply: FastifyReply, run: () => Promise<unknown>, status = 200): Promise<unknown> => {
     try {
       return reply.code(status).send(await run());
@@ -66,7 +64,7 @@ export function registerWorktreeRoutes(app: FastifyInstance, db: CerebroDatabase
   app.get<{ Params: { id: string } }>('/api/worktrees/:id/git/push', async (request, reply) =>
     attempt(reply, async () => {
       const view = await manager.get(request.params.id);
-      return currentPush(view.path);
+      return services.pushes.current(view.path);
     }),
   );
   // Orphaned worktrees still support explicit Git plans, independently of the deleted conversation.
@@ -74,7 +72,7 @@ export function registerWorktreeRoutes(app: FastifyInstance, db: CerebroDatabase
     attempt(reply, async () => {
       const view = await manager.get(request.params.id);
       if (view.error) throw new WorktreeError(view.error);
-      return prepareCommit(view.path, view);
+      return services.git.prepareCommit(view.path, view);
     }),
   );
   app.post<{ Params: { id: string } }>('/api/worktrees/:id/git/commit', async (request, reply) =>
@@ -84,11 +82,11 @@ export function registerWorktreeRoutes(app: FastifyInstance, db: CerebroDatabase
       if (!view.managed || view.primary) throw new WorktreeError('Worktree externe : opération non disponible.');
       if (view.activeSessions.some((s) => s.status !== 'idle'))
         throw new WorktreeError('Attendez la fin du tour de la session.');
-      assertWorktreeAvailable(view.path);
+      services.gate.assertAvailable(view.path);
       const raw = request.body as { snapshotId?: unknown };
       if (typeof raw?.snapshotId !== 'string') throw new WorktreeError('snapshotId requis.', 400);
-      await verifySnapshot(view.path, raw.snapshotId);
-      return executeCommitPlan(view.path, request.body);
+      await services.git.verifySnapshot(view.path, raw.snapshotId);
+      return services.git.executeCommitPlan(view.path, request.body);
     }),
   );
   return manager;

@@ -1,6 +1,7 @@
 import { statSync, unlinkSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { getAgentAvailability } from './agents.ts';
+import type { Catalog } from './catalog.ts';
 import { ATTACHMENTS_DIR } from './config.ts';
 import {
   ANSWER_SCHEMA,
@@ -93,13 +94,15 @@ export function checkImages(raw: unknown, llms: readonly { agent: Agent; label: 
 
 export class CouncilRuns {
   private db: CerebroDatabase;
+  private catalog: Catalog;
   private active = new Map<string, { run: CouncilRun; abort: AbortController; done: Promise<void> }>();
   private deletingProjects = new Set<string>();
   private closed = false;
   onComplete: (run: CouncilRun) => void = () => {};
 
-  constructor(db: CerebroDatabase) {
+  constructor(db: CerebroDatabase, catalog: Catalog) {
     this.db = db;
+    this.catalog = catalog;
     for (const run of this.list())
       if (run.status === 'running') {
         const now = Date.now();
@@ -139,7 +142,7 @@ export class CouncilRuns {
     return (
       project?.councilSettings ??
       this.db.getSetting<CouncilSettings>('council') ??
-      defaultCouncilSettings(this.db.listPersonas(), await this.availableAgents())
+      defaultCouncilSettings(this.catalog, this.db.listPersonas(), await this.availableAgents())
     );
   }
 
@@ -186,7 +189,7 @@ export class CouncilRuns {
     if (previous !== null) return previous;
     let project = this.projectForStart(input.projectId);
     const settings = structuredClone(await this.settingsFor(project));
-    const resolved = resolveParticipants(settings, this.db.listPersonas(), input.participants);
+    const resolved = resolveParticipants(this.catalog, settings, this.db.listPersonas(), input.participants);
     if ('error' in resolved) throw new CouncilError(resolved.error);
     // Relectures et synthèse reçoivent aussi les images : le chairman doit les accepter comme les conseillers.
     const images = checkImages(input.images, [

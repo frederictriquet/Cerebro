@@ -11,10 +11,9 @@ process.env.CEREBRO_DATA_DIR = join(root, 'data');
 process.env.CODEX_HOME = join(root, 'codex');
 const { CerebroDatabase } = await import('../server/db.ts');
 const { AutomaticCommits } = await import('../server/automatic-commits.ts');
-const { prepareSessionGit, executeSessionCommit } = await import('../server/session-git.ts');
+const { createServices } = await import('../server/services.ts');
 const { proposeCommits } = await import('../server/commit-proposal.ts');
 const { runHeadless } = await import('../server/headless.ts');
-const { prepareCommit } = await import('../server/git-plan.ts');
 const { createWorkspace } = await import('../server/provenance.ts');
 const git = (path, ...args) =>
   execFileSync('git', ['-C', path, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -31,7 +30,8 @@ async function fixture(run) {
   git(repo, 'commit', '-m', 'base');
   const db = new CerebroDatabase(join(directory, 'db.sqlite'));
   const project = db.createProject('Project', repo);
-  let manager = new AutomaticCommits(db);
+  let services = createServices(db);
+  let manager = new AutomaticCommits(db, services);
   let calls = 0;
   const settings = { agent: 'codex', model: 'test-model', effort: 'low', strategy: 'single' };
   const context = { scope: `projects/${project.id}`, path: repo, projectId: project.id, sessionId: null, settings };
@@ -60,12 +60,17 @@ async function fixture(run) {
     get manager() {
       return manager;
     },
+    get services() {
+      return services;
+    },
     get calls() {
       return calls;
     },
     restart: async () => {
       await manager.shutdown();
-      manager = new AutomaticCommits(db);
+      // A restarted server starts with empty in-memory state.
+      services = createServices(db);
+      manager = new AutomaticCommits(db, services);
       manager.propose = proposal;
     },
   };
@@ -112,7 +117,10 @@ test('a shared dependency link alone neither blocks the commit nor the push', as
     const source = join(f.directory, 'source');
     mkdirSync(join(source, 'node_modules'), { recursive: true });
     symlinkSync(join(source, 'node_modules'), join(f.repo, 'node_modules'), 'dir');
-    const context = { ...f.context, prepare: () => prepareCommit(f.repo, { sharedIgnored: ['node_modules'], source }) };
+    const context = {
+      ...f.context,
+      prepare: () => f.services.git.prepareCommit(f.repo, { sharedIgnored: ['node_modules'], source }),
+    };
     const result = await f.finish(await f.manager.start(context, randomUUID(), true));
     assert.equal(result.status, 'succeeded', result.error);
     assert.deepEqual(result.exclusions, []);
@@ -247,7 +255,7 @@ test('a reviewed diff lifts its warning only while unchanged, and never for a de
     writeFileSync(join(f.repo, 'notes.log'), 'reviewed\n');
     writeFileSync(join(f.repo, 'stale.log'), 'shown\n');
     writeFileSync(join(f.repo, 'key.txt'), `sk-${'a'.repeat(40)}\n`);
-    const shown = await prepareCommit(f.repo);
+    const shown = await f.services.git.prepareCommit(f.repo);
     writeFileSync(join(f.repo, 'stale.log'), 'edited after review\n');
     const reviewed = { snapshotId: shown.id, paths: ['notes.log', 'stale.log', 'key.txt'] };
     const result = await f.finish(await f.manager.start(f.context, randomUUID(), false, reviewed));
@@ -284,8 +292,8 @@ test('unknown session attribution requires intervention and never calls the mode
       ...f.context,
       scope: `sessions/${id}`,
       sessionId: id,
-      prepare: () => prepareSessionGit(f.db, id),
-      execute: (plan) => executeSessionCommit(id, plan),
+      prepare: () => f.services.sessionGit.prepare(id),
+      execute: (plan) => f.services.sessionGit.executeCommit(id, plan),
     };
     const result = await f.finish(await f.manager.start(context, randomUUID(), true));
     assert.equal(result.status, 'blocked');
@@ -586,8 +594,8 @@ test('a copy holding only content inherited from the project says there is nothi
       scope: `sessions/${id}`,
       path: workspace.root,
       sessionId: id,
-      prepare: () => prepareSessionGit(f.db, id),
-      execute: (plan) => executeSessionCommit(id, plan),
+      prepare: () => f.services.sessionGit.prepare(id),
+      execute: (plan) => f.services.sessionGit.executeCommit(id, plan),
     };
     const result = await f.finish(await f.manager.start(context, randomUUID(), false));
     assert.equal(result.status, 'blocked');

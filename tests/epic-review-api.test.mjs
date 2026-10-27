@@ -16,7 +16,8 @@ mkdirSync(process.env.CEREBRO_DATA_DIR);
 const { CerebroDatabase } = await import('../server/db.ts');
 const { createWorkspace, createWorkspaceInContext, joinWorkspace, workspaceFor } =
   await import('../server/provenance.ts');
-const { epicWorkspace, rememberEpicWorkspace } = await import('../server/epic-workspace.ts');
+const { EpicWorkspaces } = await import('../server/epic-workspace.ts');
+const { WorktreeGate } = await import('../server/worktree-gate.ts');
 const { SessionManager } = await import('../server/sessions.ts');
 const { PeerSync } = await import('../server/peers.ts');
 const { UpdateManager } = await import('../server/updates.ts');
@@ -27,7 +28,7 @@ mock.method(PeerSync.prototype, 'sync', async function () {
   this.markSynced();
 });
 const launches = [];
-mock.method(SessionManager.prototype, 'launch', async (...args) => {
+mock.method(SessionManager.prototype, 'launch', async function (...args) {
   launches.push(args);
   const [project, agent, mode, tuning, prompt, , , validate, joined, title, epicId, context] = args;
   const session = db.createSession(
@@ -50,7 +51,7 @@ mock.method(SessionManager.prototype, 'launch', async (...args) => {
     : joined
       ? await joinWorkspace(db, session.id, joined)
       : await createWorkspace(db, session.id, project);
-  if (epicId) rememberEpicWorkspace(db, epicId, { path: workspace.path, mode: workspace.mode });
+  if (epicId) this.services.epicWorkspaces.remember(epicId, { path: workspace.path, mode: workspace.mode });
   await validate?.();
   return db.getSession(session.id);
 });
@@ -115,7 +116,7 @@ test('task, review and command launches keep the epic folder after changing the 
       assert.deepEqual(context, { path: workspace.path, mode });
       const reopened = new CerebroDatabase();
       try {
-        assert.deepEqual(epicWorkspace(reopened, epic.id), context);
+        assert.deepEqual(new EpicWorkspaces(reopened, new WorktreeGate()).current(epic.id), context);
       } finally {
         reopened.close();
       }
@@ -352,7 +353,7 @@ test('ambiguous epics expose their copies and accept only an explicit available 
     assert.equal(existsSync(join(repo, 'only-in-copy.txt')), false);
     const reopened = new CerebroDatabase();
     try {
-      assert.deepEqual(epicWorkspace(reopened, epic.id), chosen.json());
+      assert.deepEqual(new EpicWorkspaces(reopened, new WorktreeGate()).current(epic.id), chosen.json());
     } finally {
       reopened.close();
     }

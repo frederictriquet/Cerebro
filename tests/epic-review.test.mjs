@@ -11,10 +11,11 @@ process.env.CEREBRO_DATA_DIR = join(root, 'data');
 process.env.CODEX_HOME = join(root, 'codex');
 const { CerebroDatabase, DEFAULT_SESSION_DEFAULTS } = await import('../server/db.ts');
 const { CommandExecutor } = await import('../server/commands.ts');
+const { WorktreeGate } = await import('../server/worktree-gate.ts');
 const { EpicRunner } = await import('../server/epic-runner.ts');
 const { createWorkspace, createWorkspaceInContext, joinWorkspace, workspaceFor } =
   await import('../server/provenance.ts');
-const { epicWorkspace, epicWorkspaceOptions, rememberEpicWorkspace } = await import('../server/epic-workspace.ts');
+const { EpicWorkspaces } = await import('../server/epic-workspace.ts');
 const { importFindings, saveReport } = await import('../server/findings.ts');
 const { epicReviewScope, epicReviewInstructions, isReviewTask, reviewTaskText, REVIEW_TASK_TITLE } =
   await import('../server/epic-review.ts');
@@ -120,7 +121,9 @@ test('the review step is recognised and a missing scope falls back to a generic 
 test('the runner completes the review step prompt with the epic scope, other steps are untouched', async () => {
   await fixture(async (f) => {
     const epic = f.db.createEpic(f.project.id, 'Livraison', 'Contexte', null);
-    const commands = new CommandExecutor(f.db);
+    const gate = new WorktreeGate();
+    const commands = new CommandExecutor(f.db, gate);
+    const workspaces = new EpicWorkspaces(f.db, gate);
     const prompts = [];
     const sessions = {
       async create(p, options) {
@@ -135,7 +138,7 @@ test('the runner completes the review step prompt with the epic scope, other ste
         return true;
       },
     };
-    const runner = new EpicRunner(f.db, sessions, commands, () => {});
+    const runner = new EpicRunner(f.db, sessions, commands, () => {}, workspaces);
     try {
       const work = f.db.createTask(f.project.id, 'Implémenter', null, epic.id);
       const review = f.db.createTask(f.project.id, reviewTaskText('Livraison'), null, epic.id);
@@ -178,7 +181,9 @@ const finding = (id, dependsOn = []) => ({
 });
 async function withRunner(f, run) {
   const epic = f.db.createEpic(f.project.id, 'Livraison', 'Contexte', null);
-  const commands = new CommandExecutor(f.db);
+  const gate = new WorktreeGate();
+  const commands = new CommandExecutor(f.db, gate);
+  const workspaces = new EpicWorkspaces(f.db, gate);
   const launches = [];
   const sessions = {
     async create(project, options, validate, contextPath, title, settings) {
@@ -187,11 +192,11 @@ async function withRunner(f, run) {
         'token',
         settings?.epicId,
       );
-      const context = epicWorkspace(f.db, epic.id);
+      const context = workspaces.current(epic.id);
       const workspace = context
         ? await createWorkspaceInContext(f.db, session.id, project, context)
         : await createWorkspace(f.db, session.id, project);
-      rememberEpicWorkspace(f.db, epic.id, { path: workspace.path, mode: workspace.mode });
+      workspaces.remember(epic.id, { path: workspace.path, mode: workspace.mode });
       await validate?.();
       launches.push(session);
       return session;
@@ -201,7 +206,7 @@ async function withRunner(f, run) {
       return true;
     },
   };
-  let runner = new EpicRunner(f.db, sessions, commands, () => {});
+  let runner = new EpicRunner(f.db, sessions, commands, () => {}, workspaces);
   const latest = () => runner.list(epic.id)[0];
   const until = async (predicate) => {
     for (let i = 0; i < 1000; i++) {
@@ -215,6 +220,7 @@ async function withRunner(f, run) {
     await run({
       epic,
       commands,
+      workspaces,
       launches,
       latest,
       until,
@@ -223,7 +229,7 @@ async function withRunner(f, run) {
       },
       restart: async () => {
         await runner.shutdown();
-        runner = new EpicRunner(f.db, sessions, commands, () => {});
+        runner = new EpicRunner(f.db, sessions, commands, () => {}, workspaces);
       },
     });
   } finally {
@@ -563,6 +569,8 @@ const knownRun = (f, epicId, workspace) => {
   };
   f.db.connection.prepare('INSERT INTO epic_runs VALUES (?,?,?)').run(run.id, epicId, JSON.stringify(run));
 };
+// Folders read as a fresh server would: only the database carries them.
+const epicWorkspaces = (f) => new EpicWorkspaces(f.db, new WorktreeGate());
 const savedContexts = (f) =>
   f.db.connection
     .prepare('SELECT epic_id,data,verified FROM epic_workspaces')
@@ -576,7 +584,7 @@ test('a known run does not hide an earlier epic session that worked in another f
     const later = await createWorkspace(f.db, epicSession(f, epic.id).id, f.project);
     knownRun(f, epic.id, later);
     assert.throws(
-      () => epicWorkspace(f.db, epic.id),
+      () => epicWorkspaces(f).current(epic.id),
       (error) =>
         /plusieurs dossiers/.test(error.message) &&
         error.message.includes(earlier.path) &&
@@ -593,7 +601,7 @@ test('a consistent history is remembered as verified', async () =>
     const workspace = await createWorkspace(f.db, epicSession(f, epic.id).id, f.project);
     await joinWorkspace(f.db, epicSession(f, epic.id).id, workspace);
     knownRun(f, epic.id, workspace);
-    assert.deepEqual(epicWorkspace(f.db, epic.id), { path: workspace.path, mode: 'isolated' });
+    assert.deepEqual(epicWorkspaces(f).current(epic.id), { path: workspace.path, mode: 'isolated' });
     assert.deepEqual(savedContexts(f), [
       { epic_id: epic.id, data: JSON.stringify({ path: workspace.path, mode: 'isolated' }), verified: 1 },
     ]);
@@ -613,14 +621,14 @@ test('contexts remembered by the former incomplete recovery are checked against 
     legacy(conflicting.id, later);
     legacy(consistent.id, own);
     assert.throws(
-      () => epicWorkspace(f.db, conflicting.id),
+      () => epicWorkspaces(f).current(conflicting.id),
       new RegExp(`plusieurs dossiers.*${earlier.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
     );
     assert.throws(
-      () => rememberEpicWorkspace(f.db, conflicting.id, { path: earlier.path, mode: 'isolated' }),
+      () => epicWorkspaces(f).remember(conflicting.id, { path: earlier.path, mode: 'isolated' }),
       /diffère du dossier d’origine/,
     );
-    assert.deepEqual(epicWorkspace(f.db, consistent.id), { path: own.path, mode: 'isolated' });
+    assert.deepEqual(epicWorkspaces(f).current(consistent.id), { path: own.path, mode: 'isolated' });
     assert.deepEqual(
       savedContexts(f)
         .map((row) => [row.epic_id, row.verified])
@@ -692,7 +700,7 @@ test('choosing a historic copy preserves files and tasks, then restarts an inter
       f.db.connection
         .prepare('INSERT INTO epic_workspaces (epic_id,data,verified) VALUES (?,?,0)')
         .run(r.epic.id, JSON.stringify(run.workspace));
-      const options = await epicWorkspaceOptions(f.db, r.epic.id);
+      const options = await r.workspaces.options(r.epic.id);
       assert.equal(options.conflict, true);
       assert.equal(options.selected, null);
       assert.equal(options.choices.length, 2);
@@ -718,7 +726,7 @@ test('choosing a historic copy preserves files and tasks, then restarts an inter
       assert.equal(readFileSync(join(f.repo, 'only-in-project.txt'), 'utf8'), 'other work\n');
       await r.restart();
       f.db.updateProject(f.project.id, { workspaceMode: 'shared' });
-      assert.deepEqual(epicWorkspace(f.db, r.epic.id), context);
+      assert.deepEqual(r.workspaces.current(r.epic.id), context);
       r.runner.resume(run.id, true);
       await r.until(() => r.latest().status === 'waiting-validation');
       assert.equal(r.latest().contextRoot, workspace.path);

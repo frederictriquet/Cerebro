@@ -10,7 +10,7 @@ mkdirSync(process.env.CEREBRO_DATA_DIR);
 process.env.HOME = root;
 const { CerebroDatabase } = await import('../server/db.ts');
 const { createWorkspace } = await import('../server/provenance.ts');
-const { prepareSessionGit, executeSessionCommit, sessionReviewContext } = await import('../server/session-git.ts');
+const { createServices } = await import('../server/services.ts');
 const repo = join(root, 'repo');
 mkdirSync(repo);
 const git = (p, ...a) =>
@@ -25,6 +25,7 @@ git(repo, 'commit', '-m', 'base');
 writeFileSync(join(repo, 'initial'), 'preexisting\n');
 git(repo, 'add', 'initial');
 const db = new CerebroDatabase(':memory:');
+const { sessionGit } = createServices(db);
 const project = db.createProject('Demo', repo);
 for (const id of ['a', 'b', 'old'])
   db.createSession(
@@ -57,11 +58,11 @@ const plan = (s, path) => ({
 test('stopped concurrent sessions commit only their explicit isolated selection', async () => {
   writeFileSync(join(a.path, 'shared'), 'a\n');
   writeFileSync(join(b.path, 'shared'), 'b\n');
-  const sa = await prepareSessionGit(db, 'a'),
-    sb = await prepareSessionGit(db, 'b');
+  const sa = await sessionGit.prepare('a'),
+    sb = await sessionGit.prepare('b');
   assert.ok(sa.files.find((f) => f.path === 'initial').warnings.length);
-  const ra = await executeSessionCommit('a', plan(sa, 'shared'));
-  const rb = await executeSessionCommit('b', plan(sb, 'shared'));
+  const ra = await sessionGit.executeCommit('a', plan(sa, 'shared'));
+  const rb = await sessionGit.executeCommit('b', plan(sb, 'shared'));
   assert.equal(ra.error, null);
   assert.equal(rb.error, null);
   assert.notEqual(ra.commits[0].hash, rb.commits[0].hash);
@@ -69,27 +70,27 @@ test('stopped concurrent sessions commit only their explicit isolated selection'
   assert.equal(git(b.path, 'show', 'HEAD:shared'), 'b');
   assert.equal(git(a.path, 'show', ':initial'), 'preexisting');
   assert.equal(git(repo, 'show', 'HEAD:shared'), 'original');
-  await assert.rejects(executeSessionCommit('b', plan(sa, 'shared')), /Sélection de session/);
+  await assert.rejects(sessionGit.executeCommit('b', plan(sa, 'shared')), /Sélection de session/);
 });
 test('review includes explicit attributed commits, no reconstruction of ownership', async () => {
-  const s = await prepareSessionGit(db, 'a');
+  const s = await sessionGit.prepare('a');
   const c = s.provenance.commits[0].hash;
-  const r = await sessionReviewContext('a', { snapshotId: s.id, selection: [], commits: [c], acknowledged: [] });
+  const r = await sessionGit.reviewContext('a', { snapshotId: s.id, selection: [], commits: [c], acknowledged: [] });
   assert.ok(r.prompt.includes(c));
   assert.ok(r.prompt.includes('+a'));
   assert.ok(!r.prompt.includes('+b\n'));
   await assert.rejects(
-    sessionReviewContext('a', { snapshotId: s.id, selection: [], commits: ['unrelated'], acknowledged: [] }),
+    sessionGit.reviewContext('a', { snapshotId: s.id, selection: [], commits: ['unrelated'], acknowledged: [] }),
     /absent/,
   );
 });
 test('historical sessions require manual confirmation and stale selections are refused', async () => {
-  const s = await prepareSessionGit(db, 'old');
+  const s = await sessionGit.prepare('old');
   assert.equal(s.provenance.workspace.mode, 'unknown');
   assert.ok(s.files.every((f) => f.warnings.length));
-  await assert.rejects(executeSessionCommit('old', plan(s, 'initial')), /incertaine/);
+  await assert.rejects(sessionGit.executeCommit('old', plan(s, 'initial')), /incertaine/);
   await assert.rejects(
-    sessionReviewContext('old', {
+    sessionGit.reviewContext('old', {
       snapshotId: s.id,
       selection: [{ path: 'initial', all: true }],
       commits: [],
@@ -97,7 +98,7 @@ test('historical sessions require manual confirmation and stale selections are r
     }),
     /incertaine/,
   );
-  const r = await sessionReviewContext('old', {
+  const r = await sessionGit.reviewContext('old', {
     snapshotId: s.id,
     selection: [{ path: 'initial', all: true }],
     commits: [],
@@ -106,7 +107,7 @@ test('historical sessions require manual confirmation and stale selections are r
   assert.ok(r.prompt.includes('+preexisting'));
   writeFileSync(join(repo, 'initial'), 'external\n');
   await assert.rejects(
-    sessionReviewContext('old', {
+    sessionGit.reviewContext('old', {
       snapshotId: s.id,
       selection: [{ path: 'initial', all: true }],
       commits: [],

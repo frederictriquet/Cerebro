@@ -4,7 +4,12 @@ import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { prepareCommit, executeCommitPlan } from '../server/git-plan.ts';
+import { GitPlanner } from '../server/git-plan.ts';
+import { GitPushes } from '../server/git-push.ts';
+import { WorktreeGate } from '../server/worktree-gate.ts';
+
+const gate = new WorktreeGate();
+const planner = new GitPlanner(gate, new GitPushes(gate));
 const git = (repo, ...args) =>
   execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 async function fixture(run, unborn = false) {
@@ -38,7 +43,7 @@ test('collection detects same-size edits with unchanged stat timestamps without 
     writeFileSync(file, 'new\n');
     utimesSync(file, timestamp, timestamp);
     const before = readFileSync(index);
-    const s = await prepareCommit(repo);
+    const s = await planner.prepareCommit(repo);
     assert.ok(s.files.some((candidate) => candidate.path === 'other' && candidate.diff.includes('+new')));
     assert.deepEqual(readFileSync(index), before);
     assert.equal(readFileSync(file, 'utf8'), 'new\n');
@@ -49,8 +54,8 @@ test('explicit plan commits ordered files, including new ones, preserving unrela
     git(repo, 'add', 'other');
     writeFileSync(join(repo, 'file'), 'changed\n');
     writeFileSync(join(repo, 'new'), 'new\n');
-    const s = await prepareCommit(repo);
-    const r = await executeCommitPlan(
+    const s = await planner.prepareCommit(repo);
+    const r = await planner.executeCommitPlan(
       repo,
       plan(s, [
         { message: 'first', selection: [one('file')] },
@@ -73,10 +78,10 @@ test('partial hunks across ordered commits preserve preexisting staged hunks in 
     writeFileSync(file, staged);
     git(repo, 'add', 'file');
     writeFileSync(file, staged.replace('line 1\n', 'selected 1\n').replace('line 12\n', 'selected 12\n'));
-    const s = await prepareCommit(repo);
+    const s = await planner.prepareCommit(repo);
     assert.equal(s.files[0].hunks.length, 3);
     const h = s.files[0].hunks;
-    const r = await executeCommitPlan(
+    const r = await planner.executeCommitPlan(
       repo,
       plan(s, [
         { message: 'one', selection: [{ path: 'file', hunks: [h[0].id] }] },
@@ -97,11 +102,11 @@ test('stale worktree, index, or HEAD cannot mutate anything', async () =>
       () => git(repo, 'add', 'file'),
       () => git(repo, 'commit', '--allow-empty', '-m', 'concurrent'),
     ]) {
-      const s = await prepareCommit(repo);
+      const s = await planner.prepareCommit(repo);
       mutate();
       const before = git(repo, 'rev-parse', 'HEAD');
       const index = readFileSync(join(repo, '.git/index'));
-      const r = await executeCommitPlan(repo, plan(s, [{ message: 'planned', selection: [one('file')] }]));
+      const r = await planner.executeCommitPlan(repo, plan(s, [{ message: 'planned', selection: [one('file')] }]));
       assert.match(r.error, /obsolète/);
       assert.equal(git(repo, 'rev-parse', 'HEAD'), before);
       assert.deepEqual(readFileSync(join(repo, '.git/index')), index);
@@ -113,10 +118,10 @@ test('failed hook stops plan and preserves the original index', async () =>
     writeFileSync(join(repo, 'other'), 'staged\n');
     git(repo, 'add', 'other');
     writeFileSync(join(repo, '.git/hooks/pre-commit'), '#!/bin/sh\necho stop >&2\nexit 1\n', { mode: 0o755 });
-    const s = await prepareCommit(repo);
+    const s = await planner.prepareCommit(repo);
     const index = readFileSync(join(repo, '.git/index'));
     const before = git(repo, 'rev-parse', 'HEAD');
-    const r = await executeCommitPlan(
+    const r = await planner.executeCommitPlan(
       repo,
       plan(s, [
         { message: 'fail', selection: [one('file')] },
@@ -131,11 +136,14 @@ test('failed hook stops plan and preserves the original index', async () =>
 test('unborn repository and exclusions/scanners are explicit', async () =>
   fixture(async (repo) => {
     writeFileSync(join(repo, '.env'), 'TOKEN=value\n');
-    const s = await prepareCommit(repo);
+    const s = await planner.prepareCommit(repo);
     assert.ok(s.files.find((f) => f.path === '.env').warnings.length);
-    const refused = await executeCommitPlan(repo, plan(s, [{ message: 'bad', selection: [one('.env')] }]));
+    const refused = await planner.executeCommitPlan(repo, plan(s, [{ message: 'bad', selection: [one('.env')] }]));
     assert.match(refused.error, /explicite/);
-    const r = await executeCommitPlan(repo, plan(s, [{ message: 'initial', selection: [one('file'), one('other')] }]));
+    const r = await planner.executeCommitPlan(
+      repo,
+      plan(s, [{ message: 'initial', selection: [one('file'), one('other')] }]),
+    );
     assert.equal(r.error, null, JSON.stringify(r));
     assert.deepEqual(r.exclusions, ['.env']);
   }, true));
@@ -146,28 +154,52 @@ test('multiple nonadjacent hunks in a single commit and duplicate execution refu
       file,
       readFileSync(file, 'utf8').replace('line 1\n', 'selected 1\n').replace('line 25\n', 'selected 25\n'),
     );
-    const s = await prepareCommit(repo);
+    const s = await planner.prepareCommit(repo);
     const p = plan(s, [
       { message: 'two hunks', selection: [{ path: 'file', hunks: s.files[0].hunks.map((h) => h.id) }] },
     ]);
-    const r = await executeCommitPlan(repo, p);
+    const r = await planner.executeCommitPlan(repo, p);
     assert.equal(r.error, null, JSON.stringify(r));
     assert.equal(git(repo, 'diff', 'HEAD'), '');
-    await assert.rejects(executeCommitPlan(repo, p), /déjà exécuté/);
+    await assert.rejects(planner.executeCommitPlan(repo, p), /déjà exécuté/);
   }));
 test('secret scanning excludes content before writing any blob; simultaneous execution is refused', async () =>
   fixture(async (repo) => {
     const secret = '-----BEGIN PRIVATE KEY-----\nprivate-content\n';
     writeFileSync(join(repo, 'secret'), secret);
-    const s = await prepareCommit(repo);
+    const s = await planner.prepareCommit(repo);
     assert.equal(s.files.find((f) => f.path === 'secret').blocked, true);
     const oid = execFileSync('git', ['hash-object', '--stdin'], { input: secret, encoding: 'utf8' }).trim();
     assert.throws(() => git(repo, 'cat-file', '-e', oid));
-    const r = await executeCommitPlan(repo, plan(s, [{ message: 'no', selection: [one('secret')] }]));
+    const r = await planner.executeCommitPlan(repo, plan(s, [{ message: 'no', selection: [one('secret')] }]));
     assert.match(r.error, /Secret/);
     writeFileSync(join(repo, 'file'), 'new\n');
-    const fresh = await prepareCommit(repo);
+    const fresh = await planner.prepareCommit(repo);
     const p = plan(fresh, [{ message: 'yes', selection: [one('file')] }]);
-    const results = await Promise.allSettled([executeCommitPlan(repo, p), executeCommitPlan(repo, p)]);
+    const results = await Promise.allSettled([planner.executeCommitPlan(repo, p), planner.executeCommitPlan(repo, p)]);
     assert.equal(results.filter((r) => r.status === 'fulfilled' && r.value.error === null).length, 1);
+  }));
+test('snapshots and workspace leases belong to the planner that holds them', async () =>
+  fixture(async (repo) => {
+    writeFileSync(join(repo, 'file'), 'changed\n');
+    const otherGate = new WorktreeGate();
+    const other = new GitPlanner(otherGate, new GitPushes(otherGate));
+    const s = await planner.prepareCommit(repo);
+    await assert.rejects(other.verifySnapshot(repo, s.id), /absente ou expirée/);
+    await assert.rejects(
+      other.executeCommitPlan(repo, plan(s, [{ message: 'x', selection: [one('file')] }])),
+      /Plan absent/,
+    );
+    const release = gate.lock([repo]);
+    try {
+      await assert.rejects(
+        planner.executeCommitPlan(repo, plan(s, [{ message: 'x', selection: [one('file')] }])),
+        /opération Git/,
+      );
+      assert.doesNotThrow(() => otherGate.assertAvailable(repo));
+    } finally {
+      release();
+    }
+    const r = await planner.executeCommitPlan(repo, plan(s, [{ message: 'x', selection: [one('file')] }]));
+    assert.equal(r.error, null, JSON.stringify(r));
   }));
