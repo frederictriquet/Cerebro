@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
@@ -31,7 +31,9 @@ export interface Workspace {
   branch: string | null;
   initialDirty: string[];
   baseline: Record<string, string>;
-  /** Commit holding the files that were already modified in the project when the copy was created. */
+  /** Directory, outside the repository, holding the files that were already modified in the project when the copy was created. */
+  startingCopy?: string;
+  /** Legacy: commit (under refs/cerebro/starting/) that held that content before it was kept out of Git. */
   startingSnapshot?: string;
   sharedIgnored?: string[];
   reason: string;
@@ -66,23 +68,28 @@ function firstDifference(a:Record<string,string>,b:Record<string,string>):string
   for(const name of new Set([...Object.keys(a),...Object.keys(b)]))if(a[name]!==b[name])return name;
   return 'inconnue';
 }
+/** Where the content copied from the project at the creation of `sessionId`'s copy is kept. */
+export const startingCopyDirectory = (sessionId: string): string => join(DATA_DIR, 'starting', sessionId);
 /**
  * Keeps the content copied from the project, so it can still be separated from the conversation's
  * work once the project has changed. Best effort: a copy without it only loses that separation.
+ * Plain files outside the repository, never Git objects: untracked files (.env, keys, dumps) would
+ * otherwise stay in the shared object database, reachable by a ref and pushed by a mirror.
  */
-async function snapshotStartingContent(workspace:string,base:string,sessionId:string,paths:string[]):Promise<string|undefined>{
+async function snapshotStartingContent(workspace:string,sessionId:string,paths:string[]):Promise<string|undefined>{
   if(!paths.length)return undefined;
-  const temporary=await mkdtemp(join(tmpdir(),'cerebro-start-'));
+  const target=startingCopyDirectory(sessionId);
   try{
-    const index=join(temporary,'index');
-    await writeFile(index,await readFile(resolve(workspace,await git(workspace,['rev-parse','--git-path','index']))));
-    await git(workspace,['add','-A','--',...paths.map(path=>`:(literal)${path}`)],index);
-    const tree=await git(workspace,['write-tree'],index);
-    const commit=await git(workspace,['-c','user.name=Cerebro','-c','user.email=cerebro@localhost','commit-tree',tree,'-p',base,'-m','Cerebro : contenu de départ de la copie']);
-    await git(workspace,['update-ref',`refs/cerebro/starting/${sessionId}`,commit]);
-    return commit;
-  }catch{return undefined;}
-  finally{await rm(temporary,{recursive:true,force:true});}
+    await rm(target,{recursive:true,force:true});
+    await mkdir(target,{recursive:true,mode:0o700});
+    for(const path of paths){
+      // Deleted files and links have no content to restore: their baseline signature is never looked up.
+      if(!(await lstat(join(workspace,path)).catch(()=>null))?.isFile())continue;
+      await mkdir(dirname(join(target,path)),{recursive:true});
+      await copyFile(join(workspace,path),join(target,path));
+    }
+    return target;
+  }catch{await rm(target,{recursive:true,force:true});return undefined;}
 }
 const SHARED_DEPENDENCY_DIRS = new Set(['node_modules','.venv','venv','vendor']);
 
@@ -162,12 +169,12 @@ export async function createWorkspace(db: CerebroDatabase, sessionId: string, pr
     if(signature(before)!==signature(baseline)) throw new Error(`Copie initiale non identique (${firstDifference(before,baseline)}) : aucun agent lancé.`);
     const dependencyNotice=sharedIgnored.length?` Dépendances partagées avec le projet source : ${sharedIgnored.join(', ')}.`:'';
     const initialDirty=[...new Set([...dirty,...staged,...untracked])];
-    const startingSnapshot=await snapshotStartingContent(workspace,common.base!,sessionId,initialDirty);
-    const saved=save(db,{...common,mode:'isolated',root:workspace,path:join(workspace,relative(root,project.path)),source:root,branch,baseline,...(startingSnapshot?{startingSnapshot}:{}),sharedIgnored,initialDirty,reason:`Périmètre de l’espace isolé ; les auteurs des éditions dans cet espace ne sont pas identifiables.${dependencyNotice}`});
+    const startingCopy=await snapshotStartingContent(workspace,sessionId,initialDirty);
+    const saved=save(db,{...common,mode:'isolated',root:workspace,path:join(workspace,relative(root,project.path)),source:root,branch,baseline,...(startingCopy?{startingCopy}:{}),sharedIgnored,initialDirty,reason:`Périmètre de l’espace isolé ; les auteurs des éditions dans cet espace ne sont pas identifiables.${dependencyNotice}`});
     await rememberWorktree(db,saved);
     return saved;
   } catch(cause) {
-    if(added) { await git(root,['worktree','remove','--force',workspace]).catch(()=>{}); await git(root,['branch','-D',branch]).catch(()=>{}); await git(root,['update-ref','-d',`refs/cerebro/starting/${sessionId}`]).catch(()=>{}); }
+    if(added) { await git(root,['worktree','remove','--force',workspace]).catch(()=>{}); await git(root,['branch','-D',branch]).catch(()=>{}); await rm(startingCopyDirectory(sessionId),{recursive:true,force:true}); }
     throw cause;
   } finally {await rm(temporary,{recursive:true,force:true});}
 }

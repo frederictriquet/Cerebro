@@ -570,10 +570,9 @@ export class WorktreeManager {
       const content=await readFile(join(targetPath,file)).catch(()=>null);
       if(content&&hash(content)===digest)return {origin:{kind:'target-worktree'},content:async()=>content};
     }
-    if(workspace.startingSnapshot){
-      const content=await gitBytes(path,['cat-file','blob',`${workspace.startingSnapshot}:${file}`]).catch(()=>null);
-      if(content&&hash(content)===digest)return {origin:{kind:'snapshot'},content:async()=>content};
-    }
+    const content=workspace.startingCopy?await readFile(join(workspace.startingCopy,file)).catch(()=>null)
+      :workspace.startingSnapshot?await gitBytes(path,['cat-file','blob',`${workspace.startingSnapshot}:${file}`]).catch(()=>null):null;
+    if(content&&hash(content)===digest)return {origin:{kind:'snapshot'},content:async()=>content};
     return null;
   }
   /**
@@ -991,6 +990,7 @@ export class WorktreeManager {
         for(const name of await sharedDependencyLinks(workspace??view,view.path))await rm(join(view.path,name));
         for(const raw of fresh.disposableIgnored)await rm(join(view.path,raw.replace(/\/$/,'')),{recursive:true,force:true});
         await git(view.targetPath??view.source,['worktree','remove','--',view.path]);
+        if(workspace?.startingCopy)await rm(workspace.startingCopy,{recursive:true,force:true});
         if(workspace?.startingSnapshot)await git(view.targetPath??view.source,['update-ref','-d',`refs/cerebro/starting/${workspace.sessionId}`]).catch(()=>'');
         const record=this.record(view.id);record.removedAt=Date.now();store(this.db,record);
         // Every epic step sharing this copy loses it, not only the session that created it.
