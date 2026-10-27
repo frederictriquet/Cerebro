@@ -15,7 +15,7 @@ import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { href } from './route.ts';
 import { AGENT_LABEL, MODE_CHIP, sessionTitle } from './format.ts';
 import { useStore } from './store.tsx';
-import { normalizeMode, type Session, type WorkspaceMode } from './types.ts';
+import { type Session, type WorkspaceMode } from './types.ts';
 import './worktrees.css';
 
 const branchName = (branch: string | null): string => branch?.replace(/^refs\/heads\//, '') ?? 'branche inconnue';
@@ -429,7 +429,7 @@ function StartingContentDialog({
           conversation dans {toReview === 1 ? 'le fichier laissé' : `les ${toReview} fichiers laissés`} à examiner. Elle
           ne commite rien : relisez ensuite ses changements, puis retirez le contenu de départ restant.
           {settings
-            ? ` Session : ${AGENT_LABEL[settings.agent]} · ${settings.model ?? 'modèle par défaut'} · ${settings.effort ?? 'effort par défaut'} · ${MODE_CHIP[normalizeMode(settings.mode)]} (« Réglages LLM » du projet).`
+            ? ` Session : ${AGENT_LABEL[settings.agent]} · ${settings.model ?? 'modèle par défaut'} · ${settings.effort ?? 'effort par défaut'} · ${MODE_CHIP[settings.mode]} (« Réglages LLM » du projet).`
             : ''}
         </p>
       ) : null}

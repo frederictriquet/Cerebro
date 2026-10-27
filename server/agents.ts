@@ -8,7 +8,6 @@ import type { Agent, Effort, Mode } from './db.ts';
 
 const execFileAsync = promisify(execFile);
 export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
-export const HOOK = ['node', HOOK_SCRIPT] as const;
 const NOTIFY_INSTRUCTIONS =
   'Tu tournes dans Cerebro. Les fins de tour et résultats connus sont notifiés automatiquement selon les préférences de l’utilisateur. Réserve `cerebro-notify "message"` aux messages apportant un contexte supplémentaire utile, sans répéter ces alertes factuelles. Pour une question dont la réponse conditionne la suite, utilise `cerebro-notify --ask "question"` puis termine ton tour : la réponse arrivera comme prochain message. Les questions sémantiques et blocages métier restent à expliquer par toi. Une fin de tour ne prouve jamais la réussite d’une tâche.';
 const BACKLOG_INSTRUCTIONS =

@@ -9,8 +9,9 @@ process.env.CEREBRO_DATA_DIR = join(root, 'data');
 process.env.HOME = root;
 mkdirSync(process.env.CEREBRO_DATA_DIR);
 const { CerebroDatabase } = await import('../server/db.ts');
-const { createWorkspace, joinWorkspace, prepareSessionCommit, sessionProvenance, workspaceAt, workspaceFor } =
+const { createWorkspace, joinWorkspace, sessionProvenance, workspaceAt, workspaceFor } =
   await import('../server/provenance.ts');
+const { prepareCommit } = await import('../server/git-plan.ts');
 const repo = join(root, 'repo');
 mkdirSync(repo);
 const git = (path, ...args) =>
@@ -74,9 +75,10 @@ test('new workspaces preserve initial context and index without changing the pro
     assert.ok(ws.initialDirty.includes('initial'));
   }
   assert.deepEqual(readFileSync(join(repo, '.git/index')), index);
-  assert.deepEqual((await sessionProvenance(db, 'a')).changes, []);
+  const { changes, workspace } = await sessionProvenance(db, 'a');
+  assert.deepEqual(changes, []);
   assert.ok(
-    !(await prepareSessionCommit(db, 'a')).files.some((file) => file.path === 'node_modules'),
+    !(await prepareCommit(workspace.root, workspace)).files.some((file) => file.path === 'node_modules'),
     'shared dependency link stays out of the commit plan',
   );
 });

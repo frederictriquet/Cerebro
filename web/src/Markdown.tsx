@@ -16,14 +16,14 @@ function inline(text: string): ReactNode[] {
     const key = nodes.length;
     if (code !== undefined) nodes.push(<code key={key}>{code}</code>);
     else if (bold !== undefined || boldAlt !== undefined)
-      nodes.push(<strong key={key}>{inline(bold ?? boldAlt!)}</strong>);
+      nodes.push(<strong key={key}>{inline(bold ?? boldAlt)}</strong>);
     else if (label !== undefined)
       nodes.push(
         <a key={key} href={url} target="_blank" rel="noreferrer">
           {inline(label)}
         </a>,
       );
-    else nodes.push(<em key={key}>{inline(italic ?? italicAlt!)}</em>);
+    else nodes.push(<em key={key}>{inline(italic ?? italicAlt)}</em>);
     last = index + match[0].length;
   }
   if (last < text.length) nodes.push(text.slice(last));
@@ -59,17 +59,17 @@ interface ListItem {
 }
 
 function list(lines: string[], start: number, key: number): [ReactNode, number] {
-  const first = LIST_ITEM.exec(lines[start]!)!;
-  const indent = first[1]!.length;
-  const ordered = /\d/.test(first[2]!);
+  const first = LIST_ITEM.exec(lines[start])!;
+  const indent = first[1].length;
+  const ordered = /\d/.test(first[2]);
   const items: ListItem[] = [];
   let index = start;
   while (index < lines.length) {
-    const line = lines[index]!;
+    const line = lines[index];
     const item = LIST_ITEM.exec(line);
-    if (item !== null && item[1]!.length <= indent) {
-      if (/\d/.test(item[2]!) !== ordered) break;
-      items.push({ text: item[3]!, children: [] });
+    if (item !== null && item[1].length <= indent) {
+      if (/\d/.test(item[2]) !== ordered) break;
+      items.push({ text: item[3], children: [] });
     } else if (line.trim() === '') {
       // Une ligne vide ne termine la liste que si la suivante n'en fait plus partie.
       const next = lines[index + 1];
@@ -83,7 +83,7 @@ function list(lines: string[], start: number, key: number): [ReactNode, number] 
     index++;
   }
   const Tag = ordered ? 'ol' : 'ul';
-  const startAt = ordered ? Number.parseInt(first[2]!, 10) : undefined;
+  const startAt = ordered ? Number.parseInt(first[2], 10) : undefined;
   return [
     <Tag key={key} start={startAt !== 1 ? startAt : undefined}>
       {items.map((item, itemIndex) => {
@@ -123,7 +123,7 @@ function blocks(lines: string[]): ReactNode[] {
   const nodes: ReactNode[] = [];
   let index = 0;
   while (index < lines.length) {
-    const line = lines[index]!;
+    const line = lines[index];
     const key = nodes.length;
     if (line.trim() === '') {
       index++;
@@ -133,7 +133,7 @@ function blocks(lines: string[]): ReactNode[] {
     if (fence !== null) {
       const body: string[] = [];
       index++;
-      while (index < lines.length && !lines[index]!.trimStart().startsWith(fence[1]!)) body.push(lines[index++]!);
+      while (index < lines.length && !lines[index].trimStart().startsWith(fence[1])) body.push(lines[index++]);
       index++;
       nodes.push(
         <pre key={key}>
@@ -145,8 +145,8 @@ function blocks(lines: string[]): ReactNode[] {
     const heading = HEADING.exec(line);
     if (heading !== null) {
       // Les titres restent sous ceux du rapport : # devient un h3.
-      const Tag = `h${Math.min(6, heading[1]!.length + 2)}` as 'h3';
-      nodes.push(<Tag key={key}>{inline(heading[2]!)}</Tag>);
+      const Tag = `h${Math.min(6, heading[1].length + 2)}` as 'h3';
+      nodes.push(<Tag key={key}>{inline(heading[2])}</Tag>);
       index++;
       continue;
     }
@@ -163,7 +163,7 @@ function blocks(lines: string[]): ReactNode[] {
     }
     if (QUOTE.test(line)) {
       const body: string[] = [];
-      while (index < lines.length && QUOTE.test(lines[index]!)) body.push(lines[index++]!.replace(QUOTE, ''));
+      while (index < lines.length && QUOTE.test(lines[index])) body.push(lines[index++].replace(QUOTE, ''));
       nodes.push(<blockquote key={key}>{blocks(body)}</blockquote>);
       continue;
     }
@@ -171,7 +171,7 @@ function blocks(lines: string[]): ReactNode[] {
       const head = cells(line);
       const rows: string[][] = [];
       index += 2;
-      while (index < lines.length && TABLE_ROW.test(lines[index]!)) rows.push(cells(lines[index++]!));
+      while (index < lines.length && TABLE_ROW.test(lines[index])) rows.push(cells(lines[index++]));
       nodes.push(
         <div key={key} className="md-table">
           <table>
@@ -198,8 +198,8 @@ function blocks(lines: string[]): ReactNode[] {
     }
     const paragraph: string[] = [line.trim()];
     index++;
-    while (index < lines.length && lines[index]!.trim() !== '' && !startsBlock(lines[index]!))
-      paragraph.push(lines[index++]!.trim());
+    while (index < lines.length && lines[index].trim() !== '' && !startsBlock(lines[index]))
+      paragraph.push(lines[index++].trim());
     nodes.push(<p key={key}>{inline(paragraph.join(' '))}</p>);
   }
   return nodes;

@@ -1,4 +1,4 @@
-import type { Agent, Mode, Session, Status, WorkspaceMode } from './types.ts';
+import type { Agent, Mode, Session, SessionMode, Status, WorkspaceMode } from './types.ts';
 
 // Statut affiché : une session inactive ou terminée depuis plus d'une heure passe « en sommeil »,
 // signe qu'on n'en aura sans doute plus besoin ; ce sont celles que la purge supprime.
@@ -33,7 +33,7 @@ export function displayStatus(
   return isDormant(session, now) ? 'dormant' : session.status;
 }
 
-export const MODE_LABEL: Record<Mode, string> = {
+export const MODE_LABEL: Record<SessionMode, string> = {
   auto: '⏵⏵ auto mode on',
   default: 'default (config de l’agent)',
   acceptEdits: '⏵⏵ accept edits on',
@@ -51,7 +51,6 @@ export function needsAttention(session: Pick<Session, 'attention' | 'pendingFind
 
 export const MODE_CHIP: Record<Mode, string> = {
   auto: '⏵⏵ auto',
-  default: 'default',
   acceptEdits: '⏵⏵ accept edits',
   plan: '⏸ plan',
   bypass: '⏵⏵ bypass',
@@ -59,7 +58,6 @@ export const MODE_CHIP: Record<Mode, string> = {
 
 export const MODE_DESCRIPTION: Record<Mode, string> = {
   auto: 'Gestion automatique des autorisations par l’agent.',
-  default: 'Utilise les autorisations définies dans la configuration de l’agent.',
   acceptEdits:
     'Accepte automatiquement les modifications de fichiers. Avec Codex, exécute sans confirmation dans le sandbox du projet.',
   plan: 'Analyse et prépare un plan sans modifier les fichiers.',

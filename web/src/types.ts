@@ -1,5 +1,8 @@
 export type Agent = 'claude' | 'codex' | 'grok';
-export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
+// Modes offered by the widgets and sent to the server: « default » is not a choice any more.
+export type Mode = 'auto' | 'acceptEdits' | 'plan' | 'bypass';
+// Sessions launched before its removal keep their stored « default » mode.
+export type SessionMode = Mode | 'default';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
 export type TaskExecution =
   { type: 'llm' } | { type: 'command'; commandId: string; completion: 'manual' | 'exit-zero' };
@@ -8,13 +11,12 @@ export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | '
 export type WorkspaceMode = 'isolated' | 'shared';
 
 export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
-export const MODES: readonly Mode[] = ['auto', 'default', 'acceptEdits', 'plan', 'bypass'];
-// Modes offered by the widgets: « default » is not a choice any more (see normalizeMode).
-export const MODE_CHOICES: readonly Mode[] = MODES.filter((mode) => mode !== 'default');
+export const MODES: readonly Mode[] = ['auto', 'acceptEdits', 'plan', 'bypass'];
 
-// Mirror of normalizeMode (server/db.ts): a stored « default » is shown and launched as « auto ».
-export function normalizeMode(mode: Mode): Mode {
-  return mode === 'default' ? 'auto' : mode;
+// Mirror of normalizeMode (server/db.ts): a stored « default » setting is shown and launched as « auto ».
+function parseMode(v: unknown): Mode | null {
+  if (v === 'default') return 'auto';
+  return MODES.find((mode) => mode === v) ?? null;
 }
 const EFFORTS: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
@@ -147,8 +149,6 @@ export interface CouncilRun {
   finishedAt: number | null;
 }
 
-export const STATUSES: readonly Status[] = ['starting', 'running', 'waiting', 'idle', 'exited'];
-
 export interface Project {
   id: string;
   name: string;
@@ -167,7 +167,7 @@ export interface Session {
   id: string;
   projectId: string;
   agent: Agent;
-  mode: Mode;
+  mode: SessionMode;
   model: string | null;
   effort: Effort | null;
   prompt: string;
@@ -282,8 +282,8 @@ export function isAgent(v: unknown): v is Agent {
   return v === 'claude' || v === 'codex' || v === 'grok';
 }
 
-export function isMode(v: unknown): v is Mode {
-  return (MODES as readonly unknown[]).includes(v);
+function isSessionMode(v: unknown): v is SessionMode {
+  return v === 'default' || parseMode(v) !== null;
 }
 
 function isEffort(v: unknown): v is Effort {
@@ -490,7 +490,7 @@ export function parseProject(v: unknown): Project | null {
   const saved = isRecord(v.sessionDefaults) ? v.sessionDefaults : {};
   const sessionDefaults: LaunchSpec = {
     agent: isAgent(saved.agent) ? saved.agent : DEFAULT_SESSION_DEFAULTS.agent,
-    mode: isMode(saved.mode) ? saved.mode : DEFAULT_SESSION_DEFAULTS.mode,
+    mode: parseMode(saved.mode) ?? DEFAULT_SESSION_DEFAULTS.mode,
     model: typeof saved.model === 'string' ? saved.model : null,
     effort: isEffort(saved.effort) ? saved.effort : null,
     prompt: typeof saved.prompt === 'string' ? saved.prompt : '',
@@ -506,7 +506,7 @@ export function parseProject(v: unknown): Project | null {
   const resolution = isRecord(v.resolutionSettings) ? v.resolutionSettings : {};
   const resolutionSettings: ResolutionSettings = {
     agent: isAgent(resolution.agent) ? resolution.agent : 'claude',
-    mode: isMode(resolution.mode) ? resolution.mode : 'auto',
+    mode: parseMode(resolution.mode) ?? 'auto',
     model: typeof resolution.model === 'string' ? resolution.model : null,
     effort: isEffort(resolution.effort) ? resolution.effort : null,
   };
@@ -542,7 +542,7 @@ export function parseSession(v: unknown): Session | null {
     createdAt === null ||
     updatedAt === null ||
     !isAgent(v.agent) ||
-    !isMode(v.mode) ||
+    !isSessionMode(v.mode) ||
     !isStatus(v.status) ||
     typeof v.attention !== 'boolean'
   ) {

@@ -82,8 +82,6 @@ interface HolderConfig {
 
 interface ExitRecord {
   exitCode: number | null;
-  signal: number | null;
-  at: number;
 }
 
 const IDLE_DELAY_MS = 20_000;
@@ -872,10 +870,6 @@ export class SessionManager {
     return runtime !== undefined && this.sendHolder(runtime, { type: 'kill', signal: 'SIGTERM' });
   }
 
-  killProject(projectId: string): void {
-    for (const session of this.db.listProjectSessions(projectId)) this.kill(session.id);
-  }
-
   async deleteProject(projectId: string): Promise<boolean> {
     const project = this.db.getProject(projectId);
     if (project === null) return false;
@@ -1050,8 +1044,6 @@ export class SessionManager {
       if (!isRecord(value)) return null;
       return {
         exitCode: typeof value.exitCode === 'number' ? value.exitCode : null,
-        signal: typeof value.signal === 'number' ? value.signal : null,
-        at: typeof value.at === 'number' ? value.at : 0,
       };
     } catch {
       return null;

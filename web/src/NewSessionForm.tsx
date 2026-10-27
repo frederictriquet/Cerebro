@@ -16,15 +16,7 @@ import { LlmSelector, llmChoices } from './LlmSelector.tsx';
 import { readDraft, writeDraft } from './drafts.ts';
 import { MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from './format.ts';
 import { useStore } from './store.tsx';
-import {
-  DEFAULT_SESSION_DEFAULTS,
-  MODE_CHOICES,
-  normalizeMode,
-  type Agent,
-  type Effort,
-  type LaunchSpec,
-  type Mode,
-} from './types.ts';
+import { DEFAULT_SESSION_DEFAULTS, MODES, type Agent, type Effort, type LaunchSpec, type Mode } from './types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
 
 // Agent, mode, modèle, effort et prompt d'une nouvelle session : page projet, et modales lancées depuis une
@@ -62,7 +54,7 @@ export function NewSessionForm({
   const defaults = project?.sessionDefaults ?? DEFAULT_SESSION_DEFAULTS;
   const available = agents.filter((a) => a.available);
   const [agent, setAgent] = useState<Agent>(defaults.agent);
-  const [mode, setMode] = useState<Mode>(normalizeMode(defaults.mode));
+  const [mode, setMode] = useState<Mode>(defaults.mode);
   // null : default model of the agent, resolved as shown by LlmSelector and launched by parseTuning.
   const [model, setModel] = useState<string | null>(defaults.model);
   const [effort, setEffort] = useState<Effort | null>(defaults.effort);
@@ -129,7 +121,7 @@ export function NewSessionForm({
     const supported =
       nextModel === null ? next.efforts : (next.models.find((m) => m.value === nextModel)?.efforts ?? []);
     setAgent(next.agent);
-    setMode(normalizeMode(defaults.mode));
+    setMode(defaults.mode);
     setModel(nextModel);
     setEffort(
       next.agent === defaults.agent && defaults.effort !== null && supported.includes(defaults.effort)
@@ -252,7 +244,7 @@ export function NewSessionForm({
             compact
             label="Mode"
             value={mode}
-            options={MODE_CHOICES.map((m) => ({
+            options={MODES.map((m) => ({
               value: m,
               label: MODE_CHIP[m],
               title: MODE_DESCRIPTION[m],

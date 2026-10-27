@@ -262,11 +262,11 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.addHook('onRequest', async (request, reply) => {
     const queryToken = requestQueryToken(request.query);
-    if (BIND_TOKEN !== undefined && request.url.split('?', 1)[0] === '/' && tokenMatches(queryToken)) {
+    const path = request.url.split('?', 1)[0];
+    if (BIND_TOKEN !== undefined && path === '/' && tokenMatches(queryToken)) {
       reply.header('set-cookie', tokenCookie(request));
     }
 
-    const path = request.url.split('?', 1)[0] ?? request.url;
     const protectedRoute =
       (path.startsWith('/api/') &&
         path !== '/api/auth' &&

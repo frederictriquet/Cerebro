@@ -7,7 +7,7 @@ import { DATA_DIR } from './config.ts';
 import type { CerebroDatabase, Project } from './db.ts';
 import { rememberWorktree } from './worktrees.ts';
 import { canonicalWorktreePath } from './worktree-gate.ts';
-import { prepareCommit, type GitSnapshot } from './git-plan.ts';
+import { prepareCommit } from './git-plan.ts';
 import { workspaceFileSignature } from './workspace-files.ts';
 const exec = promisify(execFile);
 const git = async (path: string, args: string[], index?: string): Promise<string> =>
@@ -433,13 +433,4 @@ export async function sessionProvenance(db: CerebroDatabase, sessionId: string):
       }),
     ),
   };
-}
-
-export async function prepareSessionCommit(
-  db: CerebroDatabase,
-  id: string,
-): Promise<GitSnapshot & { provenance: Provenance }> {
-  const provenance = await sessionProvenance(db, id);
-  const snapshot = await prepareCommit(provenance.workspace.root, provenance.workspace);
-  return { ...snapshot, provenance };
 }

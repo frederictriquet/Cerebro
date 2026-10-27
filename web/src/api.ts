@@ -278,10 +278,6 @@ export function getUpdates(): Promise<AgentUpdate[]> {
   return api<AgentUpdate[]>('/api/updates');
 }
 
-export function checkUpdates(): Promise<AgentUpdate[]> {
-  return api<AgentUpdate[]>('/api/updates/check', { method: 'POST' });
-}
-
 export function startUpdate(agent: Agent): Promise<AgentUpdate> {
   return api<AgentUpdate>(`/api/updates/${agent}`, { method: 'POST' });
 }

@@ -328,7 +328,7 @@ function SessionReviewDialog({
   );
 }
 
-export function SessionGitActions({ sessionId, live: _live }: { sessionId: string; live: boolean }) {
+export function SessionGitActions({ sessionId }: { sessionId: string }) {
   const { sessions } = useStore();
   const session = sessions.find((s) => s.id === sessionId);
   const [open, setOpen] = useState<'review' | 'commit' | null>(null);

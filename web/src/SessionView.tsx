@@ -560,7 +560,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             </span>
           ) : null}
           <div className="row-actions">
-            <SessionGitActions sessionId={session.id} live={live} />
+            <SessionGitActions sessionId={session.id} />
             {session.status !== 'exited' ? (
               <button
                 type="button"
