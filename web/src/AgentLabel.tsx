@@ -2,7 +2,7 @@ import claude from './assets/agents/claude.svg';
 import codex from './assets/agents/codex.svg';
 import grok from './assets/agents/grok.svg';
 import { AGENT_LABEL } from './format.ts';
-import type { Agent } from './types.ts';
+import type { Agent } from '../../shared/types.ts';
 
 const logos: Record<Agent, string> = { claude, codex, grok };
 

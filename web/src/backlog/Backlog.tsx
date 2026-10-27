@@ -1,11 +1,12 @@
 import { useState } from 'react';
+import type { Epic, Task } from '../../../shared/types.ts';
 import { DelayedActionButton } from '../DelayedActionButton.tsx';
 import { LaunchSessionDialog } from '../Dialog.tsx';
+import { errorMessage } from '../format.ts';
 import { useStore } from '../store.tsx';
-import type { Epic, Task } from '../types.ts';
 import { BacklogContext, type BacklogScope } from './context.ts';
 import { EpicBlock } from './EpicBlock.tsx';
-import { errorMessage, taskTitle } from './tasks.ts';
+import { taskLabel } from './tasks.ts';
 import { TaskComposer } from './TaskComposer.tsx';
 import { TaskRow } from './TaskRow.tsx';
 
@@ -52,17 +53,17 @@ export function Backlog({ projectId }: { projectId: string }) {
     projectTasks,
     epics: ownEpics,
     launching,
-    // Une commande s'exécute sans session : rien à régler avant le lancement.
+    // Une commande s'exécute sans session : rien à régler avant le lancement. Son démarrage passe par launch(),
+    // qui affiche « Lancement… » et ignore un second clic tant que le premier n'a pas abouti.
     startTask: (task) => {
-      if (task.execution?.type === 'command')
-        void startCommandTask(task.id).catch((cause: unknown) => setError(String(cause)));
-      else setStarting(task);
+      if (task.execution?.type !== 'command') setStarting(task);
+      else if (!launching.has(task.id)) void launch(task.id, () => startCommandTask(task.id)).catch(() => {});
     },
+    // Un epic fait uniquement de commandes démarre sans réglages de session.
     startEpic: (epic, prompt) => {
       const members = projectTasks.filter((t) => t.epicId === epic.id && t.status !== 'done');
-      if (members.every((t) => t.execution?.type === 'command'))
-        void startEpic(epic.id).catch((cause: unknown) => setError(String(cause)));
-      else setStartingEpic({ epic, prompt });
+      if (!members.every((t) => t.execution?.type === 'command')) setStartingEpic({ epic, prompt });
+      else if (!launching.has(epic.id)) void launch(epic.id, () => startEpic(epic.id)).catch(() => {});
     },
     reportError: setError,
   };
@@ -116,7 +117,7 @@ export function Backlog({ projectId }: { projectId: string }) {
         {error ? <p className="form-error">{error}</p> : null}
         {starting ? (
           <LaunchSessionDialog
-            title={`Traiter : ${taskTitle(starting.text).slice(0, 80)}`}
+            title={`Traiter : ${taskLabel(starting, 80)}`}
             projectId={projectId}
             epicId={starting.epicId}
             initialPrompt={starting.text}

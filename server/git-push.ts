@@ -1,29 +1,32 @@
 import type { WorktreeGate } from './worktree-gate.ts';
-import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { promisify } from 'node:util';
+import { git as runGit, gitEnv } from './git.ts';
+import { GitOutputLimitError, runGit as runGitProcess } from './git-process.ts';
+import type { PushOperation } from '../shared/git.ts';
+import { errorMessage } from './util.ts';
 
-const exec = promisify(execFile);
 const LIMIT = 64 * 1024;
-export interface PushRemoteResult {
-  remote: string;
-  status: 'pending' | 'running' | 'succeeded' | 'failed';
-  upstream: boolean;
-  exitCode: number | null;
-  output: string;
+const git = async (path: string, args: string[]): Promise<string> => (await runGit(path, args)).trim();
+
+/** An overflowing status is not empty: that alone proves the worktree is dirty. */
+async function isDirty(path: string): Promise<boolean> {
+  try {
+    return (await git(path, ['status', '--porcelain=v1', '-z'])) !== '';
+  } catch (cause) {
+    if (cause instanceof GitOutputLimitError) return true;
+    throw cause;
+  }
 }
-export interface PushOperation {
-  id: string;
-  branch: string | null;
-  head: string | null;
-  status: 'running' | 'succeeded' | 'failed';
-  startedAt: number;
-  finishedAt: number | null;
-  error: string | null;
-  remotes: PushRemoteResult[];
+
+/** `symbolic-ref --quiet` exits with 1 on a detached HEAD: that is a state, not a failure. */
+async function currentBranch(path: string): Promise<string | null> {
+  try {
+    return (await git(path, ['symbolic-ref', '--quiet', '--short', 'HEAD'])) || null;
+  } catch (cause) {
+    if ((cause as { code?: unknown }).code === 1) return null;
+    throw cause;
+  }
 }
-const git = async (path: string, args: string[]): Promise<string> =>
-  (await exec('git', ['-C', path, ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout.trim();
 
 /** Canonical worktree identity also serializes aliases of the same project path. */
 async function keyFor(path: string): Promise<string> {
@@ -76,23 +79,33 @@ export class GitPushes {
     this.latest.set(key, op);
     void execute(path, op, options)
       .catch((cause: unknown) => {
-        op.error = cause instanceof Error ? cause.message : String(cause);
+        op.error = errorMessage(cause);
         op.status = 'failed';
       })
       .finally(() => {
         op.finishedAt = Date.now();
         this.active.delete(key);
-        for (const listener of this.listeners) listener(path, op);
+        // A listener runs inside a detached promise: its failure is logged rather than left as an unhandled rejection.
+        for (const listener of this.listeners) {
+          try {
+            listener(path, op);
+          } catch (cause) {
+            console.error(
+              '[push] Notification de fin de push en échec :',
+              cause instanceof Error ? cause.message : cause,
+            );
+          }
+        }
       });
     return op;
   }
 }
 
 async function execute(path: string, op: PushOperation, options: PushOptions): Promise<void> {
-  if (!options.allowDirty && (await git(path, ['status', '--porcelain=v1', '-z'])) !== '') {
+  if (!options.allowDirty && (await isDirty(path))) {
     throw new Error('Le dépôt a des changements : préparez un commit avant de pousser.');
   }
-  const branch = await git(path, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  const branch = await currentBranch(path);
   if (!branch) throw new Error('HEAD détachée : choisissez une branche.');
   op.branch = branch;
   op.head = await git(path, ['rev-parse', '--verify', 'HEAD']);
@@ -127,17 +140,12 @@ async function execute(path: string, op: PushOperation, options: PushOptions): P
   for (const result of op.remotes) {
     result.status = 'running';
     try {
-      if (
-        (await git(path, ['symbolic-ref', '--quiet', '--short', 'HEAD'])) !== branch ||
-        (await git(path, ['rev-parse', 'HEAD'])) !== op.head
-      ) {
+      if ((await currentBranch(path)) !== branch || (await git(path, ['rev-parse', 'HEAD'])) !== op.head) {
         throw new Error('La branche ou HEAD a changé pendant le push ; relancez après vérification.');
       }
       // Explicit refspec avoids push.default, remote.*.push and implicit tag publication.
       // --no-mirror overrides remote.*.mirror, without bypassing any hook.
       const args = [
-        '-C',
-        path,
         'push',
         '--porcelain',
         '--progress',
@@ -149,23 +157,17 @@ async function execute(path: string, op: PushOperation, options: PushOptions): P
         result.remote,
         `refs/heads/${branch}:refs/heads/${branch}`,
       ];
-      result.exitCode = await new Promise<number | null>((resolve, reject) => {
-        const child = spawn('git', args, {
-          env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        const append = (data: Buffer): void => {
-          result.output = (result.output + data.toString()).slice(-LIMIT);
-        };
-        child.stdout.on('data', append);
-        child.stderr.on('data', append);
-        child.once('error', reject);
-        child.once('close', resolve);
-      });
+      const append = (data: Buffer): void => {
+        result.output = (result.output + data.toString()).slice(-LIMIT);
+      };
+      // Exit code kept as a result; the visible output is the streamed tail, the captured buffer only has to outlast a verbose remote.
+      result.exitCode = (
+        await runGitProcess(['-C', path, ...args], { env: gitEnv(), maxBuffer: 16 * 1024 * 1024, onOutput: append })
+      ).code;
       result.status = result.exitCode === 0 ? 'succeeded' : 'failed';
     } catch (cause) {
       result.status = 'failed';
-      result.output += cause instanceof Error ? cause.message : String(cause);
+      result.output += errorMessage(cause);
     }
   }
   op.status = op.remotes.every((remote) => remote.status === 'succeeded') ? 'succeeded' : 'failed';

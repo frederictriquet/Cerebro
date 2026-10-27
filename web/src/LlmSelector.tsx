@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { AgentLabel } from './AgentLabel.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { useStore } from './store.tsx';
-import type { AgentInfo, Effort, LaunchSpec } from './types.ts';
+import type { AgentInfo, Effort, SessionDefaults } from '../../shared/types.ts';
 
-export type LlmSelection = Pick<LaunchSpec, 'agent' | 'model' | 'effort'>;
+export type LlmSelection = Pick<SessionDefaults, 'agent' | 'model' | 'effort'>;
 
 // Effort used when none is chosen: `high` when offered, otherwise the first level. Mirror of `defaultEffort` (server/catalog.ts).
 export function defaultEffort(efforts: Effort[]): Effort | null {
@@ -37,26 +37,11 @@ export function LlmSelector({
   disabled?: boolean;
   children?: ReactNode;
 }) {
-  const { refreshAgents } = useStore();
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const { refreshAgents, agentsRefreshing: refreshing, agentsRefreshError: refreshError, watchAgents } = useStore();
   const available = agents.filter((item) => item.available);
-  const refresh = useCallback(async () => {
-    setRefreshing(true);
-    setRefreshError(null);
-    try {
-      await refreshAgents();
-    } catch (error) {
-      setRefreshError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setRefreshing(false);
-    }
-  }, [refreshAgents]);
-  useEffect(() => {
-    if (available.length > 0 || refreshing) return;
-    const timer = window.setTimeout(() => void refresh(), 5000);
-    return () => window.clearTimeout(timer);
-  }, [available.length, refreshing, refresh]);
+  const refresh = () => void refreshAgents().catch(() => {});
+  // The retry loop lives in the store: one per page, however many selectors are mounted.
+  useEffect(() => watchAgents(), [watchAgents]);
   // [SPEC UI web › Vue projet] No default choice: the shown model and effort are always explicit.
   const { models, efforts, model, effort } = llmChoices(agents, value);
   // Choix enregistrés absents du catalogue : affichés désactivés plutôt que perdus.
@@ -69,7 +54,7 @@ export function LlmSelector({
         {available.length === 0 ? (
           <span className="tuning-empty">
             <span className="muted">Aucun agent disponible</span>
-            <button type="button" className="btn" disabled={refreshing} onClick={() => void refresh()}>
+            <button type="button" className="btn" disabled={refreshing} onClick={refresh}>
               {refreshing ? 'Rafraîchissement…' : 'Rafraîchir'}
             </button>
             {refreshError ? <span className="form-error">{refreshError}</span> : null}

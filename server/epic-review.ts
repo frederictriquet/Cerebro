@@ -1,18 +1,10 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { FINDING_INSTRUCTIONS } from './findings.ts';
 import type { CerebroDatabase } from './db.ts';
 import type { EpicRunRecord } from './epic-runner.ts';
 import { workspaceAt } from './provenance.ts';
 import { REVIEW_TASK_TITLE } from '../shared/epic-review.ts';
-const exec = promisify(execFile);
-const git = async (path: string, args: string[]): Promise<string> =>
-  (
-    await exec('git', ['-C', path, ...args], {
-      maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-    })
-  ).stdout.trim();
+import { git as runGit, repositoryRoot } from './git.ts';
+const git = async (path: string, args: string[]): Promise<string> => (await runGit(path, args)).trim();
 const lines = (text: string): string[] => text.split('\n').filter(Boolean);
 export const reviewTaskText = (epicTitle: string): string =>
   `${REVIEW_TASK_TITLE}\nRelis le travail réalisé par les étapes précédentes de l’epic « ${epicTitle} » dans ce dossier, sans rien modifier. Le serveur ajoute le périmètre (commit de base, commits, fichiers) au lancement de l’étape.`;
@@ -41,7 +33,7 @@ export async function epicReviewScope(
     throw new Error('Le worktree de l’epic est introuvable ou a été retiré : aucun travail à relire.');
   const root =
     workspace?.root ??
-    (await git(path, ['rev-parse', '--show-toplevel']).catch(() => {
+    (await repositoryRoot(path).catch(() => {
       throw new Error('Le dossier de l’epic n’est pas un dépôt Git.');
     }));
   const head = await git(root, ['rev-parse', '--verify', 'HEAD']).catch(() => {

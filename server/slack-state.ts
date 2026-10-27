@@ -1,20 +1,16 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { SlackSettings } from '../shared/machine.ts';
 import { DATA_DIR, SLACK_ALERTS, SLACK_DELAY_MS } from './config.ts';
 import type { CerebroDatabase } from './db.ts';
 import type { AgentQuestion } from './questions.ts';
-import { isRecord } from './slack-api.ts';
 import { slackTimestampNow } from './slack-format.ts';
+import { isRecord } from './util.ts';
+
+export type { SlackSettings };
 
 export type MessageKind = 'alert' | 'notify' | 'ask';
-
-// Notification preferences editable from the web UI; env variables only provide the defaults.
-export interface SlackSettings {
-  waiting: boolean;
-  idle: boolean;
-  agentMessages: boolean;
-  delaySeconds: number;
-}
 
 const SETTINGS_FILE = join(DATA_DIR, 'slack.json');
 const STATE_FILE = join(DATA_DIR, 'slack-state.json');
@@ -69,8 +65,64 @@ export function loadSettings(): SlackSettings {
   }
 }
 
-export function saveSettings(settings: SlackSettings): void {
-  writeFileSync(SETTINGS_FILE, `${JSON.stringify(settings, null, 2)}\n`);
+/**
+ * Notification preferences: read from disk on first use only, so a disabled Slack never touches the file. An
+ * update applies at once; the file is written asynchronously, writes serialized and coalesced so a burst ends
+ * with the last value on disk. A failed write restores the last persisted settings unless a newer update is
+ * still queued.
+ */
+export class SlackSettingsStore {
+  private loaded: SlackSettings | null = null;
+  // Last value known to be on disk: restored when a write fails, so memory never outlives a failed save.
+  private persisted: SlackSettings | null = null;
+  // Settings waiting for the queued write; later updates replace them before it runs.
+  private pending: SlackSettings | null = null;
+  private write: Promise<void> = Promise.resolve();
+  private readonly logError: (error: unknown) => void;
+
+  constructor(logError: (error: unknown) => void) {
+    this.logError = logError;
+  }
+
+  get current(): SlackSettings {
+    if (this.loaded === null) this.loaded = this.persisted = loadSettings();
+    return this.loaded;
+  }
+
+  update(patch: Record<string, unknown>): SlackSettings | null {
+    const next = mergeSettings(this.current, patch);
+    if (next === null) return null;
+    this.loaded = next;
+    this.queueWrite(next);
+    return next;
+  }
+
+  /** Resolves once the latest settings are on disk; rejects if that write failed. */
+  saved(): Promise<void> {
+    return this.write;
+  }
+
+  private queueWrite(settings: SlackSettings): void {
+    const queued = this.pending !== null;
+    this.pending = settings;
+    if (queued) return;
+    const write = this.write
+      .catch(() => undefined)
+      .then(async () => {
+        const value = this.pending;
+        this.pending = null;
+        if (value === null) return;
+        try {
+          await writeFile(SETTINGS_FILE, `${JSON.stringify(value, null, 2)}\n`);
+          this.persisted = value;
+        } catch (error) {
+          if (this.pending === null && this.loaded === value) this.loaded = this.persisted;
+          throw error;
+        }
+      });
+    write.catch((error: unknown) => this.logError(error));
+    this.write = write;
+  }
 }
 
 export interface ActiveThread {
@@ -140,6 +192,24 @@ function activeThreadFrom(value: unknown): ActiveThread | null {
     moreTurns: value.moreTurns === true,
     questions,
     fromDm: value.fromDm === true,
+  };
+}
+
+/** A new session thread, with the defaults of a thread nothing was sent from yet. */
+export function newThread(
+  fields: Pick<ActiveThread, 'channel' | 'ts' | 'lastTs' | 'kind'> & Partial<ActiveThread>,
+): ActiveThread {
+  const now = Date.now();
+  return {
+    createdAt: now,
+    polledAt: now,
+    answered: false,
+    awaitingReply: false,
+    skipTurnEnd: false,
+    moreTurns: false,
+    questions: null,
+    fromDm: false,
+    ...fields,
   };
 }
 

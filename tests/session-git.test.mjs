@@ -11,6 +11,7 @@ process.env.HOME = root;
 const { CerebroDatabase } = await import('../server/db.ts');
 const { createWorkspace } = await import('../server/provenance.ts');
 const { createServices } = await import('../server/services.ts');
+const { SessionGit } = await import('../server/session-git.ts');
 const repo = join(root, 'repo');
 mkdirSync(repo);
 const git = (p, ...a) =>
@@ -25,7 +26,7 @@ git(repo, 'commit', '-m', 'base');
 writeFileSync(join(repo, 'initial'), 'preexisting\n');
 git(repo, 'add', 'initial');
 const db = new CerebroDatabase(':memory:');
-const { sessionGit } = createServices(db);
+const { sessionGit, git: planner } = createServices(db);
 const project = db.createProject('Demo', repo);
 for (const id of ['a', 'b', 'old'])
   db.createSession(
@@ -114,5 +115,23 @@ test('historical sessions require manual confirmation and stale selections are r
       acknowledged: ['initial'],
     }),
     /obsolète/,
+  );
+});
+test('prepared session selections expire and stay private to their store', async () => {
+  let now = 0;
+  const store = new SessionGit(db, planner, { ttlMs: 1000, now: () => now });
+  writeFileSync(join(a.path, 'shared'), 'expiring\n');
+  const s = await store.prepareCommit('a');
+  await assert.rejects(new SessionGit(db, planner).executeCommit('a', plan(s, 'shared')), /expirée/);
+  now = 1000;
+  await assert.rejects(store.executeCommit('a', plan(s, 'shared')), /expirée/);
+  await assert.rejects(
+    store.reviewContext('a', {
+      snapshotId: s.id,
+      selection: [{ path: 'shared', all: true }],
+      commits: [],
+      acknowledged: [],
+    }),
+    /expirée/,
   );
 });

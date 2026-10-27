@@ -1,20 +1,29 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { git as runGit, parseStatusZ } from './git.ts';
 
-const exec = promisify(execFile);
 const PREVIEW_LIMIT = 50;
-// LC_ALL=C keeps git's error messages in English so `notRepository` can recognize them.
-const git = async (path: string, args: string[]): Promise<string> =>
-  (
-    await exec('git', ['-C', path, ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' } })
-  ).stdout.trimEnd();
+// git.ts sets LC_ALL=C: Git's messages stay in English so that "not a git repository" can be recognized.
+const git = async (path: string, args: string[]): Promise<string> => (await runGit(path, args)).trimEnd();
 const message = (error: unknown): string =>
   error instanceof Error ? ((error as { stderr?: unknown }).stderr || error.message).toString().trim() : String(error);
-/** A missing folder or one outside any repository: the normal "not a repository" case, as opposed to a failure. */
-const notRepository = (error: unknown): boolean =>
-  /not a git repository|cannot change to .*No such file or directory/.test(message(error));
+
+/**
+ * Only a missing folder or a path outside any work tree is "not a repository"; any other failure is a read error,
+ * which must not pass for a clean tree.
+ */
+async function insideWorkTree(path: string): Promise<boolean> {
+  try {
+    return (await git(path, ['rev-parse', '--is-inside-work-tree'])) === 'true';
+  } catch (cause) {
+    if (/not a git repository|cannot change to .*No such file or directory/i.test(message(cause))) return false;
+    throw cause;
+  }
+}
 
 export interface GitSummary {
+  /** False only when the path is outside any Git work tree. */
+  repository: boolean;
+  /** Set when the repository exists but its state could not be read: the other fields are then unknown. */
+  error?: string;
   branch: string | null;
   dirty: number;
   ahead: number | null;
@@ -30,21 +39,30 @@ export interface GitSummary {
 
 /**
  * Read local refs only. Count and preview use the same captured commit range.
- * Resolves to an empty summary outside a repository; any other git failure rejects instead of passing for a clean tree.
+ * Resolves to an empty summary outside a repository; any other git failure is reported in `error` instead of passing
+ * for a clean tree.
  */
 export async function gitSummary(path: string, includeCommits = false): Promise<GitSummary> {
-  const empty: GitSummary = { branch: null, dirty: 0, ahead: 0, hasCommits: false, hasUpstream: false };
+  const empty: GitSummary = {
+    repository: false,
+    branch: null,
+    dirty: 0,
+    ahead: 0,
+    hasCommits: false,
+    hasUpstream: false,
+  };
   try {
-    if ((await git(path, ['rev-parse', '--is-inside-work-tree'])) !== 'true') return empty;
+    if (!(await insideWorkTree(path))) return empty;
     const [branch, status, head, upstream] = await Promise.all([
       git(path, ['branch', '--show-current']),
-      git(path, ['status', '--porcelain']),
+      git(path, ['status', '--porcelain', '-z']),
       git(path, ['rev-parse', '--verify', 'HEAD']).catch(() => null),
       git(path, ['rev-parse', '--verify', '@{upstream}']).catch(() => null),
     ]);
     const result: GitSummary = {
+      repository: true,
       branch: branch || null,
-      dirty: status === '' ? 0 : status.split(/\r?\n/).length,
+      dirty: parseStatusZ(status).length,
       ahead: head ? null : 0,
       hasCommits: head !== null,
       hasUpstream: upstream !== null,
@@ -82,8 +100,15 @@ export async function gitSummary(path: string, includeCommits = false): Promise<
       }
     }
     return result;
-  } catch (error) {
-    if (notRepository(error)) return empty;
-    throw new Error(`Lecture Git impossible pour ${path} : ${message(error)}`, { cause: error });
+  } catch (cause) {
+    const detail =
+      cause instanceof Error
+        ? cause.message.split('\n').find((line) => line.trim() && !line.startsWith('Command failed'))
+        : undefined;
+    return {
+      ...empty,
+      repository: true,
+      error: `Impossible de lire l’état Git${detail ? ` : ${detail.trim()}` : '.'}`,
+    };
   }
 }

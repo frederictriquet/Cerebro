@@ -1,11 +1,12 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useState } from 'react';
+import { useAsyncAction } from './async-action.ts';
 import { Modal } from './Dialog.tsx';
 import { useStore } from './store.tsx';
 import { LlmSelector, type LlmSelection } from './LlmSelector.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { MODE_CHIP, MODE_DESCRIPTION } from './format.ts';
-import { MODES, type Project, type ResolutionSettings } from './types.ts';
+import { MODE_CHOICES, normalizeMode, type Project, type ResolutionSettings } from '../../shared/types.ts';
 import './automatic-commits.css';
 
 export function CommitSettingsDialog({ project, onClose }: { project: Project; onClose: () => void }) {
@@ -14,21 +15,18 @@ export function CommitSettingsDialog({ project, onClose }: { project: Project; o
     const { agent, model, effort } = project.commitSettings;
     return { agent, model, effort };
   });
-  const [resolution, setResolution] = useState<ResolutionSettings>(project.resolutionSettings);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const save = async (): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    try {
-      await updateProject(project.id, { commitSettings: settings, resolutionSettings: resolution });
-      onClose();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const [resolution, setResolution] = useState<ResolutionSettings>(() => ({
+    ...project.resolutionSettings,
+    mode: normalizeMode(project.resolutionSettings.mode),
+  }));
+  const {
+    run: save,
+    busy,
+    error,
+  } = useAsyncAction(async () => {
+    await updateProject(project.id, { commitSettings: settings, resolutionSettings: resolution });
+    onClose();
+  });
   return (
     <Modal title="Réglages LLM" onClose={onClose}>
       <form
@@ -72,7 +70,7 @@ export function CommitSettingsDialog({ project, onClose }: { project: Project; o
                 label="Mode de la session de résolution"
                 value={resolution.mode}
                 disabled={busy}
-                options={MODES.map((mode) => ({
+                options={MODE_CHOICES.map((mode) => ({
                   value: mode,
                   label: MODE_CHIP[mode],
                   title: MODE_DESCRIPTION[mode],

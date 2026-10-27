@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import type { GitSnapshot } from '../../../server/git-plan.ts';
-import type { WorktreeView } from '../../../server/worktrees.ts';
+import { parseGitSnapshot, type GitSnapshot } from '../../../shared/git.ts';
+import type { WorktreeView } from '../../../shared/worktrees.ts';
 import { ActivityStatus } from '../ActivityStatus.tsx';
-import { api, apiBase } from '../api.ts';
+import { apiParsed } from '../api.ts';
+import { errorMessage, plural } from '../format.ts';
 import type { Reviewed } from './model.ts';
 
 export function WorktreeDiffs({
@@ -17,19 +18,18 @@ export function WorktreeDiffs({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const load = async (): Promise<void> => {
-    const machine = apiBase();
     setBusy(true);
     setError(null);
     try {
-      const value = await api<GitSnapshot>(`/api/worktrees/${view.id}/git/prepare-commit`, { method: 'POST' });
-      if (machine === apiBase()) {
-        setSnapshot(value);
-        setChecked(new Set());
-      }
+      const value = await apiParsed(`/api/worktrees/${view.id}/git/prepare-commit`, parseGitSnapshot, {
+        method: 'POST',
+      });
+      setSnapshot(value);
+      setChecked(new Set());
     } catch (cause) {
-      if (machine === apiBase()) setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     } finally {
-      if (machine === apiBase()) setBusy(false);
+      setBusy(false);
     }
   };
   const files = snapshot?.files.filter(
@@ -94,7 +94,7 @@ export function WorktreeDiffs({
           disabled={!checked.size}
           onClick={() => onCommitReviewed({ snapshotId: snapshot.id, paths: [...checked] })}
         >
-          Commiter avec {checked.size} fichier{checked.size === 1 ? '' : 's'} examiné{checked.size === 1 ? '' : 's'}
+          Commiter avec {plural(checked.size, 'fichier examiné', 'fichiers examinés', { zeroPlural: true })}
         </button>
       ) : null}
     </div>

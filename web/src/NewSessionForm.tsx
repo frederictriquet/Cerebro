@@ -1,34 +1,25 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ClipboardEvent,
-  type DragEvent,
-  type FormEvent,
-  type KeyboardEvent,
-} from 'react';
-import { clipboardImage, uploadProjectImage } from './api.ts';
-import { AttachmentStrip, insertToken, removeToken, restoredAttachment, useImageAttachments } from './attachments.tsx';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { uploadProjectImage } from './api.ts';
+import { AttachmentStrip, restoredAttachment, useAttachedField } from './attachments.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { LlmSelector, llmChoices } from './LlmSelector.tsx';
 import { readDraft, writeDraft } from './drafts.ts';
-import { MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from './format.ts';
+import { errorMessage, MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from './format.ts';
 import { useStore } from './store.tsx';
 import {
   DEFAULT_SESSION_DEFAULTS,
-  MODES,
+  MODE_CHOICES,
+  normalizeMode,
   type Agent,
   type AgentInfo,
   type Effort,
-  type LaunchSpec,
-  type Mode,
-} from './types.ts';
+  type ModeChoice,
+  type SessionDefaults,
+} from '../../shared/types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
 
-type LlmDefaults = Pick<LaunchSpec, 'agent' | 'mode' | 'model' | 'effort'>;
+type LlmDefaults = Pick<SessionDefaults, 'agent' | 'model' | 'effort'> & { mode: ModeChoice };
 
 // Réglages du projet ramenés au catalogue : à défaut de son agent, le premier disponible, sans modèle ni effort
 // qu'il ne propose pas. null tant qu'aucun agent n'est disponible.
@@ -72,7 +63,7 @@ export function NewSessionForm({
   launchDisabled?: boolean;
   autoFocus?: boolean;
   className?: string;
-  onLaunch: (spec: LaunchSpec) => Promise<void>;
+  onLaunch: (spec: SessionDefaults) => Promise<void>;
   onCancel?: () => void;
 }) {
   const { agents, projects, updateProject } = useStore();
@@ -81,7 +72,7 @@ export function NewSessionForm({
   const defaults = project?.sessionDefaults ?? DEFAULT_SESSION_DEFAULTS;
   const available = agents.filter((a) => a.available);
   const [agent, setAgent] = useState<Agent>(defaults.agent);
-  const [mode, setMode] = useState<Mode>(defaults.mode);
+  const [mode, setMode] = useState<ModeChoice>(normalizeMode(defaults.mode));
   // null : default model of the agent, resolved as shown by LlmSelector and launched by parseTuning.
   const [model, setModel] = useState<string | null>(defaults.model);
   const [effort, setEffort] = useState<Effort | null>(defaults.effort);
@@ -97,14 +88,32 @@ export function NewSessionForm({
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const queuedPrompt = useRef<string | null>(null);
-  const images = useImageAttachments(
-    (image) => uploadProjectImage(projectId, image),
-    draft?.images.map((i) => restoredAttachment(i.n, i.token, i.path)),
-  );
+  // Seul le formulaire « Nouvelle session » du projet (sans prompt prérempli) mémorise son prompt :
+  // celui d'une modale (tâche, sélection, review) ne doit ni remplacer ni effacer ce défaut.
+  const remembersPrompt = initialPrompt === undefined && promptFor === undefined;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  // Image collée ou déposée : « [Image #N] » est inséré au curseur, et remplacé par le chemin
+  // du fichier au lancement (les agents lisent les images référencées par chemin).
+  const { images, fieldProps, stripProps } = useAttachedField({
+    upload: (image) => uploadProjectImage(projectId, image),
+    initial: draft?.images.map((i) => restoredAttachment(i.n, i.token, i.path)),
+    text: prompt,
+    setText: (change) => {
+      setPromptEdited(true);
+      setPrompt(change);
+    },
+    onError: (message) => setError(`Image non envoyée : ${message}`),
+  });
 
   // Sérialiser les modifications rapides évite qu'une réponse ancienne remplace le dernier choix.
   const saveDefaults = useCallback(
-    (patch: Partial<LaunchSpec>): void => {
+    (patch: Partial<SessionDefaults>): void => {
       if (patch.prompt !== undefined) queuedPrompt.current = patch.prompt;
       setSavingDefaults((count) => count + 1);
       saveQueue.current = saveQueue.current.then(async () => {
@@ -112,7 +121,7 @@ export function NewSessionForm({
           await updateProject(projectId, { sessionDefaults: patch });
           setDefaultsError(null);
         } catch (err) {
-          setDefaultsError(err instanceof Error ? err.message : 'Enregistrement impossible');
+          setDefaultsError(errorMessage(err, 'Enregistrement impossible'));
         } finally {
           setSavingDefaults((count) => count - 1);
         }
@@ -123,10 +132,10 @@ export function NewSessionForm({
 
   const expandedPrompt = images.expand(prompt);
   useEffect(() => {
-    if (!promptEdited || images.pending || busy || expandedPrompt === queuedPrompt.current) return;
+    if (!remembersPrompt || !promptEdited || images.pending || busy || expandedPrompt === queuedPrompt.current) return;
     const timer = setTimeout(() => saveDefaults({ prompt: expandedPrompt }), 400);
     return () => clearTimeout(timer);
-  }, [promptEdited, images.pending, busy, expandedPrompt, saveDefaults]);
+  }, [remembersPrompt, promptEdited, images.pending, busy, expandedPrompt, saveDefaults]);
 
   useEffect(() => {
     if (draftKey === undefined) return;
@@ -135,14 +144,14 @@ export function NewSessionForm({
   }, [draftKey, prompt, promptEdited, images.items]);
 
   useEffect(() => {
-    if (!promptEdited && initialPrompt === undefined && promptFor === undefined) setPrompt(defaults.prompt);
-  }, [defaults.prompt, initialPrompt, promptFor, promptEdited]);
+    if (!promptEdited && remembersPrompt) setPrompt(defaults.prompt);
+  }, [defaults.prompt, remembersPrompt, promptEdited]);
 
   const resolved = useMemo(
     () =>
       resolveLlmDefaults(agents, {
         agent: defaults.agent,
-        mode: defaults.mode,
+        mode: normalizeMode(defaults.mode),
         model: defaults.model,
         effort: defaults.effort,
       }),
@@ -184,32 +193,6 @@ export function NewSessionForm({
     if (autoFocus) promptRef.current?.focus();
   }, [autoFocus]);
 
-  // Image collée ou déposée : « [Image #N] » est inséré au curseur, et remplacé par le chemin
-  // du fichier au lancement (les agents lisent les images référencées par chemin).
-  const attachImage = (image: File): void => {
-    setPromptEdited(true);
-    const el = promptRef.current;
-    const start = el?.selectionStart ?? prompt.length;
-    const end = el?.selectionEnd ?? prompt.length;
-    const token = images.add(image, (failed, message) => {
-      setPrompt((current) => removeToken(current, failed));
-      setError(`Image non envoyée : ${message}`);
-    });
-    setPrompt((current) => insertToken(current, start, end, token));
-  };
-  const onPromptPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
-    const image = clipboardImage(event.clipboardData);
-    if (image === null) return;
-    event.preventDefault();
-    attachImage(image);
-  };
-  const onPromptDrop = (event: DragEvent<HTMLTextAreaElement>): void => {
-    const image = clipboardImage(event.dataTransfer);
-    if (image === null) return;
-    event.preventDefault();
-    attachImage(image);
-  };
-
   const launch = async (): Promise<void> => {
     if (launchDisabled || available.length === 0 || busy || images.pending) return;
     setError(null);
@@ -218,17 +201,20 @@ export function NewSessionForm({
       await saveQueue.current;
       const spec = { agent, mode, model, effort, prompt: images.expand(prompt) };
       await onLaunch(spec);
+      const draftFailure = draftKey === undefined ? null : writeDraft(draftKey, { prompt: '', images: [] });
+      // Modale refermée par son lancement : rien à réinitialiser.
+      if (!mounted.current) return;
+      setDraftError(draftFailure);
       setPrompt('');
-      // Garder la main sur le champ : les défauts reçus au lancement contiennent encore
-      // le prompt envoyé. Les effacer aussi évite de le restaurer au prochain montage.
+      // Garder la main sur le champ : les défauts mémorisés contiennent encore le dernier
+      // prompt saisi. L'effacer aussi évite de le restaurer au prochain montage.
       setPromptEdited(true);
-      saveDefaults({ prompt: '' });
-      if (draftKey !== undefined) setDraftError(writeDraft(draftKey, { prompt: '', images: [] }));
+      if (remembersPrompt) saveDefaults({ prompt: '' });
       images.reset();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Lancement impossible');
+      if (mounted.current) setError(errorMessage(err, 'Lancement impossible'));
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   };
 
@@ -272,7 +258,7 @@ export function NewSessionForm({
             compact
             label="Mode"
             value={mode}
-            options={MODES.map((m) => ({
+            options={MODE_CHOICES.map((m) => ({
               value: m,
               label: MODE_CHIP[m],
               title: MODE_DESCRIPTION[m],
@@ -290,29 +276,16 @@ export function NewSessionForm({
         <textarea
           rows={initialPrompt === undefined || initialPrompt === '' ? 5 : 10}
           value={prompt}
-          onChange={(e) => {
-            setPromptEdited(true);
-            setPrompt(e.target.value);
-            images.prune(e.target.value);
-          }}
+          {...fieldProps}
           onBlur={() => {
-            if (promptEdited && !images.pending && expandedPrompt !== queuedPrompt.current)
+            if (remembersPrompt && promptEdited && !images.pending && expandedPrompt !== queuedPrompt.current)
               saveDefaults({ prompt: expandedPrompt });
           }}
           onKeyDown={onKeyDown}
-          onPaste={onPromptPaste}
-          onDrop={onPromptDrop}
           ref={promptRef}
           placeholder={`${SUBMIT_HINT} pour lancer · Ctrl+V ou glisser-déposer pour joindre une image`}
         />
-        <AttachmentStrip
-          items={images.items}
-          onRemove={(item) => {
-            setPromptEdited(true);
-            images.remove(item.n);
-            setPrompt((current) => removeToken(current, item.token));
-          }}
-        />
+        <AttachmentStrip {...stripProps} />
       </label>
       {error ? <p className="form-error">{error}</p> : null}
       {draftError ? <p className="form-error">Brouillon non sauvegardé : {draftError}</p> : null}

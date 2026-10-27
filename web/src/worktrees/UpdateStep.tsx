@@ -1,7 +1,8 @@
-import type { WorktreeView } from '../../../server/worktrees.ts';
+import type { WorktreeView } from '../../../shared/worktrees.ts';
 import { ActivityStatus } from '../ActivityStatus.tsx';
+import { plural } from '../format.ts';
 import { href } from '../route.ts';
-import { fileCount, type Journey, type WorktreeActions } from './model.ts';
+import { type Journey, type WorktreeActions } from './model.ts';
 import { Step } from './Step.tsx';
 
 /** Step 2: bring the target's new commits into the copy, so conflicts are settled there. */
@@ -84,14 +85,13 @@ export function UpdateStep({
         </p>
       ) : view.integrationConflicts.length === 0 ? (
         <p>
-          Aucun conflit prévu avec {target}, qui a reçu {view.behind} commit{view.behind === 1 ? '' : 's'} depuis la
-          création de la copie.
+          Aucun conflit prévu avec {target}, qui a reçu {plural(view.behind, 'commit')} depuis la création de la copie.
         </p>
       ) : (
         <>
           <p>
             Les commits de la copie et ceux de {target} modifient les mêmes lignes de{' '}
-            {fileCount(view.integrationConflicts.length)} :
+            {plural(view.integrationConflicts.length, 'fichier')} :
           </p>
           <ul className="worktree-files">
             {view.integrationConflicts.map((file) => (
@@ -117,6 +117,9 @@ export function UpdateStep({
           </button>
         </>
       )}
+      {!view.mergeInProgress && view.integrationConflicts && view.integrationNote ? (
+        <p className="meta">{view.integrationNote}</p>
+      ) : null}
     </Step>
   );
 }

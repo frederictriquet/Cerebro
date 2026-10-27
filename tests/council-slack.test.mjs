@@ -104,6 +104,7 @@ const peers = {
   setSlackPoster: () => {},
   generalResponder: () => general,
   knownRemotely: () => false,
+  unreachableMachines: () => [],
   conflictMachines: () => [],
   conflictResponder: () => true,
   activePeerProjects: () => [],

@@ -1,25 +1,18 @@
+import type { Session } from '../shared/types.ts';
 import { SLACK_ENABLED } from './config.ts';
 import type { CouncilRuns } from './council-runner.ts';
-import type { CerebroDatabase, Session } from './db.ts';
+import type { CerebroDatabase } from './db.ts';
 import { OperationResults } from './operation-results.ts';
 import type { PeerSync } from './peers.ts';
 import type { SessionEvent, SessionManager } from './sessions.ts';
 import { SlackAlerts } from './slack-alerts.ts';
 import { SlackClient, SlackTransport, type SlackMessage, type SlackResponse } from './slack-api.ts';
 import { injectDmMessage, SlackDmCommands } from './slack-commands.ts';
-import { SlackPoller } from './slack-polling.ts';
-import {
-  loadSettings,
-  mergeSettings,
-  saveSettings,
-  SlackState,
-  type ActiveThread,
-  type SlackSettings,
-} from './slack-state.ts';
+import { POLL_INTERVAL_MS, SlackPoller } from './slack-polling.ts';
+import { SlackSettingsStore, SlackState, type ActiveThread, type SlackSettings } from './slack-state.ts';
 
-export { councilSlackText, parseCouncilCommand } from './slack-format.ts';
-
-const POLL_INTERVAL_MS = 5_000;
+export { councilSlackText, decodeSlackText, parseCouncilCommand } from './slack-format.ts';
+export { POLL_CALLS_PER_MINUTE } from './slack-polling.ts';
 
 /**
  * Slack side of Cerebro, assembled from its modules: transport (`slack-api.ts`), saved state and settings
@@ -42,7 +35,7 @@ export class SlackNotifier {
   private readonly commands: SlackDmCommands;
   private readonly unsubscribe: (() => void) | null;
   private readonly pollTimer: NodeJS.Timeout | null;
-  private settings: SlackSettings = loadSettings();
+  private readonly settingsStore = new SlackSettingsStore((error) => this.logError(error));
 
   constructor(sessions: SessionManager, db: CerebroDatabase, peers: PeerSync) {
     this.sessions = sessions;
@@ -52,7 +45,7 @@ export class SlackNotifier {
     );
     this.state = new SlackState((error) => this.logError(error));
     this.threads = this.state.threads;
-    this.alerts = new SlackAlerts(this.client, this.state, db, sessions, peers, () => this.settings);
+    this.alerts = new SlackAlerts(this.client, this.state, db, sessions, peers, () => this.settings, this.transport);
     this.poller = new SlackPoller(
       this.client,
       this.state,
@@ -87,6 +80,10 @@ export class SlackNotifier {
     this.pollTimer.unref();
   }
 
+  private get settings(): SlackSettings {
+    return this.settingsStore.current;
+  }
+
   status(): { enabled: boolean } & SlackSettings {
     return { enabled: SLACK_ENABLED, ...this.settings };
   }
@@ -95,18 +92,21 @@ export class SlackNotifier {
     return this.settings.agentMessages;
   }
 
+  // Applies immediately; the file is written asynchronously (see settingsSaved).
   updateSettings(patch: Record<string, unknown>): SlackSettings | null {
-    const next = mergeSettings(this.settings, patch);
-    if (next === null) return null;
-    saveSettings(next);
-    this.settings = next;
     // Pending alerts may no longer be wanted: re-checked when their timer fires.
-    return next;
+    return this.settingsStore.update(patch);
   }
 
-  async agentMessage(sessionId: string, kind: 'notify' | 'ask', text: string): Promise<void> {
+  // Resolves once the latest settings are on disk; rejects if that write failed.
+  settingsSaved(): Promise<void> {
+    return this.settingsStore.saved();
+  }
+
+  // 'queued': Slack is rate limited, the message is posted as soon as the window is over.
+  async agentMessage(sessionId: string, kind: 'notify' | 'ask', text: string): Promise<'sent' | 'queued'> {
     if (!SLACK_ENABLED) throw new Error("Slack n'est pas configuré");
-    await this.alerts.agentMessage(sessionId, kind, text);
+    return this.alerts.agentMessage(sessionId, kind, text);
   }
 
   stop(): void {

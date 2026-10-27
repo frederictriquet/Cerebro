@@ -1,4 +1,4 @@
-import type { WorktreeView } from '../../../server/worktrees.ts';
+import type { WorktreeView } from '../../../shared/worktrees.ts';
 import { branchName } from './model.ts';
 import { WorktreeDiffs } from './WorktreeDiffs.tsx';
 

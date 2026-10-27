@@ -207,10 +207,7 @@ test('new epic sessions keep their original cwd after a preference change and re
         const session = await manager.create(
           f.db.getProject(f.project.id),
           { agent: 'codex', prompt: 'Corriger' },
-          undefined,
-          undefined,
-          'Correction',
-          { epicId: epic.id },
+          { title: 'Correction', epicId: epic.id },
         );
         assert.equal(readFileSync(capture, 'utf8').trim(), original.path);
         assert.equal(workspaceFor(f.db, session.id).path, original.path);

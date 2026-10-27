@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import type { Agent, Project, Session } from '../shared/types.ts';
 import { answerQuestion } from './ask.ts';
 import type { CouncilRuns } from './council-runner.ts';
-import type { Agent, CerebroDatabase, Project, Session } from './db.ts';
+import type { CerebroDatabase } from './db.ts';
 import { answerFactQuestion, FACT_HELP } from './facts.ts';
 import { normalizeProjectName, type PeerSync } from './peers.ts';
 import type { SessionManager } from './sessions.ts';
@@ -10,6 +11,7 @@ import {
   councilSlackText,
   decodeSlackText,
   escapeMrkdwn,
+  INACTIVE_SESSION_REPLY,
   parseCouncilCommand,
   parseDmCommand,
   sessionHeader,
@@ -17,8 +19,9 @@ import {
   slackMarkdown,
   splitMessage,
 } from './slack-format.ts';
-import { delay } from './slack-polling.ts';
-import type { SlackState } from './slack-state.ts';
+import { typeIntoSession } from './slack-polling.ts';
+import { newThread, type SlackState } from './slack-state.ts';
+import { errorMessage } from './util.ts';
 
 // Le fil Slack reprend la session active la plus récemment touchée, pas la plus récemment créée.
 function latestActive(sessions: Session[], agent: Agent | null = null): Session | undefined {
@@ -34,14 +37,7 @@ function latestActive(sessions: Session[], agent: Agent | null = null): Session 
 export async function injectDmMessage(sessions: SessionManager, session: Session, text: string): Promise<boolean> {
   if (session.status === 'exited') return false;
   const questions = session.status === 'waiting' ? sessions.pendingQuestions(session.id) : null;
-  if (questions !== null) {
-    if (!sessions.writeInput(session.id, '\x1b')) return false;
-    sessions.setPendingQuestions(session.id, null);
-    await delay(800);
-  }
-  if (!sessions.writeInput(session.id, `[Message Slack] ${text}`)) return false;
-  await delay(150);
-  return sessions.writeInput(session.id, '\r');
+  return typeIntoSession(sessions, session.id, `[Message Slack] ${text}`, questions !== null);
 }
 
 export interface DmCommandHooks {
@@ -131,22 +127,18 @@ export class SlackDmCommands {
             ...(command.agent === null ? {} : { agent: command.agent }),
             prompt: command.text,
           },
-          undefined,
-          undefined,
-          undefined,
           { rememberDefaults: false },
         );
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
         await this.client.postThreadReply(
           channel,
           message.ts,
-          `:x: Impossible de créer la session : ${escapeMrkdwn(reason)}`,
+          `:x: Impossible de créer la session : ${escapeMrkdwn(errorMessage(error))}`,
         );
         return;
       }
     } else if (!(await this.hooks.inject(session, command.text))) {
-      await this.client.postThreadReply(channel, message.ts, 'Session inactive : message non transmis.');
+      await this.client.postThreadReply(channel, message.ts, INACTIVE_SESSION_REPLY);
       return;
     }
     // Slack instructions belong to the session; preserve the web form's prompt.
@@ -171,30 +163,20 @@ export class SlackDmCommands {
       unfurl_links: false,
     });
     if (typeof response.ts !== 'string') throw new Error('Réponse chat.postMessage sans timestamp');
-    this.state.threads.set(session.id, {
-      channel,
-      ts: threadTs,
-      lastTs: response.ts,
-      kind: 'notify',
-      createdAt: Date.now(),
-      polledAt: Date.now(),
-      answered: false,
-      awaitingReply: true,
-      skipTurnEnd: queued,
-      moreTurns: false,
-      questions: null,
-      fromDm: true,
-    });
-    this.state.markDirty();
-    try {
-      await this.client.call('reactions.add', {
+    this.state.threads.set(
+      session.id,
+      newThread({
         channel,
-        timestamp: threadTs,
-        name: 'white_check_mark',
-      });
-    } catch (error) {
-      this.client.logError(error);
-    }
+        ts: threadTs,
+        lastTs: response.ts,
+        kind: 'notify',
+        awaitingReply: true,
+        skipTurnEnd: queued,
+        fromDm: true,
+      }),
+    );
+    this.state.markDirty();
+    await this.client.acknowledge(channel, threadTs);
   }
 
   /** Project targeted by a DM command; null when this machine does not handle it (any error reply is posted). */
@@ -209,12 +191,28 @@ export class SlackDmCommands {
     const exact = projects.filter((project) => normalizeProjectName(project.name) === normalizedName);
     // An exact name on another machine beats a prefix match here; that machine handles it.
     if (exact.length === 0 && this.peers.knownRemotely(projectName, true)) return null;
+    // Even when its machine is offline: never run a local prefix match instead.
+    const offlineExact = exact.length === 0 ? this.peers.unreachableMachines(projectName, true) : [];
     const matches =
-      exact.length > 0
+      exact.length > 0 || offlineExact.length > 0
         ? exact
         : projects.filter((project) => normalizeProjectName(project.name).startsWith(normalizedName));
     // Handled by the machine that has this project: no "unknown project" reply from this one.
-    if (matches.length === 0 && this.peers.knownRemotely(projectName, false)) return null;
+    if (matches.length === 0 && offlineExact.length === 0 && this.peers.knownRemotely(projectName, false)) return null;
+    if (matches.length === 0) {
+      // Known only on machines that stopped syncing: nobody would handle it, a single machine says so.
+      const offline = offlineExact.length > 0 ? offlineExact : this.peers.unreachableMachines(projectName, false);
+      if (offline.length > 0) {
+        if (general) {
+          await this.client.postThreadReply(
+            channel,
+            threadTs,
+            `:zzz: Projet « ${escapeMrkdwn(projectName)} » connu sur ${escapeMrkdwn(offline.join(', '))}, actuellement injoignable.`,
+          );
+        }
+        return null;
+      }
+    }
     if (matches.length !== 1) {
       // Unknown everywhere: a single machine says so. An ambiguous prefix is only ambiguous here.
       if (matches.length === 0 && !general) return null;
@@ -282,7 +280,7 @@ export class SlackDmCommands {
       text = await answer();
     } catch (error) {
       this.client.logError(error);
-      text = `:x: ${failure} : ${escapeMrkdwn(error instanceof Error ? error.message : String(error))}`;
+      text = `:x: ${failure} : ${escapeMrkdwn(errorMessage(error))}`;
     }
     try {
       for (const chunk of splitMessage(text)) await this.client.postThreadReply(channel, threadTs, chunk);

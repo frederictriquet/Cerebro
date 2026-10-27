@@ -1,20 +1,12 @@
-import type {
-  StartingContentPlan,
-  StartingContentStep,
-  StartingOrigin,
-  WorktreeView,
-} from '../../../server/worktrees.ts';
-import { sessionTitle } from '../format.ts';
-import type { Session } from '../types.ts';
+import type { Session } from '../../../shared/types.ts';
+import type { StartingContentStep, StartingOrigin, WorktreeView } from '../../../shared/worktrees.ts';
+import { formatDateTime, plural, pluralize, sessionTitle } from '../format.ts';
 
 export const branchName = (branch: string | null): string =>
   branch?.replace(/^refs\/heads\//, '') ?? 'branche inconnue';
-export const createdLabel = (view: WorktreeView): string => dateLabel(view.createdAt);
-export const dateLabel = (at: number): string =>
-  new Date(at).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+export const createdLabel = (view: WorktreeView): string => formatDateTime(view.createdAt);
 export const copyTitle = (view: WorktreeView): string =>
   sessionTitle(view.session?.title ?? view.sessionTitle ?? `Conversation supprimée · ${createdLabel(view)}`);
-export const fileCount = (count: number): string => `${count} fichier${count === 1 ? '' : 's'}`;
 export function originLabel(origin: StartingOrigin | null, target: string): string {
   if (!origin) return 'ce contenu n’existe plus que dans cette copie';
   if (origin.kind === 'target-commit') return `déjà dans ${target} · ${origin.commit.slice(0, 7)} ${origin.subject}`;
@@ -74,28 +66,28 @@ export function journey(view: WorktreeView): Journey {
   } else if (view.mergeInProgress) {
     status = 'Conflits à résoudre';
     next = view.conflicts.length
-      ? `Résolvez les conflits dans la copie (${fileCount(view.conflicts.length)}), puis terminez la mise à jour.`
+      ? `Résolvez les conflits dans la copie (${plural(view.conflicts.length, 'fichier')}), puis terminez la mise à jour.`
       : 'Les conflits sont résolus : terminez la mise à jour.';
   } else if (dirty && !view.ahead && !changes?.count) {
     status = 'Copie de départ';
     next = 'Aucun travail de la conversation : la copie ne contient que le contenu copié du projet.';
   } else if (dirty && (inherited.length || mixed.some((file) => file.separable))) {
     status = 'Contenu de départ à retirer';
-    next = `Retirez le contenu copié du projet à la création (${fileCount(inherited.length + mixed.filter((file) => file.separable).length + settled.length)}), pour ne garder que le travail de la conversation.`;
+    next = `Retirez le contenu copié du projet à la création (${plural(inherited.length + mixed.filter((file) => file.separable).length + settled.length, 'fichier')}), pour ne garder que le travail de la conversation.`;
   } else if (dirty && settled.length) {
     status = 'Contenu de départ à retirer';
-    next = `Le contenu de départ a déjà disparu de ${fileCount(settled.length)} : « Retirer le contenu de départ » ${settled.length === 1 ? 'le rattache' : 'les rattache'} au travail de la conversation, sans ${settled.length === 1 ? 'le' : 'les'} modifier.`;
+    next = `Le contenu de départ a déjà disparu de ${plural(settled.length, 'fichier')} : « Retirer le contenu de départ » ${settled.length === 1 ? 'le rattache' : 'les rattache'} au travail de la conversation, sans ${settled.length === 1 ? 'le' : 'les'} modifier.`;
   } else if (dirty && ownWork) {
     status = 'Travail à enregistrer';
     next = mixed.length
-      ? `Créez le commit du travail de la conversation, puis commitez tel${mixed.length === 1 ? '' : 's'} quel${mixed.length === 1 ? '' : 's'} ${fileCount(mixed.length)} après lecture de ${mixed.length === 1 ? 'son' : 'leur'} diff.`
+      ? `Créez le commit du travail de la conversation, puis commitez ${pluralize(mixed.length, 'tel quel', 'tels quels')} ${plural(mixed.length, 'fichier')} après lecture de ${mixed.length === 1 ? 'son' : 'leur'} diff.`
       : 'Créez le commit du travail de la conversation.';
   } else if (dirty && mixed.length) {
     status = 'Fichiers à commiter tels quels';
-    next = `Lisez le diff de ${fileCount(mixed.length)} qui mêlent contenu de départ et travail récent, puis commitez-${mixed.length === 1 ? 'le tel quel' : 'les tels quels'}.`;
+    next = `Lisez le diff de ${plural(mixed.length, 'fichier')} qui mêlent contenu de départ et travail récent, puis commitez-${mixed.length === 1 ? 'le tel quel' : 'les tels quels'}.`;
   } else if (dirty) {
     status = 'Changements à examiner';
-    next = `Examinez ${fileCount(view.dirty!)} : leur origine ne peut pas être vérifiée automatiquement.`;
+    next = `Examinez ${plural(view.dirty!, 'fichier')} : leur origine ne peut pas être vérifiée automatiquement.`;
   } else if (view.ahead && conflicts?.length) {
     status = 'Conflits prévus';
     next = `Mettez la copie à jour avec ${target} pour résoudre ${conflicts.length === 1 ? 'le conflit' : 'les conflits'} dans la copie.`;
@@ -139,11 +131,11 @@ export function startingContentGroups(plan: Journey): {
   return { separable, manual, removable: plan.inherited.length > 0 || separable.length > 0 || plan.settled.length > 0 };
 }
 
+// No machine stamp: switching machines remounts the whole tree (StoreProvider keyed by machine in App).
 export interface Confirmation {
   kind: 'merge' | 'remove';
   token: string;
   view: WorktreeView;
-  machineBase: string;
 }
 
 export interface Reviewed {
@@ -151,13 +143,6 @@ export interface Reviewed {
   paths: string[];
 }
 
-export interface DiscardResult {
-  restored: string[];
-  separated: string[];
-  settled: string[];
-  kept: StartingContentStep[];
-  targetUpdate: StartingContentPlan['targetUpdate'];
-}
 export type Resolver = Pick<Session, 'id' | 'title'>;
 
 /** What a copy row asks of the panel that owns the dialogs, the busy state and the refresh. */

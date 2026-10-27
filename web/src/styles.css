@@ -297,12 +297,13 @@ body.sidebar-resizing .main {
   text-decoration: line-through;
 }
 
-.btn-mute[aria-pressed='false'] {
+/* « Pressé » = son ou notif système actifs, conformément au libellé du bouton. */
+.btn-mute[aria-pressed='true'] {
   color: var(--running);
   border-color: #1f4a37;
 }
 
-.btn-mute[aria-pressed='true'] {
+.btn-mute[aria-pressed='false'] {
   color: var(--danger);
   border-color: #4a2a32;
 }
@@ -853,6 +854,19 @@ body.sidebar-resizing .main {
 .dot.starting {
   background: var(--starting);
   animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* Texte lu par les lecteurs d'écran mais masqué visuellement. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 @keyframes pulse {
@@ -2486,6 +2500,10 @@ a.btn:hover {
   gap: 8px;
 }
 
+.tuning-empty .muted {
+  color: var(--muted);
+}
+
 .tuning-row .choice-group.compact {
   justify-self: start;
   max-width: 100%;
@@ -3168,4 +3186,48 @@ a.btn:hover {
   grid-column: 2;
   display: flex;
   min-width: 0;
+}
+
+.term-link {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 5;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  padding: 6px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--waiting);
+  border-radius: var(--radius);
+  color: var(--waiting);
+  font-size: 12px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.error-boundary {
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+
+.error-boundary p {
+  margin: 0 0 8px;
+}
+
+.error-boundary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.error-boundary-sidebar {
+  margin: 8px;
+}
+
+.error-boundary-root {
+  margin: 16px;
 }

@@ -1,3 +1,4 @@
+import { plural } from './format.ts';
 import { href } from './route.ts';
 import './findings.css';
 
@@ -29,7 +30,7 @@ export function FindingsLink({
       >
         <path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h5" />
       </svg>
-      {count} finding{count > 1 ? 's' : ''} de review à traiter
+      {plural(count, 'finding')} de review à traiter
       <span aria-hidden="true">↗</span>
     </a>
   );

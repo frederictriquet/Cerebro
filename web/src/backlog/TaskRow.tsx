@@ -1,13 +1,14 @@
 import { useState } from 'react';
+import type { Task } from '../../../shared/types.ts';
 import { DelayedActionButton } from '../DelayedActionButton.tsx';
-import { STATUS_LABEL, sessionTitle } from '../format.ts';
+import { errorMessage, sessionTitle } from '../format.ts';
 import { href } from '../route.ts';
-import { StatusDot } from '../StatusDot.tsx';
 import { useStore } from '../store.tsx';
-import type { Task } from '../types.ts';
 import { CommandRunView } from './CommandRunView.tsx';
 import { useBacklog } from './context.ts';
-import { dependents, errorMessage, taskPill, taskTitle } from './tasks.ts';
+import { EpicSelect } from './EpicSelect.tsx';
+import { dependents, taskLabel, taskPill, taskTitle } from './tasks.ts';
+import { TaskSessionLink } from './TaskSessionLink.tsx';
 
 export function TaskRow({
   task,
@@ -62,16 +63,9 @@ export function TaskRow({
         </button>
         <div className="task-row-meta">
           <span className={`pill task-status ${pill.className}`}>{pill.label}</span>
-          {session ? (
-            <a className="task-session" href={href(`#/s/${session.id}`)} title={STATUS_LABEL[session.status]}>
-              <StatusDot status={session.status} title={STATUS_LABEL[session.status]} />
-              {sessionTitle(session.title)}
-            </a>
-          ) : null}
+          {session ? <TaskSessionLink session={session} /> : null}
           {blockers.length > 0 && task.status !== 'done' ? (
-            <span className="task-blockers">
-              Attend : {blockers.map((t) => taskTitle(t.text).slice(0, 60)).join(' · ')}
-            </span>
+            <span className="task-blockers">Attend : {blockers.map((t) => taskLabel(t, 60)).join(' · ')}</span>
           ) : null}
         </div>
       </div>
@@ -133,7 +127,7 @@ export function TaskRow({
                 {dependencies.length === 0 ? <span className="meta">aucune tâche</span> : null}
                 {dependencies.map((dep) => (
                   <span key={dep.id} className={`task-dep ${dep.status}`}>
-                    {taskTitle(dep.text).slice(0, 60)}
+                    {taskLabel(dep, 60)}
                     <button
                       type="button"
                       className="task-dep-remove"
@@ -154,7 +148,7 @@ export function TaskRow({
                     <option value="">Ajouter une dépendance…</option>
                     {candidates.map((t) => (
                       <option key={t.id} value={t.id}>
-                        {taskTitle(t.text).slice(0, 80)}
+                        {taskLabel(t, 80)}
                         {t.status === 'done' ? ' (terminée)' : ''}
                       </option>
                     ))}
@@ -164,22 +158,14 @@ export function TaskRow({
               {epics.length > 0 ? (
                 <div className="task-deps">
                   <span className="meta">Epic :</span>
-                  <select
+                  <EpicSelect
+                    epics={epics}
                     value={task.epicId ?? ''}
-                    onChange={(e) =>
-                      run(
-                        () => updateTask(task.id, { epicId: e.target.value === '' ? null : e.target.value }),
-                        "Changement d'epic impossible",
-                      )
+                    maxTitle={80}
+                    onChange={(id) =>
+                      run(() => updateTask(task.id, { epicId: id === '' ? null : id }), "Changement d'epic impossible")
                     }
-                  >
-                    <option value="">Sans epic</option>
-                    {epics.map((e) => (
-                      <option key={e.id} value={e.id}>
-                        {e.title.slice(0, 80)}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
               ) : null}
               <div className="row-actions">

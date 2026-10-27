@@ -1,45 +1,26 @@
 import { useState } from 'react';
+import type { Epic, Task } from '../../../shared/types.ts';
 import { DelayedActionButton } from '../DelayedActionButton.tsx';
 import { EpicReviewActions } from '../EpicReviewActions.tsx';
 import { RUN_ACTIVE, useEpicRun } from '../epic-runs.ts';
-import { STATUS_LABEL, WORKSPACE_TARGET, sessionTitle } from '../format.ts';
-import { href } from '../route.ts';
-import { StatusDot } from '../StatusDot.tsx';
+import { errorMessage, pluralize, WORKSPACE_TARGET } from '../format.ts';
+import { useStoredFlag } from '../storage.ts';
 import { useStore } from '../store.tsx';
-import type { Epic, Task } from '../types.ts';
 import { useBacklog } from './context.ts';
 import { EpicForm } from './EpicForm.tsx';
 import { EpicRunPanel } from './EpicRunPanel.tsx';
-import { dependencyOrder, epicPrompt, errorMessage, taskTitle } from './tasks.ts';
+import { dependencyOrder, epicPrompt, taskLabel } from './tasks.ts';
 import { TaskRow } from './TaskRow.tsx';
-
-function useCollapsed(key: string): [boolean, () => void] {
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(key) === '1';
-    } catch {
-      return false;
-    }
-  });
-  const toggle = (): void => {
-    const next = !collapsed;
-    setCollapsed(next);
-    try {
-      if (next) localStorage.setItem(key, '1');
-      else localStorage.removeItem(key);
-    } catch {
-      /* quota / mode privé : le repli reste utilisable sans persistance */
-    }
-  };
-  return [collapsed, toggle];
-}
+import { TaskSessionLink } from './TaskSessionLink.tsx';
 
 export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean }) {
   const { projects, sessions, updateEpic, deleteEpic } = useStore();
   const { projectTasks, launching, startEpic, reportError } = useBacklog();
   const project = projects.find((p) => p.id === epic.projectId);
   const workspaceMode = project?.workspaceMode ?? 'isolated';
-  const [collapsed, toggleCollapsed] = useCollapsed(`cerebro.epicCollapsed.${epic.id}`);
+  // Repli mémorisé par ce navigateur ; sans stockage disponible, il reste utilisable sans persistance.
+  const [collapsed, setCollapsed] = useStoredFlag(`cerebro.epicCollapsed.${epic.id}`, false);
+  const toggleCollapsed = (): void => setCollapsed(!collapsed);
   const [editing, setEditing] = useState(false);
   const { run, refresh: refreshRun } = useEpicRun(epic.id);
   const members = projectTasks.filter((t) => t.epicId === epic.id);
@@ -62,9 +43,9 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
   // par « Reprendre » dans son panneau.
   const runHoldsEpic = run !== null && (RUN_ACTIVE.includes(run.status) || run.status === 'failed');
   const isLaunching = launching.has(epic.id);
-  const taskLabel = (id: string): string => {
+  const labelOf = (id: string): string => {
     const task = byId.get(id);
-    return task ? taskTitle(task.text).slice(0, 80) : id;
+    return task ? taskLabel(task, 80) : id;
   };
   // Affichées dans l'ordre de création ; le numéro donne le rang de traitement (ordre des dépendances).
   const shown = showDone ? members : members.filter((t) => t.status !== 'done');
@@ -72,7 +53,7 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
     open.length === 0
       ? 'Aucune tâche ouverte dans cet epic'
       : outsideBlockers.length > 0
-        ? `Attend des tâches hors de l'epic : ${outsideBlockers.map((t) => taskTitle(t.text).slice(0, 60)).join(' · ')}`
+        ? `Attend des tâches hors de l'epic : ${outsideBlockers.map((t) => taskLabel(t, 60)).join(' · ')}`
         : activeSession !== undefined
           ? 'Une session traite déjà cet epic'
           : `Le serveur ordonnance les ${open.length} tâche(s) selon leurs dépendances${continuedWorkspace ? `, dans ${continuedWorkspace.path}` : ''}`;
@@ -87,21 +68,12 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
         </button>
         <div className="task-row-meta">
           <span className={`pill task-status ${members.length > 0 && open.length === 0 ? 'done' : ''}`}>
-            {doneCount}/{members.length} terminée{doneCount > 1 ? 's' : ''}
+            {doneCount}/{members.length} {pluralize(doneCount, 'terminée')}
           </span>
           <span className="epic-progress" aria-hidden="true">
             <span style={{ width: members.length === 0 ? 0 : `${(doneCount / members.length) * 100}%` }} />
           </span>
-          {activeSession ? (
-            <a
-              className="task-session"
-              href={href(`#/s/${activeSession.id}`)}
-              title={STATUS_LABEL[activeSession.status]}
-            >
-              <StatusDot status={activeSession.status} title={STATUS_LABEL[activeSession.status]} />
-              {sessionTitle(activeSession.title)}
-            </a>
-          ) : null}
+          {activeSession ? <TaskSessionLink session={activeSession} /> : null}
         </div>
         <div className="row-actions">
           {runHoldsEpic ? null : (
@@ -136,7 +108,7 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
           </DelayedActionButton>
         </div>
       </div>
-      {run ? <EpicRunPanel run={run} taskLabel={taskLabel} onChanged={refreshRun} /> : null}
+      {run ? <EpicRunPanel run={run} labelOf={labelOf} onChanged={refreshRun} /> : null}
       {editing ? (
         <EpicForm
           initialTitle={epic.title}

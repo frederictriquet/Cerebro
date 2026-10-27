@@ -1,6 +1,6 @@
 import { sessionEpic } from './session-groups.ts';
 import { useStore } from './store.tsx';
-import type { Session } from './types.ts';
+import type { Session } from '../../shared/types.ts';
 
 export function SessionEpicBadge({ session }: { session: Session }) {
   const { tasks, epics } = useStore();

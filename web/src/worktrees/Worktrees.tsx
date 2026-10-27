@@ -1,19 +1,18 @@
 import { useState } from 'react';
-import type { WorktreeView } from '../../../server/worktrees.ts';
-import { api, apiBase } from '../api.ts';
+import type { WorkspaceMode } from '../../../shared/types.ts';
+import {
+  parsePreparedWorktreeOperation,
+  type StartingContentDiscard,
+  type WorktreeView,
+} from '../../../shared/worktrees.ts';
+import { api, apiBase, apiParsed } from '../api.ts';
+import { useAsyncAction } from '../async-action.ts';
 import { AutomaticCommitDialog } from '../AutomaticCommitDialog.tsx';
-import type { WorkspaceMode } from '../types.ts';
+import { errorMessage } from '../format.ts';
 import '../worktrees.css';
 import { CleanedHistory } from './CleanedHistory.tsx';
 import { ConfirmationDialog } from './ConfirmationDialog.tsx';
-import {
-  copyTitle,
-  type Confirmation,
-  type DiscardResult,
-  type Resolver,
-  type Reviewed,
-  type WorktreeActions,
-} from './model.ts';
+import { copyTitle, type Confirmation, type Resolver, type Reviewed, type WorktreeActions } from './model.ts';
 import { OtherWorktrees } from './OtherWorktrees.tsx';
 import { StartingContentDialog } from './StartingContentDialog.tsx';
 import { useWorktreeInventory } from './useWorktreeInventory.ts';
@@ -47,56 +46,46 @@ function WorktreesPanel({
   workspaceMode?: WorkspaceMode;
 }) {
   const { inventory: visibleInventory, loadError, refresh, forget } = useWorktreeInventory(path, machineBase);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  /** One Git action on a copy at a time: it locks the panel and its error replaces the previous one. */
+  const { run: perform, busy, error, setError } = useAsyncAction((action: () => Promise<void>) => action());
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [discarding, setDiscarding] = useState<WorktreeView | null>(null);
-  const [results, setResults] = useState<Map<string, DiscardResult>>(() => new Map());
+  const [results, setResults] = useState<Map<string, StartingContentDiscard>>(() => new Map());
   const [resolvers, setResolvers] = useState<Map<string, Resolver>>(() => new Map());
   const [committing, setCommitting] = useState<{ view: WorktreeView; reviewed?: Reviewed } | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
-  /** One Git action on a copy at a time: it locks the panel and its error replaces the previous one. */
-  const perform = async (view: WorktreeView, action: () => Promise<void>): Promise<void> => {
-    if (apiBase() !== machineBase) return;
-    setBusy(view.id);
-    setError(null);
-    try {
-      await action();
-    } catch (cause) {
-      if (apiBase() === machineBase) setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      if (apiBase() === machineBase) setBusy(null);
-    }
-  };
-  const prepare = (view: WorktreeView, kind: 'merge' | 'remove'): Promise<void> =>
-    perform(view, async () => {
-      const prepared = await api<{ token: string; view: WorktreeView }>(`/api/worktrees/${view.id}/prepare-${kind}`, {
+  // No apiBase() check after the requests: switching machines remounts the whole tree (StoreProvider keyed by machine).
+  const prepare = async (view: WorktreeView, kind: 'merge' | 'remove'): Promise<void> => {
+    await perform(async () => {
+      const prepared = await apiParsed(`/api/worktrees/${view.id}/prepare-${kind}`, parsePreparedWorktreeOperation, {
         method: 'POST',
       });
-      if (apiBase() === machineBase) setConfirmation({ kind, ...prepared, machineBase });
+      setConfirmation({ kind, ...prepared });
     });
+  };
   const run = async (): Promise<void> => {
-    if (!confirmation || confirmation.machineBase !== apiBase()) return;
+    if (!confirmation) return;
     const { view, kind, token } = confirmation;
-    await perform(view, async () => {
+    await perform(async () => {
       await api(`/api/worktrees/${view.id}/${kind}`, { method: 'POST', body: JSON.stringify({ token }) });
-      if (apiBase() !== machineBase) return;
       setConfirmation(null);
       await refresh();
       window.setTimeout(() => void refresh(), 500);
     });
   };
   /** A synchronous Git action on one copy, followed by a refresh. */
-  const act = (view: WorktreeView, action: string): Promise<void> =>
-    perform(view, async () => {
+  const act = async (view: WorktreeView, action: string): Promise<void> => {
+    await perform(async () => {
       await api(`/api/worktrees/${view.id}/${action}`, { method: 'POST' });
-      if (apiBase() === machineBase) await refresh();
+      await refresh();
     });
-  const chooseTarget = (view: WorktreeView, branch: string): Promise<void> =>
-    perform(view, async () => {
+  };
+  const chooseTarget = async (view: WorktreeView, branch: string): Promise<void> => {
+    await perform(async () => {
       await api(`/api/worktrees/${view.id}/target`, { method: 'PATCH', body: JSON.stringify({ branch }) });
-      if (apiBase() === machineBase) await refresh();
+      await refresh();
     });
+  };
   const toggle = (id: string): void =>
     setExpanded((current) => {
       const next = new Set(current);
@@ -110,7 +99,7 @@ function WorktreesPanel({
     try {
       await forget(ids);
     } catch (cause) {
-      if (apiBase() === machineBase) setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     }
   };
   const actions: WorktreeActions = {
@@ -126,6 +115,7 @@ function WorktreesPanel({
   const other = visibleInventory?.worktrees.filter((view) => !view.managed || view.primary) ?? [];
   // Missing from servers older than automatic cleanup.
   const cleaned = visibleInventory?.cleaned ?? [];
+  const inventoryErrors = visibleInventory?.errors ?? [];
   const historyOnly =
     !!projectId &&
     workspaceMode === 'shared' &&
@@ -133,7 +123,7 @@ function WorktreesPanel({
     copies.length === 0 &&
     other.every((view) => view.primary) &&
     !loadError &&
-    !visibleInventory.errors.length;
+    !inventoryErrors.length;
   if (
     projectId &&
     workspaceMode === 'shared' &&
@@ -143,7 +133,7 @@ function WorktreesPanel({
     other.every((view) => view.primary) &&
     !loadError &&
     !error &&
-    !visibleInventory.errors.length
+    !inventoryErrors.length
   )
     return null;
   return (
@@ -175,8 +165,8 @@ function WorktreesPanel({
           {error}
         </p>
       ) : null}
-      {visibleInventory?.errors.map((message) => (
-        <p className="form-error" key={message}>
+      {inventoryErrors.map((message, index) => (
+        <p className="form-error" key={`${index}:${message}`}>
           {message}
         </p>
       ))}
@@ -189,7 +179,7 @@ function WorktreesPanel({
             key={view.id}
             view={view}
             showProject={!projectId}
-            locked={busy !== null}
+            locked={busy}
             showDetails={expanded.has(view.id)}
             result={results.get(view.id)}
             resolver={resolvers.get(view.id)}
@@ -203,10 +193,10 @@ function WorktreesPanel({
       {!historyOnly && other.length ? (
         <OtherWorktrees other={other} showProject={!projectId} onCommit={(view) => setCommitting({ view })} />
       ) : null}
-      {confirmation && confirmation.machineBase === machineBase ? (
+      {confirmation ? (
         <ConfirmationDialog
           confirmation={confirmation}
-          busy={busy !== null}
+          busy={busy}
           error={error}
           onConfirm={() => void run()}
           onClose={() => setConfirmation(null)}

@@ -1,37 +1,21 @@
 import { FINDING_INSTRUCTIONS } from './findings.ts';
-import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { promisify } from 'node:util';
 import type { GitPlanner } from './git-plan.ts';
-const exec = promisify(execFile);
-const git = async (path: string, args: string[]) =>
-  (
-    await exec('git', ['-C', path, ...args], {
-      maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-    })
-  ).stdout.trim();
-export interface PreparedReview {
-  id: string;
-  root: string;
-  snapshotId: string;
-  scope: 'working' | 'unpushed' | 'last-commit' | 'empty';
-  head: string | null;
-  upstream: string | null;
-  commits: string[];
-  files: string[];
-  context: string;
-}
+import { git as runGit, splitZ } from './git.ts';
+import type { PreparedReview } from '../shared/git.ts';
+import { ExpiringStore, type ExpiringStoreOptions } from './expiring-store.ts';
+const git = async (path: string, args: string[]) => (await runGit(path, args, { maxBuffer: 4 * 1024 * 1024 })).trim();
 export function reviewInstructions(root: string, selection: unknown, context: string): string {
   return `Fais une code review du périmètre immuable préparé par Cerebro ci-dessous. Cherche en priorité les bugs de correction, puis de sécurité et de simplicité. Vérifie chaque finding dans le code environnant, accessible dans ${root}. Ne modifie aucun fichier. Rapporte chaque finding avec gravité, fichier:ligne, problème, scénario concret et correctif attendu. ${FINDING_INSTRUCTIONS} Si une commande de review personnalisée est utilisée, applique ses critères uniquement à ce périmètre ; aucune autre règle automatique de choix du diff ne s’applique.\n\n<perimetre_cerebro>\n${JSON.stringify(selection)}\n</perimetre_cerebro>\n<contexte_git>\n${context}\n</contexte_git>`;
 }
-/** Review perimeters prepared by a server, verified again before an agent reads them. */
+/** Review perimeters prepared by a server, kept until launch and verified again before an agent reads them. */
 export class Reviews {
-  private readonly reviews = new Map<string, PreparedReview>();
+  private readonly reviews: ExpiringStore<PreparedReview>;
   private readonly git: GitPlanner;
 
-  constructor(git: GitPlanner) {
+  constructor(git: GitPlanner, options: ExpiringStoreOptions = {}) {
     this.git = git;
+    this.reviews = new ExpiringStore(options);
   }
 
   async prepare(path: string): Promise<PreparedReview> {
@@ -75,10 +59,9 @@ export class Reviews {
         size += Buffer.byteLength(patch);
         if (size > 4 * 1024 * 1024) throw new Error('Contexte de review trop volumineux.');
         patches.push(patch);
-        (await git(path, ['diff-tree', '--root', '--no-commit-id', '--name-only', '-z', '-r', oid]))
-          .split('\0')
-          .filter(Boolean)
-          .forEach((f) => files.add(f));
+        splitZ(await git(path, ['diff-tree', '--root', '--no-commit-id', '--name-only', '-z', '-r', oid])).forEach(
+          (f) => files.add(f),
+        );
       }
       review.context = patches.join('\n');
       review.files = [...files];
@@ -87,7 +70,6 @@ export class Reviews {
     await this.git.verifySnapshot(path, snapshot.id);
     if (upstream !== (await git(path, ['rev-parse', '--verify', '@{upstream}']).catch(() => null)))
       throw new Error('Upstream modifié pendant la préparation.');
-    if (this.reviews.size >= 100) this.reviews.delete(this.reviews.keys().next().value!);
     this.reviews.set(review.id, review);
     return review;
   }

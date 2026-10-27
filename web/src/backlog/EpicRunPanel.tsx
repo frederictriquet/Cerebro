@@ -1,18 +1,11 @@
 import { useState } from 'react';
-import type { EpicRunRecord, EpicRunView } from '../../../server/epic-runner.ts';
+import type { EpicRun } from '../../../shared/backlog.ts';
 import { controlEpicRun, markEpicRunSeen, RUN_ACTIVE, setEpicRunAutoValidation } from '../epic-runs.ts';
 import { EpicWorkspacePicker } from '../EpicWorkspacePicker.tsx';
+import { EPIC_RUN_STATUS_LABEL, errorMessage, pluralize } from '../format.ts';
 import { href } from '../route.ts';
 import { useStore } from '../store.tsx';
 
-const RUN_STATUS_LABEL: Record<EpicRunRecord['status'], string> = {
-  running: 'en cours',
-  'waiting-validation': 'en attente de validation',
-  blocked: 'bloqué',
-  failed: 'en échec',
-  stopped: 'arrêté',
-  succeeded: 'terminé',
-};
 const RUN_RESULT_LABEL: Record<string, string> = {
   'declared-done': 'déclarée terminée',
   validated: 'validée',
@@ -24,16 +17,16 @@ const RUN_RESULT_LABEL: Record<string, string> = {
   failed: 'en échec',
 };
 // États où l'exécution attend l'utilisateur : sa raison et ses actions restent visibles sans rien déplier.
-const RUN_NEEDS_ACTION: EpicRunRecord['status'][] = ['blocked', 'failed', 'waiting-validation'];
-const RUN_RESUMABLE: EpicRunRecord['status'][] = ['waiting-validation', 'blocked', 'failed', 'stopped'];
+const RUN_NEEDS_ACTION: EpicRun['status'][] = ['blocked', 'failed', 'waiting-validation'];
+const RUN_RESUMABLE: EpicRun['status'][] = ['waiting-validation', 'blocked', 'failed', 'stopped'];
 
 export function EpicRunPanel({
   run,
-  taskLabel,
+  labelOf,
   onChanged,
 }: {
-  run: EpicRunView;
-  taskLabel: (id: string) => string;
+  run: EpicRun;
+  labelOf: (id: string) => string;
   onChanged: () => Promise<void>;
 }) {
   const { updateTask } = useStore();
@@ -46,7 +39,7 @@ export function EpicRunPanel({
         setError(null);
         return onChanged();
       })
-      .catch((cause: unknown) => setError(String(cause)))
+      .catch((cause: unknown) => setError(errorMessage(cause)))
       .finally(() => setPending(false));
   };
   const setAutoValidate = (enabled: boolean): void => {
@@ -65,7 +58,8 @@ export function EpicRunPanel({
   const needsAction = RUN_NEEDS_ACTION.includes(run.status);
   const awaitingTaskId = run.status === 'waiting-validation' ? run.currentTaskId : null;
   const awaitingValidation = awaitingTaskId !== null;
-  const results = Object.entries(run.results);
+  // Champs absents des machines distantes antérieures.
+  const results = Object.entries(run.results ?? {});
   return (
     <div className="epic-run">
       <details
@@ -74,17 +68,17 @@ export function EpicRunPanel({
         }}
       >
         <summary>
-          Ordonnanceur : <span className={`epic-run-status ${run.status}`}>{RUN_STATUS_LABEL[run.status]}</span> —{' '}
-          {results.length}/{run.order.length} résultat{results.length > 1 ? 's' : ''}
+          Ordonnanceur : <span className={`epic-run-status ${run.status}`}>{EPIC_RUN_STATUS_LABEL[run.status]}</span> —{' '}
+          {results.length}/{run.order?.length ?? 0} {pluralize(results.length, 'résultat')}
         </summary>
-        <p>Étape courante : {run.currentTaskId ? taskLabel(run.currentTaskId) : 'aucune'}</p>
+        <p>Étape courante : {run.currentTaskId ? labelOf(run.currentTaskId) : 'aucune'}</p>
         <p>Espace : {run.contextRoot}</p>
         {!needsAction && run.error ? <p>{run.error}</p> : null}
         {results.length > 0 ? (
           <ul>
             {results.map(([id, result]) => (
               <li key={id}>
-                {taskLabel(id)} : {RUN_RESULT_LABEL[result] ?? result}
+                {labelOf(id)} : {RUN_RESULT_LABEL[result] ?? result}
               </li>
             ))}
           </ul>
@@ -114,9 +108,12 @@ export function EpicRunPanel({
         />
       ) : null}
       {needsAction && run.error && !run.workspaceConflict ? <p className="epic-run-reason">{run.error}</p> : null}
+      {run.workspaceError && !run.workspaceConflict && run.workspaceError !== run.error ? (
+        <p className="epic-run-reason">{run.workspaceError}</p>
+      ) : null}
       {awaitingTaskId !== null ? (
         <p className="epic-run-reason">
-          Étape à valider : {taskLabel(awaitingTaskId)}. Vérifiez le résultat et les critères de la tâche, puis marquez
+          Étape à valider : {labelOf(awaitingTaskId)}. Vérifiez le résultat et les critères de la tâche, puis marquez
           cette étape terminée pour poursuivre l’epic. Reprendre et recalculer actualise le plan, sans valider le
           travail.
         </p>

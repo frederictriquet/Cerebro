@@ -4,19 +4,14 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { query, type ModelInfo } from '@anthropic-ai/claude-agent-sdk';
-import { getAgentAvailability, type Tuning } from './agents.ts';
-import type { Agent, Effort } from './db.ts';
+import { claudeQueryOptions, getAgentAvailability, type Tuning } from './agents.ts';
+import { readCodexString } from './codex-config.ts';
+import { EFFORTS, isEffort, type Agent, type Effort, type ModelChoice } from '../shared/types.ts';
+import { errorMessage, isRecord } from './util.ts';
 
 const execFileAsync = promisify(execFile);
 const DISCOVERY_TIMEOUT_MS = 20_000;
 const REFRESH_MS = 60 * 60 * 1000;
-
-export interface ModelChoice {
-  value: string;
-  label: string;
-  description: string;
-  efforts: Effort[];
-}
 
 // Choix proposés à la création d'une session. `efforts` : ceux du modèle par défaut de l'agent.
 export interface AgentCatalog {
@@ -27,7 +22,6 @@ export interface AgentCatalog {
 }
 
 const CLAUDE_EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-const EFFORT_ORDER: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 // Repli quand la découverte échoue.
 const FALLBACK: Record<Agent, AgentCatalog> = {
@@ -44,12 +38,8 @@ const FALLBACK: Record<Agent, AgentCatalog> = {
   grok: { models: [], efforts: ['low', 'medium', 'high', 'xhigh'], defaultModel: null },
 };
 
-function isEffort(value: unknown): value is Effort {
-  return EFFORT_ORDER.includes(value as Effort);
-}
-
 function sortEfforts(efforts: Effort[]): Effort[] {
-  return EFFORT_ORDER.filter((e) => efforts.includes(e));
+  return EFFORTS.filter((e) => efforts.includes(e));
 }
 
 function modelEfforts(info: ModelInfo): Effort[] {
@@ -63,8 +53,9 @@ export function defaultEffort(efforts: Effort[]): Effort | null {
 
 // Interroge la CLI `claude` installée (celle que lancent les sessions) via le SDK : une requête de
 // contrôle, sans message envoyé au modèle. La ligne « default » donne les efforts du modèle par défaut.
-async function discoverClaude(): Promise<AgentCatalog> {
-  const { stdout } = await execFileAsync('which', ['claude']);
+// Après le délai, session.close() suffit : le SDK ferme stdin puis tue la CLI (SIGTERM, puis SIGKILL).
+export async function discoverClaude(timeoutMs = DISCOVERY_TIMEOUT_MS): Promise<AgentCatalog> {
+  const options = await claudeQueryOptions();
   let release = (): void => {};
   // Flux d'entrée qui ne produit rien : il garde la session ouverte jusqu'à release().
   // eslint-disable-next-line require-yield
@@ -73,21 +64,13 @@ async function discoverClaude(): Promise<AgentCatalog> {
       release = resolve;
     });
   })();
-  const session = query({
-    prompt,
-    options: {
-      cwd: homedir(),
-      pathToClaudeCodeExecutable: stdout.trim(),
-      persistSession: false,
-      settingSources: ['user'],
-    },
-  });
+  const session = query({ prompt, options });
   let timer: NodeJS.Timeout | undefined;
   try {
     const infos = await Promise.race([
       session.supportedModels(),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('délai dépassé')), DISCOVERY_TIMEOUT_MS);
+        timer = setTimeout(() => reject(new Error('délai dépassé')), timeoutMs);
       }),
     ]);
     const fallbackDefault = infos.find((info) => info.value === 'default');
@@ -114,10 +97,6 @@ async function discoverClaude(): Promise<AgentCatalog> {
     session.close();
     release();
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 // `grok models` rafraîchit ~/.grok/models_cache.json (format non documenté, lu avec tolérance) et donne
@@ -156,31 +135,15 @@ async function discoverGrok(): Promise<AgentCatalog> {
   return { models, efforts: fallbackDefault.efforts, defaultModel: fallbackDefault.value };
 }
 
-// `model = "…"` de premier niveau dans ~/.codex/config.toml, modèle lancé par défaut par codex.
-async function readCodexDefaultModel(): Promise<string | null> {
-  let text: string;
-  try {
-    text = await readFile(join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'config.toml'), 'utf8');
-  } catch {
-    return null;
-  }
-  const firstTable = text.search(/^\s*\[/m);
-  const topLevel = firstTable === -1 ? text : text.slice(0, firstTable);
-  return (
-    /^[ \t]*"?model"?[ \t]*=[ \t]*(?:"([^"\n]*)"|'([^'\n]*)')/m
-      .exec(topLevel)
-      ?.slice(1)
-      .find((v) => v !== undefined) ?? null
-  );
-}
-
 // `codex debug models` : catalogue JSON de la CLI installée (même source que `model/list` de
 // `codex app-server`, plus léger). Défaut : celui de config.toml, sinon le premier visible.
 async function discoverCodex(): Promise<AgentCatalog> {
-  const [{ stdout }, configured] = await Promise.all([
-    execFileAsync('codex', ['debug', 'models'], { timeout: DISCOVERY_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 }),
-    readCodexDefaultModel(),
-  ]);
+  const { stdout } = await execFileAsync('codex', ['debug', 'models'], {
+    timeout: DISCOVERY_TIMEOUT_MS,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  // `model = "…"` de premier niveau dans ~/.codex/config.toml, modèle lancé par défaut par codex.
+  const configured = readCodexString('model');
   const data: unknown = JSON.parse(stdout);
   if (!isRecord(data) || !Array.isArray(data.models)) throw new Error('sortie de `codex debug models` illisible');
   const models = data.models
@@ -218,6 +181,12 @@ const DISCOVERERS: Partial<Record<Agent, () => Promise<AgentCatalog>>> = {
 export class Catalog {
   private readonly catalogs: Record<Agent, AgentCatalog>;
   private pending: Promise<void> | null = null;
+  // Première découverte : seule attendue par les routes, les rafraîchissements suivants remplacent le
+  // catalogue en arrière-plan sans bloquer les lancements.
+  private initial: Promise<void> | null = null;
+  // Découverte lancée au moins une fois (démarrage du serveur) ; agents dont le catalogue réel est connu.
+  private refreshed = false;
+  private readonly discovered = new Set<Agent>();
 
   /** `known`: lists replacing the fallback of some agents, as a discovery would. */
   constructor(known: Partial<Record<Agent, AgentCatalog>> = {}) {
@@ -225,8 +194,10 @@ export class Catalog {
   }
 
   refresh(): Promise<void> {
-    // Agent non installé : pas de découverte, on garde le repli sans warning.
-    this.pending ??= getAgentAvailability()
+    // Agent non installé : pas de découverte, on garde le repli sans warning. Redétecte les CLI installées
+    // depuis, ce qui renouvelle aussi le cache des disponibilités.
+    this.refreshed = true;
+    this.pending ??= getAgentAvailability(true)
       .then((availability) =>
         Promise.all(
           Object.entries(DISCOVERERS)
@@ -235,11 +206,10 @@ export class Catalog {
               discover()
                 .then((catalog) => {
                   this.catalogs[agent as Agent] = catalog;
+                  this.discovered.add(agent as Agent);
                 })
                 .catch((error: unknown) => {
-                  console.warn(
-                    `Catalogue ${agent} indisponible, liste par défaut : ${error instanceof Error ? error.message : String(error)}`,
-                  );
+                  console.warn(`Catalogue ${agent} indisponible, liste par défaut : ${errorMessage(error)}`);
                 }),
             ),
         ),
@@ -248,6 +218,7 @@ export class Catalog {
       .finally(() => {
         this.pending = null;
       });
+    this.initial ??= this.pending;
     return this.pending;
   }
 
@@ -258,22 +229,31 @@ export class Catalog {
     return () => clearInterval(timer);
   }
 
-  /** Catalogue courant ; attend une découverte en cours pour ne pas servir le repli au démarrage. */
+  /** Attend la première découverte : parseTuning valide alors contre le catalogue réel. */
+  async ready(): Promise<void> {
+    if (this.initial !== null) await this.initial;
+  }
+
+  /** Catalogue courant ; attend la première découverte pour ne pas servir le repli au démarrage. */
   async get(): Promise<Record<Agent, AgentCatalog>> {
-    if (this.pending !== null) await this.pending;
+    await this.ready();
     return { ...this.catalogs };
   }
 
   // model / effort facultatifs (null ou absents = défaut Cerebro), restreints au catalogue de l'agent.
   // The result is always explicit: null resolves to the catalog default model, then to `defaultEffort`.
+  // Tant que la découverte de l'agent n'a pas abouti (en cours ou échouée), le repli est incomplet : un
+  // modèle qu'il ne connaît pas (mémorisé, par exemple `fable`) est accepté avec les efforts de l'agent.
+  // Sans découverte lancée (catalogue de test ou de migration), le repli fait seul référence.
   parseTuning(agent: Agent, body: Record<string, unknown>): Tuning | null {
     const catalog = this.catalogs[agent];
     const model = (body.model ?? catalog.defaultModel) as string | null;
     let efforts = catalog.efforts;
     if (model !== null) {
       const choice = catalog.models.find((m) => m.value === model);
-      if (choice === undefined) return null;
-      efforts = choice.efforts;
+      if (choice !== undefined) efforts = choice.efforts;
+      else if (!this.refreshed || this.discovered.has(agent) || typeof model !== 'string' || model.trim() === '')
+        return null;
     }
     const effort = body.effort ?? null;
     const level = efforts.find((e) => e === effort);

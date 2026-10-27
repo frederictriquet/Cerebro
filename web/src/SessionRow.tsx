@@ -1,17 +1,14 @@
-import { useRef } from 'react';
-import { AgentLabel } from './AgentLabel.tsx';
-import { DelayedActionButton } from './DelayedActionButton.tsx';
-import { FindingsLink } from './FindingsLink.tsx';
-import { SessionProtection, SESSION_PROTECTED_HINT } from './SessionProtection.tsx';
-import { displayStatus, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
+import { SessionActions } from './SessionActions.tsx';
+import { SessionAttention, SessionMeta } from './SessionMeta.tsx';
+import { SessionProtection } from './SessionProtection.tsx';
+import { displayStatus, errorMessage, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { go, href } from './route.ts';
-import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
+import { useSessionPreview } from './ScreenPreview.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { groupedSessionTitle } from './session-groups.ts';
 import { useSessionList } from './session-list-context.ts';
-import type { Session } from './types.ts';
-import { RELEASE_HINT, WorktreeLabel, resumeBlockedReason } from './WorktreeLabel.tsx';
+import type { Session } from '../../shared/types.ts';
 
 // Une session regroupée sous son epic n'affiche pas son projet : l'en-tête du groupe le porte.
 export function SessionRow({ session, grouped = false }: { session: Session; grouped?: boolean }) {
@@ -21,7 +18,7 @@ export function SessionRow({ session, grouped = false }: { session: Session; gro
   const reportError =
     (fallback: string) =>
     (err: unknown): void => {
-      onError(err instanceof Error ? err.message : fallback);
+      onError(errorMessage(err, fallback));
     };
   const onKill = (): void => {
     void killSession(session.id).catch(reportError('Arrêt impossible'));
@@ -38,11 +35,8 @@ export function SessionRow({ session, grouped = false }: { session: Session; gro
     void sendSessionInput(session.id, data).catch(reportError('Envoi impossible'));
   };
   const awaiting = isAwaiting(session);
-  const preview = usePreviewController();
-  const anchorRef = useRef<HTMLSpanElement>(null);
-  const tone = session.status === 'waiting' ? 'waiting' : 'idle';
+  const preview = useSessionPreview(session.id);
   const shown = displayStatus(session, now);
-  const resumeBlocked = resumeBlockedReason(session.worktree);
 
   return (
     <li className={`session-row${session.pendingFindings > 0 ? ' has-findings' : ''}`}>
@@ -55,18 +49,12 @@ export function SessionRow({ session, grouped = false }: { session: Session; gro
             </span>
           </span>
           <span className="session-row-meta">
-            <span className="pill">
-              <AgentLabel agent={session.agent} />
-            </span>
-            <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
-            <WorktreeLabel worktree={session.worktree} />
-            <span className="meta">{relativeTime(session.updatedAt, now)}</span>
+            <SessionMeta session={session} status={shown}>
+              <span className="meta">{relativeTime(session.updatedAt, now)}</span>
+            </SessionMeta>
           </span>
         </a>
-        <FindingsLink sessionId={session.id} count={session.pendingFindings} />
-        {awaiting && session.attentionReason ? (
-          <p className={`reason-line ${tone}`}>{session.attentionReason}</p>
-        ) : null}
+        <SessionAttention session={session} showReason={awaiting} />
       </div>
       <SessionProtection session={session} onError={onError} />
       <div className="row-actions">
@@ -90,43 +78,12 @@ export function SessionRow({ session, grouped = false }: { session: Session; gro
             <a className="btn" href={href(`#/s/${session.id}`)}>
               Ouvrir
             </a>
-            <PreviewButton pressed={preview.open} onToggle={preview.toggle} anchorRef={anchorRef} />
+            {preview.button}
           </>
         ) : null}
-        {session.status !== 'exited' ? (
-          <button
-            type="button"
-            className="btn"
-            title={
-              session.worktree !== null && !session.worktree.removed
-                ? `Arrête la conversation. ${RELEASE_HINT}`
-                : undefined
-            }
-            onClick={onKill}
-          >
-            Arrêter
-          </button>
-        ) : null}
-        {session.status === 'exited' && session.agentSessionId ? (
-          <button
-            type="button"
-            className="btn"
-            disabled={resumeBlocked !== null}
-            title={resumeBlocked ?? undefined}
-            onClick={onResume}
-          >
-            Reprendre
-          </button>
-        ) : null}
-        <DelayedActionButton
-          disabled={session.protected}
-          title={session.protected ? SESSION_PROTECTED_HINT : undefined}
-          onAction={onDelete}
-        >
-          Supprimer
-        </DelayedActionButton>
+        <SessionActions session={session} onKill={onKill} onResume={onResume} onDelete={onDelete} />
       </div>
-      {awaiting && preview.open ? <ScreenPopover sessionId={session.id} anchorRef={anchorRef} /> : null}
+      {awaiting ? preview.popover : null}
     </li>
   );
 }

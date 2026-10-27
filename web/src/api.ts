@@ -1,4 +1,25 @@
 import {
+  parseAgentUpdate,
+  parseAgentUpdates,
+  parseAgentUsages,
+  parseGeneralSlackStatus,
+  parseMachinesInfo,
+  parsePeerNotices,
+  parseProjectSlackStatus,
+  parseSessionTokenUsages,
+  parseSlackStatus,
+  type AgentUpdate,
+  type AgentUsage,
+  type GeneralSlackStatus,
+  type MachinesInfo,
+  type PeerNotice,
+  type ProjectSlackStatus,
+  type SessionTokenUsage,
+  type SlackSettings,
+  type SlackStatus,
+} from '../../shared/machine.ts';
+import { object, parser, string, type Parser } from '../../shared/parse.ts';
+import {
   parseCouncilRun,
   parseCouncilRunList,
   parseCouncilSettings,
@@ -10,7 +31,8 @@ import {
   type CouncilSettings,
   type Participant,
   type Persona,
-} from './types.ts';
+  type PersonaInput,
+} from '../../shared/types.ts';
 import { parseMachine } from './route.ts';
 
 const unauthorizedListeners = new Set<() => void>();
@@ -45,7 +67,7 @@ export class ApiError extends Error {
   }
 }
 
-function errorMessage(parsed: unknown): string | null {
+function bodyError(parsed: unknown): string | null {
   if (typeof parsed === 'object' && parsed !== null && 'error' in parsed) {
     const err = (parsed as { error: unknown }).error;
     if (typeof err === 'string' && err.length > 0) return err;
@@ -53,7 +75,7 @@ function errorMessage(parsed: unknown): string | null {
   return null;
 }
 
-async function request<T>(url: string, local: boolean, init?: RequestInit): Promise<T> {
+async function request(url: string, local: boolean, init?: RequestInit): Promise<unknown> {
   const headers = new Headers(init?.headers);
   if (init?.body !== undefined && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
@@ -71,40 +93,35 @@ async function request<T>(url: string, local: boolean, init?: RequestInit): Prom
   if (!res.ok) {
     // Un 401 relayé ne doit pas ouvrir l'écran « Token requis » de la machine locale.
     if (res.status === 401 && local) notifyUnauthorized();
-    throw new ApiError(res.status, errorMessage(parsed) ?? res.statusText);
+    throw new ApiError(res.status, bodyError(parsed) ?? res.statusText);
   }
-  return parsed as T;
+  return parsed;
 }
 
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+function validated<T>(value: unknown, parse: Parser<T>, path: string): T {
+  const result = parse(value);
+  if (result === null) throw new Error(`Réponse du serveur invalide (${path})`);
+  return result;
+}
+
+// Réponse brute, que l'appelant ignore ou valide avec un parseur partagé (shared/) : jamais de cast.
+export async function api(path: string, init?: RequestInit): Promise<unknown> {
   const machineBase = apiBase();
-  return request<T>(`${machineBase}${path}`, machineBase === '', init);
+  return request(`${machineBase}${path}`, machineBase === '', init);
 }
 
-export interface VersionInfo {
-  version: string;
-  commit: string | null;
+/** Construit un chemin d'API en encodant chaque valeur interpolée : apiPath`/api/sessions/${id}/kill`. */
+export function apiPath(strings: TemplateStringsArray, ...params: (string | number)[]): string {
+  return strings.reduce((path, part, i) => `${path}${encodeURIComponent(params[i - 1])}${part}`);
 }
 
-/** same : même version ; compatible : autre version, même majeure ; unknown : instance ancienne ou jamais jointe. */
-export type Compatibility = 'same' | 'compatible' | 'incompatible' | 'unknown';
-
-export interface RemoteVersionStatus {
-  version: VersionInfo | null;
-  compatibility: Compatibility;
-  reachable: boolean;
-  error: string | null;
-  checkedAt: number;
+/** Réponse validée par un parseur partagé : une réponse hors contrat (autre machine, autre version) est une erreur. */
+export async function apiParsed<T>(path: string, parse: Parser<T>, init?: RequestInit): Promise<T> {
+  return validated(await api(path, init), parse, path);
 }
 
-export interface MachinesInfo {
-  local: { name: string; version: VersionInfo | null };
-  // status null : pas encore d'échange avec cette machine.
-  remotes: { id: string; name: string; status: RemoteVersionStatus | null }[];
-}
-
-export function getMachines(): Promise<MachinesInfo> {
-  return request<MachinesInfo>('/api/machines', true);
+export async function getMachines(): Promise<MachinesInfo> {
+  return validated(await request('/api/machines', true), parseMachinesInfo, '/api/machines');
 }
 
 export function wsUrl(path: string, machineBase = apiBase()): string {
@@ -138,12 +155,12 @@ export async function readClipboardImage(): Promise<Blob | null> {
 
 // Stocke l'image côté serveur et renvoie son chemin absolu, que l'agent sait lire.
 export async function uploadImage(sessionId: string, image: Blob): Promise<string> {
-  return postImage(`/api/sessions/${sessionId}/attachments`, image);
+  return postImage(apiPath`/api/sessions/${sessionId}/attachments`, image);
 }
 
 // Variante pour le prompt d'une nouvelle session : la session n'existe pas encore.
 export async function uploadProjectImage(projectId: string, image: Blob): Promise<string> {
-  return postImage(`/api/projects/${projectId}/attachments`, image);
+  return postImage(apiPath`/api/projects/${projectId}/attachments`, image);
 }
 
 // Image collée dans un council : dossier du projet, ou dossier commun des councils hors projet.
@@ -151,152 +168,76 @@ export async function uploadCouncilImage(projectId: string | null, image: Blob):
   return projectId === null ? postImage('/api/council/attachments', image) : uploadProjectImage(projectId, image);
 }
 
-export interface SlackSettings {
-  waiting: boolean;
-  idle: boolean;
-  agentMessages: boolean;
-  delaySeconds: number;
-}
-
-export type SlackStatus = { enabled: boolean } & SlackSettings;
-
 export function getSlackStatus(): Promise<SlackStatus> {
-  return api<SlackStatus>('/api/slack');
+  return apiParsed('/api/slack', parseSlackStatus);
 }
 
 export function updateSlackSettings(patch: Partial<SlackSettings>): Promise<SlackStatus> {
-  return api<SlackStatus>('/api/slack', { method: 'PATCH', body: JSON.stringify(patch) });
-}
-
-/** Machine qui traite les commandes Slack sans projet (aide, liste, questions « ? »). */
-export interface GeneralSlackStatus {
-  shared: boolean;
-  owner: 'local' | 'remote';
-  ownerMachine: string;
-  manual: boolean;
+  return apiParsed('/api/slack', parseSlackStatus, { method: 'PATCH', body: JSON.stringify(patch) });
 }
 
 export function getGeneralSlack(): Promise<GeneralSlackStatus> {
-  return api<GeneralSlackStatus>('/api/slack/general');
+  return apiParsed('/api/slack/general', parseGeneralSlackStatus);
 }
 
 export function acquireGeneralSlack(): Promise<GeneralSlackStatus> {
-  return api<GeneralSlackStatus>('/api/slack/general/acquire', { method: 'POST' });
-}
-
-/** Prise de main Slack d'un projet présent sur plusieurs machines. */
-export interface ProjectSlackStatus {
-  shared: boolean;
-  conflict: boolean;
-  peerMachine: string | null;
-  owner: 'local' | 'remote' | null;
-  ownerMachine: string | null;
-}
-
-export interface PeerNotice {
-  id: string;
-  at: number;
-  projectName: string;
-  text: string;
+  return apiParsed('/api/slack/general/acquire', parseGeneralSlackStatus, { method: 'POST' });
 }
 
 export function getProjectSlack(projectId: string): Promise<ProjectSlackStatus> {
-  return api<ProjectSlackStatus>(`/api/projects/${projectId}/slack`);
+  return apiParsed(apiPath`/api/projects/${projectId}/slack`, parseProjectSlackStatus);
 }
 
 export function acquireProjectSlack(projectId: string): Promise<ProjectSlackStatus> {
-  return api<ProjectSlackStatus>(`/api/projects/${projectId}/slack/acquire`, { method: 'POST' });
+  return apiParsed(apiPath`/api/projects/${projectId}/slack/acquire`, parseProjectSlackStatus, { method: 'POST' });
 }
 
 export function getPeerNotices(): Promise<PeerNotice[]> {
-  return api<PeerNotice[]>('/api/peer/notices');
-}
-
-export function dismissPeerNotice(id: string): Promise<void> {
-  return api<void>(`/api/peer/notices/${encodeURIComponent(id)}/dismiss`, { method: 'POST' });
+  return apiParsed('/api/peer/notices', parsePeerNotices);
 }
 
 // Rapport de review saisi à la main (JSON structuré), rattaché à la session.
 export function publishFindingsReport(sessionId: string, report: unknown): Promise<unknown> {
-  return api(`/api/sessions/${sessionId}/findings`, { method: 'POST', body: JSON.stringify(report) });
+  return api(apiPath`/api/sessions/${sessionId}/findings`, { method: 'POST', body: JSON.stringify(report) });
 }
 
 // Résultat d'une opération affiché (exécution d'epic, commande, council, commit automatique) : il ne doit plus être
 // notifié. Sans incidence en cas d'échec.
 export function markOperationSeen(id: string): void {
-  void api(`/api/operations/${encodeURIComponent(id)}/seen`, { method: 'POST' }).catch(() => {});
+  void api(apiPath`/api/operations/${id}/seen`, { method: 'POST' }).catch(() => {});
 }
 
-export interface UsageWindow {
-  label: string;
-  percent: number;
-  minutes: number | null;
-  resetsAt: string | null;
-}
-
-export interface AgentAuth {
-  loginExpiresAt: string | null;
-  accessExpiresAt: string | null;
-  renewedAt: string | null;
-  error: string | null;
-}
-
-export interface AgentUsage {
-  agent: Agent;
-  windows: UsageWindow[];
-  auth: AgentAuth | null;
-  updatedAt: string | null;
-  error: string | null;
+export async function dismissPeerNotice(id: string): Promise<void> {
+  await api(apiPath`/api/peer/notices/${id}/dismiss`, { method: 'POST' });
 }
 
 export function getUsage(): Promise<AgentUsage[]> {
-  return api<AgentUsage[]>('/api/usage');
-}
-
-export interface TokenCounts {
-  /** Includes cache reads and writes. */
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  cacheWriteInputTokens: number;
-}
-
-export interface SessionTokenUsage {
-  sessionId: string;
-  tokens: TokenCounts | null;
-  partial: boolean;
+  return apiParsed('/api/usage', parseAgentUsages);
 }
 
 export function getSessionTokenUsage(): Promise<SessionTokenUsage[]> {
-  return api<SessionTokenUsage[]>('/api/usage/tokens');
-}
-
-export interface AgentUpdate {
-  agent: Agent;
-  installed: string | null;
-  latest: string | null;
-  available: boolean;
-  auto: boolean;
-  updating: boolean;
-  checkedAt: string | null;
-  lastRun: { at: string; ok: boolean; output: string } | null;
-  error: string | null;
+  return apiParsed('/api/usage/tokens', parseSessionTokenUsages);
 }
 
 export function getUpdates(): Promise<AgentUpdate[]> {
-  return api<AgentUpdate[]>('/api/updates');
+  return apiParsed('/api/updates', parseAgentUpdates);
 }
 
 export function startUpdate(agent: Agent): Promise<AgentUpdate> {
-  return api<AgentUpdate>(`/api/updates/${agent}`, { method: 'POST' });
+  return apiParsed(apiPath`/api/updates/${agent}`, parseAgentUpdate, { method: 'POST' });
 }
 
 export function setAutoUpdate(agent: Agent, auto: boolean): Promise<AgentUpdate> {
-  return api<AgentUpdate>(`/api/updates/${agent}`, { method: 'PATCH', body: JSON.stringify({ auto }) });
+  return apiParsed(apiPath`/api/updates/${agent}`, parseAgentUpdate, {
+    method: 'PATCH',
+    body: JSON.stringify({ auto }),
+  });
 }
 
+const parseAttachment = parser(object<{ path: string }>({ path: string }));
+
 async function postImage(url: string, image: Blob): Promise<string> {
-  const { path } = await api<{ path: string }>(url, {
+  const { path } = await apiParsed(url, parseAttachment, {
     method: 'POST',
     headers: { 'Content-Type': image.type },
     body: image,
@@ -304,52 +245,37 @@ async function postImage(url: string, image: Blob): Promise<string> {
   return path;
 }
 
-export type PersonaInput = Pick<Persona, 'name' | 'description' | 'prompt'>;
-
-function parsed<T>(value: T | null, what: string): T {
-  if (value === null) throw new Error(`Réponse du serveur invalide (${what})`);
-  return value;
-}
-
 export async function listPersonas(): Promise<Persona[]> {
-  return parsePersonaList(await api<unknown>('/api/personas'));
+  return parsePersonaList(await api('/api/personas'));
 }
 
-export async function createPersona(input: PersonaInput): Promise<Persona> {
-  return parsed(
-    parsePersona(await api<unknown>('/api/personas', { method: 'POST', body: JSON.stringify(input) })),
-    'persona',
-  );
+export function createPersona(input: PersonaInput): Promise<Persona> {
+  return apiParsed('/api/personas', parsePersona, { method: 'POST', body: JSON.stringify(input) });
 }
 
-export async function updatePersona(id: string, patch: Partial<PersonaInput>): Promise<Persona> {
-  const raw = await api<unknown>(`/api/personas/${encodeURIComponent(id)}`, {
+export function updatePersona(id: string, patch: Partial<PersonaInput>): Promise<Persona> {
+  return apiParsed(`/api/personas/${encodeURIComponent(id)}`, parsePersona, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   });
-  return parsed(parsePersona(raw), 'persona');
 }
 
-export function deletePersona(id: string): Promise<void> {
-  return api<void>(`/api/personas/${encodeURIComponent(id)}`, { method: 'DELETE' });
+export async function deletePersona(id: string): Promise<void> {
+  await api(`/api/personas/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-export async function getCouncilSettings(): Promise<CouncilSettings> {
-  return parsed(parseCouncilSettings(await api<unknown>('/api/council/settings')), 'réglages du council');
+export function getCouncilSettings(): Promise<CouncilSettings> {
+  return apiParsed('/api/council/settings', parseCouncilSettings);
 }
 
 // Réglages appliqués au lancement : surcharge du projet, sinon réglages globaux (projectId null).
-export async function getEffectiveCouncilSettings(projectId: string | null): Promise<CouncilSettings> {
+export function getEffectiveCouncilSettings(projectId: string | null): Promise<CouncilSettings> {
   const query = projectId === null ? '' : `?projectId=${encodeURIComponent(projectId)}`;
-  return parsed(
-    parseCouncilSettings(await api<unknown>(`/api/council/settings/effective${query}`)),
-    'réglages du council',
-  );
+  return apiParsed(`/api/council/settings/effective${query}`, parseCouncilSettings);
 }
 
-export async function putCouncilSettings(settings: CouncilSettings): Promise<CouncilSettings> {
-  const raw = await api<unknown>('/api/council/settings', { method: 'PUT', body: JSON.stringify(settings) });
-  return parsed(parseCouncilSettings(raw), 'réglages du council');
+export function putCouncilSettings(settings: CouncilSettings): Promise<CouncilSettings> {
+  return apiParsed('/api/council/settings', parseCouncilSettings, { method: 'PUT', body: JSON.stringify(settings) });
 }
 
 export interface CouncilStartInput {
@@ -365,39 +291,33 @@ export interface CouncilStartInput {
   images?: CouncilImage[];
 }
 
-export async function startCouncil(input: CouncilStartInput): Promise<CouncilRun> {
-  return parsed(
-    parseCouncilRun(await api<unknown>('/api/councils', { method: 'POST', body: JSON.stringify(input) })),
-    'council',
-  );
+export function startCouncil(input: CouncilStartInput): Promise<CouncilRun> {
+  return apiParsed('/api/councils', parseCouncilRun, { method: 'POST', body: JSON.stringify(input) });
 }
 
-export async function getCouncil(id: string): Promise<CouncilRun> {
-  return parsed(parseCouncilRun(await api<unknown>(`/api/councils/${encodeURIComponent(id)}`)), 'council');
+export function getCouncil(id: string): Promise<CouncilRun> {
+  return apiParsed(`/api/councils/${encodeURIComponent(id)}`, parseCouncilRun);
 }
 
 // projectId absent : tous les councils ; null : ceux lancés hors projet.
 export async function listCouncils(projectId?: string | null): Promise<CouncilRun[]> {
   const query =
     projectId === undefined ? '' : `?projectId=${projectId === null ? 'none' : encodeURIComponent(projectId)}`;
-  return parseCouncilRunList(await api<unknown>(`/api/councils${query}`));
+  return parseCouncilRunList(await api(`/api/councils${query}`));
 }
 
-export async function cancelCouncil(id: string): Promise<CouncilRun> {
-  return parsed(
-    parseCouncilRun(await api<unknown>(`/api/councils/${encodeURIComponent(id)}/cancel`, { method: 'POST' })),
-    'council',
-  );
+export function cancelCouncil(id: string): Promise<CouncilRun> {
+  return apiParsed(`/api/councils/${encodeURIComponent(id)}/cancel`, parseCouncilRun, { method: 'POST' });
 }
 
-export function deleteCouncil(id: string): Promise<void> {
-  return api<void>(`/api/councils/${encodeURIComponent(id)}`, { method: 'DELETE' });
+export async function deleteCouncil(id: string): Promise<void> {
+  await api(`/api/councils/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export function councilImageUrl(id: string, n: number): string {
-  return `${apiBase()}/api/councils/${encodeURIComponent(id)}/images/${n}`;
+  return apiBase() + apiPath`/api/councils/${id}/images/${n}`;
 }
 
 export function councilExportUrl(id: string): string {
-  return `${apiBase()}/api/councils/${encodeURIComponent(id)}/export`;
+  return apiBase() + apiPath`/api/councils/${id}/export`;
 }

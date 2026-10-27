@@ -18,7 +18,7 @@ const { SessionManager } = await import('../server/sessions.ts');
 const { UpdateManager } = await import('../server/updates.ts');
 const { PeerSync } = await import('../server/peers.ts');
 const { buildServer } = await import('../server/index.ts');
-const { parseProject } = await import('../web/src/types.ts');
+const { parseProject } = await import('../shared/types.ts');
 mock.method(UpdateManager.prototype, 'start', () => {});
 mock.method(PeerSync.prototype, 'sync', async function () {
   this.markReady();

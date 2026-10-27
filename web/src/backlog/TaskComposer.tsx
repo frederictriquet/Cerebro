@@ -1,13 +1,13 @@
 import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { clipboardImage, uploadProjectImage } from '../api.ts';
-import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from '../attachments.tsx';
+import { uploadProjectImage } from '../api.ts';
+import { useAsyncAction } from '../async-action.ts';
+import { AttachmentStrip, useAttachedField } from '../attachments.tsx';
 import { isSubmitShortcut, SUBMIT_HINT } from '../keys.ts';
 import { useStore } from '../store.tsx';
 import { CommandTasks } from './CommandTasks.tsx';
 import { useBacklog } from './context.ts';
 import { EpicForm } from './EpicForm.tsx';
 import { EpicSelect } from './EpicSelect.tsx';
-import { errorMessage } from './tasks.ts';
 
 // Ajout d'une tâche, confiée à un agent ou à une commande du projet, et création d'un epic.
 export function TaskComposer() {
@@ -17,25 +17,29 @@ export function TaskComposer() {
   const [draft, setDraft] = useState('');
   const [draftEpic, setDraftEpic] = useState('');
   const [creatingEpic, setCreatingEpic] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const images = useImageAttachments((image) => uploadProjectImage(projectId, image));
+  const { run: addTask, busy } = useAsyncAction(
+    async () => {
+      await createTask(projectId, images.expand(draft), { epicId: epicIds.has(draftEpic) ? draftEpic : null });
+      setDraft('');
+      images.reset();
+    },
+    { fallback: 'Ajout impossible', onError: reportError },
+  );
+  // Collage ou dépôt d'une image : « [Image #N] » au curseur, retiré du texte si l'envoi échoue.
+  const { images, fieldProps, stripProps } = useAttachedField({
+    upload: (image) => uploadProjectImage(projectId, image),
+    text: draft,
+    setText: setDraft,
+    onError: (message) => reportError(`Image non envoyée : ${message}`),
+    disabled: busy,
+  });
   const [composer, setComposer] = useState<'llm' | 'command'>('llm');
   const llmTab = useRef<HTMLButtonElement>(null);
   const commandTab = useRef<HTMLButtonElement>(null);
 
   const add = async (): Promise<void> => {
     if (busy || images.pending || draft.trim() === '') return;
-    setBusy(true);
-    reportError(null);
-    try {
-      await createTask(projectId, images.expand(draft), { epicId: epicIds.has(draftEpic) ? draftEpic : null });
-      setDraft('');
-      images.reset();
-    } catch (err) {
-      reportError(errorMessage(err, 'Ajout impossible'));
-    } finally {
-      setBusy(false);
-    }
+    await addTask();
   };
 
   const selectedEpic = epicIds.has(draftEpic) ? draftEpic : '';
@@ -102,22 +106,7 @@ export function TaskComposer() {
             value={draft}
             disabled={busy}
             placeholder={`Nouvelle tâche (${SUBMIT_HINT} pour ajouter) · Ctrl+V pour joindre une image`}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              images.prune(e.target.value);
-            }}
-            onPaste={(e) => {
-              const image = clipboardImage(e.clipboardData);
-              if (image === null) return;
-              e.preventDefault();
-              if (busy) return;
-              const { selectionStart, selectionEnd } = e.currentTarget;
-              const token = images.add(image, (failed, message) => {
-                setDraft((current) => removeToken(current, failed));
-                reportError(`Image non envoyée : ${message}`);
-              });
-              setDraft((current) => insertToken(current, selectionStart, selectionEnd, token));
-            }}
+            {...fieldProps}
             onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
               if (isSubmitShortcut(e)) {
                 e.preventDefault();
@@ -125,14 +114,7 @@ export function TaskComposer() {
               }
             }}
           />
-          <AttachmentStrip
-            items={images.items}
-            onRemove={(item) => {
-              if (busy) return;
-              images.remove(item.n);
-              setDraft((current) => removeToken(current, item.token));
-            }}
-          />
+          <AttachmentStrip {...stripProps} />
           <div className="task-add-actions">
             <EpicSelect epics={epics} value={selectedEpic} onChange={setDraftEpic} />
             <button type="submit" className="btn primary" disabled={busy || images.pending || draft.trim() === ''}>

@@ -9,7 +9,7 @@ import { after, test } from 'node:test';
 const root = mkdtempSync(join(tmpdir(), 'cerebro-session-epics-'));
 process.env.CEREBRO_DATA_DIR = join(root, 'data');
 const { CerebroDatabase } = await import('../server/db.ts');
-const { parseSession } = await import('../web/src/types.ts');
+const { parseSession } = await import('../shared/types.ts');
 const { groupSessions, groupedSessionTitle, sessionEpic } = await import('../web/src/session-groups.ts');
 after(() => rmSync(root, { recursive: true, force: true }));
 

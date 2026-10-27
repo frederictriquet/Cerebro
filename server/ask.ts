@@ -1,11 +1,7 @@
-import { execFile } from 'node:child_process';
-import { homedir } from 'node:os';
-import { promisify } from 'node:util';
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { claudeQueryOptions } from './agents.ts';
 import { collectMachines, type MachineData } from './state.ts';
 import type { CerebroDatabase } from './db.ts';
-
-const execFileAsync = promisify(execFile);
 
 const ANSWER_TIMEOUT_MS = 5 * 60 * 1_000;
 const MAX_TURNS = 25;
@@ -92,17 +88,14 @@ function systemPrompt(state: unknown): string {
 /** Answers a free-form question about Cerebro's projects, sessions and backlog. */
 export async function answerQuestion(db: CerebroDatabase, question: string): Promise<string> {
   const state = await collectState(db);
-  const { stdout } = await execFileAsync('which', ['claude']);
+  const options = await claudeQueryOptions();
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), ANSWER_TIMEOUT_MS);
   try {
     const session = query({
       prompt: question,
       options: {
-        cwd: homedir(),
-        pathToClaudeCodeExecutable: stdout.trim(),
-        persistSession: false,
-        settingSources: ['user'],
+        ...options,
         systemPrompt: systemPrompt(state),
         tools: TOOLS,
         allowedTools: TOOLS,

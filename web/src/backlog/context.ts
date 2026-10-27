@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { Epic, Task } from '../types.ts';
+import type { Epic, Task } from '../../../shared/types.ts';
 
 // Ce que les blocs d'epic et les lignes de tâche partagent avec le backlog qui les affiche : les tâches et
 // epics du projet, le suivi des lancements (la modale se ferme, le backlog garde l'état « Lancement… »)

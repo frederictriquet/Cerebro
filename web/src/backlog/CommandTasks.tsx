@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import type { ProjectCommand } from '../../../server/commands.ts';
-import { api } from '../api.ts';
+import { parseProjectCommand, parseProjectCommands, type ProjectCommand } from '../../../shared/backlog.ts';
+import type { Epic } from '../../../shared/types.ts';
+import { apiParsed } from '../api.ts';
+import { errorMessage } from '../format.ts';
 import { useStore } from '../store.tsx';
-import type { Epic } from '../types.ts';
 import { EpicSelect } from './EpicSelect.tsx';
 
 const EMPTY_COMMAND = JSON.stringify({ name: '', executable: '', args: [], cwd: '.', timeoutSeconds: 300 }, null, 2);
@@ -42,14 +43,14 @@ export function CommandTasks({
   const refresh = useCallback(async (): Promise<void> => {
     const generation = ++loadGeneration.current;
     try {
-      const list = await api<ProjectCommand[]>(`/api/projects/${projectId}/commands`);
+      const list = await apiParsed(`/api/projects/${projectId}/commands`, parseProjectCommands);
       if (loadGeneration.current !== generation) return;
       setCommands(list);
       setSelected((current) => (list.some((command) => command.id === current) ? current : ''));
       setLoaded(true);
     } catch (cause) {
       if (loadGeneration.current !== generation) return;
-      setError(cause instanceof Error ? cause.message : 'Chargement des commandes impossible');
+      setError(errorMessage(cause, 'Chargement des commandes impossible'));
       setLoaded(true);
     }
   }, [projectId]);
@@ -67,7 +68,7 @@ export function CommandTasks({
         setText('');
         setError(null);
       })
-      .catch((cause: unknown) => setError(String(cause)));
+      .catch((cause: unknown) => setError(errorMessage(cause)));
   };
 
   const saveCommand = (): void => {
@@ -75,16 +76,19 @@ export function CommandTasks({
     try {
       body = JSON.parse(raw);
     } catch (cause) {
-      setError(String(cause));
+      setError(errorMessage(cause));
       return;
     }
-    void api<ProjectCommand>(`/api/projects/${projectId}/commands`, { method: 'POST', body: JSON.stringify(body) })
+    void apiParsed(`/api/projects/${projectId}/commands`, parseProjectCommand, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
       .then(async (command) => {
         setError(null);
         await refresh();
         setSelected(command.id);
       })
-      .catch((cause: unknown) => setError(String(cause)));
+      .catch((cause: unknown) => setError(errorMessage(cause)));
   };
 
   const commandConfig = (

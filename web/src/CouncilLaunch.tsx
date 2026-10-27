@@ -1,17 +1,7 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ClipboardEvent,
-  type DragEvent,
-  type FormEvent,
-} from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
 import {
   ApiError,
-  clipboardImage,
   deleteCouncil,
   getCouncil,
   getEffectiveCouncilSettings,
@@ -21,23 +11,24 @@ import {
   uploadCouncilImage,
   type CouncilStartInput,
 } from './api.ts';
-import { AttachmentStrip, insertToken, removeToken, restoredAttachment, useImageAttachments } from './attachments.tsx';
+import { AttachmentStrip, restoredAttachment, useAttachedFields } from './attachments.tsx';
 import { CouncilAdvisorList } from './CouncilAdvisorList.tsx';
 import { assignmentOf, CouncilSettingsDialog } from './CouncilSettingsDialog.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import type { DraftImage } from './drafts.ts';
-import { relativeTime } from './format.ts';
+import { COUNCIL_STATUS_LABEL, errorMessage, relativeTime, truncate } from './format.ts';
 import { PersonasDialog } from './PersonasDialog.tsx';
-import { go, href, useNow } from './route.ts';
+import { usePolling, useNow } from './polling.tsx';
+import { go, href } from './route.ts';
+import { readJson, writeJson } from './storage.ts';
 import {
   MAX_ADVISORS,
   MIN_ADVISORS,
   type CouncilRun,
   type CouncilSettings,
-  type CouncilStatus,
   type Llm,
   type Persona,
-} from './types.ts';
+} from '../../shared/types.ts';
 import './council.css';
 
 // Brouillon d'un council non lancé, par périmètre (projet ou accueil), comme les brouillons de prompt.
@@ -64,49 +55,29 @@ function isDraftImage(value: unknown): value is DraftImage {
 }
 
 function readCouncilDraft(key: string): CouncilDraft {
-  try {
-    const raw = localStorage.getItem(DRAFT_PREFIX + key);
-    if (raw === null) return EMPTY_DRAFT;
-    const draft = JSON.parse(raw) as Partial<CouncilDraft>;
-    return {
-      question: typeof draft.question === 'string' ? draft.question : '',
-      context: typeof draft.context === 'string' ? draft.context : '',
-      personaIds: Array.isArray(draft.personaIds)
-        ? draft.personaIds.filter((id): id is string => typeof id === 'string')
-        : null,
-      images: Array.isArray(draft.images) ? draft.images.filter(isDraftImage) : [],
-    };
-  } catch (err) {
-    console.warn('Brouillon de council illisible', key, err);
-    return EMPTY_DRAFT;
-  }
+  const draft = readJson(DRAFT_PREFIX + key) as Partial<CouncilDraft> | null;
+  if (typeof draft !== 'object' || draft === null) return EMPTY_DRAFT;
+  return {
+    question: typeof draft.question === 'string' ? draft.question : '',
+    context: typeof draft.context === 'string' ? draft.context : '',
+    personaIds: Array.isArray(draft.personaIds)
+      ? draft.personaIds.filter((id): id is string => typeof id === 'string')
+      : null,
+    images: Array.isArray(draft.images) ? draft.images.filter(isDraftImage) : [],
+  };
 }
 
 function writeCouncilDraft(key: string, draft: CouncilDraft): void {
-  try {
-    if (
-      draft.question.trim() === '' &&
-      draft.context.trim() === '' &&
-      draft.personaIds === null &&
-      draft.images.length === 0
-    )
-      localStorage.removeItem(DRAFT_PREFIX + key);
-    else localStorage.setItem(DRAFT_PREFIX + key, JSON.stringify(draft));
-  } catch (err) {
-    console.warn('Brouillon de council non enregistré', key, err);
-  }
+  const empty =
+    draft.question.trim() === '' &&
+    draft.context.trim() === '' &&
+    draft.personaIds === null &&
+    draft.images.length === 0;
+  writeJson(DRAFT_PREFIX + key, empty ? null : draft);
 }
 
 // Les images sont attachées au message de chaque appel : conseillers et chairman doivent les accepter.
 const IMAGE_AGENTS: readonly string[] = ['claude', 'codex'];
-
-const STATUS_LABELS: Record<CouncilStatus, string> = {
-  running: 'en cours',
-  succeeded: 'terminé',
-  failed: 'échec',
-  cancelled: 'annulé',
-  interrupted: 'interrompu',
-};
 
 const QUESTION_PREVIEW = 120;
 
@@ -116,13 +87,6 @@ interface PendingLaunch {
   requestId: string;
   // Paramètres sérialisés de la soumission, hors identifiant.
   key: string;
-}
-
-const message = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
-
-function truncate(text: string, max: number): string {
-  const line = text.replace(/\s+/g, ' ').trim();
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
 function PastCouncils({
@@ -150,7 +114,9 @@ function PastCouncils({
         <li key={run.id} className="council-run">
           <a className="council-run-link" href={href(`#/c/${run.id}`)} title={run.question}>
             <span className="council-run-meta">
-              <span className={`council-run-status ${run.status}`}>{STATUS_LABELS[run.status]}</span>
+              <span className={`council-run-status ${run.status}`}>
+                {COUNCIL_STATUS_LABEL[run.status].toLowerCase()}
+              </span>
               <span title={new Date(run.startedAt).toLocaleString()}>{relativeTime(run.startedAt, now)}</span>
             </span>
             <span className="council-run-question">{truncate(run.question, QUESTION_PREVIEW)}</span>
@@ -191,13 +157,16 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
   const [pending, setPending] = useState<PendingLaunch | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [personasOpen, setPersonasOpen] = useState(false);
-  const questionRef = useRef<HTMLTextAreaElement>(null);
-  const contextRef = useRef<HTMLTextAreaElement>(null);
+  // Image collée ou déposée dans un champ : « [Image #N] » est inséré au curseur ; le serveur attache
+  // les fichiers au message de chaque appel, les jetons restent dans le texte pour les désigner.
   // Une seule numérotation pour la question et le contexte.
-  const images = useImageAttachments(
-    (image) => uploadCouncilImage(scope, image),
-    draft.images.map((image) => restoredAttachment(image.n, image.token, image.path)),
-  );
+  const { images, fieldProps, stripProps } = useAttachedFields({
+    upload: (image) => uploadCouncilImage(scope, image),
+    initial: draft.images.map((image) => restoredAttachment(image.n, image.token, image.path)),
+    texts: { question: draft.question, context: draft.context },
+    edit: (field, change) => setDraft((current) => ({ ...current, [field]: change(current[field]) })),
+    onError: (message) => setError(`Image non envoyée : ${message}`),
+  });
 
   const loadPersonas = useCallback(async (): Promise<void> => {
     try {
@@ -209,7 +178,7 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
       setOverrides((current) => Object.fromEntries(Object.entries(current).filter(([id]) => known.has(id))));
       setLoadError(null);
     } catch (cause) {
-      setLoadError(message(cause));
+      setLoadError(errorMessage(cause));
     }
   }, []);
   const loadSettings = useCallback(async (): Promise<void> => {
@@ -219,7 +188,7 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
       setReadProject((current) => current ?? loaded.readProject);
       setLoadError(null);
     } catch (cause) {
-      setLoadError(message(cause));
+      setLoadError(errorMessage(cause));
     }
   }, [scope]);
   // Supprimer une persona répare aussi les participants par défaut côté serveur : un brouillon
@@ -228,14 +197,18 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
     void loadPersonas();
     void loadSettings();
   };
-  const loadRuns = useCallback(async (): Promise<void> => {
-    try {
-      setRuns(await listCouncils(scope));
+  // Suit l'avancement des councils en cours, sans événement temps réel.
+  const running = runs?.some((run) => run.status === 'running') ?? false;
+  const fetchRuns = useCallback(() => listCouncils(scope), [scope]);
+  const loadRuns = usePolling(fetchRuns, 5000, {
+    enabled: running,
+    immediate: false,
+    onData: (list) => {
+      setRuns(list);
       setRunsError(null);
-    } catch (cause) {
-      setRunsError(message(cause));
-    }
-  }, [scope]);
+    },
+    onError: (cause) => setRunsError(errorMessage(cause)),
+  });
 
   useEffect(() => {
     void loadPersonas();
@@ -248,13 +221,6 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
     [images.items],
   );
   useEffect(() => writeCouncilDraft(draftKey, { ...draft, images: uploadedImages }), [draftKey, draft, uploadedImages]);
-  // Suit l'avancement des councils en cours, sans événement temps réel.
-  const running = runs?.some((run) => run.status === 'running') ?? false;
-  useEffect(() => {
-    if (!running) return;
-    const timer = window.setInterval(() => void loadRuns(), 5000);
-    return () => window.clearInterval(timer);
-  }, [running, loadRuns]);
 
   const known = new Set(personas?.map((persona) => persona.id) ?? []);
   const checkedIds = (draft.personaIds ?? settings?.defaultPersonaIds ?? []).filter((id) => known.has(id));
@@ -290,53 +256,6 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
   const toggle = (personaId: string, checked: boolean): void => {
     const others = checkedIds.filter((id) => id !== personaId);
     setDraft({ ...draft, personaIds: checked ? [...others, personaId] : others });
-  };
-
-  // Image collée ou déposée dans un champ : « [Image #N] » est inséré au curseur ; le serveur attache
-  // les fichiers au message de chaque appel, les jetons restent dans le texte pour les désigner.
-  const attachImage = (field: 'question' | 'context', image: File): void => {
-    const el = (field === 'question' ? questionRef : contextRef).current;
-    const text = draft[field];
-    const start = el?.selectionStart ?? text.length;
-    const end = el?.selectionEnd ?? text.length;
-    const token = images.add(image, (failed, message) => {
-      setDraft((current) => ({
-        ...current,
-        question: removeToken(current.question, failed),
-        context: removeToken(current.context, failed),
-      }));
-      setError(`Image non envoyée : ${message}`);
-    });
-    setDraft((current) => ({ ...current, [field]: insertToken(current[field], start, end, token) }));
-  };
-  const onPaste =
-    (field: 'question' | 'context') =>
-    (event: ClipboardEvent<HTMLTextAreaElement>): void => {
-      const image = clipboardImage(event.clipboardData);
-      if (image === null) return;
-      event.preventDefault();
-      attachImage(field, image);
-    };
-  const onDrop =
-    (field: 'question' | 'context') =>
-    (event: DragEvent<HTMLTextAreaElement>): void => {
-      const image = clipboardImage(event.dataTransfer);
-      if (image === null) return;
-      event.preventDefault();
-      attachImage(field, image);
-    };
-  const edit = (field: 'question' | 'context', value: string): void => {
-    const next = { ...draft, [field]: value };
-    images.prune(`${next.question}\n${next.context}`);
-    setDraft(next);
-  };
-  const removeImage = (n: number, token: string): void => {
-    images.remove(n);
-    setDraft((current) => ({
-      ...current,
-      question: removeToken(current.question, token),
-      context: removeToken(current.context, token),
-    }));
   };
 
   const launch = async (): Promise<void> => {
@@ -383,7 +302,7 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
           // Introuvable ou serveur toujours injoignable : la relance réutilisera l'identifiant.
         }
       }
-      setError(message(cause));
+      setError(errorMessage(cause));
     } finally {
       setBusy(false);
     }
@@ -394,7 +313,7 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
       await deleteCouncil(id);
       setRuns((current) => current?.filter((run) => run.id !== id) ?? current);
     } catch (cause) {
-      setRunsError(message(cause));
+      setRunsError(errorMessage(cause));
     }
   };
 
@@ -414,11 +333,8 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
             rows={3}
             value={draft.question}
             disabled={busy}
-            ref={questionRef}
             placeholder="La décision ou la question à soumettre au council · Ctrl+V ou glisser-déposer pour joindre une image"
-            onChange={(event) => edit('question', event.target.value)}
-            onPaste={onPaste('question')}
-            onDrop={onDrop('question')}
+            {...fieldProps('question')}
           />
         </label>
         <label className="council-field">
@@ -429,14 +345,11 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
             rows={4}
             value={draft.context}
             disabled={busy}
-            ref={contextRef}
             placeholder="Contraintes, options envisagées, éléments utiles aux conseillers · Ctrl+V ou glisser-déposer pour joindre une image"
-            onChange={(event) => edit('context', event.target.value)}
-            onPaste={onPaste('context')}
-            onDrop={onDrop('context')}
+            {...fieldProps('context')}
           />
         </label>
-        <AttachmentStrip items={images.items} onRemove={(item) => removeImage(item.n, item.token)} />
+        <AttachmentStrip {...stripProps} />
         {imageError ? (
           <p className="form-error" role="alert">
             {imageError}

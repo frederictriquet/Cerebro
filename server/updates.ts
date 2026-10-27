@@ -3,28 +3,15 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { AGENTS } from './agents.ts';
 import { DATA_DIR } from './config.ts';
-import type { Agent } from './db.ts';
+import { AGENTS, type Agent } from '../shared/types.ts';
+import type { AgentUpdate } from '../shared/machine.ts';
+import { errorMessage, isRecord } from './util.ts';
 
 const execFileAsync = promisify(execFile);
 
 // Each CLI installs a release in its own folder and only moves a link: updating while sessions
 // run is safe, they keep their binary until relaunched.
-
-export interface AgentUpdate {
-  agent: Agent;
-  installed: string | null;
-  latest: string | null;
-  available: boolean;
-  auto: boolean;
-  updating: boolean;
-  /** Last check (ISO). */
-  checkedAt: string | null;
-  /** Outcome of the last `<cli> update`, kept until the next one. */
-  lastRun: { at: string; ok: boolean; output: string } | null;
-  error: string | null;
-}
 
 const SETTINGS_FILE = join(DATA_DIR, 'updates.json');
 const CHECK_INTERVAL_MS = 60 * 60_000;
@@ -34,19 +21,14 @@ const OUTPUT_TAIL = 2_000;
 
 const VERSION = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/;
 
-function errorText(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** Numeric comparison of x.y.z; a pre-release sorts before its release. */
+/** Semver precedence: numeric x.y.z, then pre-release identifiers (a pre-release sorts before its release). */
 export function isNewer(candidate: string, current: string): boolean {
-  const parse = (v: string): [number[], string] => {
-    const [core = '', pre = ''] = v.split('-', 2);
-    return [core.split('.').map(Number), pre];
+  const parse = (v: string): [number[], string[]] => {
+    const version = v.split('+', 1)[0] ?? '';
+    const dash = version.indexOf('-');
+    const core = dash === -1 ? version : version.slice(0, dash);
+    const pre = dash === -1 ? '' : version.slice(dash + 1);
+    return [core.split('.').map(Number), pre === '' ? [] : pre.split('.')];
   };
   const [a, preA] = parse(candidate);
   const [b, preB] = parse(current);
@@ -54,10 +36,23 @@ export function isNewer(candidate: string, current: string): boolean {
     const diff = (a[i] ?? 0) - (b[i] ?? 0);
     if (diff !== 0) return diff > 0;
   }
-  if (preA === preB) return false;
-  if (preA === '') return true;
-  if (preB === '') return false;
-  return preA > preB;
+  if (preA.length === 0 || preB.length === 0) return preA.length === 0 && preB.length > 0;
+  const numeric = /^\d+$/;
+  for (let i = 0; i < Math.max(preA.length, preB.length); i += 1) {
+    const x = preA[i];
+    const y = preB[i];
+    // A larger set of identifiers wins when all preceding ones are equal.
+    if (x === undefined) return false;
+    if (y === undefined) return true;
+    if (x === y) continue;
+    const xNum = numeric.test(x);
+    const yNum = numeric.test(y);
+    if (xNum && yNum) return Number(x) > Number(y);
+    // Numeric identifiers sort before alphanumeric ones.
+    if (xNum !== yNum) return yNum;
+    return x > y;
+  }
+  return false;
 }
 
 async function installedVersion(agent: Agent): Promise<string> {
@@ -116,7 +111,7 @@ function loadAuto(): Record<Agent, boolean> {
     const saved = isRecord(value) && isRecord(value.auto) ? value.auto : {};
     for (const agent of AGENTS) if (typeof saved[agent] === 'boolean') auto[agent] = saved[agent];
   } catch (error) {
-    console.error('[updates] réglages illisibles :', errorText(error));
+    console.error('[updates] réglages illisibles :', errorMessage(error));
   }
   return auto;
 }
@@ -204,7 +199,7 @@ export class UpdateManager {
         latest: null,
         available: false,
         checkedAt: missing ? null : new Date().toISOString(),
-        error: errorText(cause),
+        error: errorMessage(cause),
       });
       return;
     }
@@ -213,7 +208,7 @@ export class UpdateManager {
       current.latest = await LATEST[agent]();
       current.error = null;
     } catch (cause) {
-      current.error = `Vérification impossible : ${errorText(cause)}`;
+      current.error = `Vérification impossible : ${errorMessage(cause)}`;
     }
     current.available = current.latest !== null && isNewer(current.latest, installed);
     current.checkedAt = new Date().toISOString();
@@ -235,16 +230,17 @@ export class UpdateManager {
       const pending = execFileAsync(agent, ['update'], {
         timeout: UPDATE_TIMEOUT_MS,
         maxBuffer: 4 * 1024 * 1024,
-        env: { ...process.env, CODEX_NON_INTERACTIVE: '1' },
+        // Codex's own switch for unattended runs: only its process gets it.
+        env: agent === 'codex' ? { ...process.env, CODEX_NON_INTERACTIVE: '1' } : process.env,
       });
-      // No one to answer a prompt: an empty stdin makes it fail instead of hanging.
+      // No one to answer a prompt: an empty stdin makes any CLI fail instead of hanging.
       pending.child.stdin?.end();
       const { stdout, stderr } = await pending;
       output = `${stdout}\n${stderr}`;
       ok = true;
     } catch (cause) {
       const failed = cause as { stdout?: string; stderr?: string; killed?: boolean };
-      output = `${failed.stdout ?? ''}\n${failed.stderr ?? ''}\n${failed.killed === true ? 'Délai dépassé' : errorText(cause)}`;
+      output = `${failed.stdout ?? ''}\n${failed.stderr ?? ''}\n${failed.killed === true ? 'Délai dépassé' : errorMessage(cause)}`;
     }
     await this.check(agent);
     // Exit 0 without a new version (e.g. a CLI that only reports) is not a success.

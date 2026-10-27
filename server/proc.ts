@@ -73,6 +73,12 @@ export function signalProcesses(processes: Iterable<ProcessInfo>, signal: NodeJS
   }
 }
 
+/** SIGTERM through `kill` now, SIGKILL after `delayMs` unless the returned timer is cleared first. */
+export function killWithEscalation(kill: (signal: NodeJS.Signals) => void, delayMs: number): NodeJS.Timeout {
+  kill('SIGTERM');
+  return setTimeout(() => kill('SIGKILL'), delayMs);
+}
+
 // Holders are found by their command line, so one survives even if its socket file is gone.
 export function findProcessesByArgument(argument: string): ProcessInfo[] {
   const found: ProcessInfo[] = [];
@@ -87,4 +93,16 @@ export function findProcessesByArgument(argument: string): ProcessInfo[] {
     if (info !== null) found.push(info);
   }
   return found;
+}
+
+// Like findProcessesByArgument, but also requires `entry` (`NAME=value`) in the initial environment, which
+// a program merely naming the same file (an editor, `tail -f`) does not carry.
+export function findProcessesByArgumentAndEnvironment(argument: string, entry: string): ProcessInfo[] {
+  return findProcessesByArgument(argument).filter((info) => {
+    try {
+      return readFileSync(`/proc/${info.pid}/environ`, 'utf8').split('\0').includes(entry);
+    } catch {
+      return false;
+    }
+  });
 }

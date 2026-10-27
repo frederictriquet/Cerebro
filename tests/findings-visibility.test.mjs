@@ -12,8 +12,8 @@ const { CerebroDatabase } = await import('../server/db.ts');
 const { SessionManager } = await import('../server/sessions.ts');
 const { createServices } = await import('../server/services.ts');
 const { importFindings, saveReport } = await import('../server/findings.ts');
-const { parseEventsMessage, parseSession } = await import('../web/src/types.ts');
-const { isAwaiting, needsAttention } = await import('../web/src/format.ts');
+const { parseEventsMessage, parseSession } = await import('../shared/types.ts');
+const { attentionCounts, isAwaiting, needsAttention } = await import('../web/src/format.ts');
 const { isDormant } = await import('../shared/sessions.ts');
 const { parseHash, parseMachine } = await import('../web/src/route.ts');
 const { showFindingsNotification, updateAttentionIndicators } = await import('../web/src/notify.ts');
@@ -83,6 +83,21 @@ test('all session lists expose existing unimported findings across viewing, part
   } finally {
     db.close();
   }
+});
+
+test('attention counts share one predicate: pending findings alone count, a seen waiting session does not', () => {
+  const session = (status, attention, pendingFindings) => ({ status, attention, pendingFindings });
+  assert.deepEqual(
+    attentionCounts([
+      session('exited', false, 2),
+      session('waiting', true, 0),
+      session('idle', true, 1),
+      session('waiting', false, 0),
+      session('running', false, 0),
+    ]),
+    { total: 3, waiting: 1, pendingFindings: 3 },
+  );
+  assert.deepEqual(attentionCounts([]), { total: 0, waiting: 0, pendingFindings: 0 });
 });
 
 test('a review with pending findings stays visible and is excluded from the dormant-session purge', async (t) => {

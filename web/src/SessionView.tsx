@@ -1,46 +1,46 @@
-import { AgentLabel } from './AgentLabel.tsx';
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ClipboardEvent,
-  type FormEvent,
-  type KeyboardEvent,
-} from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useLatest } from './use-latest.ts';
-import type { SavedReport } from '../../server/findings.ts';
 import { FindingsNotice, FindingsPanel } from './Findings.tsx';
-import type { Provenance } from '../../server/provenance.ts';
-import { api, clipboardImage, uploadImage } from './api.ts';
-import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
+import { apiParsed, uploadImage } from './api.ts';
+import { useAsyncAction } from './async-action.ts';
+import { AttachmentStrip, useAttachedField } from './attachments.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { AddTaskDialog, LaunchSessionDialog } from './Dialog.tsx';
-import { displayStatus, MODE_LABEL, STATUS_LABEL, sessionTitle } from './format.ts';
+import {
+  displayStatus,
+  errorMessage,
+  MODE_LABEL,
+  SESSION_TASKS_STATE_LABEL,
+  STATUS_LABEL,
+  sessionTitle,
+} from './format.ts';
 import { SessionGitActions } from './GitActions.tsx';
-import { SessionProtection, SESSION_PROTECTED_HINT } from './SessionProtection.tsx';
-import { go, href, parseHash, useNow } from './route.ts';
+import { SessionActions } from './SessionActions.tsx';
+import { SessionMeta } from './SessionMeta.tsx';
+import { SessionProtection } from './SessionProtection.tsx';
+import { go, href, parseHash, replaceRoute } from './route.ts';
+import { sessionIsWatched } from './notify.ts';
+import { useNow, usePolling } from './polling.tsx';
 import { StatusDot } from './StatusDot.tsx';
-import { SessionTasksPanel, useSessionTasks, sessionTasksState, TASK_STATE_LABELS } from './SessionTasks.tsx';
+import { SessionTasksPanel, useSessionTasks, sessionTasksState } from './SessionTasks.tsx';
 import { useStore } from './store.tsx';
+import { ErrorBoundary } from './ErrorBoundary.tsx';
 import { Term, type TermApi } from './Term.tsx';
-import { RELEASE_HINT, WorktreeLabel, resumeBlockedReason } from './WorktreeLabel.tsx';
+import { resumeBlockedReason } from './WorktreeLabel.tsx';
 import { SessionEpicBadge } from './SessionEpicBadge.tsx';
+import { parseSavedReports, type SavedReport } from '../../shared/backlog.ts';
+import { parseProvenance, type Provenance } from '../../shared/git.ts';
 
 type SessionDrawer = 'provenance' | 'findings' | 'tasks' | null;
 
 function useFindingsReports(sessionId: string) {
   const [reports, setReports] = useState<SavedReport[]>([]);
-  const refresh = useCallback(
-    async (): Promise<void> => setReports(await api<SavedReport[]>(`/api/sessions/${sessionId}/findings`)),
+  const fetchReports = useCallback(
+    () => apiParsed(`/api/sessions/${sessionId}/findings`, parseSavedReports),
     [sessionId],
   );
-  useEffect(() => {
-    setReports([]);
-    void refresh().catch(() => {});
-    const timer = window.setInterval(() => void refresh().catch(() => {}), 3000);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+  useEffect(() => setReports([]), [sessionId]);
+  const refresh = usePolling(fetchReports, 3000, { onData: setReports });
   return { reports, refresh };
 }
 
@@ -49,10 +49,10 @@ function useProvenance(sessionId: string) {
   const [error, setError] = useState<string | null>(null);
   const refresh = useCallback(async (): Promise<void> => {
     try {
-      setData(await api<Provenance>(`/api/sessions/${sessionId}/provenance`));
+      setData(await apiParsed(`/api/sessions/${sessionId}/provenance`, parseProvenance));
       setError(null);
     } catch (cause) {
-      setError(String(cause));
+      setError(errorMessage(cause));
     }
   }, [sessionId]);
   useEffect(() => {
@@ -160,6 +160,13 @@ function TitleEditor({ sessionId, title }: { sessionId: string; title: string })
   const [draft, setDraft] = useState(title);
   const [error, setError] = useState<string | null>(null);
   const saving = useRef(false);
+  const { run: rename } = useAsyncAction(
+    async (next: string) => {
+      await renameSession(sessionId, next);
+      setEditing(false);
+    },
+    { fallback: 'Renommage impossible', onError: setError },
+  );
 
   useEffect(() => {
     if (!editing) setDraft(title);
@@ -185,28 +192,28 @@ function TitleEditor({ sessionId, title }: { sessionId: string; title: string })
       return;
     }
     if (next === title) {
+      saving.current = false;
       setEditing(false);
       setError(null);
       return;
     }
     saving.current = true;
-    setError(null);
-    try {
-      await renameSession(sessionId, next);
-      setEditing(false);
-    } catch (err) {
-      saving.current = false;
-      setError(err instanceof Error ? err.message : 'Renommage impossible');
-    }
+    await rename(next);
+    saving.current = false;
+  };
+
+  const startEditing = (): void => {
+    saving.current = false;
+    setEditing(true);
   };
 
   if (!editing) {
     return (
       <>
-        <h1 title="Double-clic pour renommer" onDoubleClick={() => setEditing(true)}>
+        <h1 title="Double-clic pour renommer" onDoubleClick={startEditing}>
           {sessionTitle(title)}
         </h1>
-        <button type="button" className="btn icon" aria-label="Renommer" onClick={() => setEditing(true)}>
+        <button type="button" className="btn icon" aria-label="Renommer" onClick={startEditing}>
           <PencilIcon />
         </button>
       </>
@@ -291,36 +298,27 @@ function QuickReply({
     };
   }, []);
 
+  // Une touche confirmée part après le délai de DelayedActionButton : l'état courant est relu via les refs.
+  // Démontée (changement de session), elle est abandonnée : le terminal joint serait celui d'une autre session.
   const press = (key: (typeof QUICK_KEYS)[number]): void => {
-    if (disabled) return;
-    if (key.confirm && !window.confirm('Envoyer Ctrl+C à cette session ?')) return;
+    if (disabledRef.current || !mounted.current) return;
     setNote(null);
     const ok = key.arrow !== undefined ? sendArrow(key.arrow) : send(key.data);
     if (!ok) setNote('Terminal non connecté');
   };
 
-  const images = useImageAttachments((image) => uploadImage(sessionId, image));
-
   // « [Image #N] » est inséré au curseur ; le chemin réel est substitué à l'envoi.
-  const attach = (image: File): void => {
-    const input = inputRef.current;
-    const start = input?.selectionStart ?? text.length;
-    const end = input?.selectionEnd ?? start;
-    setNote(null);
-    const token = images.add(image, (failed, message) => {
-      if (!mounted.current) return;
-      setText((current) => removeToken(current, failed));
-      setNote(message);
-    });
-    setText((current) => insertToken(current, start, end, token));
-  };
-
-  const onPaste = (e: ClipboardEvent<HTMLInputElement>): void => {
-    const image = clipboardImage(e.clipboardData);
-    if (!image) return;
-    e.preventDefault();
-    attach(image);
-  };
+  const { images, attach, fieldProps, stripProps } = useAttachedField({
+    upload: (image) => uploadImage(sessionId, image),
+    text,
+    setText: (change) => {
+      setText(change);
+      setNote(null);
+    },
+    onError: (message) => {
+      if (mounted.current) setNote(message);
+    },
+  });
 
   const onSubmit = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
@@ -344,11 +342,22 @@ function QuickReply({
   return (
     <div className="quick-bar">
       <div className="quick-keys">
-        {QUICK_KEYS.map((key) => (
-          <button key={key.label} type="button" className="btn" disabled={disabled} onClick={() => press(key)}>
-            {key.label}
-          </button>
-        ))}
+        {QUICK_KEYS.map((key) =>
+          key.confirm ? (
+            <DelayedActionButton
+              key={key.label}
+              disabled={disabled}
+              title={`Envoie ${key.label} à cette session après 5 s (second clic ou Échap pour annuler)`}
+              onAction={() => press(key)}
+            >
+              {key.label}
+            </DelayedActionButton>
+          ) : (
+            <button key={key.label} type="button" className="btn" disabled={disabled} onClick={() => press(key)}>
+              {key.label}
+            </button>
+          ),
+        )}
       </div>
       <form className="quick-send" onSubmit={(e) => void onSubmit(e)}>
         <input
@@ -358,12 +367,7 @@ function QuickReply({
           autoComplete="off"
           placeholder="Envoyer un message (Ctrl+V pour joindre une capture d’écran)"
           aria-label="Envoyer un message"
-          onPaste={onPaste}
-          onChange={(e) => {
-            setText(e.target.value);
-            images.prune(e.target.value);
-            setNote(null);
-          }}
+          {...fieldProps}
         />
         <input
           ref={fileRef}
@@ -373,7 +377,7 @@ function QuickReply({
           onChange={(e) => {
             const file = e.target.files?.[0];
             e.target.value = '';
-            if (file) attach(file);
+            if (file) attach(file, inputRef.current);
           }}
         />
         <button
@@ -394,13 +398,7 @@ function QuickReply({
           Envoyer
         </button>
       </form>
-      <AttachmentStrip
-        items={images.items}
-        onRemove={(item) => {
-          images.remove(item.n);
-          setText((current) => removeToken(current, item.token));
-        }}
-      />
+      <AttachmentStrip {...stripProps} />
       {note ? <p className="form-error">{note}</p> : null}
     </div>
   );
@@ -411,6 +409,13 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const session = sessions.find((s) => s.id === sessionId);
   const project = session ? projects.find((p) => p.id === session.projectId) : undefined;
   const [error, setError] = useState<string | null>(null);
+  const { run: act } = useAsyncAction(
+    async (fn: () => Promise<unknown>, thenGo?: string) => {
+      await fn();
+      if (thenGo !== undefined) go(thenGo);
+    },
+    { fallback: 'Action impossible', onError: setError },
+  );
   const now = useNow();
   const live = session !== undefined && session.status !== 'exited';
   const termApi = useRef<TermApi | null>(null);
@@ -447,7 +452,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       route.sessionId === sessionId &&
       route.panel === 'findings'
     ) {
-      window.history.replaceState(window.history.state, '', href(`#/s/${sessionId}`));
+      replaceRoute(`#/s/${sessionId}`);
     }
     setDrawer(next);
   };
@@ -469,6 +474,22 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     void markSeen(sessionId);
   }, [sessionId, markSeen]);
 
+  // Une alerte arrivée fenêtre cachée ou non focalisée reste « À traiter » ; elle est acquittée
+  // quand l'utilisateur revient effectivement sur la session.
+  const attention = session?.attention === true;
+  useEffect(() => {
+    if (!attention) return;
+    const acknowledge = (): void => {
+      if (sessionIsWatched(sessionId)) void markSeen(sessionId);
+    };
+    window.addEventListener('focus', acknowledge);
+    document.addEventListener('visibilitychange', acknowledge);
+    return () => {
+      window.removeEventListener('focus', acknowledge);
+      document.removeEventListener('visibilitychange', acknowledge);
+    };
+  }, [attention, sessionId, markSeen]);
+
   if (!session) {
     return (
       <div className="pane padded">
@@ -479,18 +500,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   }
 
   const shown = displayStatus(session, now);
-  const isolated = session.worktree !== null && !session.worktree.removed;
   const resumeBlocked = resumeBlockedReason(session.worktree);
-
-  const act = async (fn: () => Promise<unknown>, thenGo?: string): Promise<void> => {
-    setError(null);
-    try {
-      await fn();
-      if (thenGo !== undefined) go(thenGo);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Action impossible');
-    }
-  };
 
   return (
     <div className="pane session-pane">
@@ -501,55 +511,61 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             <TitleEditor key={session.id} sessionId={session.id} title={session.title} />
           </div>
           <p className="session-meta">
-            <span className="pill">
-              <AgentLabel agent={session.agent} />
-            </span>
-            <span className="pill">{MODE_LABEL[session.mode]}</span>
-            {session.model !== null ? (
-              <span className="pill">
-                {agents.find((a) => a.agent === session.agent)?.models.find((m) => m.value === session.model)?.label ??
-                  session.model}
-              </span>
-            ) : null}
-            {session.effort !== null ? <span className="pill">effort {session.effort}</span> : null}
-            {provenance.data ? (
-              <button
-                type="button"
-                className={`pill pill-toggle${drawer === 'provenance' ? ' active' : ''}`}
-                aria-expanded={drawer === 'provenance'}
-                title={`${WORKSPACE_PILL[provenance.data.workspace.mode].title} — cliquer pour le détail`}
-                onClick={() => toggleDrawer('provenance')}
-              >
-                {WORKSPACE_PILL[provenance.data.workspace.mode].label}
-              </button>
-            ) : null}
-            <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
-            <button
-              type="button"
-              className={`pill pill-toggle session-tasks-indicator${drawer === 'tasks' ? ' active' : ''}`}
-              data-state={sessionTasks.error ? 'empty' : taskState}
-              aria-expanded={drawer === 'tasks'}
-              title={`${sessionTasks.error ? 'Suivi indisponible' : TASK_STATE_LABELS[taskState]} · nombre terminé / total`}
-              aria-label={`Sous-tâches : ${sessionTasks.error ? 'suivi indisponible' : TASK_STATE_LABELS[taskState]}`}
-              onClick={() => toggleDrawer('tasks')}
+            <SessionMeta
+              session={session}
+              status={shown}
+              beforeStatus={
+                <>
+                  <span className="pill">{MODE_LABEL[session.mode]}</span>
+                  {session.model !== null ? (
+                    <span className="pill">
+                      {agents.find((a) => a.agent === session.agent)?.models.find((m) => m.value === session.model)
+                        ?.label ?? session.model}
+                    </span>
+                  ) : null}
+                  {session.effort !== null ? <span className="pill">effort {session.effort}</span> : null}
+                  {provenance.data ? (
+                    <button
+                      type="button"
+                      className={`pill pill-toggle${drawer === 'provenance' ? ' active' : ''}`}
+                      aria-expanded={drawer === 'provenance'}
+                      title={`${WORKSPACE_PILL[provenance.data.workspace.mode].title} — cliquer pour le détail`}
+                      onClick={() => toggleDrawer('provenance')}
+                    >
+                      {WORKSPACE_PILL[provenance.data.workspace.mode].label}
+                    </button>
+                  ) : null}
+                </>
+              }
+              afterStatus={
+                <button
+                  type="button"
+                  className={`pill pill-toggle session-tasks-indicator${drawer === 'tasks' ? ' active' : ''}`}
+                  data-state={sessionTasks.error ? 'empty' : taskState}
+                  aria-expanded={drawer === 'tasks'}
+                  title={`${sessionTasks.error ? 'Suivi indisponible' : SESSION_TASKS_STATE_LABEL[taskState]} · nombre terminé / total`}
+                  aria-label={`Sous-tâches : ${sessionTasks.error ? 'suivi indisponible' : SESSION_TASKS_STATE_LABEL[taskState]}`}
+                  onClick={() => toggleDrawer('tasks')}
+                >
+                  Sous-tâches
+                  {sessionTasks.loaded
+                    ? ` · ${sessionTasks.tasks.filter((task) => task.status === 'done').length}/${sessionTasks.tasks.length}`
+                    : ''}
+                  {sessionTasks.tasks.some((task) => task.status === 'blocked') ? ' · blocage' : ''}
+                  {sessionTasks.error ? ' · indisponible' : ''}
+                </button>
+              }
             >
-              Sous-tâches
-              {sessionTasks.loaded
-                ? ` · ${sessionTasks.tasks.filter((task) => task.status === 'done').length}/${sessionTasks.tasks.length}`
-                : ''}
-              {sessionTasks.tasks.some((task) => task.status === 'blocked') ? ' · blocage' : ''}
-              {sessionTasks.error ? ' · indisponible' : ''}
-            </button>
-            <WorktreeLabel worktree={session.worktree} />
-            <SessionEpicBadge session={session} />
-            {project ? (
-              <a className="project-crumb" href={href(`#/p/${project.id}`)}>
-                {project.name}
-              </a>
-            ) : null}
-            {session.status === 'exited' && session.exitCode !== null ? (
-              <span className="pill">code {session.exitCode}</span>
-            ) : null}
+              <SessionEpicBadge session={session} />
+              {project ? (
+                <a className="project-crumb" href={href(`#/p/${project.id}`)}>
+                  {project.name}
+                </a>
+              ) : null}
+              {session.status === 'exited' && session.exitCode !== null ? (
+                <span className="pill">code {session.exitCode}</span>
+              ) : null}
+            </SessionMeta>
           </p>
         </div>
         <SessionProtection session={session} onError={setError} />
@@ -561,40 +577,14 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           ) : null}
           <div className="row-actions">
             <SessionGitActions sessionId={session.id} />
-            {session.status !== 'exited' ? (
-              <button
-                type="button"
-                className="btn"
-                title={isolated ? `Arrête la conversation. ${RELEASE_HINT}` : undefined}
-                onClick={() => void act(() => killSession(session.id))}
-              >
-                Arrêter
-              </button>
-            ) : null}
-            {session.status === 'exited' && session.agentSessionId ? (
-              <button
-                type="button"
-                className="btn primary"
-                disabled={resumeBlocked !== null}
-                title={resumeBlocked ?? undefined}
-                onClick={() => void act(() => resumeSession(session.id))}
-              >
-                Reprendre
-              </button>
-            ) : null}
-            <DelayedActionButton
-              disabled={session.protected}
-              title={
-                session.protected
-                  ? SESSION_PROTECTED_HINT
-                  : isolated
-                    ? `Supprime la conversation. ${RELEASE_HINT} Sinon, elle reste dans l’inventaire des copies de travail.`
-                    : 'Supprime la conversation'
-              }
-              onAction={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}
-            >
-              Supprimer
-            </DelayedActionButton>
+            <SessionActions
+              session={session}
+              emphasizeResume
+              explainDelete
+              onKill={() => void act(() => killSession(session.id))}
+              onResume={() => void act(() => resumeSession(session.id))}
+              onDelete={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}
+            />
           </div>
         </div>
       </header>
@@ -604,11 +594,13 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           {resumeBlocked}
         </p>
       ) : null}
-      <FindingsNotice
-        reports={findings.reports}
-        expanded={drawer === 'findings'}
-        onToggle={() => toggleDrawer('findings')}
-      />
+      <ErrorBoundary zone="Findings" resetKey={session.id}>
+        <FindingsNotice
+          reports={findings.reports}
+          expanded={drawer === 'findings'}
+          onToggle={() => toggleDrawer('findings')}
+        />
+      </ErrorBoundary>
       {drawer !== null ? (
         <section
           id={drawer === 'findings' ? 'session-findings' : undefined}
@@ -623,19 +615,21 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           >
             ×
           </button>
-          {drawer === 'tasks' ? (
-            <SessionTasksPanel key={session.id} {...sessionTasks} />
-          ) : drawer === 'provenance' ? (
-            <ProvenancePanel {...provenance} />
-          ) : (
-            <FindingsPanel
-              key={session.id}
-              sessionId={session.id}
-              epic={session.epic}
-              reports={findings.reports}
-              refresh={findings.refresh}
-            />
-          )}
+          <ErrorBoundary zone="Panneau" resetKey={`${session.id}:${drawer}`}>
+            {drawer === 'tasks' ? (
+              <SessionTasksPanel key={session.id} {...sessionTasks} />
+            ) : drawer === 'provenance' ? (
+              <ProvenancePanel {...provenance} />
+            ) : (
+              <FindingsPanel
+                key={session.id}
+                sessionId={session.id}
+                epic={session.epic}
+                reports={findings.reports}
+                refresh={findings.refresh}
+              />
+            )}
+          </ErrorBoundary>
         </section>
       ) : null}
       <div className="term-wrap">

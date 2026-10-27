@@ -1,5 +1,5 @@
-import { AGENTS, type Agent, type Session } from './types.ts';
-import type { SessionTokenUsage, TokenCounts } from './api.ts';
+import { AGENTS, type Agent, type Session } from '../../shared/types.ts';
+import type { SessionTokenUsage, TokenCounts } from '../../shared/machine.ts';
 
 export type UsagePeriod = '7d' | '30d' | 'all';
 

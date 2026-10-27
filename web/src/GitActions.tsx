@@ -1,17 +1,23 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { api, apiBase } from './api.ts';
-import type { PreparedReview } from '../../server/review.ts';
-import { Modal } from './Dialog.tsx';
-import { NewSessionForm } from './NewSessionForm.tsx';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { api, apiParsed, apiPath } from './api.ts';
+import { LaunchDialog, Modal, usePrepared } from './Dialog.tsx';
 import { useStore } from './store.tsx';
-import type { SessionGitContext, SessionGitSnapshot } from '../../server/session-git.ts';
-import type { GitInfo } from './types.ts';
-import type { PushOperation, PushRemoteResult } from '../../server/git-push.ts';
+import { pushBlockedReason, type GitInfo } from '../../shared/types.ts';
 import './automatic-commits.css';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
-
-const canPush = (git: GitInfo): boolean => (git.ahead ?? 0) > 0 || (git.hasCommits && !git.hasUpstream);
+import { errorMessage, plural } from './format.ts';
+import { usePolling } from './polling.tsx';
+import {
+  parseOptionalPushOperation,
+  parsePreparedReview,
+  parsePushOperation,
+  parseSessionGitContext,
+  parseSessionGitSnapshot,
+  type PushOperation,
+  type PushRemoteResult,
+  type SessionGitContext,
+} from '../../shared/git.ts';
 
 export function GitActions({
   projectId,
@@ -25,13 +31,13 @@ export function GitActions({
   const [open, setOpen] = useState<'review' | 'single' | 'atomic' | 'push' | null>(null);
   const close = (): void => setOpen(null);
   const hasChanges = git.dirty > 0;
-  const pushable = canPush(git);
+  const pushBlocked = pushBlockedReason(git);
 
   return (
     <>
       <span className="git-actions" role="group" aria-label="Changements à commiter">
         <span className={hasChanges ? 'git-dirty' : 'meta'}>
-          {git.dirty} fichier{git.dirty === 1 ? '' : 's'} modifié{git.dirty === 1 ? '' : 's'}
+          {plural(git.dirty, 'fichier modifié', 'fichiers modifiés', { zeroPlural: true })}
         </span>
         <button
           type="button"
@@ -60,13 +66,13 @@ export function GitActions({
       </span>
       <span className="git-actions git-actions-publish" role="group" aria-label="Publication des commits">
         {pendingCommits}
-        {!git.hasUpstream ? <span className="meta">pas d’upstream</span> : null}
+        {git.branch !== null && !git.hasUpstream ? <span className="meta">pas d’upstream</span> : null}
         <button
           type="button"
           className="btn"
           onClick={() => setOpen('push')}
-          disabled={!pushable}
-          title={pushable ? 'Pousser les commits locaux vers les remotes' : 'Rien à pousser'}
+          disabled={pushBlocked !== null}
+          title={pushBlocked ?? 'Pousser les commits locaux vers les remotes'}
         >
           Push
         </button>
@@ -88,48 +94,39 @@ const REMOTE_STATUS: Record<PushRemoteResult['status'], string> = {
 };
 
 function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
-  const [machineBase] = useState(apiBase);
   const [operation, setOperation] = useState<PushOperation | null>(null);
   const [error, setError] = useState<string | null>(null);
   const start = useRef<Promise<PushOperation> | null>(null);
   useEffect(() => {
     let disposed = false;
-    let timer: number | undefined;
-    const current = (): boolean => !disposed && apiBase() === machineBase;
-    const fail = (cause: unknown): void => {
-      if (current()) setError(cause instanceof Error ? cause.message : String(cause));
-    };
-    const poll = async (): Promise<void> => {
-      if (!current()) return;
-      try {
-        const value = await api<PushOperation | null>(`/api/projects/${projectId}/git/push`);
-        if (!current()) return;
-        setOperation(value);
-        if (value?.status !== 'running') return;
-      } catch (cause) {
-        fail(cause);
-        return;
-      }
-      timer = window.setTimeout(() => void poll(), 500);
-    };
-    if (apiBase() !== machineBase) return;
     // Reuse the same request in React StrictMode; a double submission returns the running operation.
-    start.current ??= api<PushOperation>(`/api/projects/${projectId}/git/push`, {
+    start.current ??= apiParsed(`/api/projects/${projectId}/git/push`, parsePushOperation, {
       method: 'POST',
       body: JSON.stringify({ allowDirty: true }),
     });
-    void start.current
-      .then((value) => {
-        if (!current()) return;
-        setOperation(value);
-        if (value.status === 'running') timer = window.setTimeout(() => void poll(), 500);
-      })
-      .catch(fail);
+    void start.current.then(
+      (value) => {
+        if (!disposed) setOperation(value);
+      },
+      (cause) => {
+        if (!disposed) setError(errorMessage(cause));
+      },
+    );
     return () => {
       disposed = true;
-      window.clearTimeout(timer);
     };
-  }, [projectId, machineBase]);
+  }, [projectId]);
+  // Suivi tant que le push tourne ; une erreur de suivi l'interrompt.
+  const load = useCallback(
+    () => apiParsed(`/api/projects/${projectId}/git/push`, parseOptionalPushOperation),
+    [projectId],
+  );
+  usePolling(load, 500, {
+    enabled: operation?.status === 'running' && error === null,
+    immediate: false,
+    onData: setOperation,
+    onError: (cause) => setError(errorMessage(cause)),
+  });
   const running = !error && (!operation || operation.status === 'running');
   return (
     <Modal title="Push" onClose={onClose}>
@@ -190,20 +187,28 @@ function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => 
 }
 
 function RepoReviewDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
-  const [review, setReview] = useState<PreparedReview | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    void api<PreparedReview>(`/api/projects/${projectId}/git/prepare-review`, { method: 'POST' })
-      .then(setReview)
-      .catch((cause) => setError(String(cause)));
-  }, [projectId]);
+  const prepare = useCallback(
+    () => apiParsed(`/api/projects/${projectId}/git/prepare-review`, parsePreparedReview, { method: 'POST' }),
+    [projectId],
+  );
+  const { value: review, error } = usePrepared(prepare);
   return (
-    <Modal title="Périmètre de code review" onClose={onClose}>
-      {!review && !error ? (
-        <p>
-          <ActivityStatus>Préparation du périmètre de review…</ActivityStatus>
-        </p>
-      ) : null}
+    <LaunchDialog
+      title="Périmètre de code review"
+      projectId={projectId}
+      ready={review !== null}
+      error={error}
+      initialPrompt="Recherche les bugs dans le périmètre préparé par Cerebro."
+      launchDisabled={review?.scope === 'empty'}
+      onLaunch={async (spec) => {
+        await api(`/api/projects/${projectId}/git/review`, {
+          method: 'POST',
+          body: JSON.stringify({ reviewId: review!.id, launch: spec }),
+        });
+        onClose();
+      }}
+      onClose={onClose}
+    >
       {review ? (
         <>
           <p>
@@ -215,24 +220,9 @@ function RepoReviewDialog({ projectId, onClose }: { projectId: string; onClose: 
             <summary>Contexte Git capturé</summary>
             <pre>{review.context || 'Aucun changement à relire.'}</pre>
           </details>
-          <NewSessionForm
-            className="bare"
-            projectId={projectId}
-            initialPrompt="Recherche les bugs dans le périmètre préparé par Cerebro."
-            launchDisabled={review.scope === 'empty'}
-            onLaunch={async (spec) => {
-              await api(`/api/projects/${projectId}/git/review`, {
-                method: 'POST',
-                body: JSON.stringify({ reviewId: review.id, launch: spec }),
-              });
-              onClose();
-            }}
-            onCancel={onClose}
-          />
         </>
       ) : null}
-      {error ? <p className="form-error">{error}</p> : null}
-    </Modal>
+    </LaunchDialog>
   );
 }
 
@@ -245,35 +235,43 @@ function SessionReviewDialog({
   projectId: string;
   onClose: () => void;
 }) {
-  const [snapshot, setSnapshot] = useState<SessionGitSnapshot | null>(null);
-  const [selection, setSelection] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    void api<SessionGitSnapshot>(`/api/sessions/${sessionId}/git/prepare-commit`, { method: 'POST' })
-      .then((s) => {
-        setSnapshot(s);
-        setSelection(
-          JSON.stringify(
-            {
-              snapshotId: s.id,
-              selection: s.files.filter((f) => !f.warnings.length).map((f) => ({ path: f.path, all: true })),
-              commits: s.provenance.commits.filter((c) => c.certainty === 'workspace').map((c) => c.hash),
-              acknowledged: [],
-            },
-            null,
-            2,
-          ),
-        );
-      })
-      .catch((cause) => setError(String(cause)));
-  }, [sessionId]);
+  const prepare = useCallback(
+    () => apiParsed(`/api/sessions/${sessionId}/git/prepare-commit`, parseSessionGitSnapshot, { method: 'POST' }),
+    [sessionId],
+  );
+  const { value: snapshot, error } = usePrepared(prepare);
+  // Sélection proposée par défaut tant que l'utilisateur ne l'a pas modifiée.
+  const [edited, setEdited] = useState<string | null>(null);
+  const selection =
+    edited ??
+    (snapshot
+      ? JSON.stringify(
+          {
+            snapshotId: snapshot.id,
+            selection: snapshot.files.filter((f) => !f.warnings.length).map((f) => ({ path: f.path, all: true })),
+            commits: snapshot.provenance.commits.filter((c) => c.certainty === 'workspace').map((c) => c.hash),
+            acknowledged: [],
+          },
+          null,
+          2,
+        )
+      : '');
   return (
-    <Modal title="Périmètre de review de la session" onClose={onClose}>
-      {!snapshot && !error ? (
-        <p>
-          <ActivityStatus>Préparation du périmètre de review…</ActivityStatus>
-        </p>
-      ) : null}
+    <LaunchDialog
+      title="Périmètre de review de la session"
+      projectId={projectId}
+      ready={snapshot !== null}
+      error={error}
+      initialPrompt="Review du périmètre sélectionné"
+      onLaunch={async (spec) => {
+        await api(`/api/sessions/${sessionId}/git/review`, {
+          method: 'POST',
+          body: JSON.stringify({ selection: JSON.parse(selection), launch: spec }),
+        });
+        onClose();
+      }}
+      onClose={onClose}
+    >
       {snapshot ? (
         <>
           <p>{snapshot.scopeNotice}</p>
@@ -301,40 +299,21 @@ function SessionReviewDialog({
             aria-label="Sélection de review JSON"
             rows={12}
             value={selection}
-            onChange={(e) => setSelection(e.target.value)}
-          />
-          <NewSessionForm
-            className="bare"
-            projectId={projectId}
-            initialPrompt="Review du périmètre sélectionné"
-            onLaunch={async (spec) => {
-              try {
-                await api(`/api/sessions/${sessionId}/git/review`, {
-                  method: 'POST',
-                  body: JSON.stringify({ selection: JSON.parse(selection), launch: spec }),
-                });
-                onClose();
-              } catch (cause) {
-                setError(String(cause));
-                throw cause;
-              }
-            }}
-            onCancel={onClose}
+            onChange={(e) => setEdited(e.target.value)}
           />
         </>
       ) : null}
-      {error ? <p className="form-error">{error}</p> : null}
-    </Modal>
+    </LaunchDialog>
   );
 }
 
 export function SessionGitActions({ sessionId }: { sessionId: string }) {
-  const machineBase = apiBase();
-  // Une autre session ou machine repart d'un état vierge : ni le contexte ni le dialogue de la précédente.
-  return <SessionGitActionsPanel key={`${machineBase}|${sessionId}`} sessionId={sessionId} machineBase={machineBase} />;
+  // Une autre session repart d'un état vierge : ni le contexte ni le dialogue de la précédente. Changer de machine
+  // remonte déjà tout l'arbre (StoreProvider par machine, App.tsx).
+  return <SessionGitActionsPanel key={sessionId} sessionId={sessionId} />;
 }
 
-function SessionGitActionsPanel({ sessionId, machineBase }: { sessionId: string; machineBase: string }) {
+function SessionGitActionsPanel({ sessionId }: { sessionId: string }) {
   const { sessions } = useStore();
   const session = sessions.find((s) => s.id === sessionId);
   const [open, setOpen] = useState<'review' | 'commit' | null>(null);
@@ -342,18 +321,17 @@ function SessionGitActionsPanel({ sessionId, machineBase }: { sessionId: string;
   const [contextError, setContextError] = useState<string | null>(null);
   useEffect(() => {
     let disposed = false;
-    void api<SessionGitContext>(`/api/sessions/${sessionId}/git/context`)
+    void apiParsed(apiPath`/api/sessions/${sessionId}/git/context`, parseSessionGitContext)
       .then((value) => {
-        if (!disposed && apiBase() === machineBase) setContext(value);
+        if (!disposed) setContext(value);
       })
       .catch((cause) => {
-        if (!disposed && apiBase() === machineBase)
-          setContextError(cause instanceof Error ? cause.message : String(cause));
+        if (!disposed) setContextError(errorMessage(cause));
       });
     return () => {
       disposed = true;
     };
-  }, [sessionId, machineBase]);
+  }, [sessionId]);
   if (!session) return null;
   const close = (): void => setOpen(null);
   const shared = context?.mode === 'shared';

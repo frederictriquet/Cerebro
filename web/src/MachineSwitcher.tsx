@@ -3,24 +3,21 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type Dispatch,
   type ReactNode,
   type SetStateAction,
 } from 'react';
-import {
-  getMachines,
-  wsUrl,
-  type Compatibility,
-  type MachinesInfo,
-  type RemoteVersionStatus,
-  type VersionInfo,
-} from './api.ts';
+import { getMachines, wsUrl } from './api.ts';
 import { playAlert, readMuted, showAlertNotification, showFindingsNotification } from './notify.ts';
-import { needsAttention } from './format.ts';
+import { attentionCounts, plural } from './format.ts';
+import { openReconnectingSocket } from './reconnectingSocket.ts';
 import { goMachine, useMachine } from './route.ts';
-import { useStore } from './store.tsx';
-import { parseEventsMessage, type Session } from './types.ts';
+import { usePolling } from './polling.tsx';
+import { upsertById, useStore } from './store.tsx';
+import { parseEventsMessage, type Session } from '../../shared/types.ts';
+import type { Compatibility, MachinesInfo, RemoteVersionStatus, VersionInfo } from '../../shared/machine.ts';
 
 interface WatchState {
   online: boolean;
@@ -39,70 +36,8 @@ interface MachineWatch {
   hidden: Record<string, WatchState>;
 }
 
-const MACHINE_ID = /^[a-z0-9-]{1,32}$/;
 const MACHINES_REFRESH_MS = 30_000;
-const COMPATIBILITIES: readonly Compatibility[] = ['same', 'compatible', 'incompatible', 'unknown'];
 const MachineWatchContext = createContext<MachineWatch>({ info: null, hidden: {} });
-
-interface AttentionCounts {
-  /** Sessions réclamant l'attention, tous types confondus. */
-  total: number;
-  /** Parmi elles, celles en attente d'une réponse/permission (type « question »). */
-  waiting: number;
-}
-
-function countAttention(list: Session[]): AttentionCounts {
-  let total = 0;
-  let waiting = 0;
-  for (const session of list) {
-    if (!needsAttention(session)) continue;
-    total += 1;
-    if (session.status === 'waiting') waiting += 1;
-  }
-  return { total, waiting };
-}
-
-function upsertSession(list: Session[], session: Session): Session[] {
-  const index = list.findIndex((item) => item.id === session.id);
-  if (index === -1) return [session, ...list];
-  const next = list.slice();
-  next[index] = session;
-  return next;
-}
-
-function usableVersion(value: unknown): VersionInfo | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const { version, commit } = value as Partial<Record<keyof VersionInfo, unknown>>;
-  if (typeof version !== 'string') return null;
-  return { version, commit: typeof commit === 'string' ? commit : null };
-}
-
-function usableStatus(value: unknown): RemoteVersionStatus | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const raw = value as Partial<Record<keyof RemoteVersionStatus, unknown>>;
-  const compatibility = COMPATIBILITIES.find((candidate) => candidate === raw.compatibility);
-  if (compatibility === undefined || typeof raw.checkedAt !== 'number') return null;
-  return {
-    version: usableVersion(raw.version),
-    compatibility,
-    reachable: raw.reachable === true,
-    error: typeof raw.error === 'string' ? raw.error : null,
-    checkedAt: raw.checkedAt,
-  };
-}
-
-function usableMachines(data: MachinesInfo): MachinesInfo | null {
-  if (typeof data !== 'object' || data === null) return null;
-  const name = data.local?.name;
-  if (typeof name !== 'string' || !Array.isArray(data.remotes)) return null;
-  const remotes: MachinesInfo['remotes'] = [];
-  for (const remote of data.remotes) {
-    if (typeof remote?.id !== 'string' || typeof remote.name !== 'string') continue;
-    if (remote.id === 'local' || !MACHINE_ID.test(remote.id)) continue;
-    remotes.push({ id: remote.id, name: remote.name, status: usableStatus(remote.status) });
-  }
-  return { local: { name, version: usableVersion(data.local.version) }, remotes };
-}
 
 export function versionLabel(info: VersionInfo): string {
   return info.commit === null ? info.version : `${info.version}+${info.commit}`;
@@ -149,14 +84,11 @@ function hiddenTargets(remoteIds: string[], current: string | null): WatchTarget
 
 function startWatcher(target: WatchTarget, setState: Dispatch<SetStateAction<Record<string, WatchState>>>): () => void {
   let stopped = false;
-  let retry = 0;
-  let socket: WebSocket | null = null;
-  let timer: ReturnType<typeof setTimeout> | undefined;
   let sessions: Session[] = [];
 
   const publish = (online: boolean): void => {
     if (stopped) return;
-    const { total, waiting } = countAttention(sessions);
+    const { total, waiting } = attentionCounts(sessions);
     setState((prev) => {
       const currentState = prev[target.key];
       if (
@@ -171,32 +103,20 @@ function startWatcher(target: WatchTarget, setState: Dispatch<SetStateAction<Rec
     });
   };
 
-  const connect = (): void => {
-    if (stopped) return;
-    const next = new WebSocket(wsUrl('/ws/events', target.machineBase));
-    socket = next;
-    next.addEventListener('open', () => {
-      if (stopped) return;
-      retry = 0;
+  const connection = openReconnectingSocket(wsUrl('/ws/events', target.machineBase), {
+    onOpen: () => {
       publish(true);
-    });
-    next.addEventListener('message', (ev) => {
-      if (stopped || typeof ev.data !== 'string') return;
-      let raw: unknown;
-      try {
-        raw = JSON.parse(ev.data) as unknown;
-      } catch {
-        return;
-      }
+    },
+    onMessage: (raw) => {
       const msg = parseEventsMessage(raw);
       if (!msg) return;
       switch (msg.type) {
         case 'snapshot':
           sessions = msg.sessions;
-          publish(next.readyState === WebSocket.OPEN);
+          publish(true);
           break;
         case 'session':
-          sessions = upsertSession(sessions, msg.session);
+          sessions = upsertById(sessions, msg.session, 'start');
           publish(true);
           break;
         case 'session-deleted':
@@ -204,13 +124,13 @@ function startWatcher(target: WatchTarget, setState: Dispatch<SetStateAction<Rec
           publish(true);
           break;
         case 'alert':
-          sessions = upsertSession(sessions, msg.session);
+          sessions = upsertById(sessions, msg.session, 'start');
           publish(true);
           showAlertNotification(msg.session, target.machineId);
           if (!readMuted()) playAlert(msg.session.status);
           break;
         case 'findings-available':
-          sessions = upsertSession(sessions, msg.session);
+          sessions = upsertById(sessions, msg.session, 'start');
           publish(true);
           showFindingsNotification(msg.session, target.machineId);
           if (!readMuted()) playAlert('idle');
@@ -218,24 +138,14 @@ function startWatcher(target: WatchTarget, setState: Dispatch<SetStateAction<Rec
         case 'projects':
           break;
       }
-    });
-    next.addEventListener('close', () => {
-      if (stopped) return;
+    },
+    onClose: () => {
       publish(false);
-      const delay = Math.min(8_000, 400 * 2 ** retry);
-      retry += 1;
-      timer = setTimeout(connect, delay);
-    });
-    next.addEventListener('error', () => {
-      next.close();
-    });
-  };
-
-  connect();
+    },
+  });
   return () => {
     stopped = true;
-    if (timer !== undefined) clearTimeout(timer);
-    socket?.close();
+    connection.close();
   };
 }
 
@@ -243,28 +153,16 @@ export function MachineWatchProvider({ children }: { children: ReactNode }) {
   const current = useMachine();
   const [info, setInfo] = useState<MachinesInfo | null>(null);
   const [hidden, setHidden] = useState<Record<string, WatchState>>({});
+  // Surveillances en cours par clé de machine : changer de machine n'arrête et ne lance que celles qui changent.
+  const watchers = useRef(new Map<string, () => void>());
 
   // Rechargée périodiquement : la version d'une machine distante change quand elle est mise à jour.
-  useEffect(() => {
-    let cancelled = false;
-    const load = (): void => {
-      void getMachines()
-        .then((data) => {
-          if (cancelled) return;
-          const parsed = usableMachines(data);
-          if (parsed) setInfo((prev) => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
-        })
-        .catch(() => {
-          /* pas de sélecteur si la liste est indisponible */
-        });
-    };
-    load();
-    const timer = window.setInterval(load, MACHINES_REFRESH_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
+  usePolling(getMachines, MACHINES_REFRESH_MS, {
+    onData: (parsed) => setInfo((prev) => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed)),
+    onError: () => {
+      /* pas de sélecteur si la liste est indisponible */
+    },
+  });
 
   // Clé stable : un changement de version ne doit pas rouvrir les WebSocket de surveillance.
   const remoteIds = info?.remotes.map((remote) => remote.id).join(',') ?? '';
@@ -282,11 +180,24 @@ export function MachineWatchProvider({ children }: { children: ReactNode }) {
       }
       return changed ? next : prev;
     });
-    const stops = wanted.map((target) => startWatcher(target, setHidden));
-    return () => {
-      for (const stop of stops) stop();
-    };
+    const running = watchers.current;
+    for (const [key, stop] of running) {
+      if (wantedKeys.has(key)) continue;
+      stop();
+      running.delete(key);
+    }
+    for (const target of wanted) {
+      if (!running.has(target.key)) running.set(target.key, startWatcher(target, setHidden));
+    }
   }, [remoteIds, current]);
+
+  useEffect(() => {
+    const running = watchers.current;
+    return () => {
+      for (const stop of running.values()) stop();
+      running.clear();
+    };
+  }, []);
 
   const value = useMemo(() => ({ info, hidden }), [info, hidden]);
   return <MachineWatchContext.Provider value={value}>{children}</MachineWatchContext.Provider>;
@@ -322,7 +233,7 @@ export function MachineSwitcher() {
         const watched = hidden[pill.id ?? 'local'];
         const online = active ? connected : (watched?.online ?? false);
         const counts = active
-          ? countAttention(sessions)
+          ? attentionCounts(sessions)
           : { total: watched?.attention ?? 0, waiting: watched?.waiting ?? 0 };
         const attention = counts.total;
         // Priorité au type « question » : une seule session en attente teinte la machine en orange.
@@ -332,8 +243,8 @@ export function MachineSwitcher() {
         const detail =
           attention > 0
             ? counts.waiting > 0
-              ? `${counts.waiting} question(s), ${attention} à traiter`
-              : `${attention} terminée(s)`
+              ? `${plural(counts.waiting, 'question')}, ${attention} à traiter`
+              : `${plural(attention, 'terminée')}`
             : null;
         const title = [pill.name, status, pill.version, detail].filter(Boolean).join(' — ');
         const compat = pill.status?.compatibility ?? null;

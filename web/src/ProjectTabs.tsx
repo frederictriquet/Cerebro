@@ -1,9 +1,10 @@
-import { ActivityStatus } from './ActivityStatus.tsx';
-import { useRef, useState, type DragEvent, type FormEvent } from 'react';
+import { useRef, useState, type DragEvent } from 'react';
 import { Modal } from './Dialog.tsx';
-import { PathInput } from './PathInput.tsx';
-import { go, href, type Route } from './route.ts';
+import { attentionCounts, plural } from './format.ts';
+import { NewProjectForm } from './NewProjectForm.tsx';
+import { href, type Route } from './route.ts';
 import { useStore } from './store.tsx';
+import { useAsyncAction } from './async-action.ts';
 
 export function ProjectTabs({ route }: { route: Route }) {
   const { projects, sessions, reorderProjects } = useStore();
@@ -11,8 +12,12 @@ export function ProjectTabs({ route }: { route: Route }) {
   const draggedId = useRef<string | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; side: 'before' | 'after' } | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    run: reorder,
+    busy: saving,
+    error,
+    setError,
+  } = useAsyncAction(reorderProjects, { fallback: 'Réordonnancement impossible' });
 
   const clearDrag = (): void => {
     draggedId.current = null;
@@ -37,15 +42,7 @@ export function ProjectTabs({ route }: { route: Route }) {
     if (targetIndex === -1) return;
     ids.splice(targetIndex + (side === 'after' ? 1 : 0), 0, sourceId);
     if (ids.every((id, index) => id === projects[index]?.id)) return;
-
-    setSaving(true);
-    try {
-      await reorderProjects(ids);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Réordonnancement impossible');
-    } finally {
-      setSaving(false);
-    }
+    await reorder(ids);
   };
 
   const activeProjectId =
@@ -88,18 +85,17 @@ export function ProjectTabs({ route }: { route: Route }) {
         const active = project.id === activeProjectId;
         const projectSessions = sessions.filter((session) => session.projectId === project.id);
         const sessionCount = projectSessions.length;
-        const alerts = projectSessions.filter((session) => session.attention);
-        const alertTone = alerts.some((session) => session.status === 'waiting') ? 'waiting' : 'idle';
-        const questions = alerts.filter((session) => session.status === 'waiting').length;
+        const { total: alerts, waiting: questions } = attentionCounts(projectSessions);
+        const alertTone = questions > 0 ? 'waiting' : 'idle';
         const alertLabel =
-          alerts.length > 0
-            ? `${alerts.length} ${alerts.length > 1 ? 'sessions demandent' : 'session demande'} votre attention` +
-              (questions > 0 ? ` (${questions} question${questions > 1 ? 's' : ''})` : '')
+          alerts > 0
+            ? `${plural(alerts, 'session demande', 'sessions demandent')} votre attention` +
+              (questions > 0 ? ` (${plural(questions, 'question')})` : '')
             : undefined;
         return (
           <a
             key={project.id}
-            className={`project-tab${active ? ' active' : ''}${alerts.length > 0 ? ` alert ${alertTone}` : ''}${dragging === project.id ? ' dragging' : ''}${dropTarget?.id === project.id ? ` drop-${dropTarget.side}` : ''}`}
+            className={`project-tab${active ? ' active' : ''}${alerts > 0 ? ` alert ${alertTone}` : ''}${dragging === project.id ? ' dragging' : ''}${dropTarget?.id === project.id ? ` drop-${dropTarget.side}` : ''}`}
             href={href(`#/p/${project.id}`)}
             aria-current={active ? 'page' : undefined}
             title={`${project.path}${alertLabel ? `\n${alertLabel}` : ''}`}
@@ -108,7 +104,14 @@ export function ProjectTabs({ route }: { route: Route }) {
               if (draggedId.current === null || saving) return;
               event.preventDefault();
               event.dataTransfer.dropEffect = 'move';
-              setDropTarget(draggedId.current === project.id ? null : { id: project.id, side: dropSide(event) });
+              const side = draggedId.current === project.id ? null : dropSide(event);
+              setDropTarget((current) =>
+                side === null
+                  ? null
+                  : current?.id === project.id && current.side === side
+                    ? current
+                    : { id: project.id, side },
+              );
             }}
             onDrop={(event) => void dropProject(event, project.id)}
           >
@@ -148,7 +151,7 @@ export function ProjectTabs({ route }: { route: Route }) {
                 </g>
               </svg>
             </span>
-            {alerts.length > 0 ? (
+            {alerts > 0 ? (
               <span
                 className={`project-tab-alert ${alertTone}${alertTone === 'waiting' ? ' ask-mark' : ''}`}
                 role="status"
@@ -188,54 +191,9 @@ export function ProjectTabs({ route }: { route: Route }) {
 }
 
 function NewProjectDialog({ onClose }: { onClose: () => void }) {
-  const { createProject } = useStore();
-  const [name, setName] = useState('');
-  const [path, setPath] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const onCreate = async (e: FormEvent): Promise<void> => {
-    e.preventDefault();
-    setError(null);
-    setBusy(true);
-    try {
-      const project = await createProject(name.trim(), path.trim());
-      onClose();
-      go(`#/p/${project.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Création impossible');
-      setBusy(false);
-    }
-  };
-
   return (
     <Modal title="Nouveau projet" onClose={onClose}>
-      <form className="new-project" onSubmit={(e) => void onCreate(e)}>
-        <label>
-          Nom
-          <input
-            required
-            autoFocus
-            autoComplete="off"
-            placeholder="Nom"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </label>
-        <label className="block">
-          Chemin
-          <PathInput required value={path} onChange={setPath} />
-        </label>
-        {error ? <p className="form-error">{error}</p> : null}
-        <div className="row-actions">
-          <button type="submit" className="btn primary" disabled={busy}>
-            <ActivityStatus active={busy}>{busy ? 'Création…' : 'Créer'}</ActivityStatus>
-          </button>
-          <button type="button" className="btn" onClick={onClose}>
-            Annuler
-          </button>
-        </div>
-      </form>
+      <NewProjectForm className="new-project" submitLabel="Créer" autoFocus onCreated={onClose} onCancel={onClose} />
     </Modal>
   );
 }

@@ -1,8 +1,11 @@
+// Contrat des données échangées entre le serveur, l'UI web et les autres machines : une seule définition
+// des deux côtés, et les parseurs qui valident ce qui arrive d'un autre processus.
+import { asNullableNumber, asNullableString, asNumber, asString, isRecord, parseItems } from './parse.ts';
+import type { CommandRun, EpicRun } from './backlog.ts';
+
 export type Agent = 'claude' | 'codex' | 'grok';
-// Modes offered by the widgets and sent to the server: « default » is not a choice any more.
-export type Mode = 'auto' | 'acceptEdits' | 'plan' | 'bypass';
-// Sessions launched before its removal keep their stored « default » mode.
-export type SessionMode = Mode | 'default';
+// « default » (agent configuration) remains a stored mode: sessions launched before its removal keep it.
+export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
 export type TaskExecution =
   { type: 'llm' } | { type: 'command'; commandId: string; completion: 'manual' | 'exit-zero' };
@@ -11,67 +14,94 @@ export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | '
 export type WorkspaceMode = 'isolated' | 'shared';
 
 export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
-export const MODES: readonly Mode[] = ['auto', 'acceptEdits', 'plan', 'bypass'];
+export const MODES: readonly Mode[] = ['auto', 'default', 'acceptEdits', 'plan', 'bypass'];
+// Modes offered by the widgets and sent for new launches: « default » is not a choice any more.
+export type ModeChoice = Exclude<Mode, 'default'>;
+export const MODE_CHOICES: readonly ModeChoice[] = ['auto', 'acceptEdits', 'plan', 'bypass'];
 
-// Mirror of normalizeMode (server/db.ts): a stored « default » setting is shown and launched as « auto ».
-function parseMode(v: unknown): Mode | null {
-  if (v === 'default') return 'auto';
-  return MODES.find((mode) => mode === v) ?? null;
+// A stored « default » is shown and launched as the default mode, « auto ».
+export function normalizeMode(mode: Mode): ModeChoice {
+  return mode === 'default' ? 'auto' : mode;
 }
-const EFFORTS: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+// Saved settings are normalized at read, so the widgets only ever receive a ModeChoice.
+function parseMode(v: unknown): ModeChoice | null {
+  return isMode(v) ? normalizeMode(v) : null;
+}
+export const EFFORTS: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
-// Ce que le formulaire de nouvelle session envoie au serveur.
-export interface LaunchSpec {
+// Réglages de lancement d'une session : ce que le formulaire envoie, et ce que le projet mémorise.
+export interface SessionDefaults {
   agent: Agent;
   mode: Mode;
+  // null: model / effort Cerebro default, resolved by the server (parseTuning).
   model: string | null;
   effort: Effort | null;
   prompt: string;
 }
 
-export const DEFAULT_SESSION_DEFAULTS: Readonly<LaunchSpec> = {
+export const DEFAULT_SESSION_DEFAULTS: Readonly<SessionDefaults> = {
   agent: 'claude',
   mode: 'auto',
   model: null,
   effort: null,
   prompt: '',
 };
+
 export interface CommitSettings {
   agent: Agent;
   model: string | null;
   effort: Effort | null;
   strategy: 'single' | 'atomic';
 }
-/** Session that separates the starting content of a copy from the conversation's work. */
-export type ResolutionSettings = Pick<LaunchSpec, 'agent' | 'mode' | 'model' | 'effort'>;
+export const DEFAULT_COMMIT_SETTINGS: Readonly<CommitSettings> = {
+  agent: 'claude',
+  model: null,
+  effort: null,
+  strategy: 'single',
+};
 
+/** Session launched to separate the starting content of a copy from the conversation's work, file by file. */
+export type ResolutionSettings = Pick<SessionDefaults, 'agent' | 'mode' | 'model' | 'effort'>;
+export const DEFAULT_RESOLUTION_SETTINGS: Readonly<ResolutionSettings> = {
+  agent: 'claude',
+  mode: 'auto',
+  model: null,
+  effort: null,
+};
+
+// Agent, model and effort (null: Cerebro default, resolved by parseTuning).
 export interface Llm {
   agent: Agent;
   model: string | null;
   effort: Effort | null;
 }
 
+// Une persona du catalogue de la machine : un angle de réflexion, indépendant de l'agent qui la joue.
 export interface Persona {
   id: string;
   name: string;
   description: string;
   prompt: string;
-  // Fournie par Cerebro (badge « fournie »), modifiable et supprimable.
+  // Fournie par Cerebro : modifiable et supprimable comme les autres, jamais réinsérée.
   builtin: boolean;
   createdAt: number;
   updatedAt: number;
 }
 
+export type PersonaInput = Pick<Persona, 'name' | 'description' | 'prompt'>;
+
+// Un participant à un council : une persona jouée par un agent.
 export interface Participant extends Llm {
   personaId: string;
 }
 
 export interface CouncilSettings {
-  // Agent, modèle et effort par défaut de chaque persona (clé : personaId).
+  // Agent, modèle et effort proposés par défaut pour chaque persona (clé : personaId).
   assignments: Record<string, Llm>;
   // Participants cochés par défaut au lancement.
   defaultPersonaIds: string[];
   chairman: Llm;
+  // Valeur proposée par défaut pour « laisser les conseillers lire le projet ».
   readProject: boolean;
 }
 
@@ -80,16 +110,13 @@ export const MAX_PERSONA_NAME_LENGTH = 80;
 export const MAX_PERSONA_DESCRIPTION_LENGTH = 300;
 export const MAX_PERSONA_PROMPT_LENGTH = 4000;
 export const MIN_PERSONAS = 2;
-// Nombre de conseillers d'un council (bornes du serveur).
+// Nombre de conseillers d'un council.
 export const MIN_ADVISORS = 2;
 export const MAX_ADVISORS = 8;
+export const MAX_COUNCIL_IMAGES = 10;
 
-// Copie figée d'une persona jouée par un agent dans un run.
-export interface Advisor extends Participant {
-  name: string;
-  description: string;
-  prompt: string;
-}
+// Copie figée dans un run : un rapport reste lisible si la persona est modifiée ou supprimée ensuite.
+export interface Advisor extends Participant, PersonaInput {}
 
 export type CouncilStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 export type CouncilPhase = 'answering' | 'reviewing' | 'synthesizing' | 'finished';
@@ -103,9 +130,14 @@ export interface CouncilAnswer {
   finishedAt: number | null;
 }
 
+export interface CouncilRanking {
+  letter: string;
+  reason: string;
+}
+
 export interface CouncilReview {
   advisorId: string;
-  ranking: { letter: string; reason: string }[];
+  ranking: CouncilRanking[];
   blindSpot: string | null;
   missed: string | null;
   error: string | null;
@@ -121,7 +153,8 @@ export interface CouncilSynthesis {
   firstAction: string;
 }
 
-// Image jointe : `n` est le numéro du jeton « [Image #n] » dans la question ou le contexte.
+// Image jointe au lancement : `n` est le numéro du jeton « [Image #n] » placé dans la question ou le contexte,
+// `path` le fichier enregistré sous le dossier des pièces jointes du serveur.
 export interface CouncilImage {
   n: number;
   path: string;
@@ -132,14 +165,17 @@ export interface CouncilRun {
   projectId: string | null;
   origin: 'web' | 'slack';
   question: string;
+  // Contexte collé par l'utilisateur.
   context: string;
+  // Images jointes, transmises à chaque appel (réponses, relectures, synthèse).
   images: CouncilImage[];
   readProject: boolean;
+  // Copies figées au lancement.
   settings: CouncilSettings;
   advisors: Advisor[];
   status: CouncilStatus;
   phase: CouncilPhase;
-  // advisorId -> lettre d'anonymisation.
+  // advisorId -> 'A', 'B'… tirées au hasard pour chaque run.
   letters: Record<string, string>;
   answers: CouncilAnswer[];
   reviews: CouncilReview[];
@@ -149,12 +185,20 @@ export interface CouncilRun {
   finishedAt: number | null;
 }
 
+export interface AggregatedRank {
+  letter: string;
+  advisorId: string;
+  // Rang moyen (1 = meilleur) sur les relectures réussies ; null si aucune ne l'a classée.
+  averageRank: number | null;
+  votes: number;
+}
+
 export interface Project {
   id: string;
   name: string;
   path: string;
   color: string | null;
-  sessionDefaults: LaunchSpec;
+  sessionDefaults: SessionDefaults;
   commitSettings: CommitSettings;
   // null : le projet suit les réglages globaux du council.
   councilSettings: CouncilSettings | null;
@@ -167,7 +211,9 @@ export interface Session {
   id: string;
   projectId: string;
   agent: Agent;
-  mode: SessionMode;
+  // Peut valoir « default » pour une session lancée avant son retrait (voir normalizeMode).
+  mode: Mode;
+  // null: model / effort Cerebro default, resolved by parseTuning.
   model: string | null;
   effort: Effort | null;
   prompt: string;
@@ -180,8 +226,11 @@ export interface Session {
   exitCode: number | null;
   createdAt: number;
   updatedAt: number;
+  // Copie de travail isolée de la conversation ; null quand elle travaille dans le dossier du projet.
   worktree: SessionWorktree | null;
+  // Origine conservée même après nettoyage du backlog.
   epic: SessionEpic | null;
+  // Findings publiés qui n’ont pas encore été importés dans le backlog.
   pendingFindings: number;
 }
 
@@ -196,10 +245,11 @@ export interface SessionWorktree {
   branch: string | null;
   removed: boolean;
   removedAt: number | null;
-  /** Retirée par le nettoyage automatique à la fin de la conversation. */
+  /** Removed by the automatic cleanup once the conversation was over. */
   removedAutomatically: boolean;
 }
 
+// Élément du backlog d'un projet : un texte à confier plus tard à une session.
 export interface Task {
   id: string;
   projectId: string;
@@ -207,8 +257,10 @@ export interface Task {
   status: TaskStatus;
   sessionId: string | null;
   sourceSessionId: string | null;
+  // Tâches du même projet à terminer avant de pouvoir lancer celle-ci.
   dependsOn: string[];
   execution: TaskExecution;
+  // Epic du même projet qui regroupe la tâche, ou null.
   epicId: string | null;
   createdAt: number;
   updatedAt: number;
@@ -243,6 +295,9 @@ export interface AgentInfo {
 }
 
 export interface GitInfo {
+  // False only outside any Git work tree; `error` reports a repository whose state could not be read.
+  repository: boolean;
+  error?: string;
   branch: string | null;
   dirty: number;
   ahead: number | null;
@@ -257,7 +312,8 @@ export interface GitInfo {
 }
 
 export type EventsMessage =
-  | { type: 'snapshot'; projects: Project[]; sessions: Session[]; tasks: Task[]; epics: Epic[] }
+  // runEvents : l'instance diffuse epic-run et command-run (absent sur une instance antérieure).
+  | { type: 'snapshot'; projects: Project[]; sessions: Session[]; tasks: Task[]; epics: Epic[]; runEvents: boolean }
   | { type: 'session'; session: Session }
   | { type: 'session-deleted'; id: string }
   | { type: 'task'; task: Task }
@@ -267,51 +323,29 @@ export type EventsMessage =
   | { type: 'projects'; projects: Project[] }
   | { type: 'alert'; session: Session }
   | { type: 'findings-available'; session: Session }
-  | { type: 'peers' };
+  | { type: 'peers' }
+  | { type: 'epic-run'; run: EpicRun }
+  | { type: 'command-run'; run: Omit<CommandRun, 'output'> };
 
 export type TermClientMessage = { type: 'input'; data: string } | { type: 'resize'; cols: number; rows: number };
 
 export type TermServerMessage =
   { type: 'snapshot'; data: string } | { type: 'output'; data: string } | { type: 'exit'; exitCode: number | null };
 
-export function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null;
-}
-
 export function isAgent(v: unknown): v is Agent {
   return v === 'claude' || v === 'codex' || v === 'grok';
 }
 
-function isSessionMode(v: unknown): v is SessionMode {
-  return v === 'default' || parseMode(v) !== null;
+export function isMode(v: unknown): v is Mode {
+  return (MODES as readonly unknown[]).includes(v);
 }
 
-function isEffort(v: unknown): v is Effort {
+export function isEffort(v: unknown): v is Effort {
   return (EFFORTS as readonly unknown[]).includes(v);
 }
 
 export function isStatus(v: unknown): v is Status {
   return v === 'starting' || v === 'running' || v === 'waiting' || v === 'idle' || v === 'exited';
-}
-
-function asString(v: unknown): string | null {
-  return typeof v === 'string' ? v : null;
-}
-
-function asNumber(v: unknown): number | null {
-  return typeof v === 'number' && Number.isFinite(v) ? v : null;
-}
-
-function asNullableString(v: unknown): string | null | undefined {
-  if (v === null) return null;
-  if (typeof v === 'string') return v;
-  return undefined;
-}
-
-function asNullableNumber(v: unknown): number | null | undefined {
-  if (v === null) return null;
-  if (typeof v === 'number' && Number.isFinite(v)) return v;
-  return undefined;
 }
 
 function parseLlm(v: unknown): Llm | null {
@@ -355,16 +389,11 @@ export function parsePersona(v: unknown): Persona | null {
 }
 
 export function parsePersonaList(v: unknown): Persona[] {
-  if (!Array.isArray(v)) return [];
-  return v.map(parsePersona).filter((p): p is Persona => p !== null);
+  return parseItems(v, parsePersona);
 }
 
 const COUNCIL_STATUSES: readonly CouncilStatus[] = ['running', 'succeeded', 'failed', 'cancelled', 'interrupted'];
 const COUNCIL_PHASES: readonly CouncilPhase[] = ['answering', 'reviewing', 'synthesizing', 'finished'];
-
-function asText(v: unknown): string | null {
-  return typeof v === 'string' ? v : null;
-}
 
 function parseAdvisor(v: unknown): Advisor | null {
   if (!isRecord(v)) return null;
@@ -372,7 +401,7 @@ function parseAdvisor(v: unknown): Advisor | null {
   const personaId = asString(v.personaId);
   const name = asString(v.name);
   if (llm === null || personaId === null || name === null) return null;
-  return { ...llm, personaId, name, description: asText(v.description) ?? '', prompt: asText(v.prompt) ?? '' };
+  return { ...llm, personaId, name, description: asString(v.description) ?? '', prompt: asString(v.prompt) ?? '' };
 }
 
 function parseCouncilAnswer(v: unknown): CouncilAnswer | null {
@@ -381,8 +410,8 @@ function parseCouncilAnswer(v: unknown): CouncilAnswer | null {
   if (advisorId === null) return null;
   return {
     advisorId,
-    text: asText(v.text),
-    error: asText(v.error),
+    text: asString(v.text),
+    error: asString(v.error),
     startedAt: asNumber(v.startedAt) ?? 0,
     finishedAt: asNumber(v.finishedAt),
   };
@@ -394,15 +423,15 @@ function parseCouncilReview(v: unknown): CouncilReview | null {
   if (advisorId === null) return null;
   const ranking = Array.isArray(v.ranking)
     ? v.ranking.flatMap((r) =>
-        isRecord(r) && typeof r.letter === 'string' ? [{ letter: r.letter, reason: asText(r.reason) ?? '' }] : [],
+        isRecord(r) && typeof r.letter === 'string' ? [{ letter: r.letter, reason: asString(r.reason) ?? '' }] : [],
       )
     : [];
   return {
     advisorId,
     ranking,
-    blindSpot: asText(v.blindSpot),
-    missed: asText(v.missed),
-    error: asText(v.error),
+    blindSpot: asString(v.blindSpot),
+    missed: asString(v.missed),
+    error: asString(v.error),
     startedAt: asNumber(v.startedAt) ?? 0,
     finishedAt: asNumber(v.finishedAt),
   };
@@ -418,16 +447,12 @@ function parseCouncilImage(v: unknown): CouncilImage | null {
 function parseCouncilSynthesis(v: unknown): CouncilSynthesis | null {
   if (!isRecord(v)) return null;
   return {
-    agreements: asText(v.agreements) ?? '',
-    disagreements: asText(v.disagreements) ?? '',
-    blindSpots: asText(v.blindSpots) ?? '',
-    recommendation: asText(v.recommendation) ?? '',
-    firstAction: asText(v.firstAction) ?? '',
+    agreements: asString(v.agreements) ?? '',
+    disagreements: asString(v.disagreements) ?? '',
+    blindSpots: asString(v.blindSpots) ?? '',
+    recommendation: asString(v.recommendation) ?? '',
+    firstAction: asString(v.firstAction) ?? '',
   };
-}
-
-function parseItems<T>(v: unknown, parse: (item: unknown) => T | null): T[] {
-  return Array.isArray(v) ? v.map(parse).filter((item): item is T => item !== null) : [];
 }
 
 export function parseCouncilRun(v: unknown): CouncilRun | null {
@@ -457,7 +482,7 @@ export function parseCouncilRun(v: unknown): CouncilRun | null {
     projectId: asString(v.projectId),
     origin: v.origin === 'slack' ? 'slack' : 'web',
     question,
-    context: asText(v.context) ?? '',
+    context: asString(v.context) ?? '',
     images: parseItems(v.images, parseCouncilImage),
     readProject: v.readProject === true,
     settings,
@@ -468,7 +493,7 @@ export function parseCouncilRun(v: unknown): CouncilRun | null {
     answers: parseItems(v.answers, parseCouncilAnswer),
     reviews: parseItems(v.reviews, parseCouncilReview),
     synthesis: parseCouncilSynthesis(v.synthesis),
-    error: asText(v.error),
+    error: asString(v.error),
     startedAt,
     finishedAt: asNumber(v.finishedAt),
   };
@@ -488,7 +513,7 @@ export function parseProject(v: unknown): Project | null {
   const color = typeof v.color === 'string' && /^#[0-9a-f]{6}$/i.test(v.color) ? v.color : null;
   // Compatibilité avec les machines qui ne mémorisent pas encore les réglages de lancement.
   const saved = isRecord(v.sessionDefaults) ? v.sessionDefaults : {};
-  const sessionDefaults: LaunchSpec = {
+  const sessionDefaults: SessionDefaults = {
     agent: isAgent(saved.agent) ? saved.agent : DEFAULT_SESSION_DEFAULTS.agent,
     mode: parseMode(saved.mode) ?? DEFAULT_SESSION_DEFAULTS.mode,
     model: typeof saved.model === 'string' ? saved.model : null,
@@ -542,7 +567,7 @@ export function parseSession(v: unknown): Session | null {
     createdAt === null ||
     updatedAt === null ||
     !isAgent(v.agent) ||
-    !isSessionMode(v.mode) ||
+    !isMode(v.mode) ||
     !isStatus(v.status) ||
     typeof v.attention !== 'boolean'
   ) {
@@ -674,38 +699,19 @@ export function parseEpic(v: unknown): Epic | null {
 }
 
 export function parseEpicList(v: unknown): Epic[] {
-  if (!Array.isArray(v)) return [];
-  return v.map(parseEpic).filter((e): e is Epic => e !== null);
+  return parseItems(v, parseEpic);
 }
 
 export function parseTaskList(v: unknown): Task[] {
-  if (!Array.isArray(v)) return [];
-  const out: Task[] = [];
-  for (const item of v) {
-    const t = parseTask(item);
-    if (t) out.push(t);
-  }
-  return out;
+  return parseItems(v, parseTask);
 }
 
 export function parseProjectList(v: unknown): Project[] {
-  if (!Array.isArray(v)) return [];
-  const out: Project[] = [];
-  for (const item of v) {
-    const p = parseProject(item);
-    if (p) out.push(p);
-  }
-  return out;
+  return parseItems(v, parseProject);
 }
 
 export function parseSessionList(v: unknown): Session[] {
-  if (!Array.isArray(v)) return [];
-  const out: Session[] = [];
-  for (const item of v) {
-    const s = parseSession(item);
-    if (s) out.push(s);
-  }
-  return out;
+  return parseItems(v, parseSession);
 }
 
 export function parseGitInfo(v: unknown): GitInfo | null {
@@ -724,6 +730,10 @@ export function parseGitInfo(v: unknown): GitInfo | null {
   if (v.hasUpstream !== undefined && typeof v.hasUpstream !== 'boolean') return null;
   const hasCommits = v.hasCommits ?? ahead !== null;
   const hasUpstream = v.hasUpstream ?? ahead !== null;
+  if (v.repository !== undefined && typeof v.repository !== 'boolean') return null;
+  // Serveurs antérieurs : seul le dépôt absent renvoyait une branche nulle.
+  const repository = v.repository ?? branch !== null;
+  const error = typeof v.error === 'string' ? v.error : undefined;
   let pendingCommits: GitInfo['pendingCommits'];
   const preview = v.pendingCommits;
   if (
@@ -747,6 +757,8 @@ export function parseGitInfo(v: unknown): GitInfo | null {
   }
   const pendingCommitsError = typeof v.pendingCommitsError === 'string' ? v.pendingCommitsError : undefined;
   return {
+    repository,
+    ...(error ? { error } : {}),
     branch,
     dirty: v.dirty,
     ahead,
@@ -755,6 +767,13 @@ export function parseGitInfo(v: unknown): GitInfo | null {
     ...(pendingCommits ? { pendingCommits } : {}),
     ...(pendingCommitsError ? { pendingCommitsError } : {}),
   };
+}
+
+// Raison affichée sur le bouton Push désactivé ; null quand un push peut aboutir.
+// Une HEAD détachée n'a ni branche ni upstream, et startPush la refuse toujours.
+export function pushBlockedReason(git: GitInfo): string | null {
+  if (git.branch === null) return 'HEAD détachée : choisissez une branche pour pousser';
+  return (git.ahead ?? 0) > 0 || (git.hasCommits && !git.hasUpstream) ? null : 'Rien à pousser';
 }
 
 export function parseScreenLines(v: unknown): string[] | null {
@@ -808,6 +827,7 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
         sessions: parseSessionList(v.sessions),
         tasks: parseTaskList(v.tasks),
         epics: parseEpicList(v.epics),
+        runEvents: v.runEvents === true,
       };
     case 'session': {
       const session = parseSession(v.session);
@@ -842,6 +862,21 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
     }
     case 'peers':
       return { type: 'peers' };
+    // Runs d'epic et de commande : le serveur et cette interface partagent leur type.
+    case 'epic-run':
+      return isRecord(v.run) &&
+        typeof v.run.id === 'string' &&
+        typeof v.run.epicId === 'string' &&
+        typeof v.run.startedAt === 'number'
+        ? { type: 'epic-run', run: v.run as unknown as EpicRun }
+        : null;
+    case 'command-run':
+      return isRecord(v.run) &&
+        typeof v.run.id === 'string' &&
+        typeof v.run.taskId === 'string' &&
+        typeof v.run.status === 'string'
+        ? { type: 'command-run', run: v.run as unknown as Omit<CommandRun, 'output'> }
+        : null;
     default:
       return null;
   }

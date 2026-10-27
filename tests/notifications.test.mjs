@@ -275,3 +275,123 @@ test('a resumed turn drops the previous end-of-turn reason', () => {
   assert.equal(s.attentionReason, null);
   assert.equal(s.attention, false);
 });
+test('each new attention state of a turn is notified, a repeated signal is not', async () => {
+  session('permissions');
+  const n = posted.length;
+  manager.setReliableState('permissions', 'waiting', 'Autoriser la commande ?');
+  await wait();
+  assert.equal(posted.length, n + 1);
+  manager.seen('permissions');
+  manager.setReliableState('permissions', 'waiting', 'Autoriser la commande ?');
+  await wait();
+  assert.equal(posted.length, n + 1);
+  manager.setRunning('permissions');
+  manager.setReliableState('permissions', 'waiting', 'Autoriser la commande ?');
+  await wait();
+  assert.equal(posted.length, n + 2);
+  assert.match(posted.at(-1).text, /En attente/);
+  manager.setRunning('permissions');
+  manager.setReliableState('permissions', 'idle', 'Tour terminé');
+  await wait();
+  assert.equal(posted.length, n + 3);
+  assert.match(posted.at(-1).text, /Tour terminé/);
+});
+test('a state change during a slow Slack send does not swallow the next alert', async () => {
+  session('slow');
+  const n = posted.length;
+  const inFlight = Promise.withResolvers();
+  const sending = Promise.withResolvers();
+  const previous = notifier.slackApi;
+  notifier.slackApi = async function (method, body) {
+    if (method === 'chat.postMessage' && /En attente/.test(body.text)) {
+      sending.resolve();
+      await inFlight.promise;
+    }
+    return previous.call(this, method, body);
+  };
+  try {
+    manager.setReliableState('slow', 'waiting', 'Autoriser la commande ?');
+    await Promise.race([sending.promise, wait().then(() => assert.fail('alerte « En attente » non envoyée'))]);
+    // Permission validated in the terminal and turn finished before Slack answers.
+    manager.setRunning('slow');
+    manager.setReliableState('slow', 'idle', 'Tour terminé');
+    await wait();
+    inFlight.resolve();
+    await wait();
+  } finally {
+    inFlight.resolve();
+    notifier.slackApi = previous;
+  }
+  assert.equal(posted.length, n + 2);
+  assert.match(posted.at(-2).text, /En attente/);
+  assert.match(posted.at(-1).text, /Tour terminé/);
+  assert.equal(
+    db.connection.prepare('SELECT automatic_status FROM notification_turns WHERE session_id=?').get('slow')
+      .automatic_status,
+    'idle',
+  );
+});
+test('a long operation summary is split under the Slack message limit', async () => {
+  notifier.updateSettings({ idle: true, waiting: true });
+  const id = 'long-operation';
+  const n = posted.length;
+  const summary = 'x & y\n'.repeat(834).slice(0, 5000);
+  notifier.operations.record({
+    id,
+    projectId: project.id,
+    sessionId: null,
+    kind: 'command',
+    ok: false,
+    summary,
+    startedAt: Date.now() - 1000,
+    finishedAt: Date.now(),
+  });
+  await notifier.operations.deliver(id);
+  const chunks = posted.slice(n);
+  assert.ok(chunks.length > 1, 'le résultat échappé dépasse un seul message');
+  for (const chunk of chunks) {
+    assert.ok(chunk.text.length <= 4000, `message de ${chunk.text.length} caractères`);
+    assert.equal(chunk.channel, 'DM');
+  }
+  const text = chunks.map((chunk) => chunk.text).join('\n');
+  assert.match(text, /^:x: \*Demo\* — command : x &amp; y/);
+  assert.match(text, /Durée : 1 s/);
+  assert.match(text, /Ouvrir dans Cerebro>$/);
+  assert.ok(notifier.operations.get(id).notifiedAt);
+});
+test('a retried operation message resumes at the chunk that failed instead of reposting the first ones', async () => {
+  notifier.updateSettings({ idle: true, waiting: true });
+  const id = 'retried-chunks';
+  const n = posted.length;
+  const summary = '<a> && <b>\n'.repeat(150);
+  const previous = notifier.slackApi;
+  let calls = 0;
+  notifier.slackApi = async function (method, body) {
+    if (method === 'chat.postMessage' && ++calls === 2) throw new Error('Slack 429');
+    return previous.call(this, method, body);
+  };
+  try {
+    notifier.operations.record({
+      id,
+      projectId: project.id,
+      sessionId: null,
+      kind: 'command',
+      ok: false,
+      summary,
+      startedAt: Date.now() - 1000,
+      finishedAt: Date.now(),
+    });
+    await assert.rejects(notifier.operations.deliver(id), /429/);
+    assert.equal(posted.length, n + 1, 'seul le premier morceau est parti');
+    assert.equal(notifier.operations.get(id).notifiedAt, null);
+    await notifier.operations.deliver(id);
+  } finally {
+    notifier.slackApi = previous;
+  }
+  const chunks = posted.slice(n).map((chunk) => chunk.text);
+  assert.equal(chunks.length, 2, 'le premier morceau n’est pas reposté');
+  assert.notEqual(chunks[0], chunks[1]);
+  assert.match(chunks[0], /^:x: \*Demo\* — command : &lt;a&gt; &amp;&amp; &lt;b&gt;/);
+  assert.match(chunks[1], /Ouvrir dans Cerebro>$/);
+  assert.ok(notifier.operations.get(id).notifiedAt);
+});

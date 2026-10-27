@@ -3,7 +3,7 @@ import { AgentLogo } from './AgentLabel.tsx';
 import { AGENT_LABEL } from './format.ts';
 import { LlmSelector } from './LlmSelector.tsx';
 import { useStore } from './store.tsx';
-import type { Llm, Persona } from './types.ts';
+import type { Llm, Persona } from '../../shared/types.ts';
 import './council.css';
 
 // Personas présentées en onglets, chacune avec l'agent qui la joue : partagées par le lancement

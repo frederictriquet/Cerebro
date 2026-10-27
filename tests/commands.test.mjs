@@ -50,6 +50,23 @@ test('migration preserves old LLM tasks and argv command runs have logs, exit co
   assert.equal(failed.status, 'failed');
   assert.equal(failed.exitCode, 7);
 });
+test('commands do not inherit Cerebro server secrets but keep their run marker', async () => {
+  process.env.CEREBRO_BIND_TOKEN = 'bind-secret';
+  process.env.CEREBRO_SLACK_TOKEN = 'slack-secret';
+  try {
+    const task = taskFor(configure('console.log(JSON.stringify(process.env))'));
+    const run = await ended(await executor.start(task.id));
+    const env = JSON.parse(run.output);
+    assert.equal(env.CEREBRO_BIND_TOKEN, undefined);
+    assert.equal(env.CEREBRO_SLACK_TOKEN, undefined);
+    assert.equal(env.CEREBRO_DATA_DIR, undefined);
+    assert.equal(env.CEREBRO_COMMAND_RUN, run.id);
+    assert.equal(env.PATH, process.env.PATH);
+  } finally {
+    delete process.env.CEREBRO_BIND_TOKEN;
+    delete process.env.CEREBRO_SLACK_TOKEN;
+  }
+});
 test('stop, timeout, double launch and dependencies are enforced', async () => {
   const task = taskFor(configure('setInterval(()=>{},1000)'));
   const [a, b] = await Promise.allSettled([executor.start(task.id), executor.start(task.id)]);
@@ -59,9 +76,27 @@ test('stop, timeout, double launch and dependencies are enforced', async () => {
   assert.equal((await ended(run)).status, 'stopped');
   const timed = await ended(await executor.start(taskFor(configure('setInterval(()=>{},1000)', 1)).id));
   assert.match(timed.error, /Durée limite/);
+  assert.equal(timed.status, 'failed', 'a timeout is a failure, not a user stop');
   const blocked = taskFor(configure('console.log("never")'));
   db.setTaskDependencies(blocked.id, [task.id]);
   await assert.rejects(executor.start(blocked.id), /Dépendance/);
+});
+test('a missing executable ends the run as failed and frees the task', async () => {
+  const command = executor.configure(project.id, {
+    name: 'Absente',
+    executable: 'cerebro-missing-executable',
+    args: [],
+    cwd: '.',
+    timeoutSeconds: 10,
+  });
+  const task = taskFor(command);
+  const run = await ended(await executor.start(task.id));
+  assert.equal(run.status, 'failed');
+  assert.equal(run.pid, null);
+  assert.match(run.error, /ENOENT/);
+  assert.ok(run.finishedAt);
+  assert.equal(executor.active(task.id), false, 'the task is no longer blocked by a phantom running run');
+  assert.equal(executor.live.size, 0);
 });
 test('restart preserves logs and marks unfinished commands interrupted without relaunching', async () => {
   const task = taskFor(configure('console.log("persisted")'));
@@ -73,9 +108,14 @@ test('restart preserves logs and marks unfinished commands interrupted without r
   db.close();
   db = new CerebroDatabase(join(root, 'test.db'));
   executor = new CommandExecutor(db, new WorktreeGate());
-  executor.initialize();
+  const announced = executor.initialize();
   const run = executor.listRuns(task.id)[0];
   assert.equal(run.status, 'interrupted');
+  assert.deepEqual(
+    announced.map((r) => [r.id, r.status]),
+    [['unfinished', 'interrupted']],
+    'interrupted runs are returned for the caller to announce',
+  );
   assert.match(run.output, /persisted/);
   assert.equal(db.listSessions().length, 0);
 });
@@ -93,5 +133,46 @@ test('pre-executor database migration keeps existing tasks as LLM tasks', () => 
     assert.equal(legacy.getTask(old.id).status, 'todo');
   } finally {
     legacy.close();
+  }
+});
+test('verbose output is buffered: 1 000 chunks cost a few throttled writes and no extra change notification (no poke, no broadcast)', async () => {
+  const task = taskFor(
+    configure(
+      'let i=0;const t=setInterval(()=>{process.stdout.write(`line ${i}\\n`);if(++i===1000)clearInterval(t);},1)',
+    ),
+  );
+  const changes = [];
+  executor.onChange = (run) => changes.push(run.status);
+  const prepare = db.connection.prepare.bind(db.connection);
+  let writes = 0;
+  db.connection.prepare = (sql) => {
+    if (sql.startsWith('INSERT INTO command_runs')) writes++;
+    return prepare(sql);
+  };
+  try {
+    const startedAt = Date.now();
+    const run = await executor.start(task.id);
+    let chunks = 0;
+    executor.live.get(run.id).child.stdout.on('data', () => chunks++);
+    while (
+      !/line 10\n/.test(executor.listRuns(task.id)[0].output) &&
+      executor.listRuns(task.id)[0].status === 'running'
+    )
+      await new Promise((r) => setTimeout(r, 10));
+    assert.equal(executor.listRuns(task.id)[0].status, 'running', 'live output is readable before the command ends');
+    const done = await ended(run);
+    const elapsed = Date.now() - startedAt;
+    assert.equal(done.status, 'succeeded');
+    for (const i of [0, 500, 999]) assert.match(done.output, new RegExp(`line ${i}\\n`));
+    assert.ok(chunks > 100, `the command must really produce many chunks (${chunks})`);
+    assert.deepEqual(
+      changes,
+      ['running', 'running', 'succeeded'],
+      'only start, pid and end notify (each notification is one poke and one broadcast)',
+    );
+    assert.ok(writes <= 3 + Math.ceil(elapsed / 250) + 1, `${writes} writes for ${chunks} chunks in ${elapsed} ms`);
+  } finally {
+    db.connection.prepare = prepare;
+    executor.onChange = () => {};
   }
 });

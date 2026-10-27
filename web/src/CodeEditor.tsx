@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, apiBase } from './api.ts';
-import type { Project } from './types.ts';
+import type { Project } from '../../shared/types.ts';
+import { errorMessage } from './format.ts';
 
 type VscodeOpen = { ready: false } | { ready: true; path: string };
 
@@ -27,14 +28,14 @@ export function CodeEditor({ project, onClose }: { project: Project; onClose: ()
     const machineBase = apiBase();
     const load = async (): Promise<void> => {
       try {
-        const opened = parseVscodeOpen(await api<unknown>(`/api/projects/${project.id}/vscode`, { method: 'POST' }));
+        const opened = parseVscodeOpen(await api(`/api/projects/${project.id}/vscode`, { method: 'POST' }));
         if (cancelled) return;
         if (opened === null) throw new Error('Réponse inattendue du serveur');
         // Premier lancement : le serveur VS Code est en cours de téléchargement.
         if (!opened.ready) timer = window.setTimeout(() => void load(), RETRY_MS);
         else setUrl(`${machineBase}${opened.path}`);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'VS Code indisponible');
+        if (!cancelled) setError(errorMessage(err, 'VS Code indisponible'));
       }
     };
     void load();

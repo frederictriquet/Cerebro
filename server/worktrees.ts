@@ -1,90 +1,73 @@
-import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import { promisify } from 'node:util';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { CerebroDatabase } from './db.ts';
-import type { CommitSettings } from './db.ts';
-import { mergeCommitReflog } from './git-reflog.ts';
-import type { Workspace } from './provenance.ts';
+import { runGit } from './git-process.ts';
 import { sharedDependencyLinks } from './git-plan.ts';
+import { mergeCommitReflog } from './git-reflog.ts';
 import type { Services } from './services.ts';
-import { canonicalWorktreePath } from './worktree-gate.ts';
-import { workspaceFileSignature } from './workspace-files.ts';
+import { canonicalWorktreePath, pathWithin } from './worktree-gate.ts';
+import { repositoryActivity, sessionBusy, type RepositoryActivity } from './repository-activity.ts';
+import { sessionWorkspaces, workspaceFor } from './provenance.ts';
+import { regularFileSignature, workspaceFileSignature } from './workspace-files.ts';
+import { branchLabel, git, GitError, gitEnv, parseStatusZ, repositoryRoot, splitZ } from './git.ts';
+import type {
+  AutomaticCleanup,
+  PreparedWorktreeOperation,
+  StartingContent,
+  StartingContentDiscard,
+  StartingContentPlan,
+  StartingContentStep,
+  StartingOrigin,
+  WorktreeInventory,
+  WorktreeOperation,
+  WorktreeRecord,
+  WorktreeView,
+} from '../shared/worktrees.ts';
+import type { Workspace } from '../shared/git.ts';
+import { errorMessage } from './util.ts';
+import { isActiveRun } from '../shared/backlog.ts';
 
-const exec = promisify(execFile);
-async function git(path: string, args: string[], env: Record<string, string> = {}): Promise<string> {
-  return (
-    await exec('git', ['-C', path, ...args], {
-      maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_MERGE_AUTOEDIT: 'no', ...env },
-    })
-  ).stdout;
+const gitBytes = (path: string, args: string[]): Promise<Buffer> =>
+  git(path, args, { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 });
+const mergeRef = (operationId: string): string => `refs/cerebro/merges/${operationId}`;
+let mergeTreeSupport: Promise<boolean> | null = null;
+/** Whether `git merge-tree --write-tree` (Git 2.38) is available: the merge machinery itself, without a worktree. */
+function mergeTreeAvailable(): Promise<boolean> {
+  return (mergeTreeSupport ??= runGit(['version']).then(
+    (result) => {
+      const [major, minor] = (/(\d+)\.(\d+)/.exec(result.stdout.toString('utf8')) ?? []).slice(1).map(Number);
+      return major > 2 || (major === 2 && minor >= 38);
+    },
+    () => false,
+  ));
 }
-const branchLabel = (branch: string | null): string => branch?.replace(/^refs\/heads\//, '') ?? 'la cible';
-async function gitBytes(path: string, args: string[]): Promise<Buffer> {
-  return (
-    await exec('git', ['-C', path, ...args], {
-      encoding: 'buffer',
-      maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
-    })
-  ).stdout;
+/** Shown with the conflict forecast when Git is too old to simulate the merge itself. */
+const APPROXIMATE_FORECAST =
+  'Prévision approchée (Git antérieur à 2.38) : les renommages de dossiers et les fichiers renommés des deux côtés ne sont pas suivis.';
+/**
+ * Commits the merge of the target into a copy, with the hooks and Git configuration of any other commit. A refusal
+ * leaves the merge in progress in the copy: it is finished once the cause is fixed, or abandoned.
+ */
+async function commitTargetUpdate(path: string): Promise<void> {
+  try {
+    await git(path, ['commit', '--no-edit']);
+  } catch (cause) {
+    const detail = (cause as { stderr?: string }).stderr?.trim() || errorMessage(cause);
+    throw new WorktreeError(
+      `Git a refusé le commit de la mise à jour (hook ou configuration) : ${detail}\nLa mise à jour reste en cours dans la copie : corrigez la cause puis terminez-la, ou annulez-la.`,
+    );
+  }
 }
 const hash = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
-const within = (root: string, path: string): boolean => {
-  const part = relative(root, path);
-  return part === '' || (part !== '..' && !part.startsWith(`..${sep}`) && !part.startsWith(sep));
-};
 export class WorktreeError extends Error {
   statusCode: number;
   constructor(message: string, statusCode = 409) {
     super(message);
     this.statusCode = statusCode;
   }
-}
-export interface WorktreeRecord {
-  id: string;
-  commonDir: string;
-  path: string;
-  source: string;
-  projectId: string | null;
-  projectName: string;
-  sessionId: string | null;
-  sessionTitle: string | null;
-  managed: boolean;
-  expectedBranch: string | null;
-  targetBranch: string | null;
-  sharedIgnored?: string[];
-  createdAt: number;
-  removedAt: number | null;
-  commitSettings?: CommitSettings;
-  /** Last automatic cleanup decision, taken when the conversation ended or was deleted. */
-  autoCleanup?: AutomaticCleanup;
-  /** Removed from the visible history; retain provenance and cleanup records. */
-  historyDeletedAt?: number;
-}
-export interface AutomaticCleanup {
-  status: 'removed' | 'kept' | 'failed';
-  at: number;
-  reasons: string[];
-}
-export interface WorktreeOperation {
-  id: string;
-  worktreeId: string;
-  kind: 'merge' | 'remove';
-  status: 'running' | 'succeeded' | 'failed' | 'interrupted';
-  targetBranch: string | null;
-  sourceHead: string | null;
-  targetHead: string | null;
-  resultHead: string | null;
-  output: string;
-  error: string | null;
-  startedAt: number;
-  finishedAt: number | null;
-  automatic?: boolean;
 }
 interface RegisteredWorktree {
   path: string;
@@ -93,96 +76,10 @@ interface RegisteredWorktree {
   locked: boolean;
   prunable: boolean;
 }
-export interface WorktreeView extends WorktreeRecord {
-  projectExists: boolean;
-  session: { id: string; title: string; status: string } | null;
-  primary: boolean;
-  branch: string | null;
-  head: string | null;
-  dirty: number | null;
-  files: string[];
-  ignored: number | null;
-  ignoredFiles: string[];
-  /** Ignored entries with nothing to lose, deleted on removal instead of blocking it. */
-  disposableIgnored: string[];
-  ahead: number | null;
-  behind: number | null;
-  targetPath: string | null;
-  targetHead: string | null;
-  targets: { branch: string; path: string }[];
-  integration: 'integrated' | 'pending' | 'unknown';
-  /** Whether the copy's commits are in the target's upstream branch; null without upstream or before integration. */
-  published: boolean | null;
-  mergeInProgress: boolean;
-  activeSessions: { id: string; title: string; status: string }[];
-  mergeBlockers: string[];
-  removeBlockers: string[];
-  fingerprint: string | null;
-  error: string | null;
-  operation: WorktreeOperation | null;
-  changesSinceCreation: { count: number; files: string[]; inheritedCount: number; needsReviewCount: number } | null;
-  /** Dirty files holding content copied from the project at creation, or not yet confirmed free of it (first 100). */
-  startingContent: StartingContent[] | null;
-  /** Number of files with uncommitted changes in the target worktree, when it is known. */
-  targetDirty: number | null;
-  /** Files that merging the copy's commits with the target would leave in conflict; null when not computed. */
-  integrationConflicts: string[] | null;
-  /** Files still in conflict while a merge is in progress in the copy. */
-  conflicts: string[];
-}
-/** A copy removed automatically: still listed so its branch and conversation can be found again. */
-export interface CleanedWorktree {
-  id: string;
-  path: string;
-  projectId: string | null;
-  projectName: string;
-  sessionId: string | null;
-  sessionTitle: string | null;
-  session: { id: string; title: string; status: string } | null;
-  branch: string | null;
-  removedAt: number;
-}
-/** Where the content copied from the project at creation can still be found. */
-export type StartingOrigin =
-  { kind: 'target-commit'; commit: string; subject: string } | { kind: 'target-worktree' } | { kind: 'snapshot' };
-/** A dirty file of the copy that still holds content copied from the project at creation. */
-export interface StartingContent {
-  path: string;
-  /**
-   * inherited: unchanged since the copy; mixed: copied content edited since, by the conversation or someone else;
-   * settled: edited since, and the copied content no longer appears in its uncommitted changes.
-   */
-  state: 'inherited' | 'mixed' | 'settled';
-  /** null: this content now only exists in the copy. */
-  origin: StartingOrigin | null;
-  /** A mixed file whose starting content can be removed automatically, unless its recent changes overlap it. */
-  separable: boolean;
-}
-/** What removing the starting content does to one file. */
-export interface StartingContentStep {
-  path: string;
-  state: StartingContent['state'];
-  origin: StartingOrigin | null;
-  /**
-   * restore: back to the copy's last commit; separate: keep only the changes made since the copy; settle: no starting
-   * content left, the file becomes the conversation's work unchanged; keep: left for a manual review.
-   */
-  action: 'restore' | 'separate' | 'settle' | 'keep';
-  reason: string | null;
-  /** Changes left to commit for this file once the action is applied; for a kept file, its current changes. */
-  diff: string;
-  /** Content the plan was made with: a confirmation applies to this content only. */
-  version: string | null;
-}
 /** A kept file the user checked: it only holds the conversation's work, as long as its content stays `version`. */
 export interface StartingConfirmation {
   path: string;
   version: string;
-}
-export interface StartingContentPlan {
-  /** The copy first receives the target's new commits, so the changes kept apply to its latest version. */
-  targetUpdate: { branch: string; commits: number } | null;
-  steps: StartingContentStep[];
 }
 /** One dirty file of the plan. `write` is its final content (null: absent); undefined leaves the file untouched. */
 interface PlannedFile {
@@ -203,11 +100,6 @@ interface PlannedStarting {
   files: PlannedFile[];
   merge: TargetMerge | null;
 }
-export interface WorktreeInventory {
-  worktrees: WorktreeView[];
-  cleaned: CleanedWorktree[];
-  errors: string[];
-}
 
 function records(db: CerebroDatabase): WorktreeRecord[] {
   return (db.connection.prepare('SELECT data FROM worktree_inventory ORDER BY rowid').all() as { data: string }[]).map(
@@ -224,24 +116,34 @@ const worktreeId = (common: string, path: string): string => hash(`${common}\0${
 async function commonDirectory(path: string): Promise<string> {
   return realpath(resolve(path, (await git(path, ['rev-parse', '--git-common-dir'])).trim()));
 }
-/** Persist identity while the session/project still exist. No foreign key cascades this record. */
-export async function rememberWorktree(db: CerebroDatabase, workspace: Workspace): Promise<void> {
-  if (workspace.mode !== 'isolated' || workspace.removedAt) return;
+/**
+ * Persist identity while the session/project still exist. No foreign key cascades this record. A copy already
+ * gone from disk fails, unless `missing` is 'removed': it is then recorded as removed and its removal date returned.
+ */
+export async function rememberWorktree(
+  db: CerebroDatabase,
+  workspace: Workspace,
+  missing: 'fail' | 'removed' = 'fail',
+): Promise<number | null> {
+  if (workspace.mode !== 'isolated' || workspace.removedAt) return null;
   const commonDir = await commonDirectory(workspace.root).catch(() =>
     commonDirectory(workspace.projectRoot ?? workspace.source),
   );
-  const path = await realpath(workspace.root);
+  let removedAt: number | null = null;
+  const path = await realpath(workspace.root).catch(async (cause: NodeJS.ErrnoException) => {
+    if (missing !== 'removed' || cause.code !== 'ENOENT') throw cause;
+    removedAt = Date.now();
+    return join(
+      await realpath(dirname(workspace.root)).catch(() => resolve(dirname(workspace.root))),
+      basename(workspace.root),
+    );
+  });
   const id = worktreeId(commonDir, path);
   const session = db.getSession(workspace.sessionId);
   const project = session ? db.getProject(session.projectId) : null;
   const source =
     workspace.projectRoot ??
-    (project
-      ? await git(project.path, ['rev-parse', '--show-toplevel']).then(
-          (text) => text.trim(),
-          () => workspace.source,
-        )
-      : workspace.source);
+    (project ? await repositoryRoot(project.path).catch(() => workspace.source) : workspace.source);
   const target =
     workspace.targetBranch ??
     (await git(source, ['symbolic-ref', '--quiet', 'HEAD']).then(
@@ -252,7 +154,7 @@ export async function rememberWorktree(db: CerebroDatabase, workspace: Workspace
   // Upgrade that provisional record, but preserve registered identities and targets.
   // Read after the awaits so concurrent registration cannot be overwritten.
   const previous = records(db).find((record) => record.id === id);
-  if (previous?.managed || previous?.removedAt) return;
+  if (previous?.managed || previous?.removedAt) return previous.removedAt;
   store(db, {
     id,
     commonDir,
@@ -267,21 +169,29 @@ export async function rememberWorktree(db: CerebroDatabase, workspace: Workspace
     targetBranch: target,
     sharedIgnored: workspace.sharedIgnored,
     createdAt: workspace.createdAt,
-    removedAt: null,
+    removedAt,
     ...(project ? { commitSettings: project.commitSettings } : {}),
   });
+  return removedAt;
 }
 
 /** Keep the final labels and repository association before session/project deletion. */
 export async function archiveSessionWorktree(db: CerebroDatabase, id: string): Promise<void> {
-  const row = db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(id) as
-    { data: string } | undefined;
-  if (!row) return;
-  const workspace = JSON.parse(row.data) as Workspace;
-  if (workspace.mode !== 'isolated' || workspace.removedAt) return;
-  if (!records(db).some((record) => record.sessionId === id)) await rememberWorktree(db, workspace);
+  const workspace = workspaceFor(db, id);
+  if (!workspace || workspace.mode !== 'isolated' || workspace.removedAt) return;
+  // A copy deleted or moved outside Cerebro before being inventoried must not make its conversation undeletable.
+  if (!records(db).some((record) => record.sessionId === id)) {
+    const removedAt = await rememberWorktree(db, workspace, 'removed');
+    if (removedAt) {
+      workspace.removedAt = removedAt;
+      db.connection
+        .prepare('UPDATE session_workspaces SET data=? WHERE session_id=?')
+        .run(JSON.stringify(workspace), id);
+    }
+  }
+  const inventory = records(db);
   const session = db.getSession(id);
-  for (const record of records(db).filter((r) => r.sessionId === id)) {
+  for (const record of inventory.filter((r) => r.sessionId === id)) {
     const project = session ? db.getProject(session.projectId) : null;
     if (session) {
       record.sessionTitle = session.title;
@@ -347,7 +257,10 @@ async function registered(path: string): Promise<RegisteredWorktree[]> {
       };
     });
 }
-/** Ignored directories that a reinstall or a build recreates: dependencies and build outputs or caches. */
+/**
+ * Ignored directories that a reinstall or a build recreates: dependencies and build outputs or caches. Only
+ * at the root of the copy: deeper, a `data/build/` may hold anything. Listed in the README.
+ */
 const REGENERABLE_DIRS = new Set([
   'node_modules',
   '.venv',
@@ -364,7 +277,8 @@ const REGENERABLE_DIRS = new Set([
 /**
  * An ignored entry has nothing to lose when it is a link to the same path of the source project, a
  * file identical to that path there (e.g. `.claude/settings.local.json` written by the agent), or a
- * regenerable directory. Another directory qualifies only if every entry below it does, within a small bound.
+ * regenerable directory at the root of the copy. Another directory qualifies only if every entry below it does,
+ * within a small bound.
  */
 async function disposableIgnored(
   root: string,
@@ -378,7 +292,7 @@ async function disposableIgnored(
   if (!stat) return false;
   if (stat.isSymbolicLink()) return resolve(dirname(path), await readlink(path)) === resolve(source, name);
   if (stat.isDirectory()) {
-    if (REGENERABLE_DIRS.has(basename(name))) return true;
+    if (dirname(name) === '.' && REGENERABLE_DIRS.has(name)) return true;
     for (const entry of await readdir(path))
       if (!(await disposableIgnored(root, source, join(name, entry), budget))) return false;
     return true;
@@ -400,7 +314,7 @@ async function contentDiff(
   await writeFile(left, before ?? '');
   await writeFile(right, after ?? '');
   try {
-    await git(cwd, ['diff', '--no-index', '--no-color', '--', left, right]);
+    await git(cwd, ['diff', '--no-index', '--no-color', '--no-ext-diff', '--no-textconv', '--', left, right]);
     return '';
   } catch (cause) {
     const failure = cause as { code?: unknown; stdout?: unknown };
@@ -429,17 +343,6 @@ function diffLines(diff: string): { added: Set<string>; removed: Set<string> } {
  * automatically.
  */
 type MixedStartingState = 'settled' | 'separable' | 'manual';
-function changedFiles(status: string): string[] {
-  const entries = status.split('\0');
-  const files: string[] = [];
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    if (!entry) continue;
-    files.push(entry.slice(3));
-    if (/[RC]/.test(entry.slice(0, 2))) i++;
-  }
-  return files;
-}
 /** Every change Git reports in a worktree, untracked files and submodules included. */
 const STATUS = ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'];
 const underShared = (path: string, shared: Iterable<string>): boolean =>
@@ -486,15 +389,12 @@ async function inspectStatus(
   view: WorktreeView,
 ): Promise<{ files: string[]; ignored: string[] }> {
   const sharedIgnored = new Set(await sharedDependencyLinks(workspace ?? record, record.path));
-  const files = changedFiles(await git(record.path, STATUS)).filter((path) => !underShared(path, sharedIgnored));
+  const files = parseStatusZ(await git(record.path, STATUS)).filter((path) => !underShared(path, sharedIgnored));
   // The inventory only needs removable ignored entries, not every file below them.
   // Expanding node_modules here made each UI refresh walk thousands of files.
-  const ignored = (
-    await git(record.path, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])
-  )
-    .split('\0')
-    .filter(Boolean)
-    .filter((path) => !underShared(path, sharedIgnored));
+  const ignored = splitZ(
+    await git(record.path, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z']),
+  ).filter((path) => !underShared(path, sharedIgnored));
   const disposable: string[] = [];
   if (record.managed)
     for (const name of ignored)
@@ -512,8 +412,7 @@ async function inspectMergeInProgress(path: string, gitDir: string, view: Worktr
   view.mergeInProgress = ['MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'].some(
     (name) => existsSync(join(gitDir, name)),
   );
-  if (view.mergeInProgress)
-    view.conflicts = (await git(path, ['diff', '--name-only', '-z', '--diff-filter=U'])).split('\0').filter(Boolean);
+  if (view.mergeInProgress) view.conflicts = splitZ(await git(path, ['diff', '--name-only', '-z', '--diff-filter=U']));
 }
 /** Whether the integrated commits are in the target's upstream branch, when it has one. */
 async function inspectPublication(record: WorktreeRecord, view: WorktreeView): Promise<void> {
@@ -775,9 +674,9 @@ async function applyStartingPlan(view: WorktreeView, plan: PlannedStarting): Pro
   const written = plan.files.filter((file) => file.write !== undefined);
   const literals = written.map((file) => `:(literal)${file.path}`);
   const inHead = written.length
-    ? (await git(view.path, ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', ...written.map((file) => file.path)]))
-        .split('\0')
-        .filter(Boolean)
+    ? splitZ(
+        await git(view.path, ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', ...written.map((file) => file.path)]),
+      )
     : [];
   if (literals.length) await git(view.path, ['rm', '--cached', '--quiet', '--ignore-unmatch', '-r', '--', ...literals]);
   if (plan.merge) await commitTargetMerge(view, plan.merge, written, inHead);
@@ -799,7 +698,7 @@ async function commitTargetMerge(
   // The worktree too, so the tree can switch to the merge.
   if (inHead.length) await git(view.path, ['checkout', 'HEAD', '--', ...inHead.map((path) => `:(literal)${path}`)]);
   for (const file of written) if (!inHead.includes(file.path)) await rm(join(view.path, file.path), { force: true });
-  const message = `Copie : intégrer ${branchLabel(view.targetBranch)} avant de retirer le contenu de départ`;
+  const message = `Copie : intégrer ${branchLabel(view.targetBranch, 'la cible')} avant de retirer le contenu de départ`;
   try {
     const commit = (
       await git(view.path, ['commit-tree', merge.tree, '-p', head, '-p', view.targetHead!, '-m', message])
@@ -814,9 +713,21 @@ async function commitTargetMerge(
   } catch (cause) {
     await writePlannedFiles(view.path, written, (file) => file.current);
     throw new WorktreeError(
-      `La copie n’a pas pu être mise à jour avec ${branchLabel(view.targetBranch)} : ${cause instanceof Error ? cause.message : String(cause)}\nLes fichiers de la copie ont été remis dans leur état précédent.`,
+      `La copie n’a pas pu être mise à jour avec ${branchLabel(view.targetBranch, 'la cible')} : ${errorMessage(cause)}\nLes fichiers de la copie ont été remis dans leur état précédent.`,
     );
   }
+}
+/** Why `activity` blocks a merge into, or the removal of, its folder. */
+function activityReasons(activity: RepositoryActivity, removing: boolean): string[] {
+  const repeat = (count: number, reason: string): string[] => Array.from({ length: count }, () => reason);
+  return [
+    ...activity.sessions
+      .filter((session) => removing || sessionBusy(session.status))
+      .map((session) => `Session ${session.title} (${session.status}).`),
+    ...repeat(activity.commands, 'Une commande utilise ce worktree.'),
+    ...repeat(activity.automaticCommits, 'Un commit automatique utilise ce worktree.'),
+    ...(removing ? repeat(activity.epics, 'Un epic utilise encore ce worktree.') : []),
+  ];
 }
 
 export class WorktreeManager {
@@ -835,6 +746,8 @@ export class WorktreeManager {
   // Automatic cleanups run one at a time: two triggers for the same copy never inspect it concurrently.
   private cleanupQueue: Promise<void> = Promise.resolve();
   private cleanupQueued = new Set<string>();
+  /** Repositories (common directories) already rid of the merge refs left by an earlier process. */
+  private purgedMergeRefs = new Set<string>();
   /** Sessions whose copy was just removed: their `worktree` field changed. */
   onSessionsChanged: (ids: string[]) => void = () => {};
   constructor(db: CerebroDatabase, services: Services) {
@@ -843,7 +756,7 @@ export class WorktreeManager {
     for (const operation of this.operations())
       if (operation.status === 'running') {
         operation.status = 'interrupted';
-        operation.error = 'Serveur interrompu : vérifier les références et tout merge en cours avant de relancer.';
+        operation.error = 'Serveur interrompu : vérifier tout merge en cours avant de relancer.';
         operation.finishedAt = Date.now();
         this.saveOperation(operation);
       }
@@ -872,8 +785,7 @@ export class WorktreeManager {
     // Later epic steps share the first step's copy, whose record already identifies it: rememberWorktree would only
     // ask Git again to find that record, on every listing.
     const registeredPaths = new Set(managed.filter((r) => !r.removedAt).map((r) => r.path));
-    for (const row of this.db.connection.prepare('SELECT data FROM session_workspaces').all() as { data: string }[]) {
-      const workspace = JSON.parse(row.data) as Workspace;
+    for (const workspace of sessionWorkspaces(this.db).values()) {
       if (
         workspace.mode !== 'isolated' ||
         workspace.removedAt ||
@@ -885,13 +797,26 @@ export class WorktreeManager {
         await rememberWorktree(this.db, workspace);
       } catch (cause) {
         if (!records(this.db).some((r) => r.sessionId === workspace.sessionId))
-          errors.push(`Espace ${workspace.root} : ${String(cause)}`);
+          errors.push(`Espace ${workspace.root} : ${errorMessage(cause)}`);
       }
     }
     const known = records(this.db);
     const projects = this.db.listProjects();
     const paths = [...new Set([...projects.map((p) => p.path), ...known.flatMap((r) => [r.path, r.source])])];
     const anchors = new Map<string, string>();
+    // Isolated copies still in use, by canonical path: resolved once per discovery, only if a copy needs attributing.
+    let isolated: Map<string, Workspace> | undefined;
+    const workspaces = (): Map<string, Workspace> => {
+      if (isolated) return isolated;
+      isolated = new Map();
+      for (const row of this.db.connection.prepare('SELECT data FROM session_workspaces').all() as { data: string }[]) {
+        const workspace = JSON.parse(row.data) as Workspace;
+        if (workspace.mode !== 'isolated' || workspace.removedAt) continue;
+        const canonical = canonicalWorktreePath(workspace.root);
+        if (!isolated.has(canonical)) isolated.set(canonical, workspace);
+      }
+      return isolated;
+    };
     await Promise.all(
       paths.map(async (path) => {
         try {
@@ -904,27 +829,60 @@ export class WorktreeManager {
     );
     for (const [commonDir, anchor] of anchors) {
       try {
+        await this.purgeMergeRefs(commonDir, anchor);
         const listing = await registered(anchor);
-        const project = projects.find((p) => listing.some((w) => within(w.path, canonicalWorktreePath(p.path))));
-        const source = project
-          ? (await git(project.path, ['rev-parse', '--show-toplevel'])).trim()
-          : (known.find((r) => r.commonDir === commonDir)?.source ?? anchor);
-        const target = await git(source, ['symbolic-ref', '--quiet', 'HEAD']).then(
-          (text) => text.trim(),
-          () => null,
-        );
+        // Several projects may live in one repository (e.g. two folders of a monorepo).
+        const sharing = projects.filter((p) => listing.some((w) => pathWithin(w.path, canonicalWorktreePath(p.path))));
+        const sources = new Map<string, Promise<{ source: string; target: string | null }>>();
+        const origin = (project: (typeof projects)[number] | undefined) => {
+          const key = project?.id ?? '';
+          let found = sources.get(key);
+          if (!found)
+            sources.set(
+              key,
+              (found = (async () => {
+                const source = project
+                  ? await repositoryRoot(project.path)
+                  : (known.find((r) => r.commonDir === commonDir)?.source ?? anchor);
+                return {
+                  source,
+                  target: await git(source, ['symbolic-ref', '--quiet', 'HEAD']).then(
+                    (text) => text.trim(),
+                    () => null,
+                  ),
+                };
+              })()),
+            );
+          return found;
+        };
         for (const worktree of listing) {
+          // Read after the awaits, so a registration made meanwhile is never overwritten.
           const path = resolve(worktree.path);
           const id = worktreeId(commonDir, path);
           const previous = records(this.db).find((r) => r.id === id);
-          if (previous && !previous.removedAt) continue;
           const preparing = /^refs\/heads\/cerebro\/session-(.+)$/.exec(worktree.branch ?? '')?.[1];
-          if (
-            preparing &&
-            this.db.getSession(preparing)?.status === 'starting' &&
-            !this.db.connection.prepare('SELECT 1 FROM session_workspaces WHERE session_id=?').get(preparing)
-          )
+          if (previous && !previous.removedAt) {
+            if (previous.managed) continue;
+            // Copies discovered before their repository was shared, or credited to the wrong one of its projects.
+            const project = this.owner(sharing, path, workspaces(), preparing);
+            if (
+              previous.projectId !== (project?.id ?? null) &&
+              (previous.projectId === null || sharing.some((p) => p.id === previous.projectId))
+            )
+              store(this.db, {
+                ...previous,
+                projectId: project?.id ?? null,
+                projectName: project?.name ?? basename(previous.source),
+              });
             continue;
+          }
+          // A copy recorded as removed but deleted outside Git leaves only stale metadata: keep its archived record.
+          if (previous && worktree.prunable) continue;
+          if (preparing && this.db.getSession(preparing)?.status === 'starting' && !workspaceFor(this.db, preparing))
+            continue;
+          const project = this.owner(sharing, path, workspaces(), preparing);
+          // Unattributed in a shared repository: listed under each of its projects, credited to none.
+          const { source, target } = await origin(project ?? sharing[0]);
           store(this.db, {
             id,
             commonDir,
@@ -942,51 +900,49 @@ export class WorktreeManager {
           });
         }
       } catch (cause) {
-        errors.push(`Dépôt ${anchor} : ${String(cause)}`);
+        errors.push(`Dépôt ${anchor} : ${errorMessage(cause)}`);
       }
     }
     return errors;
+  }
+  /** A merge pins its tip only while it runs: the refs of operations interrupted by a stop are dropped once per repository. */
+  private async purgeMergeRefs(commonDir: string, anchor: string): Promise<void> {
+    if (this.purgedMergeRefs.has(commonDir)) return;
+    this.purgedMergeRefs.add(commonDir);
+    const running = new Set(
+      this.operations()
+        .filter((operation) => operation.status === 'running')
+        .map((operation) => mergeRef(operation.id)),
+    );
+    const stale = (await git(anchor, ['for-each-ref', '--format=%(refname)', 'refs/cerebro/merges/']))
+      .split('\n')
+      .filter((ref) => ref && !running.has(ref));
+    if (stale.length)
+      await git(anchor, ['update-ref', '--stdin'], { input: stale.map((ref) => `delete ${ref}\n`).join('') });
+  }
+  /**
+   * The project a discovered copy belongs to: the one of the conversation that created it, else the only project
+   * located inside it, else the repository's only project. null when the repository is shared and nothing tells.
+   */
+  private owner<P extends { id: string; path: string }>(
+    sharing: P[],
+    path: string,
+    workspaces: Map<string, Workspace>,
+    branchSession?: string,
+  ): P | undefined {
+    const workspace = workspaces.get(path);
+    const sessionId = workspace?.sessionId ?? branchSession;
+    const projectId = workspace?.projectId ?? (sessionId ? this.db.getSession(sessionId)?.projectId : undefined);
+    const own = sharing.find((p) => p.id === projectId);
+    if (own) return own;
+    const inside = sharing.filter((p) => pathWithin(path, canonicalWorktreePath(p.path)));
+    if (inside.length === 1) return inside[0];
+    return sharing.length === 1 ? sharing[0] : undefined;
   }
   private record(id: string): WorktreeRecord {
     const record = records(this.db).find((r) => r.id === id && !r.removedAt);
     if (!record) throw new WorktreeError('Worktree introuvable.', 404);
     return record;
-  }
-  private activity(path: string, removing: boolean): string[] {
-    const reasons: string[] = [];
-    for (const session of this.db.listSessions()) {
-      const row = this.db.connection
-        .prepare('SELECT data FROM session_workspaces WHERE session_id=?')
-        .get(session.id) as { data: string } | undefined;
-      const workspace = row ? (JSON.parse(row.data) as Workspace) : null;
-      const cwd = workspace?.path ?? this.db.getProject(session.projectId)?.path;
-      if (
-        cwd &&
-        within(path, canonicalWorktreePath(cwd)) &&
-        (removing ? session.status !== 'exited' : !['idle', 'exited'].includes(session.status))
-      )
-        reasons.push(`Session ${session.title} (${session.status}).`);
-    }
-    for (const row of this.db.connection.prepare('SELECT data FROM command_runs').all() as { data: string }[]) {
-      const run = JSON.parse(row.data);
-      if (run.status === 'running' && within(path, canonicalWorktreePath(run.cwd)))
-        reasons.push('Une commande utilise ce worktree.');
-    }
-    for (const row of this.db.connection.prepare('SELECT data FROM automatic_commits').all() as { data: string }[]) {
-      const run = JSON.parse(row.data);
-      if (run.status === 'running' && within(path, canonicalWorktreePath(run.path)))
-        reasons.push('Un commit automatique utilise ce worktree.');
-    }
-    if (removing)
-      for (const row of this.db.connection.prepare('SELECT data FROM epic_runs').all() as { data: string }[]) {
-        const run = JSON.parse(row.data);
-        if (
-          ['running', 'waiting-validation', 'blocked'].includes(run.status) &&
-          within(path, canonicalWorktreePath(run.contextRoot))
-        )
-          reasons.push('Un epic utilise encore ce worktree.');
-      }
-    return reasons;
   }
   async list(projectId?: string): Promise<WorktreeInventory> {
     const key = projectId ?? '';
@@ -1003,20 +959,30 @@ export class WorktreeManager {
     const project = projectId ? this.db.getProject(projectId) : null;
     if (projectId && !project) throw new WorktreeError('Projet introuvable.', 404);
     const common = project ? await commonDirectory(project.path).catch(() => null) : null;
-    const selected = records(this.db).filter(
-      (r) => !r.removedAt && (!projectId || r.projectId === projectId || r.commonDir === common),
-    );
+    const inventory = records(this.db);
+    const inProject = (record: WorktreeRecord): boolean =>
+      !projectId || record.projectId === projectId || record.commonDir === common;
+    const selected = inventory.filter((r) => !r.removedAt && inProject(r));
     const worktrees: WorktreeView[] = [];
     for (let i = 0; i < selected.length; i += 8)
       worktrees.push(...(await Promise.all(selected.slice(i, i + 8).map((record) => this.inspect(record)))));
+    // A copy credited to no project of its shared repository is shown as belonging to each of them.
+    const unattributed = worktrees.filter((view) => view.projectId === null);
+    if (project)
+      for (const view of unattributed)
+        if (view.commonDir === common)
+          Object.assign(view, { projectId: project.id, projectName: project.name, projectExists: true });
+    if (!project && unattributed.length) {
+      const projects = this.db.listProjects();
+      const repositories = await Promise.all(projects.map((p) => commonDirectory(p.path).catch(() => null)));
+      for (const view of unattributed) {
+        const names = projects.filter((_, i) => repositories[i] === view.commonDir).map((p) => p.name);
+        if (names.length) Object.assign(view, { projectName: names.join(', '), projectExists: true });
+      }
+    }
+    // Read again after the inspections: a copy removed meanwhile is listed among the cleaned ones.
     const cleaned = records(this.db)
-      .filter(
-        (r) =>
-          r.removedAt &&
-          r.autoCleanup?.status === 'removed' &&
-          !r.historyDeletedAt &&
-          (!projectId || r.projectId === projectId || r.commonDir === common),
-      )
+      .filter((r) => r.removedAt && r.autoCleanup?.status === 'removed' && !r.historyDeletedAt && inProject(r))
       .sort((left, right) => right.removedAt! - left.removedAt!)
       .slice(0, CLEANED_SHOWN)
       .map((record) => {
@@ -1046,14 +1012,9 @@ export class WorktreeManager {
         throw new WorktreeError('Seules les copies déjà nettoyées peuvent être retirées de l’historique.');
       return record;
     });
-    this.db.connection.exec('BEGIN');
-    try {
+    this.db.transaction(() => {
       for (const record of selected) store(this.db, { ...record, historyDeletedAt: Date.now() });
-      this.db.connection.exec('COMMIT');
-    } catch (cause) {
-      this.db.connection.exec('ROLLBACK');
-      throw cause;
-    }
+    });
   }
   async get(id: string): Promise<WorktreeView> {
     await this.sync();
@@ -1075,7 +1036,7 @@ export class WorktreeManager {
       view.fingerprint = await inspectFingerprint(record, view, entry, gitDir, files, ignored, targetState);
       await assertStableReferences(record, view);
     } catch (cause) {
-      view.error = cause instanceof Error ? cause.message : String(cause);
+      view.error = errorMessage(cause);
       view.integration = 'unknown';
       view.fingerprint = null;
       view.mergeBlockers = [view.error];
@@ -1117,13 +1078,12 @@ export class WorktreeManager {
       startingContent: null,
       targetDirty: null,
       integrationConflicts: null,
+      integrationNote: null,
       conflicts: [],
     };
   }
   private workspaceOf(sessionId: string): Workspace | null {
-    const row = this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(sessionId) as
-      { data: string } | undefined;
-    return row ? (JSON.parse(row.data) as Workspace) : null;
+    return workspaceFor(this.db, sessionId);
   }
   /** Files changed since the copy was created, and those still holding the content copied from the project. */
   private async inspectStartingContent(
@@ -1175,7 +1135,10 @@ export class WorktreeManager {
     view.behind = counts[0];
     view.ahead = counts[1];
     view.integration = view.ahead === 0 && view.dirty === 0 ? 'integrated' : 'pending';
-    if (view.ahead && view.behind && !view.mergeInProgress) view.integrationConflicts = this.forecast(view);
+    if (view.ahead && view.behind && !view.mergeInProgress) {
+      view.integrationConflicts = this.forecast(view);
+      view.integrationNote = (await mergeTreeAvailable()) ? null : APPROXIMATE_FORECAST;
+    }
     if (view.integration === 'integrated') await inspectPublication(record, view);
   }
   /** What prevents a removal or a merge of the copy itself; the target worktree is checked by `inspectTarget`. */
@@ -1186,10 +1149,8 @@ export class WorktreeManager {
     gitDir: string,
     ownOperation: string | undefined,
   ): Promise<void> {
-    const active = this.db
-      .listSessions()
-      .filter((s) => s.status !== 'exited' && this.activityForSession(s.id, record.path));
-    view.activeSessions = active.map((s) => ({ id: s.id, title: s.title, status: s.status }));
+    const activity = repositoryActivity(this.db, record.path);
+    view.activeSessions = activity.sessions.map((s) => ({ id: s.id, title: s.title, status: s.status }));
     const commonBlockers: string[] = [];
     if (view.operation?.status === 'running' && view.operation.id !== ownOperation)
       commonBlockers.push('Une opération Git utilise ce worktree.');
@@ -1209,12 +1170,12 @@ export class WorktreeManager {
       commonBlockers.push('Worktree ou index verrouillé par Git.');
     if ((await this.services.pushes.current(record.path))?.status === 'running')
       commonBlockers.push('Un push est en cours.');
-    view.removeBlockers = [...commonBlockers, ...this.activity(record.path, true)];
+    view.removeBlockers = [...commonBlockers, ...activityReasons(activity, true)];
     if (view.ahead === null || view.ahead > 0)
       view.removeBlockers.push('Des commits restent à intégrer, ou leur intégration ne peut pas être vérifiée.');
     if (view.ignored)
       view.removeBlockers.push(`${view.ignored} fichier(s) ignoré(s) conservé(s) : déplacez-les avant suppression.`);
-    view.mergeBlockers = [...commonBlockers, ...this.activity(record.path, false)];
+    view.mergeBlockers = [...commonBlockers, ...activityReasons(activity, false)];
     if (!view.targetPath) view.mergeBlockers.push('La branche cible doit être ouverte dans un worktree Git.');
     if (view.ahead === 0) view.mergeBlockers.push('Aucun nouveau commit à intégrer.');
   }
@@ -1234,7 +1195,7 @@ export class WorktreeManager {
       'rebase-apply',
       'index.lock',
     ].filter((name) => existsSync(join(targetGitDir, name)));
-    view.targetDirty = changedFiles(dirty).length;
+    view.targetDirty = parseStatusZ(dirty).length;
     if (view.targetDirty)
       view.mergeBlockers.push(
         `Le dossier cible doit être propre : ${view.targetPath} contient ${view.targetDirty} fichier(s) non commité(s). Commitez-les d’abord (« Commit / push du projet »).`,
@@ -1243,15 +1204,8 @@ export class WorktreeManager {
       view.mergeBlockers.push(
         `Le dossier cible doit être propre : une opération Git est en cours dans ${view.targetPath}.`,
       );
-    view.mergeBlockers.push(...this.activity(view.targetPath, false));
+    view.mergeBlockers.push(...activityReasons(repositoryActivity(this.db, view.targetPath), false));
     return hash(dirty + '\0' + JSON.stringify(pending));
-  }
-  private activityForSession(id: string, path: string): boolean {
-    const row = this.db.connection.prepare('SELECT data FROM session_workspaces WHERE session_id=?').get(id) as
-      { data: string } | undefined;
-    const session = this.db.getSession(id)!;
-    const cwd = row ? (JSON.parse(row.data) as Workspace).path : this.db.getProject(session.projectId)?.path;
-    return !!cwd && within(path, canonicalWorktreePath(cwd));
   }
   async target(id: string, branch: unknown): Promise<WorktreeView> {
     if (typeof branch !== 'string' || !branch.startsWith('refs/heads/'))
@@ -1318,12 +1272,12 @@ export class WorktreeManager {
       if (content && hash(content) === digest)
         return { origin: { kind: 'target-worktree' }, content: async () => content };
     }
-    if (workspace.startingSnapshot) {
-      const content = await gitBytes(path, ['cat-file', 'blob', `${workspace.startingSnapshot}:${file}`]).catch(
-        () => null,
-      );
-      if (content && hash(content) === digest) return { origin: { kind: 'snapshot' }, content: async () => content };
-    }
+    const content = workspace.startingCopy
+      ? await readFile(join(workspace.startingCopy, file)).catch(() => null)
+      : workspace.startingSnapshot
+        ? await gitBytes(path, ['cat-file', 'blob', `${workspace.startingSnapshot}:${file}`]).catch(() => null)
+        : null;
+    if (content && hash(content) === digest) return { origin: { kind: 'snapshot' }, content: async () => content };
     return null;
   }
   /**
@@ -1454,7 +1408,7 @@ export class WorktreeManager {
     if (!view.managed || view.primary)
       throw new WorktreeError('Worktree principal ou géré hors de Cerebro : lecture seule.');
     if (view.operation?.status === 'running') throw new WorktreeError('Une opération utilise ce worktree.');
-    const busy = this.activity(view.path, false);
+    const busy = activityReasons(repositoryActivity(this.db, view.path), false);
     if (busy.length) throw new WorktreeError(busy.join('\n'));
     if ((await this.services.pushes.current(view.path))?.status === 'running')
       throw new WorktreeError('Un push est en cours.');
@@ -1475,13 +1429,13 @@ export class WorktreeManager {
       throw new WorktreeError('La copie contient déjà tous les commits de la cible.');
     const release = this.services.gate.lock([view.path]);
     try {
-      const message = `Copie : intégrer ${branchLabel(view.targetBranch)}`;
+      const message = `Copie : intégrer ${branchLabel(view.targetBranch, 'la cible')}`;
       const clean = await git(view.path, ['merge', '--no-ff', '--no-commit', '-m', message, view.targetHead]).then(
         () => true,
         () => false,
       );
       // Committed apart from the merge, so the branch history records a commit, as for the conversation's own commits.
-      if (clean) await git(view.path, ['commit', '--no-edit', '--no-verify']);
+      if (clean) await commitTargetUpdate(view.path);
       else if (!existsSync(join((await git(view.path, ['rev-parse', '--absolute-git-dir'])).trim(), 'MERGE_HEAD')))
         throw new WorktreeError('Git n’a pas pu commencer la mise à jour de la copie.');
       return await this.inspect(this.record(id));
@@ -1517,34 +1471,80 @@ export class WorktreeManager {
       if (remaining.length) throw new WorktreeError(`Marqueurs de conflit encore présents : ${remaining.join(', ')}.`);
       if (view.conflicts.length)
         await git(view.path, ['add', '-A', '--', ...view.conflicts.map((file) => `:(literal)${file}`)]);
-      await git(view.path, ['commit', '--no-edit', '--no-verify']);
+      await commitTargetUpdate(view.path);
       return await this.inspect(this.record(id));
     } finally {
       release();
     }
   }
   /**
-   * Merges the target into the copy's last commit inside a temporary index, without touching the copy.
-   * Null when Git cannot resolve it without a person: the copy then stays on its own last commit.
+   * Merges the target into the copy's last commit without touching the copy: with `git merge-tree` when Git has it,
+   * otherwise inside a temporary index. Null when there is nothing to merge.
    */
   private async simulateTargetMerge(view: WorktreeView, temporary: string): Promise<SimulatedMerge | null> {
     if (!view.targetHead || !view.behind || !view.head) return null;
-    const env = { GIT_INDEX_FILE: join(temporary, 'merge-index') };
     const base = (await git(view.path, ['merge-base', 'HEAD', view.targetHead]).catch(() => '')).trim();
     if (!base) return null;
-    await git(view.path, ['read-tree', '-i', '-m', '--aggressive', base, 'HEAD', view.targetHead], env);
+    if (await mergeTreeAvailable()) {
+      const args = ['merge-tree', '--write-tree', '-z', '--name-only', '--no-messages', 'HEAD', view.targetHead];
+      const result = await runGit(['-C', view.path, ...args], { kind: 'write', env: gitEnv() });
+      // Exit status 1 reports conflicts; any other failure is not a forecast.
+      if (result.code !== 0 && result.code !== 1)
+        throw new GitError(result.stderr.toString('utf8').trim() || `git merge-tree : code ${result.code}`, result);
+      const [tree, ...conflicts] = splitZ(result.stdout.toString('utf8'));
+      if (result.code === 1) return { conflicts };
+      return {
+        tree,
+        commits: view.behind,
+        read: (file) => gitBytes(view.path, ['cat-file', 'blob', `${tree}:${file}`]).catch(() => null),
+      };
+    }
+    return this.simulateInIndex(view, base, temporary);
+  }
+  /**
+   * The merge of `simulateTargetMerge` for a Git without `merge-tree --write-tree`: a three-way merge of the trees,
+   * then of each file changed on both sides, following a file renamed on one side and modified on the other.
+   * Directory renames and a file renamed on both sides are not followed, as `APPROXIMATE_FORECAST` says.
+   */
+  private async simulateInIndex(view: WorktreeView, base: string, temporary: string): Promise<SimulatedMerge> {
+    const index = { index: join(temporary, 'merge-index') };
+    const renames = async (side: string): Promise<Map<string, string>> => {
+      const fields = (await git(view.path, ['diff', '--name-status', '-z', '-M', '--diff-filter=R', base, side])).split(
+        '\0',
+      );
+      const renamed = new Map<string, string>();
+      for (let i = 0; i + 2 < fields.length; i += 3) renamed.set(fields[i + 1], fields[i + 2]);
+      return renamed;
+    };
+    const renamedBy = { 2: await renames('HEAD'), 3: await renames(view.targetHead!) };
+    await git(view.path, ['read-tree', '-i', '-m', '--aggressive', base, 'HEAD', view.targetHead!], index);
     const stages = new Map<string, Map<number, { mode: string; oid: string }>>();
-    for (const entry of (await git(view.path, ['ls-files', '-u', '-z'], env)).split('\0').filter(Boolean)) {
+    for (const entry of splitZ(await git(view.path, ['ls-files', '-u', '-z'], index))) {
       const [info, path] = [entry.slice(0, entry.indexOf('\t')), entry.slice(entry.indexOf('\t') + 1)];
       const [mode, oid, stage] = info.split(' ');
       if (!stages.has(path)) stages.set(path, new Map());
       stages.get(path)!.set(Number(stage), { mode, oid });
     }
     const conflicts: string[] = [];
-    for (const [path, entry] of stages) {
-      const ours = entry.get(2);
-      const theirs = entry.get(3);
+    for (const [file, entry] of stages) {
+      let path = file;
+      let ours = entry.get(2);
+      let theirs = entry.get(3);
       const ancestor = entry.get(1);
+      // Deleted on one side because renamed there: the renamed file, untouched by the other side, takes its changes.
+      const side = ancestor && !ours && theirs ? 2 : ancestor && ours && !theirs ? 3 : null;
+      const renamed = side ? renamedBy[side].get(file) : undefined;
+      if (side && renamed && !stages.has(renamed)) {
+        const [mode, oid] = (await git(view.path, ['ls-files', '-s', '-z', '--', `:(literal)${renamed}`], index)).split(
+          ' ',
+        );
+        if (mode && oid) {
+          path = renamed;
+          if (side === 2) ours = { mode, oid };
+          else theirs = { mode, oid };
+          await git(view.path, ['update-index', '--force-remove', '--', file], index);
+        }
+      }
       if (!ours || !theirs || ours.mode !== theirs.mode || ours.mode === '120000') {
         conflicts.push(path);
         continue;
@@ -1560,13 +1560,13 @@ export class WorktreeManager {
       }
       await writeFile(files[1], merged);
       const oid = (await git(view.path, ['hash-object', '-w', '--', files[1]])).trim();
-      await git(view.path, ['update-index', '--cacheinfo', `${ours.mode},${oid},${path}`], env);
+      await git(view.path, ['update-index', '--cacheinfo', `${ours.mode},${oid},${path}`], index);
     }
     if (conflicts.length) return { conflicts };
-    const tree = (await git(view.path, ['write-tree'], env)).trim();
+    const tree = (await git(view.path, ['write-tree'], index)).trim();
     return {
       tree,
-      commits: view.behind,
+      commits: view.behind!,
       read: (file) => gitBytes(view.path, ['cat-file', 'blob', `${tree}:${file}`]).catch(() => null),
     };
   }
@@ -1657,7 +1657,7 @@ export class WorktreeManager {
     confirmed: StartingConfirmation[] = [],
   ): Promise<PlannedStarting> {
     const shared = await sharedDependencyLinks(workspace, view.path);
-    const paths = changedFiles(await git(view.path, STATUS)).filter((path) => !underShared(path, shared));
+    const paths = parseStatusZ(await git(view.path, STATUS)).filter((path) => !underShared(path, shared));
     const simulated = await this.simulateTargetMerge(view, temporary).catch(() => null);
     const merge = simulated && 'tree' in simulated ? simulated : null;
     const merged = merge ? await this.planFiles(view, workspace, paths, merge, temporary, confirmed) : null;
@@ -1703,13 +1703,8 @@ export class WorktreeManager {
   private async startingEditable(id: string): Promise<{ view: WorktreeView; workspace: Workspace }> {
     if (this.closed) throw new WorktreeError('Serveur en cours d’arrêt.');
     const view = await this.get(id);
-    if (view.error) throw new WorktreeError(view.error);
-    if (!view.managed || view.primary)
-      throw new WorktreeError('Worktree principal ou géré hors de Cerebro : lecture seule.');
+    await this.assertEditable(view);
     if (view.mergeInProgress) throw new WorktreeError('Une opération Git doit être résolue dans ce worktree.');
-    if (view.operation?.status === 'running') throw new WorktreeError('Une opération utilise ce worktree.');
-    const busy = this.activity(view.path, false);
-    if (busy.length) throw new WorktreeError(busy.join('\n'));
     return { view, workspace: this.startingWorkspace(view) };
   }
   /**
@@ -1717,17 +1712,7 @@ export class WorktreeManager {
    * its commits (a merge commit), so the changes kept apply to its latest version. Files untouched since the copy
    * take that version; files edited since keep only those edits when the starting content can be found.
    */
-  async discardInherited(
-    id: string,
-    confirmations: unknown = [],
-  ): Promise<{
-    restored: string[];
-    separated: string[];
-    settled: string[];
-    kept: StartingContentStep[];
-    targetUpdate: StartingContentPlan['targetUpdate'];
-    view: WorktreeView;
-  }> {
+  async discardInherited(id: string, confirmations: unknown = []): Promise<StartingContentDiscard> {
     const confirmed = parseConfirmations(confirmations);
     const { view, workspace } = await this.startingEditable(id);
     const release = this.services.gate.lock([view.path]);
@@ -1764,14 +1749,18 @@ export class WorktreeManager {
     for (const file of plan.files)
       if (done.has(file.path)) {
         if (file.next === null) delete workspace.baseline[file.path];
-        else workspace.baseline[file.path] = `${(await lstat(join(view.path, file.path))).mode}:${hash(file.next)}`;
+        else
+          workspace.baseline[file.path] = regularFileSignature(
+            (await lstat(join(view.path, file.path))).mode,
+            file.next,
+          );
       }
     this.db.connection
       .prepare('UPDATE session_workspaces SET data=? WHERE session_id=?')
       .run(JSON.stringify(workspace), workspace.sessionId);
   }
   /** Validates a merge or removal and returns the single-use token that `start` requires to run it. */
-  async prepareAction(id: string, kind: 'merge' | 'remove'): Promise<{ token: string; view: WorktreeView }> {
+  async prepareAction(id: string, kind: 'merge' | 'remove'): Promise<PreparedWorktreeOperation> {
     const view = await this.get(id);
     const blockers = kind === 'merge' ? view.mergeBlockers : view.removeBlockers;
     if (blockers.length || !view.fingerprint) throw new WorktreeError(blockers.join('\n'));
@@ -1782,7 +1771,12 @@ export class WorktreeManager {
     return { token, view };
   }
   async start(id: string, kind: 'merge' | 'remove', token: unknown): Promise<WorktreeOperation> {
-    return (await this.begin(id, kind, token, false)).operation;
+    const { operation, done } = await this.begin(id, kind, token, false);
+    // Nobody awaits a manual operation: its outcome is recorded, a late failure (saving it) is only logged.
+    void done.catch((cause) =>
+      console.error('[worktrees] Fin d’opération non enregistrée :', cause instanceof Error ? cause.message : cause),
+    );
+    return operation;
   }
   private async begin(
     id: string,
@@ -1840,44 +1834,61 @@ export class WorktreeManager {
       const blockers = operation.kind === 'merge' ? fresh.mergeBlockers : fresh.removeBlockers;
       if (blockers.length) throw new WorktreeError(blockers.join('\n'));
       if (operation.kind === 'merge') {
-        // Keep the exact requested tip recoverable, even if a branch is later rewritten externally.
-        await git(view.path, ['update-ref', `refs/cerebro/merges/${operation.id}`, view.head!]);
-        if ((await git(view.targetPath!, ['symbolic-ref', '--quiet', 'HEAD'])).trim() !== view.targetBranch)
-          throw new WorktreeError('La branche cible a changé.');
+        // Keep the exact requested tip recoverable while merging, even if a branch is rewritten externally meanwhile.
+        await git(view.path, ['update-ref', mergeRef(operation.id), view.head!]);
         try {
-          operation.output = await git(view.targetPath!, ['merge', '--no-edit', '--', view.head!]);
-        } catch (cause) {
-          const failure = cause as Error & { stdout?: string; stderr?: string };
-          operation.output = [failure.stdout, failure.stderr]
-            .filter(Boolean)
-            .join('\n')
-            .slice(-64 * 1024);
-          throw new WorktreeError(
-            `Merge interrompu : ${failure.message}\nVérifiez ${view.targetPath}. Les conflits éventuels sont conservés ; aucun reset ni abandon automatique n’a été appliqué.`,
-          );
+          if ((await git(view.targetPath!, ['symbolic-ref', '--quiet', 'HEAD'])).trim() !== view.targetBranch)
+            throw new WorktreeError('La branche cible a changé.');
+          try {
+            operation.output = await git(view.targetPath!, ['merge', '--no-edit', '--', view.head!]);
+          } catch (cause) {
+            const failure = cause as Error & { stdout?: string; stderr?: string };
+            operation.output = [failure.stdout, failure.stderr]
+              .filter(Boolean)
+              .join('\n')
+              .slice(-64 * 1024);
+            throw new WorktreeError(
+              `Merge interrompu : ${failure.message}\nVérifiez ${view.targetPath}. Les conflits éventuels sont conservés ; aucun reset ni abandon automatique n’a été appliqué.`,
+            );
+          }
+          operation.resultHead = (await git(view.targetPath!, ['rev-parse', 'HEAD'])).trim();
+          if ((await git(view.targetPath!, ['symbolic-ref', '--quiet', 'HEAD'])).trim() !== view.targetBranch)
+            throw new WorktreeError('La branche cible a changé pendant le merge : vérification manuelle requise.');
+          await git(view.targetPath!, ['merge-base', '--is-ancestor', view.head!, 'HEAD']);
+          operation.output = operation.output.slice(-64 * 1024);
+        } finally {
+          // Merged, the tip is in the target's history; interrupted, MERGE_HEAD and the source branch still hold it.
+          await git(view.path, ['update-ref', '-d', mergeRef(operation.id)]).catch(() => '');
         }
-        operation.resultHead = (await git(view.targetPath!, ['rev-parse', 'HEAD'])).trim();
-        if ((await git(view.targetPath!, ['symbolic-ref', '--quiet', 'HEAD'])).trim() !== view.targetBranch)
-          throw new WorktreeError('La branche cible a changé pendant le merge : vérification manuelle requise.');
-        await git(view.targetPath!, ['merge-base', '--is-ancestor', view.head!, 'HEAD']);
-        operation.output = operation.output.slice(-64 * 1024);
       } else {
-        const row = view.sessionId
-          ? (this.db.connection
-              .prepare('SELECT data FROM session_workspaces WHERE session_id=?')
-              .get(view.sessionId) as { data: string } | undefined)
-          : undefined;
-        const workspace = row ? (JSON.parse(row.data) as Workspace) : null;
+        const workspace = view.sessionId ? workspaceFor(this.db, view.sessionId) : null;
         // Checked again right before deletion: an entry edited since the inspection blocks the removal.
         for (const raw of fresh.disposableIgnored) {
           const name = raw.replace(/\/$/, '');
           if (!(await disposableIgnored(view.path, view.source, name)))
             throw new WorktreeError(`${name} a changé : retrait annulé, rien n’a été supprimé de la copie.`);
         }
-        for (const name of await sharedDependencyLinks(workspace ?? view, view.path)) await rm(join(view.path, name));
-        for (const raw of fresh.disposableIgnored)
-          await rm(join(view.path, raw.replace(/\/$/, '')), { recursive: true, force: true });
-        await git(view.targetPath ?? view.source, ['worktree', 'remove', '--', view.path]);
+        // Git deletes the ignored entries checked above itself, without following links, and refuses a copy
+        // locked or dirtied meanwhile. Only the shared dependency links, untracked for Git, go beforehand:
+        // they are put back if the removal fails, so the copy kept stays usable.
+        const links: { name: string; target: string }[] = [];
+        for (const name of await sharedDependencyLinks(workspace ?? view, view.path))
+          links.push({ name, target: await readlink(join(view.path, name)) });
+        try {
+          for (const link of links) await rm(join(view.path, link.name));
+          await git(view.targetPath ?? view.source, ['worktree', 'remove', '--', view.path]);
+        } catch (cause) {
+          const lost: string[] = [];
+          for (const link of links)
+            if (!(await lstat(join(view.path, link.name)).catch(() => null)))
+              await symlink(link.target, join(view.path, link.name), 'dir').catch(() => lost.push(link.name));
+          if (lost.length)
+            throw new WorktreeError(
+              `${cause instanceof Error ? cause.message : String(cause)}\nLiens de dépendances non rétablis dans la copie : ${lost.join(', ')}.`,
+            );
+          throw cause;
+        }
+        if (workspace?.startingCopy) await rm(workspace.startingCopy, { recursive: true, force: true });
         if (workspace?.startingSnapshot)
           await git(view.targetPath ?? view.source, [
             'update-ref',
@@ -1889,13 +1900,9 @@ export class WorktreeManager {
         store(this.db, record);
         // Every epic step sharing this copy loses it, not only the session that created it.
         const changed: string[] = [];
-        for (const row of this.db.connection.prepare('SELECT session_id, data FROM session_workspaces').all() as {
-          session_id: string;
-          data: string;
-        }[]) {
-          const workspace = JSON.parse(row.data) as Workspace;
+        for (const [sessionId, workspace] of sessionWorkspaces(this.db)) {
           if (
-            row.session_id !== record.sessionId &&
+            sessionId !== record.sessionId &&
             (workspace.mode !== 'isolated' || canonicalWorktreePath(workspace.root) !== record.path)
           )
             continue;
@@ -1903,8 +1910,8 @@ export class WorktreeManager {
           if (operation.automatic) workspace.removedAutomatically = true;
           this.db.connection
             .prepare('UPDATE session_workspaces SET data=? WHERE session_id=?')
-            .run(JSON.stringify(workspace), row.session_id);
-          changed.push(row.session_id);
+            .run(JSON.stringify(workspace), sessionId);
+          changed.push(sessionId);
         }
         if (changed.length) this.onSessionsChanged(changed);
         operation.output = operation.automatic
@@ -1914,7 +1921,7 @@ export class WorktreeManager {
       operation.status = 'succeeded';
     } catch (cause) {
       operation.status = 'failed';
-      operation.error = cause instanceof Error ? cause.message : String(cause);
+      operation.error = errorMessage(cause);
     } finally {
       operation.finishedAt = Date.now();
       this.saveOperation(operation);
@@ -1968,10 +1975,7 @@ export class WorktreeManager {
       // The epic runner reuses a step's copy for the next one before it records that copy as its context.
       const epic = (this.db.connection.prepare('SELECT data FROM epic_runs').all() as { data: string }[])
         .map((row) => JSON.parse(row.data))
-        .some(
-          (run) =>
-            ['running', 'waiting-validation', 'blocked'].includes(run.status) && run.projectId === record.projectId,
-        );
+        .some((run) => isActiveRun(run) && run.projectId === record.projectId);
       if (epic)
         throw new WorktreeError('Un epic du projet est en cours : ses étapes peuvent encore utiliser cette copie.');
       const { token } = await this.prepareAction(id, 'remove');
@@ -1985,11 +1989,7 @@ export class WorktreeManager {
           : { status: 'failed', at: Date.now(), reasons: [result?.error ?? 'Retrait interrompu.'] };
     } catch (cause) {
       if (this.closed) return;
-      decision = {
-        status: 'kept',
-        at: Date.now(),
-        reasons: (cause instanceof Error ? cause.message : String(cause)).split('\n').filter(Boolean),
-      };
+      decision = { status: 'kept', at: Date.now(), reasons: errorMessage(cause).split('\n').filter(Boolean) };
     }
     // Re-read synchronously: the removal, a rename or an archive may have updated the record meanwhile.
     const fresh = records(this.db).find((r) => r.id === id);

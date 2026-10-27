@@ -28,7 +28,7 @@ mock.method(PeerSync.prototype, 'sync', async function () {
 const launches = [];
 mock.method(SessionManager.prototype, 'launch', async (...args) => {
   launches.push(args);
-  const [project, agent, mode, tuning, prompt, , , validate, joined, title, epicId, context] = args;
+  const [project, { agent, mode, tuning, prompt, validate, joined, title, epicId, context }] = args;
   const session = db.createSession(
     {
       id: randomUUID(),
@@ -155,7 +155,7 @@ test('« Résoudre avec l’IA » launches a session in the copy, with the proje
     assert.equal(session.agent, 'codex');
     assert.equal(session.mode, 'acceptEdits');
     assert.match(session.title, /Conversation d’origine/);
-    const prompt = launches.at(-1)[4];
+    const prompt = launches.at(-1)[1].prompt;
     assert.match(prompt, /- doc \(contenu de départ et travail de la conversation mélangés\)/);
     assert.ok(
       prompt.includes(
@@ -202,11 +202,16 @@ test('the prompt tells where each starting content can be read, and leaves the t
       step('c', { kind: 'target-commit', commit: '0123456789abcdef', subject: 'Projet' }, 'r3'),
     ],
   };
-  const prompt = startingResolutionPrompt(view, { base: 'base0', startingSnapshot: 'snap0' }, plan, null);
-  assert.match(prompt, /`git show snap0:a` \(instantané conservé par Cerebro/);
+  const prompt = startingResolutionPrompt(view, { base: 'base0', startingCopy: '/donnees/starting/s' }, plan, null);
+  assert.match(prompt, /le fichier \/donnees\/starting\/s\/a \(instantané conservé par Cerebro/);
   assert.match(
     prompt,
-    /b \(contenu[^\n]*\n {2}Contenu de départ : introuvable : ni dans la cible, ni identique dans l’instantané de création \(`git show snap0:b`/,
+    /b \(contenu[^\n]*\n {2}Contenu de départ : introuvable : ni dans la cible, ni identique dans l’instantané de création \(le fichier \/donnees\/starting\/s\/b/,
+  );
+  // Copies created before the content was kept out of Git still point to their commit.
+  assert.match(
+    startingResolutionPrompt(view, { base: 'base0', startingSnapshot: 'snap0' }, plan, null),
+    /`git show snap0:a` \(instantané conservé par Cerebro/,
   );
   assert.match(prompt, /`git show 0123456789abcdef:c` \(commit 0123456 « Projet » de main\)/);
   assert.match(prompt, /main a reçu 2 commits depuis la création : ne les intègre pas/);

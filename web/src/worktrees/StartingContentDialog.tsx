@@ -1,12 +1,20 @@
 import { useEffect, useState } from 'react';
-import type { StartingContentPlan, StartingContentStep, WorktreeView } from '../../../server/worktrees.ts';
+import { normalizeMode, parseSession } from '../../../shared/types.ts';
+import {
+  parseStartingContentDiscard,
+  parseStartingContentPlan,
+  type StartingContentDiscard,
+  type StartingContentPlan,
+  type StartingContentStep,
+  type WorktreeView,
+} from '../../../shared/worktrees.ts';
 import { ActivityStatus } from '../ActivityStatus.tsx';
-import { api, apiBase } from '../api.ts';
+import { apiParsed } from '../api.ts';
+import { useAsyncAction } from '../async-action.ts';
 import { Modal } from '../Dialog.tsx';
-import { AGENT_LABEL, MODE_CHIP } from '../format.ts';
+import { AGENT_LABEL, errorMessage, MODE_CHIP } from '../format.ts';
 import { useStore } from '../store.tsx';
-import type { Session } from '../types.ts';
-import { branchName, copyTitle, originLabel, type DiscardResult, type Resolver } from './model.ts';
+import { branchName, copyTitle, originLabel, type Resolver } from './model.ts';
 
 const ACTION_LABEL: Record<StartingContentStep['action'], string> = {
   restore: 'remis à l’état de la copie',
@@ -23,62 +31,57 @@ export function StartingContentDialog({
 }: {
   view: WorktreeView;
   onClose: () => void;
-  onDone: (result: DiscardResult) => void;
+  onDone: (result: StartingContentDiscard) => void;
   onResolving: (session: Resolver) => void;
 }) {
-  const [machineBase] = useState(apiBase);
   const { projects } = useStore();
   const settings = projects.find((project) => project.id === view.projectId)?.resolutionSettings;
   const [plan, setPlan] = useState<StartingContentPlan | null>(null);
-  const [busy, setBusy] = useState<'loading' | 'running' | 'resolving' | null>('loading');
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Kept files checked as holding only the conversation's work, with the content they were checked with.
   const [confirmed, setConfirmed] = useState<Map<string, string>>(() => new Map());
   const target = branchName(view.targetBranch);
+  // No apiBase() check: switching machines remounts the whole tree (StoreProvider keyed by machine in App).
+  const discard = useAsyncAction(
+    async () => {
+      const result = await apiParsed(`/api/worktrees/${view.id}/discard-inherited`, parseStartingContentDiscard, {
+        method: 'POST',
+        body: JSON.stringify({ confirmed: [...confirmed].map(([path, version]) => ({ path, version })) }),
+      });
+      onDone(result);
+    },
+    { onError: setError },
+  );
+  // The files left for a manual review go to a session working in the copy, with the project's LLM settings.
+  const resolution = useAsyncAction(
+    async () => {
+      const session = await apiParsed(`/api/worktrees/${view.id}/resolve-starting-content`, parseSession, {
+        method: 'POST',
+      });
+      onResolving(session);
+    },
+    { onError: setError },
+  );
+  const busy = loading ? 'loading' : discard.busy ? 'running' : resolution.busy ? 'resolving' : null;
   useEffect(() => {
     let disposed = false;
-    api<StartingContentPlan>(`/api/worktrees/${view.id}/starting-content`)
+    apiParsed(`/api/worktrees/${view.id}/starting-content`, parseStartingContentPlan)
       .then((value) => {
-        if (!disposed && apiBase() === machineBase) setPlan(value);
+        if (!disposed) setPlan(value);
       })
       .catch((cause) => {
-        if (!disposed && apiBase() === machineBase) setError(cause instanceof Error ? cause.message : String(cause));
+        if (!disposed) setError(errorMessage(cause));
       })
       .finally(() => {
-        if (!disposed && apiBase() === machineBase) setBusy(null);
+        if (!disposed) setLoading(false);
       });
     return () => {
       disposed = true;
     };
-  }, [view.id, machineBase]);
-  const run = async (): Promise<void> => {
-    setBusy('running');
-    setError(null);
-    try {
-      const result = await api<DiscardResult>(`/api/worktrees/${view.id}/discard-inherited`, {
-        method: 'POST',
-        body: JSON.stringify({ confirmed: [...confirmed].map(([path, version]) => ({ path, version })) }),
-      });
-      if (apiBase() === machineBase) onDone(result);
-    } catch (cause) {
-      if (apiBase() === machineBase) setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      if (apiBase() === machineBase) setBusy(null);
-    }
-  };
-  // The files left for a manual review go to a session working in the copy, with the project's LLM settings.
-  const resolve = async (): Promise<void> => {
-    setBusy('resolving');
-    setError(null);
-    try {
-      const session = await api<Session>(`/api/worktrees/${view.id}/resolve-starting-content`, { method: 'POST' });
-      if (apiBase() === machineBase) onResolving(session);
-    } catch (cause) {
-      if (apiBase() === machineBase) setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      if (apiBase() === machineBase) setBusy(null);
-    }
-  };
+  }, [view.id]);
+  const run = discard.run;
+  const resolve = resolution.run;
   const actionable = plan?.steps.some((step) => step.action !== 'keep') || confirmed.size > 0;
   const confirm = (step: StartingContentStep, checked: boolean): void =>
     setConfirmed((current) => {
@@ -151,7 +154,7 @@ export function StartingContentDialog({
           conversation dans {toReview === 1 ? 'le fichier laissé' : `les ${toReview} fichiers laissés`} à examiner. Elle
           ne commite rien : relisez ensuite ses changements, puis retirez le contenu de départ restant.
           {settings
-            ? ` Session : ${AGENT_LABEL[settings.agent]} · ${settings.model ?? 'modèle par défaut'} · ${settings.effort ?? 'effort par défaut'} · ${MODE_CHIP[settings.mode]} (« Réglages LLM » du projet).`
+            ? ` Session : ${AGENT_LABEL[settings.agent]} · ${settings.model ?? 'modèle par défaut'} · ${settings.effort ?? 'effort par défaut'} · ${MODE_CHIP[normalizeMode(settings.mode)]} (« Réglages LLM » du projet).`
             : ''}
         </p>
       ) : null}

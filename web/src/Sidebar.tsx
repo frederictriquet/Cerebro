@@ -1,25 +1,19 @@
 import { AgentLabel } from './AgentLabel.tsx';
 import { useEffect, useRef, useState } from 'react';
-import {
-  acquireGeneralSlack,
-  getGeneralSlack,
-  getSlackStatus,
-  updateSlackSettings,
-  type GeneralSlackStatus,
-  type SlackSettings,
-  type SlackStatus,
-} from './api.ts';
-import { needsAttention, relativeTime, sessionTitle } from './format.ts';
-import { FindingsLink } from './FindingsLink.tsx';
+import { acquireGeneralSlack, getGeneralSlack, getSlackStatus, updateSlackSettings } from './api.ts';
+import { errorMessage, needsAttention, relativeTime, sessionTitle } from './format.ts';
 import { AppVersion, MachineSwitcher } from './MachineSwitcher.tsx';
-import { href, useNow, type Route } from './route.ts';
+import { href, type Route } from './route.ts';
+import { useNow } from './polling.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { UsageGauges } from './UsageGauges.tsx';
 import { WorktreeLabel } from './WorktreeLabel.tsx';
 import { SessionEpicBadge } from './SessionEpicBadge.tsx';
-import type { Session } from './types.ts';
-import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
+import type { Session } from '../../shared/types.ts';
+import type { GeneralSlackStatus, SlackSettings, SlackStatus } from '../../shared/machine.ts';
+import { useSessionPreview } from './ScreenPreview.tsx';
+import { attentionTone, SessionAttention } from './SessionMeta.tsx';
 
 export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () => void }) {
   const { sessions, connected, muted, setMuted, desktopNotif, setDesktopNotif } = useStore();
@@ -30,19 +24,30 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
   const attention = sessions.filter(needsAttention);
   const activeSessionId = route.kind === 'session' ? route.sessionId : null;
 
+  const mounted = useRef(true);
   useEffect(() => {
-    let cancelled = false;
-    void getSlackStatus()
-      .then((status) => {
-        if (!cancelled) setSlack(status);
-      })
-      .catch(() => {
-        /* endpoint missing or Slack unconfigured: pill stays off */
-      });
+    mounted.current = true;
     return () => {
-      cancelled = true;
+      mounted.current = false;
     };
   }, []);
+  const loadSlack = (open = false) => {
+    void getSlackStatus()
+      .then((status) => {
+        if (!mounted.current) return;
+        setSlack(status);
+        if (open) setShowSlack(true);
+      })
+      .catch(() => {
+        /* endpoint missing or transient error: retried on WS reconnect or on click */
+      });
+  };
+
+  // Tant que le statut manque, on retente au montage et à chaque reconnexion WS.
+  const slackLoaded = slack !== null;
+  useEffect(() => {
+    if (!slackLoaded) loadSlack();
+  }, [connected, slackLoaded]);
 
   return (
     <aside className="sidebar" id="sidebar">
@@ -53,16 +58,21 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
           type="button"
           className={`slack-pill ${slack?.enabled ? 'on' : 'off'}`}
           aria-expanded={showSlack}
-          disabled={slack === null}
-          title={slack?.enabled ? 'Réglages des notifications Slack' : 'Slack non configuré (voir README)'}
-          onClick={() => setShowSlack(!showSlack)}
+          title={
+            slack === null
+              ? 'Statut Slack indisponible : cliquer pour réessayer'
+              : slack.enabled
+                ? 'Réglages des notifications Slack'
+                : 'Slack non configuré (voir README)'
+          }
+          onClick={() => (slack === null ? loadSlack(true) : setShowSlack(!showSlack))}
         >
           Slack
         </button>
         <button
           type="button"
           className={`btn-mute${muted ? ' off' : ''}`}
-          aria-pressed={muted}
+          aria-pressed={!muted}
           title={muted ? 'Activer le son' : 'Couper le son'}
           onClick={() => setMuted(!muted)}
         >
@@ -71,7 +81,7 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
         <button
           type="button"
           className={`btn-mute${desktopNotif ? '' : ' off'}`}
-          aria-pressed={!desktopNotif}
+          aria-pressed={desktopNotif}
           title={
             desktopNotif
               ? 'Couper les notifications système (toaster du bureau et son de l’OS)'
@@ -134,7 +144,7 @@ function SlackPanel({ status, onChange }: { status: SlackStatus; onChange: (stat
       onChange(await updateSlackSettings(patch));
     } catch (err) {
       onChange(previous);
-      setError(err instanceof Error ? err.message : 'Enregistrement impossible');
+      setError(errorMessage(err, 'Enregistrement impossible'));
     }
   };
 
@@ -200,7 +210,7 @@ function GeneralSlackLead() {
         if (!cancelled) setStatus(value);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'État de la prise de main indisponible');
+        if (!cancelled) setError(errorMessage(err, 'État de la prise de main indisponible'));
       });
     return () => {
       cancelled = true;
@@ -215,7 +225,7 @@ function GeneralSlackLead() {
     try {
       setStatus(await acquireGeneralSlack());
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Prise de main impossible');
+      setError(errorMessage(err, 'Prise de main impossible'));
     } finally {
       setBusy(false);
     }
@@ -259,9 +269,8 @@ function AttentionItem({
   now: number;
   onNavigate: () => void;
 }) {
-  const tone = session.status === 'waiting' ? 'waiting' : 'idle';
-  const preview = usePreviewController();
-  const anchorRef = useRef<HTMLSpanElement>(null);
+  const tone = attentionTone(session);
+  const preview = useSessionPreview(session.id);
   return (
     <li className="attention-item">
       <a
@@ -269,7 +278,7 @@ function AttentionItem({
         className={`attention-link ${tone} ${active ? 'active' : ''}`}
         onClick={onNavigate}
       >
-        <StatusDot status={session.status === 'waiting' ? 'waiting' : 'idle'} />
+        <StatusDot status={tone} />
         <span className="session-link-title">{sessionTitle(session.title)}</span>
         <span className="meta">
           <AgentLabel agent={session.agent} /> · {relativeTime(session.updatedAt, now)}
@@ -282,11 +291,10 @@ function AttentionItem({
         ) : null}
       </a>
       <div className="attention-extra">
-        <FindingsLink sessionId={session.id} count={session.pendingFindings} onNavigate={onNavigate} />
-        {session.attentionReason ? <p className={`reason-line ${tone}`}>{session.attentionReason}</p> : null}
-        <PreviewButton pressed={preview.open} onToggle={preview.toggle} anchorRef={anchorRef} />
+        <SessionAttention session={session} onNavigate={onNavigate} />
+        {preview.button}
       </div>
-      {preview.open ? <ScreenPopover sessionId={session.id} anchorRef={anchorRef} /> : null}
+      {preview.popover}
     </li>
   );
 }

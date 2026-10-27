@@ -1,4 +1,5 @@
-import type { Epic, Session, Task } from '../types.ts';
+import type { Epic, Session, Task } from '../../../shared/types.ts';
+import { TASK_STATUS_LABEL } from '../format.ts';
 
 export function taskTitle(text: string): string {
   return (
@@ -9,11 +10,10 @@ export function taskTitle(text: string): string {
   );
 }
 
-const TASK_STATUS_LABEL: Record<Task['status'], string> = {
-  todo: 'À faire',
-  started: 'En cours',
-  done: 'Terminée',
-};
+/** Titre d'une tâche tronqué pour une liste, une option ou un titre de modale. */
+export function taskLabel(task: Pick<Task, 'text'>, max: number): string {
+  return taskTitle(task.text).slice(0, max);
+}
 
 // Tâches de `tasks` dont `id` dépend, directement ou non : en dépendre créerait un cycle.
 export function dependents(id: string, tasks: Task[]): Set<string> {
@@ -77,5 +77,3 @@ export function taskPill(
       return { label: 'À valider', className: 'review' };
   }
 }
-
-export const errorMessage = (err: unknown, fallback: string): string => (err instanceof Error ? err.message : fallback);

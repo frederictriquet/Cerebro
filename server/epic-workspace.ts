@@ -1,10 +1,12 @@
 import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import type { CerebroDatabase } from './db.ts';
-import { workspaceAt, type WorkspaceContext, type Workspace } from './provenance.ts';
+import { workspaceAt } from './provenance.ts';
 import { canonicalWorktreePath, type WorktreeGate } from './worktree-gate.ts';
+import { git } from './git.ts';
+import type { Workspace, WorkspaceContext } from '../shared/git.ts';
+import type { EpicWorkspaceOptions } from '../shared/backlog.ts';
+import { errorMessage } from './util.ts';
 
 const contextOf = (workspace: Pick<Workspace, 'mode' | 'path'>): WorkspaceContext => ({
   mode: workspace.mode,
@@ -121,28 +123,10 @@ function workspaceChoices(db: CerebroDatabase, epicId: string, inventory: () => 
   return [...choices.values()];
 }
 
-export interface EpicWorkspaceChoice extends WorkspaceContext {
-  branch: string | null;
-  head: string | null;
-  changes: string[] | null;
-  unavailableReason: string | null;
-  sessions: { id: string; title: string }[];
-}
-export interface EpicWorkspaceOptions {
-  conflict: boolean;
-  selected: WorkspaceContext | null;
-  choices: EpicWorkspaceChoice[];
-}
-const execFileAsync = promisify(execFile);
-async function gitInfo(path: string, args: string[]): Promise<string | null> {
+/** Output of a read-only git command, or null when it fails. */
+export async function gitInfo(path: string, args: string[]): Promise<string | null> {
   try {
-    return (
-      await execFileAsync('git', ['--no-optional-locks', '-C', path, ...args], {
-        encoding: 'utf8',
-        timeout: 5000,
-        maxBuffer: 2 * 1024 * 1024,
-      })
-    ).stdout.trimEnd();
+    return (await git(path, args, { timeout: 5000, maxBuffer: 2 * 1024 * 1024 })).trimEnd();
   } catch {
     return null;
   }
@@ -176,16 +160,23 @@ export class EpicWorkspaces {
     return contexts;
   }
 
+  /** Called once a step is launched in `context`: from then on the epic's folder is fixed. */
   remember(epicId: string, context: WorkspaceContext): WorkspaceContext {
     this.db.connection
       .prepare('INSERT OR IGNORE INTO epic_workspaces (epic_id,data,verified) VALUES (?,?,1)')
       .run(epicId, JSON.stringify(context));
-    const saved = JSON.parse(
-      (this.db.connection.prepare('SELECT data FROM epic_workspaces WHERE epic_id=?').get(epicId) as { data: string })
-        .data,
-    ) as WorkspaceContext;
+    const row = this.db.connection.prepare('SELECT data,verified FROM epic_workspaces WHERE epic_id=?').get(epicId) as {
+      data: string;
+      verified: number;
+    };
+    const saved = JSON.parse(row.data) as WorkspaceContext;
     if (!sameContext(saved, context))
       throw new Error('Le dossier de cette étape diffère du dossier d’origine de l’epic. Aucun agent lancé.');
+    if (!row.verified) {
+      // Remembered by an earlier, incomplete recovery: it only becomes authoritative once the whole history agrees.
+      assertSingleFolder([saved, ...historyContexts(this.db, epicId, () => this.inventory())]);
+      this.db.connection.prepare('UPDATE epic_workspaces SET verified=1 WHERE epic_id=?').run(epicId);
+    }
     return saved;
   }
 
@@ -209,7 +200,7 @@ export class EpicWorkspaces {
         try {
           this.assert(context);
         } catch (cause) {
-          unavailableReason = cause instanceof Error ? cause.message : String(cause);
+          unavailableReason = errorMessage(cause);
         }
         const [branch, head, status] = unavailableReason
           ? [null, null, null]
@@ -264,7 +255,10 @@ export class EpicWorkspaces {
     return context;
   }
 
-  /** Recover old epics from persisted execution/provenance, never from the project's current preference. */
+  /**
+   * Recover old epics from persisted execution/provenance, never from the project's current preference.
+   * Read-only: launches fix the folder through remember().
+   */
   current(epicId: string): WorkspaceContext | null {
     const saved = this.db.connection
       .prepare('SELECT data,verified FROM epic_workspaces WHERE epic_id=?')
@@ -272,15 +266,14 @@ export class EpicWorkspaces {
     if (saved?.verified) return JSON.parse(saved.data) as WorkspaceContext;
     const contexts = historyContexts(this.db, epicId, () => this.inventory());
     if (saved) {
-      // Remembered by an earlier, incomplete recovery: it only becomes authoritative once the whole history agrees.
+      // Remembered by an earlier, incomplete recovery: usable only while the whole history agrees.
       const context = JSON.parse(saved.data) as WorkspaceContext;
       assertSingleFolder([context, ...contexts]);
-      this.db.connection.prepare('UPDATE epic_workspaces SET verified=1 WHERE epic_id=?').run(epicId);
       return context;
     }
     if (!contexts.length) return null;
     assertSingleFolder(contexts);
-    return this.remember(epicId, contexts.find((context) => context.mode !== 'unknown') ?? contexts[0]);
+    return contexts.find((context) => context.mode !== 'unknown') ?? contexts[0];
   }
 
   assert(context: WorkspaceContext): void {

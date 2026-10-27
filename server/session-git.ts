@@ -1,27 +1,16 @@
 import { reviewInstructions } from './review.ts';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import type { CerebroDatabase } from './db.ts';
 import {
+  assertNoGitOperation,
   parseCommitPlan,
   selectionDiff,
-  type CommitResult,
   type CommitSelection,
   type GitPlanner,
-  type GitSnapshot,
 } from './git-plan.ts';
-import { sessionProvenance, workspaceFor, type Provenance } from './provenance.ts';
-const exec = promisify(execFile);
-export interface SessionGitSnapshot extends GitSnapshot {
-  provenance: Provenance;
-  scopeNotice: string;
-}
-export interface SessionGitContext {
-  mode: 'shared' | 'isolated' | 'removed';
-  projectId: string;
-  projectName: string;
-  path: string;
-}
+import { ExpiringStore, type ExpiringStoreOptions } from './expiring-store.ts';
+import { sessionProvenance, sessionWorkspace, workspaceFor } from './provenance.ts';
+import { git } from './git.ts';
+import type { CommitResult, Provenance, SessionGitContext, SessionGitSnapshot } from '../shared/git.ts';
 export function sessionGitContext(db: CerebroDatabase, id: string): SessionGitContext {
   const session = db.getSession(id);
   const project = session ? db.getProject(session.projectId) : null;
@@ -43,27 +32,34 @@ export interface SessionReviewSelection {
   commits: string[];
   acknowledged: string[];
 }
-
-/** Session commit and review selections, bound to the provenance prepared with their snapshot. */
+interface SessionGitScope {
+  sessionId: string;
+  provenance: Provenance;
+  uncertain: Set<string>;
+}
+/** Session commit and review selections, bound to the provenance prepared with their snapshot: one instance per server. */
 export class SessionGit {
-  private readonly scopes = new Map<string, { sessionId: string; provenance: Provenance; uncertain: Set<string> }>();
   private readonly db: CerebroDatabase;
   private readonly git: GitPlanner;
+  private readonly scopes: ExpiringStore<SessionGitScope>;
 
-  constructor(db: CerebroDatabase, git: GitPlanner) {
+  constructor(db: CerebroDatabase, git: GitPlanner, options: ExpiringStoreOptions = {}) {
     this.db = db;
     this.git = git;
+    this.scopes = new ExpiringStore(options);
   }
 
   async prepareCommit(id: string): Promise<SessionGitSnapshot> {
-    const provenance = await sessionProvenance(this.db, this.git, id);
-    const snapshot = await this.git.prepareCommit(provenance.workspace.root, provenance.workspace);
+    const workspace = sessionWorkspace(this.db, id);
+    // Provenance stays readable during a merge; only a commit plan is refused early.
+    await assertNoGitOperation(workspace.root);
+    const snapshot = await this.git.prepareCommit(workspace.root, workspace);
+    const provenance = await sessionProvenance(this.db, this.git, id, snapshot);
     const uncertain = new Set(
       snapshot.files
         .filter((f) => !provenance.changes.some((c) => c.path === f.path && c.certainty === 'workspace'))
         .map((f) => f.path),
     );
-    for (const [key] of this.scopes) if (this.scopes.size > 100) this.scopes.delete(key);
     this.scopes.set(snapshot.id, { sessionId: id, provenance, uncertain });
     return {
       ...snapshot,
@@ -87,7 +83,7 @@ export class SessionGit {
       })),
     };
   }
-  private scope(id: string, snapshotId: string) {
+  private scope(id: string, snapshotId: string): SessionGitScope {
     const scope = this.scopes.get(snapshotId);
     if (!scope || scope.sessionId !== id) throw new Error('Sélection de session absente ou expirée.');
     return scope;
@@ -125,12 +121,11 @@ export class SessionGit {
       if (!commit) throw new Error('Commit absent de la provenance préparée.');
       if (commit.certainty === 'uncertain' && !p.acknowledged.includes(oid))
         throw new Error('Confirmez explicitement le périmètre du commit incertain.');
-      const result = await exec(
-        'git',
-        ['-C', root, 'show', '--format=fuller', '--binary', '--no-ext-diff', '--no-textconv', oid],
-        { maxBuffer: 4 * 1024 * 1024 },
+      patches.push(
+        await git(root, ['show', '--format=fuller', '--binary', '--no-ext-diff', '--no-textconv', oid], {
+          maxBuffer: 4 * 1024 * 1024,
+        }),
       );
-      patches.push(result.stdout);
     }
     if (!patches.length) throw new Error('Choisissez au moins un fichier, hunk ou commit.');
     const context = patches.join('\n');

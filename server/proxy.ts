@@ -1,5 +1,5 @@
 import { request as httpRequest } from 'node:http';
-import type { ClientRequest, IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http';
+import type { ClientRequest, IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeaders } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import WebSocket, { type RawData } from 'ws';
@@ -90,31 +90,33 @@ export function relayHttp(
   reply.hijack();
 
   let receivedResponse = false;
+  let upstreamResponse: IncomingMessage | undefined;
   let responseTimeout: NodeJS.Timeout | undefined;
   const transport = target.protocol === 'https:' ? httpsRequest : httpRequest;
   let upstreamRequest: ClientRequest;
   try {
-    upstreamRequest = transport(target, { method: request.method, headers }, (upstreamResponse) => {
+    upstreamRequest = transport(target, { method: request.method, headers }, (response) => {
       receivedResponse = true;
+      upstreamResponse = response;
       clearTimeout(responseTimeout);
-      upstreamResponse.on('error', (caught) => {
+      response.on('error', (caught) => {
         if (!reply.raw.headersSent) jsonAfterHijack(reply, 502, options.unreachable);
         else if (!reply.raw.writableEnded) reply.raw.destroy(caught);
       });
-      if (upstreamResponse.statusCode === 401 && options.unauthorized !== undefined) {
-        upstreamResponse.resume();
+      if (response.statusCode === 401 && options.unauthorized !== undefined) {
+        response.resume();
         jsonAfterHijack(reply, 502, options.unauthorized);
         return;
       }
       if (reply.raw.destroyed) {
-        upstreamResponse.destroy();
+        response.destroy();
         return;
       }
       reply.raw.writeHead(
-        upstreamResponse.statusCode ?? 502,
-        filteredHeaders(upstreamResponse.headers, options.dropResponseHeaders ?? []),
+        response.statusCode ?? 502,
+        filteredHeaders(response.headers, options.dropResponseHeaders ?? []),
       );
-      upstreamResponse.pipe(reply.raw);
+      response.pipe(reply.raw);
     });
   } catch {
     jsonAfterHijack(reply, 502, options.unreachable);
@@ -134,8 +136,10 @@ export function relayHttp(
   });
   request.raw.once('aborted', () => upstreamRequest.destroy());
   request.raw.once('error', (caught) => upstreamRequest.destroy(caught));
+  // Client parti : on coupe aussi l'amont, y compris en plein streaming de la réponse.
   reply.raw.once('close', () => {
     if (!receivedResponse) upstreamRequest.destroy();
+    else if (upstreamResponse !== undefined && !upstreamResponse.complete) upstreamResponse.destroy();
   });
   request.raw.pipe(upstreamRequest);
 }

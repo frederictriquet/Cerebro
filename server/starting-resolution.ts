@@ -1,20 +1,25 @@
-import type { Workspace } from './provenance.ts';
-import type { StartingContentPlan, StartingContentStep, WorktreeView } from './worktrees.ts';
+import { join } from 'node:path';
+import type { StartingContentPlan, StartingContentStep, WorktreeView } from '../shared/worktrees.ts';
+import type { Workspace } from '../shared/git.ts';
+import { branchLabel } from './git.ts';
 
 const MAX_CONVERSATION_PROMPT = 2000;
-const branchLabel = (branch: string | null): string => branch?.replace(/^refs\/heads\//, '') ?? 'branche inconnue';
 
 /** Where the session can read the starting content of one file, as a command or a path. */
 function startingSource(step: StartingContentStep, view: WorktreeView, workspace: Workspace): string {
   const origin = step.origin;
   if (origin?.kind === 'target-commit')
-    return `\`git show ${origin.commit}:${step.path}\` (commit ${origin.commit.slice(0, 7)} « ${origin.subject} » de ${branchLabel(view.targetBranch)})`;
+    return `\`git show ${origin.commit}:${step.path}\` (commit ${origin.commit.slice(0, 7)} « ${origin.subject} » de ${branchLabel(view.targetBranch, 'branche inconnue')})`;
   if (origin?.kind === 'target-worktree')
-    return `le fichier ${view.targetPath}/${step.path}, encore non commité dans le dossier de ${branchLabel(view.targetBranch)}`;
-  if (origin?.kind === 'snapshot' && workspace.startingSnapshot)
-    return `\`git show ${workspace.startingSnapshot}:${step.path}\` (instantané conservé par Cerebro à la création)`;
-  return workspace.startingSnapshot
-    ? `introuvable : ni dans la cible, ni identique dans l’instantané de création (\`git show ${workspace.startingSnapshot}:${step.path}\` peut en garder une version proche)`
+    return `le fichier ${view.targetPath}/${step.path}, encore non commité dans le dossier de ${branchLabel(view.targetBranch, 'branche inconnue')}`;
+  const kept = workspace.startingCopy
+    ? `le fichier ${join(workspace.startingCopy, step.path)}`
+    : workspace.startingSnapshot
+      ? `\`git show ${workspace.startingSnapshot}:${step.path}\``
+      : null;
+  if (origin?.kind === 'snapshot' && kept) return `${kept} (instantané conservé par Cerebro à la création)`;
+  return kept
+    ? `introuvable : ni dans la cible, ni identique dans l’instantané de création (${kept} peut en garder une version proche)`
     : 'introuvable : ni dans la cible, ni conservé à la création';
 }
 
@@ -30,7 +35,7 @@ export function startingResolutionPrompt(
 ): string {
   const kept = plan.steps.filter((step) => step.action === 'keep');
   const automatic = plan.steps.filter((step) => step.action !== 'keep');
-  const target = branchLabel(view.targetBranch);
+  const target = branchLabel(view.targetBranch, 'branche inconnue');
   const files = kept
     .map((step) =>
       [
@@ -43,7 +48,7 @@ export function startingResolutionPrompt(
   const context = conversation
     ? `\n\nConversation d’origine : « ${conversation.title} »${conversation.prompt.trim() ? `\nSa demande initiale :\n<demande_initiale>\n${conversation.prompt.trim().slice(0, MAX_CONVERSATION_PROMPT)}${conversation.prompt.trim().length > MAX_CONVERSATION_PROMPT ? '\n…' : ''}\n</demande_initiale>` : ''}`
     : '';
-  return `Tu travailles dans la copie de travail d’une conversation Cerebro (worktree Git ${view.path}, branche ${branchLabel(view.branch ?? view.expectedBranch)}, destinée à être intégrée dans ${target}).
+  return `Tu travailles dans la copie de travail d’une conversation Cerebro (worktree Git ${view.path}, branche ${branchLabel(view.branch ?? view.expectedBranch, 'branche inconnue')}, destinée à être intégrée dans ${target}).
 
 À sa création, la copie a reçu les fichiers alors non commités du dossier du projet : c’est le « contenu de départ ». Il n’appartient pas au travail de la conversation et doit quitter la copie, sans perdre ce que la conversation a changé depuis. Cerebro n’a pas pu séparer automatiquement les fichiers ci-dessous : fais-le au mieux, fichier par fichier.
 

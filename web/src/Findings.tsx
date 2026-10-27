@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import type { Finding, SavedReport } from '../../server/findings.ts';
 import { publishFindingsReport } from './api.ts';
 import { href } from './route.ts';
 import { useStore } from './store.tsx';
-import type { Session } from './types.ts';
+import type { Session } from '../../shared/types.ts';
+import { errorMessage, plural } from './format.ts';
 import './findings.css';
+import type { Finding, SavedReport } from '../../shared/backlog.ts';
 
 const SEVERITY: Record<Finding['severity'], string> = {
   critical: 'Critique',
@@ -25,7 +26,7 @@ export function FindingsNotice({
   if (!reports.length) return null;
   const total = reports.reduce((count, report) => count + report.findings.length, 0);
   const remaining = reports.reduce(
-    (count, report) => count + report.findings.filter((f) => !report.imported[f.id]).length,
+    (count, report) => count + report.findings.filter((f) => !report.imported?.[f.id]).length,
     0,
   );
   return (
@@ -51,11 +52,9 @@ export function FindingsNotice({
         </svg>
       </span>
       <span className="findings-notice-copy">
-        <strong>
-          {total} finding{total > 1 ? 's' : ''} de review disponible{total > 1 ? 's' : ''}
-        </strong>
+        <strong>{plural(total, 'finding de review disponible', 'findings de review disponibles')}</strong>
         <span>
-          {reports.length} rapport{reports.length > 1 ? 's' : ''} ·{' '}
+          {plural(reports.length, 'rapport')} ·{' '}
           {remaining ? `${remaining} à examiner pour le backlog` : 'Tous les findings sont enregistrés dans le backlog'}
         </span>
       </span>
@@ -92,7 +91,7 @@ export function FindingsPanel({
       await action();
       await refresh();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     } finally {
       setBusy(false);
     }
@@ -109,7 +108,7 @@ export function FindingsPanel({
         </p>
       ) : null}
       {reports.map((report) => {
-        const available = report.findings.filter((f) => !report.imported[f.id]);
+        const available = report.findings.filter((f) => !report.imported?.[f.id]);
         const selected = available.filter((f) => chosen.has(`${report.id}:${f.id}`));
         const allSelected = available.length > 0 && selected.length === available.length;
         const destination =
@@ -122,7 +121,7 @@ export function FindingsPanel({
               <div>
                 <h3 id={`report-${report.id}`}>{report.title}</h3>
                 <p className="meta">
-                  {report.findings.length} finding{report.findings.length > 1 ? 's' : ''} ·{' '}
+                  {plural(report.findings.length, 'finding')} ·{' '}
                   <time dateTime={new Date(report.createdAt).toISOString()}>
                     {new Date(report.createdAt).toLocaleString('fr-FR')}
                   </time>
@@ -152,7 +151,7 @@ export function FindingsPanel({
             <div className="finding-cards">
               {report.findings.map((f) => {
                 const key = `${report.id}:${f.id}`;
-                const imported = !!report.imported[f.id];
+                const imported = !!report.imported?.[f.id];
                 const checked = !imported && chosen.has(key);
                 return (
                   <article
@@ -223,7 +222,7 @@ export function FindingsPanel({
             <footer className="finding-report-footer">
               <span role="status">
                 {available.length
-                  ? `${selected.length} finding${selected.length > 1 ? 's' : ''} sélectionné${selected.length > 1 ? 's' : ''} sur ${available.length}`
+                  ? `${plural(selected.length, 'finding sélectionné', 'findings sélectionnés')} sur ${available.length}`
                   : 'Tous les findings de ce rapport sont dans le backlog.'}
               </span>
               <div className="finding-import-actions">

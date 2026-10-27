@@ -1,21 +1,22 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { createPersona, deletePersona, listPersonas, updatePersona, type PersonaInput } from './api.ts';
+import { createPersona, deletePersona, listPersonas, updatePersona } from './api.ts';
+import { useAsyncAction } from './async-action.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { Modal } from './Dialog.tsx';
+import { errorMessage } from './format.ts';
 import {
   MAX_PERSONA_DESCRIPTION_LENGTH,
   MAX_PERSONA_NAME_LENGTH,
   MAX_PERSONA_PROMPT_LENGTH,
   MIN_PERSONAS,
   type Persona,
-} from './types.ts';
+} from '../../shared/types.ts';
 import './council.css';
+import type { PersonaInput } from '../../shared/types.ts';
 
 // id null : nouvelle persona.
 type Draft = PersonaInput & { id: string | null };
-
-const message = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
 
 function Counter({ value, max }: { value: string; max: number }) {
   // Le serveur compte les caractères sans les espaces de début et de fin.
@@ -112,8 +113,27 @@ export function PersonasDialog({ onClose, onChange }: { onClose: () => void; onC
   const [personas, setPersonas] = useState<Persona[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
+  const {
+    run: saveDraft,
+    busy,
+    error: formError,
+    setError: setFormError,
+  } = useAsyncAction(async (current: Draft) => {
+    const input: PersonaInput = {
+      name: current.name.trim(),
+      description: current.description.trim(),
+      prompt: current.prompt.trim(),
+    };
+    const saved = current.id === null ? await createPersona(input) : await updatePersona(current.id, input);
+    setPersonas((list) => {
+      const items = list ?? [];
+      return items.some((p) => p.id === saved.id)
+        ? items.map((p) => (p.id === saved.id ? saved : p))
+        : [...items, saved];
+    });
+    setDraft(null);
+    onChange?.();
+  });
   const [deleting, setDeleting] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -122,7 +142,7 @@ export function PersonasDialog({ onClose, onChange }: { onClose: () => void; onC
       setPersonas(await listPersonas());
       setLoadError(null);
     } catch (cause) {
-      setLoadError(message(cause));
+      setLoadError(errorMessage(cause));
     }
   }, []);
   useEffect(() => {
@@ -137,28 +157,7 @@ export function PersonasDialog({ onClose, onChange }: { onClose: () => void; onC
 
   const save = async (): Promise<void> => {
     if (draft === null) return;
-    setBusy(true);
-    setFormError(null);
-    const input: PersonaInput = {
-      name: draft.name.trim(),
-      description: draft.description.trim(),
-      prompt: draft.prompt.trim(),
-    };
-    try {
-      const saved = draft.id === null ? await createPersona(input) : await updatePersona(draft.id, input);
-      setPersonas((current) => {
-        const list = current ?? [];
-        return list.some((p) => p.id === saved.id)
-          ? list.map((p) => (p.id === saved.id ? saved : p))
-          : [...list, saved];
-      });
-      setDraft(null);
-      onChange?.();
-    } catch (cause) {
-      setFormError(message(cause));
-    } finally {
-      setBusy(false);
-    }
+    await saveDraft(draft);
   };
 
   const remove = async (persona: Persona): Promise<void> => {
@@ -170,7 +169,7 @@ export function PersonasDialog({ onClose, onChange }: { onClose: () => void; onC
       if (draft?.id === persona.id) setDraft(null);
       onChange?.();
     } catch (cause) {
-      setDeleteError(`Suppression de « ${persona.name} » refusée : ${message(cause)}`);
+      setDeleteError(`Suppression de « ${persona.name} » refusée : ${errorMessage(cause)}`);
       // Le catalogue a pu changer ailleurs (autre onglet, Slack).
       void load();
     } finally {

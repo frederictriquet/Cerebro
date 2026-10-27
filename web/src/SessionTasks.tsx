@@ -1,31 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { SessionTask, SessionTaskStatus } from '../../server/session-tasks.ts';
-import { api } from './api.ts';
+import { api, apiParsed, apiPath } from './api.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
+import { errorMessage, plural, SESSION_TASK_STATUS_LABEL } from './format.ts';
+import { usePolling } from './polling.tsx';
 import './session-tasks.css';
+import { parseSessionTasks, type SessionTask, type SessionTaskStatus } from '../../shared/backlog.ts';
 
-const LABELS: Record<SessionTaskStatus, string> = {
-  todo: 'À faire',
-  in_progress: 'En cours',
-  blocked: 'Bloquée',
-  done: 'Terminée',
-  cancelled: 'Annulée',
-};
-const COUNT_LABELS: Record<SessionTaskStatus, string> = {
-  todo: 'à faire',
-  in_progress: 'en cours',
-  blocked: 'bloquée',
-  done: 'terminée',
-  cancelled: 'annulée',
-};
-export const TASK_STATE_LABELS = {
-  todo: 'À faire',
-  in_progress: 'En cours',
-  blocked: 'Blocage',
-  done: 'Tous les objectifs sont terminés ou annulés',
-  cancelled: 'Tous les objectifs sont annulés',
-  empty: 'Aucune sous-tâche',
-};
+// « à faire » et « en cours » sont invariables ; les autres états s'accordent avec le nombre.
+const INVARIABLE: readonly SessionTaskStatus[] = ['todo', 'in_progress'];
 
 export function sessionTasksState(tasks: readonly SessionTask[]): SessionTaskStatus | 'empty' {
   for (const status of ['blocked', 'in_progress', 'todo'] as const) {
@@ -38,44 +20,33 @@ export function sessionTasksState(tasks: readonly SessionTask[]): SessionTaskSta
 export function useSessionTasks(sessionId: string) {
   const [data, setData] = useState<{ sessionId: string; tasks: SessionTask[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const requestId = useRef(0);
-  const refresh = useCallback(async (): Promise<void> => {
-    const current = ++requestId.current;
-    try {
-      const tasks = await api<SessionTask[]>(`/api/sessions/${sessionId}/tasks`);
-      if (requestId.current === current) {
-        setData({ sessionId, tasks });
-        setError(null);
-      }
-    } catch (cause) {
-      if (requestId.current === current) setError(String(cause));
-    }
-  }, [sessionId]);
+  const fetchTasks = useCallback(
+    () => apiParsed(apiPath`/api/sessions/${sessionId}/tasks`, parseSessionTasks),
+    [sessionId],
+  );
   useEffect(() => {
     setData(null);
     setError(null);
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 3000);
-    return () => {
-      window.clearInterval(timer);
-      // Compteur de requêtes, pas un nœud DOM : la valeur courante est bien celle à invalider.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      requestId.current++;
-    };
-  }, [refresh]);
+  }, [sessionId]);
+  // usePolling rend périmées les réponses d'une autre session (fetchTasks change avec sessionId).
+  const refresh = usePolling(fetchTasks, 3000, {
+    onData: (tasks) => {
+      setData({ sessionId, tasks });
+      setError(null);
+    },
+    onError: (cause) => setError(errorMessage(cause)),
+  });
   // Écritures seules : l'appelant relit la liste quand il le juge utile.
   const save = useCallback(
     async (id: string | undefined, changes: SessionTaskChanges): Promise<void> => {
-      await api(`/api/sessions/${sessionId}/tasks${id ? `/${id}` : ''}`, {
-        method: id ? 'PATCH' : 'POST',
-        body: JSON.stringify(changes),
-      });
+      const path = id ? apiPath`/api/sessions/${sessionId}/tasks/${id}` : apiPath`/api/sessions/${sessionId}/tasks`;
+      await api(path, { method: id ? 'PATCH' : 'POST', body: JSON.stringify(changes) });
     },
     [sessionId],
   );
   const remove = useCallback(
     async (id: string): Promise<void> => {
-      await api(`/api/sessions/${sessionId}/tasks/${id}`, { method: 'DELETE' });
+      await api(apiPath`/api/sessions/${sessionId}/tasks/${id}`, { method: 'DELETE' });
     },
     [sessionId],
   );
@@ -121,18 +92,18 @@ export function SessionTasksPanel({ tasks, loaded, error, refresh, save, remove 
       after?.();
       await refresh();
     } catch (cause) {
-      setSaveError(String(cause));
+      setSaveError(errorMessage(cause));
     } finally {
       setBusy(false);
     }
   };
-  const counts = (Object.keys(LABELS) as SessionTaskStatus[])
+  const counts = (Object.keys(SESSION_TASK_STATUS_LABEL) as SessionTaskStatus[])
     .map((status) => ({ status, count: tasks.filter((task) => task.status === status).length }))
     .filter(({ count }) => count > 0);
-  const summary = counts.map(
-    ({ status, count }) =>
-      `${count} ${COUNT_LABELS[status]}${count > 1 && ['blocked', 'done', 'cancelled'].includes(status) ? 's' : ''}`,
-  );
+  const summary = counts.map(({ status, count }) => {
+    const label = SESSION_TASK_STATUS_LABEL[status].toLowerCase();
+    return plural(count, label, INVARIABLE.includes(status) ? label : undefined);
+  });
   return (
     <div className="session-tasks">
       <div className="session-tasks-toolbar">
@@ -266,7 +237,7 @@ export function SessionTasksPanel({ tasks, loaded, error, refresh, save, remove 
                   void mutate(() => save(task.id, { status: event.target.value as SessionTaskStatus }))
                 }
               >
-                {Object.entries(LABELS).map(([value, label]) => (
+                {Object.entries(SESSION_TASK_STATUS_LABEL).map(([value, label]) => (
                   <option key={value} value={value}>
                     {label}
                   </option>

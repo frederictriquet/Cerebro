@@ -5,7 +5,8 @@ import { setImmediate } from 'node:timers/promises';
 import * as jsx from 'react/jsx-runtime';
 import { moduleRunnerTransform, transformWithOxc } from 'vite';
 import * as format from '../web/src/format.ts';
-import * as types from '../web/src/types.ts';
+import * as localStore from '../web/src/storage.ts';
+import * as types from '../shared/types.ts';
 import { withoutPersona } from '../server/council.ts';
 
 // Exécute les vrais composants et leurs handlers en mémoire, avec le transformateur
@@ -30,12 +31,13 @@ async function compile(name, extension = 'tsx') {
   };
 }
 
-const [loadLaunch, loadSettings, loadAdvisorList, loadAttachments, loadUseLatest] = await Promise.all([
+const [loadLaunch, loadSettings, loadAdvisorList, loadAttachments, loadUseLatest, loadAsyncAction] = await Promise.all([
   compile('CouncilLaunch'),
   compile('CouncilSettingsDialog'),
   compile('CouncilAdvisorList'),
   compile('attachments'),
   compile('use-latest', 'ts'),
+  compile('async-action', 'ts'),
 ]);
 // Composants dont le rendu est déplié dans l'arbre, pour inspecter leurs éléments.
 const inlined = new Map();
@@ -154,7 +156,7 @@ async function fixture(t, projectId, setup = () => {}) {
     useEffect(effect, deps) {
       const { slots, effects } = current;
       const index = current.index++;
-      if (!slots[index] || deps.some((value, i) => !Object.is(value, slots[index][i]))) effects.push(effect);
+      if (!deps || !slots[index] || deps.some((value, i) => !Object.is(value, slots[index][i]))) effects.push(effect);
       slots[index] = deps;
     },
     useMemo(factory, deps) {
@@ -200,18 +202,36 @@ async function fixture(t, projectId, setup = () => {}) {
   const modules = {
     react: hooks,
     'react/jsx-runtime': jsx,
-    './types.ts': types,
+    '../../shared/types.ts': types,
     './council.css': {},
     './ActivityStatus.tsx': { ActivityStatus() {} },
     './AgentLabel.tsx': { AgentLogo() {} },
-    './format.ts': { relativeTime: () => '', AGENT_LABEL: format.AGENT_LABEL },
+    './format.ts': { ...format, relativeTime: () => '' },
     './DelayedActionButton.tsx': { DelayedActionButton() {} },
     './LlmSelector.tsx': { LlmSelector },
     './PersonasDialog.tsx': { PersonasDialog },
     './Dialog.tsx': { Modal },
-    './route.ts': { useNow: () => 0, go: (target) => f.navigations.push(target), href: (value) => value },
+    './route.ts': { go: (target) => f.navigations.push(target), href: (value) => value },
+    // Sans minuterie : seul le chargement explicite (refresh) interroge l'API. Comme le vrai hook, refresh ne
+    // change qu'avec le fetcher et appelle les derniers gestionnaires.
+    './polling.tsx': {
+      useNow: () => 0,
+      usePolling(fetcher, _ms, options) {
+        const handlers = hooks.useRef(options);
+        handlers.current = options;
+        return hooks.useMemo(
+          () => () =>
+            fetcher().then(
+              (value) => handlers.current.onData?.(value),
+              (cause) => handlers.current.onError?.(cause),
+            ),
+          [fetcher],
+        );
+      },
+    },
     './store.tsx': { useStore: () => store },
     './drafts.ts': {},
+    './storage.ts': localStore,
     './api.ts': {
       clipboardImage: () => null,
       async uploadCouncilImage() {
@@ -253,6 +273,7 @@ async function fixture(t, projectId, setup = () => {}) {
   };
   modules['./use-latest.ts'] = await loadUseLatest(modules);
   modules['./attachments.tsx'] = await loadAttachments(modules);
+  modules['./async-action.ts'] = await loadAsyncAction(modules);
   modules['./CouncilAdvisorList.tsx'] = await loadAdvisorList(modules);
   const { CouncilAdvisorList } = modules['./CouncilAdvisorList.tsx'];
   // Rendu hors montage : l'onglet actif est sans incidence, tous les panneaux sont dans l'arbre.

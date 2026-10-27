@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import type { EpicRunView } from '../../server/epic-runner.ts';
 import { isReviewTask } from '../../shared/epic-review.ts';
 import { LaunchSessionDialog } from './Dialog.tsx';
-import { RUN_ACTIVE } from './epic-runs.ts';
 import { useStore } from './store.tsx';
+import { errorMessage } from './format.ts';
+import { isActiveRun, type EpicRun } from '../../shared/backlog.ts';
 
 // « Review de l'epic » et « Ajouter une étape de review » : partagés par le bloc du backlog et l'en-tête du groupe de sessions.
 export function EpicReviewActions({
@@ -12,7 +12,7 @@ export function EpicReviewActions({
   onError,
 }: {
   epic: { id: string; projectId: string; title: string };
-  run: EpicRunView | null;
+  run: EpicRun | null;
   onError: (message: string) => void;
 }) {
   const { tasks, projects, addEpicReviewTask, startEpicReview } = useStore();
@@ -24,7 +24,7 @@ export function EpicReviewActions({
     : (projects.find((p) => p.id === epic.projectId)?.workspaceMode ?? 'isolated');
   const members = tasks.filter((t) => t.epicId === epic.id && t.projectId === epic.projectId);
   // Une review porte sur le travail d'une exécution terminée, arrêtée ou échouée, jamais d'une exécution en cours.
-  const canReview = run !== null && !RUN_ACTIVE.includes(run.status);
+  const canReview = run !== null && !isActiveRun(run);
   const hasOpenReviewStep = members.some((t) => t.status !== 'done' && isReviewTask(t));
   return (
     <>
@@ -44,9 +44,7 @@ export function EpicReviewActions({
           className="btn"
           title="Ajoute une dernière tâche de review, qui attend toutes les autres et travaille dans le même worktree"
           onClick={() =>
-            void addEpicReviewTask(epic.id).catch((err: unknown) =>
-              onError(err instanceof Error ? err.message : 'Ajout impossible'),
-            )
+            void addEpicReviewTask(epic.id).catch((err: unknown) => onError(errorMessage(err, 'Ajout impossible')))
           }
         >
           Ajouter une étape de review

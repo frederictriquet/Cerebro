@@ -1,12 +1,24 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLatest } from './use-latest.ts';
 import { clipboardImage, readClipboardImage, uploadImage, wsUrl } from './api.ts';
-import { parseTermServerMessage, type TermClientMessage } from './types.ts';
+import { errorMessage } from './format.ts';
+import { openReconnectingSocket, type ReconnectingSocket } from './reconnectingSocket.ts';
+import { parseTermServerMessage, type TermClientMessage } from '../../shared/types.ts';
 
 const FONT = 'ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace';
+// Frappes conservées pendant une reconnexion ; au-delà, elles sont refusées et signalées.
+const MAX_PENDING_INPUT = 4096;
+
+interface LinkState {
+  reconnecting: boolean;
+  pending: number;
+  dropped: boolean;
+}
+
+const LINK_OPEN: LinkState = { reconnecting: false, pending: 0, dropped: false };
 
 export interface TermApi {
   sendInput: (data: string) => boolean;
@@ -51,6 +63,7 @@ export function Term({
   const onApiRef = useLatest(onApi);
   const onSelectionRef = useLatest(onSelectionChange);
   const onEscapeRef = useLatest(onEscape);
+  const [link, setLink] = useState<LinkState>(LINK_OPEN);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -114,21 +127,45 @@ export function Term({
     term.open(host);
     term.focus();
 
-    const socketRef: { current: WebSocket | null } = { current: null };
+    let link: ReconnectingSocket | null = null;
+    const current = (): WebSocket | null => link?.current() ?? null;
     let closed = false;
-    let retry = 0;
-    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let lastCols = 0;
     let lastRows = 0;
+    let reconnecting = false;
+    let pending = '';
+    let dropped = false;
+
+    const publishLink = (): void => {
+      if (closed) return;
+      setLink(reconnecting ? { reconnecting, pending: pending.length, dropped } : LINK_OPEN);
+    };
+
+    // Saisie clavier : mise en attente si le socket n'est pas ouvert, puis envoyée à la reconnexion.
+    const input = (data: string): void => {
+      if (pending === '' && send(current(), { type: 'input', data })) return;
+      if (pending.length + data.length > MAX_PENDING_INPUT) {
+        dropped = true;
+      } else {
+        pending += data;
+      }
+      publishLink();
+    };
+
+    const flushPending = (): void => {
+      if (pending !== '' && send(current(), { type: 'input', data: pending })) pending = '';
+      dropped = false;
+      publishLink();
+    };
 
     const api: TermApi = {
       sendInput(data: string): boolean {
-        return send(socketRef.current, { type: 'input', data });
+        return send(current(), { type: 'input', data });
       },
       sendArrow(direction: 'up' | 'down'): boolean {
         const application = term.modes.applicationCursorKeysMode;
         const data = direction === 'up' ? (application ? '\x1bOA' : '\x1b[A') : application ? '\x1bOB' : '\x1b[B';
-        return send(socketRef.current, { type: 'input', data });
+        return send(current(), { type: 'input', data });
       },
       focus(): void {
         term.focus();
@@ -146,7 +183,7 @@ export function Term({
       if (cols === lastCols && rows === lastRows) return;
       lastCols = cols;
       lastRows = rows;
-      send(socketRef.current, { type: 'resize', cols, rows });
+      send(current(), { type: 'resize', cols, rows });
     };
 
     const doFit = (): void => {
@@ -159,9 +196,7 @@ export function Term({
       sendResize();
     };
 
-    const dataSub = term.onData((data) => {
-      send(socketRef.current, { type: 'input', data });
-    });
+    const dataSub = term.onData(input);
     const selectionSub = term.onSelectionChange(() => {
       onSelectionRef.current?.(term.getSelection().trim() !== '');
     });
@@ -172,10 +207,10 @@ export function Term({
     const sendImage = (image: Blob): void => {
       uploadImage(sessionId, image).then(
         (path) => {
-          send(socketRef.current, { type: 'input', data: `${path} ` });
+          input(`${path} `);
         },
         (err: unknown) => {
-          notice(`image non envoyée : ${err instanceof Error ? err.message : 'erreur'}`);
+          notice(`image non envoyée : ${errorMessage(err, 'erreur')}`);
         },
       );
     };
@@ -200,7 +235,7 @@ export function Term({
           else notice(`aucune image dans le presse-papiers (types : ${types})`);
         },
         (err: unknown) => {
-          notice(`presse-papiers illisible (types : ${types}) : ${err instanceof Error ? err.message : 'erreur'}`);
+          notice(`presse-papiers illisible (types : ${types}) : ${errorMessage(err, 'erreur')}`);
         },
       );
     };
@@ -211,25 +246,16 @@ export function Term({
     });
     ro.observe(host);
 
-    const connect = (): void => {
-      if (closed) return;
-      const socket = new WebSocket(wsUrl(`/ws/term/${sessionId}`));
-      socketRef.current = socket;
-      socket.addEventListener('open', () => {
-        retry = 0;
+    link = openReconnectingSocket(wsUrl(`/ws/term/${sessionId}`), {
+      onOpen: () => {
+        reconnecting = false;
         lastCols = 0;
         lastRows = 0;
         doFit();
+        flushPending();
         term.focus();
-      });
-      socket.addEventListener('message', (ev) => {
-        if (typeof ev.data !== 'string') return;
-        let raw: unknown;
-        try {
-          raw = JSON.parse(ev.data) as unknown;
-        } catch {
-          return;
-        }
+      },
+      onMessage: (raw) => {
         const msg = parseTermServerMessage(raw);
         if (!msg) return;
         if (msg.type === 'snapshot') {
@@ -238,42 +264,44 @@ export function Term({
         } else if (msg.type === 'output') {
           term.write(msg.data);
         }
-      });
-      socket.addEventListener('close', () => {
-        if (socketRef.current === socket) socketRef.current = null;
-        if (closed) return;
-        const delay = Math.min(8_000, 400 * 2 ** retry);
-        retry += 1;
-        retryTimer = setTimeout(connect, delay);
-      });
-      socket.addEventListener('error', () => {
-        socket.close();
-      });
-    };
-
-    connect();
-    requestAnimationFrame(() => {
+      },
+      onClose: () => {
+        reconnecting = true;
+        publishLink();
+      },
+    });
+    const firstFrame = requestAnimationFrame(() => {
       doFit();
       term.focus();
     });
 
     return () => {
       closed = true;
+      cancelAnimationFrame(firstFrame);
       // Le rappel courant du parent, pas celui du montage : c'est l'intérêt de useLatest.
       // eslint-disable-next-line react-hooks/exhaustive-deps
       onApiRef.current?.(null);
-      if (retryTimer !== undefined) clearTimeout(retryTimer);
       dataSub.dispose();
       selectionSub.dispose();
       // eslint-disable-next-line react-hooks/exhaustive-deps
       onSelectionRef.current?.(false);
       host.removeEventListener('paste', onPaste, true);
       ro.disconnect();
-      socketRef.current?.close();
-      socketRef.current = null;
+      link?.close();
       term.dispose();
     };
   }, [sessionId, onApiRef, onEscapeRef, onSelectionRef]);
 
-  return <div className="term-host" ref={hostRef} />;
+  return (
+    <>
+      <div className="term-host" ref={hostRef} />
+      {link.reconnecting ? (
+        <div className="term-link" role="status">
+          Terminal déconnecté — reconnexion…
+          {link.pending > 0 ? ` · ${link.pending} caractère${link.pending > 1 ? 's' : ''} en attente d’envoi` : ''}
+          {link.dropped ? ' · frappes au-delà de la limite ignorées' : ''}
+        </div>
+      ) : null}
+    </>
+  );
 }

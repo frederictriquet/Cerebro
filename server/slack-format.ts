@@ -1,6 +1,8 @@
+import type { Agent, CouncilRun, Session } from '../shared/types.ts';
 import { PUBLIC_URL } from './config.ts';
-import type { CouncilRun } from './council.ts';
-import type { Agent, CerebroDatabase, Session } from './db.ts';
+import type { CerebroDatabase } from './db.ts';
+
+export const INACTIVE_SESSION_REPLY = 'Session inactive : message non transmis.';
 
 interface DmCommand {
   projectName: string;
@@ -48,9 +50,13 @@ const COUNCIL_FAILURES: Record<CouncilRun['status'], string> = {
   interrupted: 'interrompu',
 };
 
+export function cerebroLink(path: string, label: string): string {
+  return `<${PUBLIC_URL.replace(/\/+$/, '')}/${path}|${label}>`;
+}
+
 // Réponse du fil Slack : l'essentiel de la synthèse, le détail reste sur la page du run.
 export function councilSlackText(run: CouncilRun, projectName: string | null): string {
-  const link = `<${PUBLIC_URL.replace(/\/+$/, '')}/#/c/${encodeURIComponent(run.id)}|Ouvrir le rapport dans Cerebro>`;
+  const link = cerebroLink(`#/c/${encodeURIComponent(run.id)}`, 'Ouvrir le rapport dans Cerebro');
   const scope = projectName === null ? 'hors projet' : `*${escapeMrkdwn(projectName)}*`;
   const synthesis = run.synthesis;
   if (run.status !== 'succeeded' || synthesis === null) {
@@ -94,8 +100,27 @@ export function escapeMrkdwn(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
+// Slack's <…> markup: links, user/channel mentions and special commands. Its labels and URLs are still entity-encoded.
+function decodeSlackMarkup(content: string): string {
+  const separator = content.indexOf('|');
+  const target = separator === -1 ? content : content.slice(0, separator);
+  const label = separator === -1 ? '' : content.slice(separator + 1);
+  if (target.startsWith('@')) return label !== '' ? `@${label}` : target;
+  if (target.startsWith('#')) return label !== '' ? `#${label}` : target;
+  if (target.startsWith('!')) {
+    if (label !== '') return label;
+    const command = target.slice(1).split('^')[0];
+    return ['here', 'channel', 'everyone'].includes(command) ? `@${command}` : `<${target}>`;
+  }
+  if (target === `mailto:${label}`) return label;
+  // Auto-linked URLs repeat the URL, possibly without its scheme, as their label.
+  if (label === '' || label === target || label === target.replace(/^https?:\/\//, '')) return target;
+  return `${label} (${target})`;
+}
+
 export function decodeSlackText(value: string): string {
   return value
+    .replace(/<([^<>\n]+)>/g, (_, content: string) => decodeSlackMarkup(content))
     .replace(/&(amp|lt|gt);/g, (entity, name: string) => {
       if (name === 'amp') return '&';
       if (name === 'lt') return '<';
@@ -181,6 +206,5 @@ export function sessionHeader(db: CerebroDatabase, session: Session): string {
 }
 
 export function sessionLink(sessionId: string): string {
-  const base = PUBLIC_URL.replace(/\/+$/, '');
-  return `<${base}/#/s/${encodeURIComponent(sessionId)}|Ouvrir dans Cerebro>`;
+  return cerebroLink(`#/s/${encodeURIComponent(sessionId)}`, 'Ouvrir dans Cerebro');
 }

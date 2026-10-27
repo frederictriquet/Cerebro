@@ -1,44 +1,15 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { sep } from 'node:path';
-import type { CerebroDatabase, CommitSettings } from './db.ts';
-import { type CommitPlan, type CommitResult, type GitSnapshot } from './git-plan.ts';
-import type { PushOperation } from './git-push.ts';
-import { parseCommitProposal, proposeCommits, type ProposalContext, type CommitProposal } from './commit-proposal.ts';
+import type { CerebroDatabase } from './db.ts';
+import { assertNoGitOperation, GitOperationInProgress, type CommitPlan } from './git-plan.ts';
+import { draftCommits, parseCommitProposal, type ProposalContext } from './commit-proposal.ts';
 import type { Services } from './services.ts';
 import { canonicalWorktreePath } from './worktree-gate.ts';
-import { workspaceFor } from './provenance.ts';
-import { INHERITED_WARNING, type SessionGitSnapshot } from './session-git.ts';
+import { repositoryActivity, sessionBusy } from './repository-activity.ts';
+import { INHERITED_WARNING } from './session-git.ts';
+import { repositoryRoot } from './git.ts';
+import type { CommitSettings } from '../shared/types.ts';
+import type { AutomaticCommit, CommitResult, GitSnapshot, SessionGitSnapshot } from '../shared/git.ts';
+import { errorMessage } from './util.ts';
 
-export interface AutomaticCommit {
-  id: string;
-  scope: string;
-  path: string;
-  projectId: string | null;
-  sessionId: string | null;
-  settings: CommitSettings;
-  push: boolean;
-  /**
-   * Outcome, on the vocabulary shared by the server's operations (running, succeeded, failed; see PushOperation)
-   * plus the endings specific to automatic commits: blocked by a precondition, cancelled by the user, interrupted
-   * by a server restart.
-   */
-  status: 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled' | 'interrupted';
-  /** Step reached, independent of the outcome: `finished` once the status is no longer running. */
-  phase: 'collecting' | 'drafting' | 'committing' | 'pushing' | 'finished';
-  files: string[];
-  exclusions: { path: string; reason: string }[];
-  commits: CommitResult['commits'];
-  pushOperation: PushOperation | null;
-  error: string | null;
-  startedAt: number;
-  finishedAt: number | null;
-  needsProjectScope: boolean;
-  /** Files the user reviewed in a diff snapshot; included despite warnings only while that diff is unchanged. */
-  reviewed?: { snapshotId: string; paths: string[] };
-}
-/** Session scopes return their provenance with the snapshot (SessionGit.prepareCommit). */
-type PreparedSnapshot = GitSnapshot & Partial<Pick<SessionGitSnapshot, 'provenance'>>;
 export interface AutomaticCommitContext {
   scope: string;
   path: string;
@@ -48,12 +19,9 @@ export interface AutomaticCommitContext {
   prepareCommit?: () => Promise<PreparedSnapshot>;
   execute?: (plan: CommitPlan) => Promise<CommitResult>;
 }
+/** Session scopes return their provenance with the snapshot (SessionGit.prepareCommit). */
+type PreparedSnapshot = GitSnapshot & Partial<Pick<SessionGitSnapshot, 'provenance'>>;
 class CommitBlocked extends Error {}
-const exec = promisify(execFile);
-const inside = (root: string, path: string): boolean => {
-  const cwd = canonicalWorktreePath(path);
-  return cwd === root || cwd.startsWith(root + sep);
-};
 
 export class AutomaticCommits {
   private db: CerebroDatabase;
@@ -87,21 +55,19 @@ export class AutomaticCommits {
       .prepare('INSERT INTO automatic_commits VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data')
       .run(operation.id, JSON.stringify(operation));
   }
-  async proposeCommits(context: ProposalContext, signal: AbortSignal): Promise<CommitProposal> {
-    return proposeCommits(context, signal);
+  /** Raw answer of the agent, checked once by `execute`. */
+  async proposeCommits(context: ProposalContext, signal: AbortSignal): Promise<unknown> {
+    return draftCommits(context, signal);
   }
-  private idle(path: string): void {
+  private async idle(path: string): Promise<void> {
     this.services.gate.assertAvailable(path);
-    for (const session of this.db.listSessions()) {
-      const cwd = workspaceFor(this.db, session.id)?.root ?? this.db.getProject(session.projectId)?.path;
-      if (cwd && inside(path, cwd) && ['starting', 'running', 'waiting'].includes(session.status))
-        throw new CommitBlocked('Une session utilise encore ce dépôt. Attendez la fin de son tour avant de commiter.');
-    }
-    for (const row of this.db.connection.prepare('SELECT data FROM command_runs').all() as { data: string }[]) {
-      const run = JSON.parse(row.data);
-      if (run.status === 'running' && inside(path, run.cwd))
-        throw new CommitBlocked('Une commande utilise encore ce dépôt. Attendez sa fin avant de commiter.');
-    }
+    await assertNoGitOperation(path);
+    // Its own operation is a running automatic commit of this repository: only sessions and commands block it.
+    const activity = repositoryActivity(this.db, path);
+    if (activity.sessions.some((session) => sessionBusy(session.status)))
+      throw new CommitBlocked('Une session utilise encore ce dépôt. Attendez la fin de son tour avant de commiter.');
+    if (activity.commands)
+      throw new CommitBlocked('Une commande utilise encore ce dépôt. Attendez sa fin avant de commiter.');
   }
   async start(
     context: AutomaticCommitContext,
@@ -123,9 +89,7 @@ export class AutomaticCommits {
         !review.paths.every((path) => typeof path === 'string'))
     )
       throw new Error('Sélection des fichiers examinés invalide.');
-    const path = canonicalWorktreePath(
-      (await exec('git', ['-C', context.path, 'rev-parse', '--show-toplevel'])).stdout.trim(),
-    );
+    const path = canonicalWorktreePath(await repositoryRoot(context.path));
     if (this.closed) throw new Error('Serveur en cours d’arrêt.');
     const request = this.db.connection
       .prepare('SELECT operation_id,scope,push FROM automatic_commit_requests WHERE id=?')
@@ -180,15 +144,10 @@ export class AutomaticCommits {
       needsProjectScope: false,
       ...(review ? { reviewed: { snapshotId: review.snapshotId, paths: [...new Set(review.paths)] } } : {}),
     };
-    this.db.connection.exec('BEGIN IMMEDIATE');
-    try {
+    this.db.transaction(() => {
       this.save(operation);
       remember(operation.id);
-      this.db.connection.exec('COMMIT');
-    } catch (cause) {
-      this.db.connection.exec('ROLLBACK');
-      throw cause;
-    }
+    }, 'IMMEDIATE');
     const abort = new AbortController();
     const done = Promise.resolve()
       .then(() => this.execute(context, operation, abort.signal))
@@ -215,7 +174,7 @@ export class AutomaticCommits {
       this.save(operation);
     };
     try {
-      this.idle(operation.path);
+      await this.idle(operation.path);
       signal.throwIfAborted();
       if ((await this.services.pushes.current(operation.path))?.status === 'running')
         throw new CommitBlocked('Un push est déjà en cours dans ce dépôt.');
@@ -270,7 +229,7 @@ export class AutomaticCommits {
         const input = { settings: operation.settings, files: eligible, log: snapshot.log };
         const proposal = parseCommitProposal(await this.proposeCommits(input, signal), input);
         signal.throwIfAborted();
-        this.idle(operation.path);
+        await this.idle(operation.path);
         await this.services.git.verifySnapshot(operation.path, snapshot.id);
         signal.throwIfAborted();
         const plan: CommitPlan = {
@@ -286,11 +245,11 @@ export class AutomaticCommits {
         const result = await (context.execute?.(plan) ?? this.services.git.executeCommitPlan(operation.path, plan));
         operation.commits = result.commits;
         this.save(operation);
-        if (result.error) throw new Error(result.error);
+        if (result.error) throw result.blocked ? new GitOperationInProgress(result.error) : new Error(result.error);
       }
       if (operation.push) {
         phase('pushing');
-        this.idle(operation.path);
+        await this.idle(operation.path);
         // The snapshot already checked the tree (a snapshot with only excluded files is blocked above), and
         // shared dependency links stay untracked on purpose, so a raw `git status` check would refuse them.
         operation.pushOperation = structuredClone(
@@ -317,12 +276,12 @@ export class AutomaticCommits {
       }
       operation.status = 'succeeded';
     } catch (cause) {
-      operation.status = signal.aborted ? 'cancelled' : cause instanceof CommitBlocked ? 'blocked' : 'failed';
-      operation.error = signal.aborted
-        ? 'Préparation annulée.'
-        : cause instanceof Error
-          ? cause.message
-          : String(cause);
+      operation.status = signal.aborted
+        ? 'cancelled'
+        : cause instanceof CommitBlocked || cause instanceof GitOperationInProgress
+          ? 'blocked'
+          : 'failed';
+      operation.error = signal.aborted ? 'Préparation annulée.' : errorMessage(cause);
     } finally {
       operation.phase = 'finished';
       operation.finishedAt = Date.now();

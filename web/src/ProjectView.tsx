@@ -1,5 +1,6 @@
-import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
-import { acquireProjectSlack, getProjectSlack, type ProjectSlackStatus } from './api.ts';
+import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react';
+import { acquireProjectSlack, getProjectSlack } from './api.ts';
+import { useAsyncAction } from './async-action.ts';
 import { Backlog } from './backlog/Backlog.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { CodeEditor } from './CodeEditor.tsx';
@@ -10,12 +11,16 @@ import { CommitSettingsDialog } from './CommitSettingsDialog.tsx';
 import { CouncilLaunch } from './CouncilLaunch.tsx';
 import { Modal } from './Dialog.tsx';
 import { isDormant } from '../../shared/sessions.ts';
+import { errorMessage } from './format.ts';
 import { SessionList } from './SessionList.tsx';
 import { NewSessionForm } from './NewSessionForm.tsx';
-import { go, href, useNow } from './route.ts';
+import { go, href } from './route.ts';
+import { useNow, usePolling } from './polling.tsx';
 import { PathInput } from './PathInput.tsx';
 import { useStore } from './store.tsx';
-import type { Project, WorkspaceMode } from './types.ts';
+import { ErrorBoundary } from './ErrorBoundary.tsx';
+import type { Project, WorkspaceMode } from '../../shared/types.ts';
+import type { ProjectSlackStatus } from '../../shared/machine.ts';
 
 const PROJECT_COLORS = ['#e5484d', '#f76b15', '#ffc53d', '#46a758', '#12a594', '#0090ff', '#6e56cf', '#d6409f'];
 
@@ -23,27 +28,23 @@ const PROJECT_COLORS = ['#e5484d', '#f76b15', '#ffc53d', '#46a758', '#12a594', '
 function SlackLead({ projectId }: { projectId: string }) {
   const { peersVersion } = useStore();
   const [status, setStatus] = useState<ProjectSlackStatus | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    run: acquire,
+    busy,
+    error,
+  } = useAsyncAction(async () => setStatus(await acquireProjectSlack(projectId)), {
+    fallback: 'Prise de main impossible',
+  });
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = (): void => {
-      void getProjectSlack(projectId)
-        .then((value) => {
-          if (!cancelled) setStatus(value);
-        })
-        .catch(() => {
-          /* machine sans cette fonctionnalité ou injoignable : garder la dernière valeur */
-        });
-    };
-    load();
-    const timer = window.setInterval(load, 10_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [projectId, peersVersion]);
+  // peersVersion relance le cycle : un changement de pairs se voit aussitôt.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- dépendance voulue : un nouveau fetcher relance usePolling.
+  const load = useCallback(() => getProjectSlack(projectId), [projectId, peersVersion]);
+  usePolling(load, 10_000, {
+    onData: setStatus,
+    onError: () => {
+      /* machine sans cette fonctionnalité ou injoignable : garder la dernière valeur */
+    },
+  });
 
   if (!status || (!status.shared && !status.conflict)) return null;
   if (status.conflict) {
@@ -56,17 +57,6 @@ function SlackLead({ projectId }: { projectId: string }) {
   }
 
   const local = status.owner === 'local';
-  const acquire = async (): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    try {
-      setStatus(await acquireProjectSlack(projectId));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Prise de main impossible');
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const state = local
     ? `Cette machine traite les commandes Slack (projet aussi présent sur ${status.peerMachine ?? 'une autre machine'}). On ne rend pas la main : prends-la depuis l'autre machine.`
@@ -93,20 +83,17 @@ function SlackLead({ projectId }: { projectId: string }) {
 // Choix du dossier de travail des nouvelles conversations : enregistré dès le clic, comme la case Slack.
 function WorkspaceModeControl({ project }: { project: Project }) {
   const { updateProject } = useStore();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    run: save,
+    busy,
+    error,
+  } = useAsyncAction((workspaceMode: WorkspaceMode) => updateProject(project.id, { workspaceMode }), {
+    fallback: 'Modification impossible',
+  });
 
   const change = async (workspaceMode: WorkspaceMode): Promise<void> => {
     if (workspaceMode === project.workspaceMode) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await updateProject(project.id, { workspaceMode });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Modification impossible');
-    } finally {
-      setBusy(false);
-    }
+    await save(workspaceMode);
   };
 
   return (
@@ -156,7 +143,13 @@ export function ProjectView({ projectId }: { projectId: string }) {
   const [editName, setEditName] = useState('');
   const [editPath, setEditPath] = useState('');
   const [editColor, setEditColor] = useState<string | null>(null);
-  const [editBusy, setEditBusy] = useState(false);
+  const { run: saveProject, busy: editBusy } = useAsyncAction(
+    async (update: Pick<Project, 'name' | 'path' | 'color'>) => {
+      await updateProject(projectId, update);
+      setEditing(false);
+    },
+    { fallback: 'Modification impossible', onError: setError },
+  );
   const [codeOpen, setCodeOpen] = useState(false);
   const [commitSettingsOpen, setCommitSettingsOpen] = useState(false);
   const [councilOpen, setCouncilOpen] = useState(false);
@@ -183,14 +176,14 @@ export function ProjectView({ projectId }: { projectId: string }) {
         await deleteProject(project.id);
         go('#/');
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Suppression impossible');
+        setError(errorMessage(err, 'Suppression impossible'));
       }
     })();
   };
 
   const onPurge = (): void => {
     void purgeProjectSessions(project.id).catch((err: unknown) => {
-      setError(err instanceof Error ? err.message : 'Purge impossible');
+      setError(errorMessage(err, 'Purge impossible'));
     });
   };
 
@@ -210,16 +203,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
       setError('Le nom et le chemin sont requis');
       return;
     }
-    setEditBusy(true);
-    setError(null);
-    try {
-      await updateProject(project.id, { name, path, color: editColor });
-      setEditing(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Modification impossible');
-    } finally {
-      setEditBusy(false);
-    }
+    await saveProject({ name, path, color: editColor });
   };
 
   if (codeOpen) return <CodeEditor project={project} onClose={() => setCodeOpen(false)} />;
@@ -327,7 +311,9 @@ export function ProjectView({ projectId }: { projectId: string }) {
           </DelayedActionButton>
         </div>
         <div className="project-head-details">
-          <GitStatus key={project.id} projectId={project.id} />
+          <ErrorBoundary zone="État Git" resetKey={project.id}>
+            <GitStatus key={project.id} projectId={project.id} />
+          </ErrorBoundary>
         </div>
       </header>
       {commitSettingsOpen ? (
@@ -341,7 +327,9 @@ export function ProjectView({ projectId }: { projectId: string }) {
 
       {error ? <p className="form-error">{error}</p> : null}
 
-      <Worktrees key={`worktrees-${project.id}`} projectId={project.id} workspaceMode={project.workspaceMode} />
+      <ErrorBoundary zone="Copies de travail" resetKey={project.id}>
+        <Worktrees key={`worktrees-${project.id}`} projectId={project.id} workspaceMode={project.workspaceMode} />
+      </ErrorBoundary>
       <div className="project-columns">
         <section className="card project-panel session-table-wrap">
           <div className="project-panel-head">
@@ -370,11 +358,15 @@ export function ProjectView({ projectId }: { projectId: string }) {
           {projectSessions.length === 0 ? (
             <p className="empty-hint">Aucune session pour ce projet.</p>
           ) : (
-            <SessionList key={`sessions-${project.id}`} sessions={projectSessions} now={now} onError={setError} />
+            <ErrorBoundary zone="Sessions" resetKey={project.id}>
+              <SessionList key={`sessions-${project.id}`} sessions={projectSessions} now={now} onError={setError} />
+            </ErrorBoundary>
           )}
         </section>
 
-        <Backlog projectId={project.id} />
+        <ErrorBoundary zone="Backlog" resetKey={project.id}>
+          <Backlog projectId={project.id} />
+        </ErrorBoundary>
       </div>
     </div>
   );

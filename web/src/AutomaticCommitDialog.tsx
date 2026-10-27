@@ -1,10 +1,12 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { useEffect, useRef, useState } from 'react';
-import { api, apiBase, markOperationSeen } from './api.ts';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { api, apiParsed, markOperationSeen } from './api.ts';
 import { Modal } from './Dialog.tsx';
-import type { CommitSettings } from './types.ts';
-import type { AutomaticCommit } from '../../server/automatic-commits.ts';
+import type { CommitSettings } from '../../shared/types.ts';
+import { errorMessage, plural } from './format.ts';
+import { usePolling } from './polling.tsx';
 import './automatic-commits.css';
+import { parseAutomaticCommit, type AutomaticCommit } from '../../shared/git.ts';
 
 const PHASE_LABEL: Record<AutomaticCommit['phase'], string> = {
   collecting: 'Vérification des changements…',
@@ -47,7 +49,6 @@ function AutomaticCommitRun({
 }: CommitDialogProps & { onUseProject: () => void }) {
   const [requestId] = useState(() => crypto.randomUUID());
   const [review] = useState(reviewed);
-  const [machineBase] = useState(apiBase);
   const [operation, setOperation] = useState<AutomaticCommit | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -55,55 +56,46 @@ function AutomaticCommitRun({
   const [now, setNow] = useState(Date.now);
   const start = useRef<Promise<AutomaticCommit> | null>(null);
   const path = endpoint ?? `/api/projects/${projectId}/git`;
+  const show = useCallback((value: AutomaticCommit): void => {
+    setOperation(value);
+    setError(null);
+    if (value.finishedAt) markOperationSeen(`auto-commit:${value.id}`);
+  }, []);
   useEffect(() => {
     let disposed = false;
-    const show = (value: AutomaticCommit): void => {
-      if (disposed || apiBase() !== machineBase) return;
-      setOperation(value);
-      setError(null);
-      if (value.finishedAt) markOperationSeen(`auto-commit:${value.id}`);
-    };
-    if (apiBase() !== machineBase) return;
     // Reuse the same request in React StrictMode. Reopening also attaches to an active server operation.
-    start.current ??= api<AutomaticCommit>(`${path}/auto-commit`, {
+    start.current ??= apiParsed(`${path}/auto-commit`, parseAutomaticCommit, {
       method: 'POST',
       body: JSON.stringify({ requestId, push, strategy, ...(review ? { reviewed: review } : {}) }),
     });
-    let id: string | null = null;
     void start.current
       .then((value) => {
-        id = value.id;
-        show(value);
+        if (!disposed) show(value);
       })
       .catch((cause) => {
-        if (!disposed && apiBase() === machineBase) setError(cause instanceof Error ? cause.message : String(cause));
+        if (!disposed) setError(errorMessage(cause));
       });
-    let timer: number | undefined;
-    const poll = async (): Promise<void> => {
-      if (disposed || apiBase() !== machineBase) return;
-      if (id)
-        try {
-          const value = await api<AutomaticCommit>(`/api/git/auto-commits/${id}`);
-          show(value);
-          if (value.finishedAt) return;
-        } catch (cause) {
-          if (!disposed && apiBase() === machineBase) setError(cause instanceof Error ? cause.message : String(cause));
-        }
-      if (!disposed) timer = window.setTimeout(() => void poll(), 300);
-    };
-    void poll();
     return () => {
       disposed = true;
-      window.clearTimeout(timer);
     };
-  }, [path, requestId, push, strategy, review, machineBase]);
+  }, [path, requestId, push, strategy, review, show]);
+  const operationId = operation?.id ?? null;
+  const load = useCallback(
+    () => apiParsed(`/api/git/auto-commits/${operationId}`, parseAutomaticCommit),
+    [operationId],
+  );
+  usePolling(load, 300, {
+    enabled: operation !== null && !operation.finishedAt,
+    onData: show,
+    onError: (cause) => setError(errorMessage(cause)),
+  });
   const cancel = async (): Promise<void> => {
-    if (!operation || apiBase() !== machineBase) return;
+    if (!operation) return;
     setCancelling(true);
     try {
       await api(`/api/git/auto-commits/${operation.id}/cancel`, { method: 'POST' });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     } finally {
       setCancelling(false);
     }
@@ -170,7 +162,9 @@ function AutomaticCommitRun({
                     ? 'Git enregistre les changements. Cette étape ne peut plus être annulée.'
                     : 'Git envoie les commits aux dépôts distants. Cette étape ne peut plus être annulée.'}
             </p>
-            {operation?.files.length ? <p className="meta">{operation.files.length} fichier(s) à commiter</p> : null}
+            {operation?.files.length ? (
+              <p className="meta">{plural(operation.files.length, 'fichier')} à commiter</p>
+            ) : null}
           </div>
         ) : null}
         <p className="meta">
@@ -211,7 +205,10 @@ function AutomaticCommitRun({
         ))}
         {!operation?.needsProjectScope && operation?.exclusions.length ? (
           <details>
-            <summary>{operation.exclusions.length} fichier(s) écarté(s), conservé(s) dans le dépôt</summary>
+            <summary>
+              {plural(operation.exclusions.length, 'fichier écarté, conservé', 'fichiers écartés, conservés')} dans le
+              dépôt
+            </summary>
             <ul>
               {operation.exclusions.map((file) => (
                 <li key={file.path}>

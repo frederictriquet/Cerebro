@@ -31,7 +31,7 @@ export function parseFactQuery(question: string): FactQuery | string | null {
   const n = normalized(question)
     .trim()
     .replace(/\s*\?$/, '');
-  if (natural[n]) return natural[n];
+  if (Object.hasOwn(natural, n)) return natural[n];
   if (!/^etat(?:\s|$)/.test(n)) return null;
   const match = /^\S+\s+(sessions|taches|epics|machines|avancement|blocages|activites)(?=\s|$)/.exec(n);
   if (!match) return FACT_HELP;

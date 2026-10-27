@@ -16,7 +16,8 @@ delete process.env.CEREBRO_BIND_TOKEN;
 delete process.env.CEREBRO_SLACK_TOKEN;
 delete process.env.CEREBRO_SLACK_USER;
 
-const { CerebroDatabase, DEFAULT_SESSION_DEFAULTS } = await import('../server/db.ts');
+const { CerebroDatabase } = await import('../server/db.ts');
+const { DEFAULT_SESSION_DEFAULTS } = await import('../shared/types.ts');
 const { SessionManager } = await import('../server/sessions.ts');
 const { createServices } = await import('../server/services.ts');
 const { EpicRunner } = await import('../server/epic-runner.ts');
@@ -27,7 +28,7 @@ const { Catalog } = await import('../server/catalog.ts');
 const { UpdateManager } = await import('../server/updates.ts');
 const { PeerSync } = await import('../server/peers.ts');
 const { buildServer } = await import('../server/index.ts');
-const { parseProject } = await import('../web/src/types.ts');
+const { parseProject } = await import('../shared/types.ts');
 
 const saved = {
   agent: 'codex',
@@ -55,7 +56,10 @@ const launches = [];
 mock.method(
   SessionManager.prototype,
   'launch',
-  async function (project, agent, mode, tuning, prompt, resumeId, existingId = null, validate, joined, title, epicId) {
+  async function (
+    project,
+    { agent, mode, tuning, prompt, resumeSessionId: resumeId = null, existingId = null, epicId = null },
+  ) {
     const id = existingId ?? randomUUID();
     const command = buildAgentCommand(agent, mode, prompt, id, resumeId, tuning);
     launches.push({ agent, mode, ...tuning, prompt, command, id });
@@ -182,7 +186,7 @@ test('les étapes automatiques d’une epic préservent le formulaire et transme
     const second = db.createTask(project.id, 'Deuxième tâche', null, epic.id);
     db.setTaskDependencies(second.id, [first.id]);
     const options = { ...saved, mode: 'plan', prompt: 'Instructions de l’epic' };
-    runner.start(epic.id, options);
+    await runner.start(epic.id, options);
     const waitForStep = async (taskId) => {
       for (let i = 0; i < 200; i++) {
         runner.poke();
@@ -224,6 +228,7 @@ test('Slack hérite des réglages, préserve le prompt du formulaire et mémoris
     ready: Promise.resolve(),
     generalResponder: () => true,
     knownRemotely: () => false,
+    unreachableMachines: () => [],
     conflictMachines: () => [],
     owns: () => true,
   };
@@ -303,6 +308,9 @@ test('API : réglages avant lancement, rechargement, backlog et validation des c
     assert.equal(response.statusCode, 201);
     assert.equal(response.json().session.agent, saved.agent);
     assert.equal(response.json().session.prompt, task.text);
+    // Le texte de la tâche n'écrase pas le prompt mémorisé du formulaire « Nouvelle session ».
+    response = await send('GET', '/api/projects');
+    assert.equal(response.json().find((p) => p.id === id).sessionDefaults.prompt, saved.prompt);
 
     // A push operation uses the Git service, never launchSession / an agent CLI.
     execFileSync('git', ['-C', root, 'init', '-b', 'main']);
@@ -338,6 +346,60 @@ test('API : réglages avant lancement, rechargement, backlog et validation des c
   }
 });
 
+test('API : les reviews ne mémorisent que les réglages du formulaire, ni son prompt ni les instructions générées', async () => {
+  const repo = mkdtempSync(join(root, 'git-review-'));
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args]);
+  git('init', '-b', 'main');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Test');
+  writeFileSync(join(repo, 'file'), 'base\n');
+  git('add', '.');
+  git('commit', '-m', 'base');
+  writeFileSync(join(repo, 'file'), 'changed\n');
+  const app = await buildServer({ catalog });
+  const send = (method, url, payload) => app.inject({ method, url, ...(payload === undefined ? {} : { payload }) });
+  try {
+    const project = (await send('POST', '/api/projects', { name: 'Review', path: repo })).json();
+    await send('PATCH', `/api/projects/${project.id}`, { sessionDefaults: saved });
+    const defaults = async () =>
+      (await send('GET', '/api/projects')).json().find((p) => p.id === project.id).sessionDefaults;
+
+    let review = (await send('POST', `/api/projects/${project.id}/git/prepare-review`)).json();
+    let response = await send('POST', `/api/projects/${project.id}/git/review`, {
+      reviewId: review.id,
+      launch: { mode: 'plan', prompt: 'Saisie de review' },
+    });
+    assert.equal(response.statusCode, 201);
+    assert.match(response.json().prompt, /^Saisie de review\n\n.+/s);
+    // Un lancement ne mémorise jamais son prompt : seul le formulaire « Nouvelle session » le modifie.
+    assert.deepEqual(await defaults(), { ...saved, mode: 'plan' });
+
+    await send('PATCH', `/api/projects/${project.id}`, { sessionDefaults: saved });
+    review = (await send('POST', `/api/projects/${project.id}/git/prepare-review`)).json();
+    response = await send('POST', `/api/projects/${project.id}/git/review`, { reviewId: review.id, launch: {} });
+    assert.equal(response.statusCode, 201);
+    assert.deepEqual(await defaults(), saved);
+
+    const session = response.json();
+    const snapshot = (await send('POST', `/api/sessions/${session.id}/git/prepare-commit`)).json();
+    const selection = {
+      snapshotId: snapshot.id,
+      selection: [{ path: 'file', all: true }],
+      commits: [],
+      acknowledged: ['file'],
+    };
+    response = await send('POST', `/api/sessions/${session.id}/git/review`, {
+      selection,
+      launch: { prompt: 'Revue de session' },
+    });
+    assert.equal(response.statusCode, 201);
+    assert.match(response.json().prompt, /^Revue de session\n\n.*\+changed/s);
+    assert.deepEqual(await defaults(), saved);
+  } finally {
+    await app.close();
+  }
+});
+
 test('API commit plan executes without launching an agent', async () => {
   const repo = mkdtempSync(join(root, 'git-api-'));
   const git = (...args) => execFileSync('git', ['-C', repo, ...args]);
@@ -368,6 +430,57 @@ test('API commit plan executes without launching an agent', async () => {
     assert.equal(response.json().error, null);
     assert.equal(response.json().commits.length, 1);
     assert.equal(launches.length, before);
+  } finally {
+    await app.close();
+  }
+});
+
+test('API : un commit de session reste enregistré si la session est supprimée pendant son exécution', async () => {
+  const repo = mkdtempSync(join(root, 'git-session-deleted-'));
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args]);
+  git('init', '-b', 'main');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Test');
+  writeFileSync(join(repo, 'file'), 'new\n');
+  const app = await buildServer({ catalog });
+  try {
+    const project = (
+      await app.inject({ method: 'POST', url: '/api/projects', payload: { name: 'Session supprimée', path: repo } })
+    ).json();
+    const session = (
+      await app.inject({ method: 'POST', url: `/api/projects/${project.id}/sessions`, payload: { prompt: 'Commit' } })
+    ).json();
+    const snapshot = (
+      await app.inject({ method: 'POST', url: `/api/sessions/${session.id}/git/prepare-commit` })
+    ).json();
+    // La session disparaît juste après la vérification initiale, avant la fin du commit.
+    const getSession = CerebroDatabase.prototype.getSession;
+    const spy = mock.method(CerebroDatabase.prototype, 'getSession', function (id) {
+      const found = getSession.call(this, id);
+      if (id === session.id && found !== null) {
+        spy.mock.restore();
+        this.connection.prepare('DELETE FROM sessions WHERE id=?').run(id);
+      }
+      return found;
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/sessions/${session.id}/git/commit`,
+      payload: {
+        snapshotId: snapshot.id,
+        commits: [{ message: 'initial', selection: [{ path: 'file', all: true }] }],
+        acknowledged: ['file'],
+        push: false,
+      },
+    });
+    spy.mock.restore();
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().commits.length, 1);
+    const operations = (await app.inject({ method: 'GET', url: `/api/operations?projectId=${project.id}` })).json();
+    assert.deepEqual(
+      operations.map((o) => [o.id, o.projectId, o.sessionId, o.ok]),
+      [[response.json().operationId, project.id, session.id, true]],
+    );
   } finally {
     await app.close();
   }
@@ -483,6 +596,57 @@ test('API task launches retain their epic through retry and backlog cleanup', as
     const sessions = (await send('GET', '/api/sessions')).json().filter((s) => s.projectId === project.id);
     assert.equal(sessions.length, 2);
     assert.ok(sessions.every((s) => s.epic.id === epic.id && s.epic.title === 'Origine renommée'));
+  } finally {
+    await app.close();
+  }
+});
+
+test('POST /api/tasks/:id/start refuse une tâche LLM terminée ou dont la session tourne encore', async () => {
+  const app = await buildServer({ catalog });
+  const send = (method, url, payload) => app.inject({ method, url, ...(payload === undefined ? {} : { payload }) });
+  try {
+    const project = (await send('POST', '/api/projects', { name: 'Statut', path: root })).json();
+    const task = (await send('POST', `/api/projects/${project.id}/tasks`, { text: 'Une fois' })).json();
+    // Deux lancements concurrents : un seul crée une session, même si le premier n'a pas fini.
+    const launch = SessionManager.prototype.launch;
+    SessionManager.prototype.launch = async function (...args) {
+      await new Promise((r) => setTimeout(r, 100));
+      return launch.apply(this, args);
+    };
+    let concurrent;
+    try {
+      concurrent = await Promise.all(
+        [1, 2].map(() => send('POST', `/api/tasks/${task.id}/start`, { prompt: task.text })),
+      );
+    } finally {
+      SessionManager.prototype.launch = launch;
+    }
+    assert.deepEqual(concurrent.map((r) => r.statusCode).sort(), [201, 409]);
+    const sessionId = concurrent.find((r) => r.statusCode === 201).json().session.id;
+    // Session encore active : « Relancer » la détacherait.
+    const db = new CerebroDatabase();
+    try {
+      db.updateSession(sessionId, { status: 'running' });
+    } finally {
+      db.close();
+    }
+    const busy = await send('POST', `/api/tasks/${task.id}/start`, { prompt: task.text });
+    assert.equal(busy.statusCode, 409, busy.body);
+    // Session arrêtée : la relance reste permise.
+    const reopened = new CerebroDatabase();
+    try {
+      reopened.updateSession(sessionId, { status: 'exited' });
+    } finally {
+      reopened.close();
+    }
+    const retry = await send('POST', `/api/tasks/${task.id}/start`, { prompt: task.text });
+    assert.equal(retry.statusCode, 201, retry.body);
+    await send('PATCH', `/api/tasks/${task.id}`, { status: 'done' });
+    const count = launches.length;
+    const done = await send('POST', `/api/tasks/${task.id}/start`, { prompt: task.text });
+    assert.equal(done.statusCode, 409, done.body);
+    assert.equal(launches.length, count);
+    assert.equal((await send('GET', '/api/tasks')).json().find((t) => t.id === task.id).status, 'done');
   } finally {
     await app.close();
   }

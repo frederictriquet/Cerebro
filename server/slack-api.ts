@@ -1,4 +1,5 @@
 import { SLACK_API_URL, SLACK_ENABLED, SLACK_TOKEN, SLACK_USER } from './config.ts';
+import { isRecord } from './util.ts';
 
 export interface SlackResponse {
   ok?: boolean;
@@ -6,6 +7,8 @@ export interface SlackResponse {
   channel?: { id?: string } | string;
   ts?: string;
   messages?: unknown[];
+  has_more?: boolean;
+  response_metadata?: { next_cursor?: string };
 }
 
 export interface SlackMessage {
@@ -19,10 +22,6 @@ export interface SlackMessage {
 
 export type SlackCall = (method: string, body: Record<string, unknown>) => Promise<SlackResponse>;
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 export function messageFrom(value: unknown): SlackMessage | null {
   if (!isRecord(value) || typeof value.ts !== 'string') return null;
   return {
@@ -35,17 +34,28 @@ export function messageFrom(value: unknown): SlackMessage | null {
   };
 }
 
+// Slack 429 window: deferred sends retry once it is over, plus this margin.
+const RATE_LIMIT_MARGIN_MS = 500;
+
+/** Thrown while Slack asks to slow down: the caller may retry once `SlackTransport.rateLimitWait()` is over. */
+export class SlackRateLimitError extends Error {}
+
 /** Calls the Slack Web API, and stops calling it while Slack asks to slow down. */
 export class SlackTransport {
-  private rateLimitedUntil = 0;
+  rateLimitedUntil = 0;
 
   rateLimited(): boolean {
     return Date.now() < this.rateLimitedUntil;
   }
 
+  /** Time left before a deferred send may retry. */
+  rateLimitWait(): number {
+    return Math.max(0, this.rateLimitedUntil - Date.now()) + RATE_LIMIT_MARGIN_MS;
+  }
+
   async call(method: string, body: Record<string, unknown>): Promise<SlackResponse> {
     if (!SLACK_ENABLED || SLACK_TOKEN === undefined) throw new Error("Slack n'est pas configuré");
-    if (this.rateLimited()) throw new Error('Limite de débit Slack active');
+    if (this.rateLimited()) throw new SlackRateLimitError('Limite de débit Slack active');
     const response = await fetch(`${SLACK_API_URL}/${method}`, {
       method: 'POST',
       headers: {
@@ -59,7 +69,7 @@ export class SlackTransport {
     if (response.status === 429) {
       const seconds = Number(response.headers.get('retry-after') ?? 1);
       this.rateLimitedUntil = Date.now() + (Number.isFinite(seconds) && seconds > 0 ? seconds : 1) * 1_000;
-      throw new Error('Limite de débit Slack atteinte');
+      throw new SlackRateLimitError('Limite de débit Slack atteinte');
     }
     let value: unknown;
     try {
@@ -123,6 +133,13 @@ export class SlackClient {
       text,
       unfurl_links: false,
     });
+  }
+
+  /** Marks a forwarded message as transmitted. */
+  async acknowledge(channel: string, timestamp: string): Promise<void> {
+    await this.call('reactions.add', { channel, timestamp, name: 'white_check_mark' }).catch((error: unknown) =>
+      this.logError(error),
+    );
   }
 
   /** Sends for one id run one after another, each after the previous one settled. */

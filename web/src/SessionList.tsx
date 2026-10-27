@@ -2,13 +2,14 @@ import { useId, useMemo, useState } from 'react';
 import { EpicReviewActions } from './EpicReviewActions.tsx';
 import { useEpicRun } from './epic-runs.ts';
 import { FindingsLink } from './FindingsLink.tsx';
-import { isAwaiting } from './format.ts';
+import { attentionCounts, isAwaiting, plural } from './format.ts';
 import { href, parseMachine } from './route.ts';
 import { SessionRow } from './SessionRow.tsx';
+import { useStoredFlag } from './storage.ts';
 import { groupSessions, type SessionGroup } from './session-groups.ts';
 import { useStore } from './store.tsx';
 import { SessionListContext, useSessionList } from './session-list-context.ts';
-import type { Session } from './types.ts';
+import type { Session } from '../../shared/types.ts';
 import './session-groups.css';
 
 export function SessionList({
@@ -44,32 +45,20 @@ function EpicSessions({ group }: { group: Extract<SessionGroup, { kind: 'epic' }
   const { showProject } = useSessionList();
   const project = showProject ? projects.find((item) => item.id === group.projectId) : undefined;
   const listId = useId();
-  // Plus lent que dans le backlog : la liste peut afficher de nombreux epics, et la review n'a besoin que d'un état d'exécution à peu près à jour.
-  const { run } = useEpicRun(group.epic.id, 5000);
+  // Suivi par les événements epic-run, comme dans le backlog.
+  const { run } = useEpicRun(group.epic.id);
   const [actionError, setActionError] = useState<string | null>(null);
   const storageKey = `cerebro.sessionEpic.${JSON.stringify([parseMachine(window.location.hash), group.projectId, group.epic.id])}`;
-  const [open, setOpen] = useState(() => {
-    try {
-      const saved = localStorage.getItem(storageKey);
-      if (saved !== null) return saved !== 'closed';
-    } catch {
-      /* Le repli reste disponible sans stockage local. */
-    }
-    return group.sessions.some(
-      (session) => session.status !== 'exited' || isAwaiting(session) || session.pendingFindings > 0,
-    );
-  });
-  const toggle = (): void => {
-    const next = !open;
-    setOpen(next);
-    try {
-      localStorage.setItem(storageKey, next ? 'open' : 'closed');
-    } catch {
-      /* mode privé / quota */
-    }
-  };
-  const attention = group.sessions.filter((session) => isAwaiting(session) || session.pendingFindings > 0).length;
-  const pendingFindings = group.sessions.reduce((total, session) => total + session.pendingFindings, 0);
+  const [open, setOpen] = useStoredFlag(
+    storageKey,
+    () =>
+      group.sessions.some(
+        (session) => session.status !== 'exited' || isAwaiting(session) || session.pendingFindings > 0,
+      ),
+    ['open', 'closed'],
+  );
+  const toggle = (): void => setOpen(!open);
+  const { total: attention, pendingFindings } = attentionCounts(group.sessions);
   const nextReview = group.sessions.find((session) => session.pendingFindings > 0);
   const running = group.sessions.filter(
     (session) => session.status === 'starting' || session.status === 'running',
@@ -94,9 +83,7 @@ function EpicSessions({ group }: { group: Extract<SessionGroup, { kind: 'epic' }
               <span>{group.epic.title}</span>
             </span>
             <span className="session-epic-summary">
-              <span>
-                {group.sessions.length} session{group.sessions.length > 1 ? 's' : ''}
-              </span>
+              <span>{plural(group.sessions.length, 'session')}</span>
               {running > 0 ? <span className="pill status running">{running} en cours</span> : null}
               {attention > 0 ? <span className="pill status waiting">{attention} à traiter</span> : null}
             </span>

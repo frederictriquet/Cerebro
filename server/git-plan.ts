@@ -1,5 +1,5 @@
 import { canonicalWorktreePath, type WorktreeGate } from './worktree-gate.ts';
-import { spawn } from 'node:child_process';
+import { GitOutputLimitError } from './git-process.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   lstat,
@@ -16,32 +16,14 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { GitPushes } from './git-push.ts';
+import { git as runGit, GitError, repositoryRoot, splitZ, type GitOptions } from './git.ts';
+import type { CommitResult, GitCandidate, GitHunk, GitSnapshot } from '../shared/git.ts';
+import { errorMessage } from './util.ts';
+import { workspaceManifest } from './workspace-files.ts';
 
 const LIMIT = 4 * 1024 * 1024;
 const EMPTY = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const hash = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
-export interface GitHunk {
-  id: string;
-  patch: string;
-}
-export interface GitCandidate {
-  path: string;
-  diff: string;
-  hunks: GitHunk[];
-  warnings: string[];
-  blocked: boolean;
-}
-export interface GitSnapshot {
-  root: string;
-  id: string;
-  head: string | null;
-  branch: string | null;
-  fingerprint: string;
-  files: GitCandidate[];
-  stagedDiff: string;
-  log: string;
-  createdAt: number;
-}
 export interface CommitSelection {
   path: string;
   all?: boolean;
@@ -57,53 +39,23 @@ export interface CommitPlan {
   acknowledged: string[];
   push: boolean;
 }
-export interface CommitResult {
-  commits: { hash: string; title: string }[];
-  exclusions: string[];
-  error: string | null;
-  pushId: string | null;
-  operationId?: string;
-}
 interface Saved {
   path: string;
   snapshot: GitSnapshot;
   work: string;
+  manifest: Record<string, string>;
   index: string;
   branch: string | null;
   used: boolean;
 }
 
-async function git(path: string, args: string[], index?: string, input?: string | Buffer): Promise<string> {
-  return new Promise((accept, reject) => {
-    const child = spawn('git', ['-C', path, ...args], {
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...(index ? { GIT_INDEX_FILE: index } : {}) },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    let exceeded = false;
-    child.stdout.on('data', (data: Buffer) => {
-      stdout += data;
-      if (Buffer.byteLength(stdout) > LIMIT) {
-        exceeded = true;
-        child.kill();
-      }
-    });
-    child.stderr.on('data', (data: Buffer) => {
-      stderr = (stderr + data).slice(-LIMIT);
-    });
-    child.on('error', reject);
-    child.on('close', (code) =>
-      (code === 0 || (code === 1 && args.includes('--no-index'))) && !exceeded
-        ? accept(stdout)
-        : reject(
-            new Error(exceeded ? 'Contexte Git trop volumineux (4 Mio).' : stderr || `git ${args[0]} : code ${code}`),
-          ),
-    );
-    child.stdin.on('error', () => {});
-    child.stdin.end(input);
+/** `diff --no-index` exits with 1 when the files differ: that is its output, not a failure. */
+const git = (path: string, args: string[], options: GitOptions = {}): Promise<string> =>
+  runGit(path, args, { maxBuffer: LIMIT, ...options }).catch((cause) => {
+    if (cause instanceof GitOutputLimitError) throw new Error('Contexte Git trop volumineux (4 Mio).');
+    if (cause instanceof GitError && cause.code === 1 && args.includes('--no-index')) return cause.stdout;
+    throw cause;
   });
-}
 async function branch(path: string): Promise<string | null> {
   return (await git(path, ['symbolic-ref', '--quiet', 'HEAD']).catch(() => '')).trim() || null;
 }
@@ -113,6 +65,53 @@ async function head(path: string): Promise<string | null> {
 async function indexPath(path: string): Promise<string> {
   return resolve(path, (await git(path, ['rev-parse', '--git-path', 'index'])).trim());
 }
+// A bisect is absent: it only moves HEAD, and committing there reads none of its state.
+const OPERATIONS: [string, string][] = [
+  ['MERGE_HEAD', 'une fusion (merge)'],
+  ['CHERRY_PICK_HEAD', 'un cherry-pick'],
+  ['REVERT_HEAD', 'un revert'],
+  ['REBASE_HEAD', 'un rebase'],
+  ['rebase-merge', 'un rebase'],
+  ['rebase-apply', 'un rebase ou git am'],
+];
+/** Refusal to commit while a Git operation is in progress: `git commit` would read its state (MERGE_HEAD becomes a second parent). */
+export class GitOperationInProgress extends Error {
+  readonly operation?: string;
+  constructor(message: string, operation?: string) {
+    super(message);
+    this.operation = operation;
+  }
+}
+/** Throws while a merge, cherry-pick, revert or rebase is in progress in this worktree; only commit creation needs it, never read-only views. */
+export async function assertNoGitOperation(path: string): Promise<void> {
+  const locations = (await git(path, ['rev-parse', ...OPERATIONS.flatMap(([name]) => ['--git-path', name])])).split(
+    '\n',
+  );
+  for (const [position, [, label]] of OPERATIONS.entries()) {
+    const location = resolve(path, locations[position]);
+    if (
+      await lstat(location).then(
+        () => true,
+        (cause) => {
+          if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return false;
+          throw cause;
+        },
+      )
+    )
+      throw new GitOperationInProgress(
+        `Opération Git en cours (${label}) : terminez-la ou annulez-la avant de créer un commit.`,
+        label,
+      );
+  }
+}
+/** Takes the real index lock with Git's own protocol; a lock held elsewhere is a retryable refusal, not a failure. */
+async function lockIndex(index: string): Promise<FileHandle> {
+  return open(`${index}.lock`, 'wx').catch((cause: NodeJS.ErrnoException) => {
+    throw cause.code === 'EEXIST'
+      ? new GitOperationInProgress('Une autre opération Git est en cours (index.lock) : réessayez.', 'index.lock')
+      : cause;
+  });
+}
 async function indexHash(path: string): Promise<string> {
   return hash(
     await readFile(await indexPath(path)).catch((cause) => {
@@ -121,38 +120,21 @@ async function indexHash(path: string): Promise<string> {
     }),
   );
 }
+/** Reads and hashes every Git-visible file: the costliest check, kept to the points where the worktree may have moved. */
+const manifestHash = (manifest: Record<string, string>): string => hash(JSON.stringify(manifest));
 async function workHash(path: string): Promise<string> {
-  const files = [
-    ...new Set(
-      (await git(path, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])).split('\0').filter(Boolean),
-    ),
-  ].sort();
-  const digest = createHash('sha256');
-  for (const file of files) {
-    digest.update(file + '\0');
-    const full = join(path, file);
-    try {
-      const stat = await lstat(full);
-      digest.update(String(stat.mode));
-      if (stat.isSymbolicLink()) digest.update(await readlink(full));
-      else if (stat.isFile()) digest.update(await readFile(full));
-      else throw new Error(`Type de fichier non pris en charge : ${file}`);
-    } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
-      digest.update('deleted');
-    }
-  }
-  return digest.digest('hex');
+  return manifestHash(await workspaceManifest(path));
 }
 function hunks(diff: string): GitHunk[] {
   const start = diff.indexOf('\n@@ ');
   if (start < 0 || /^(new file mode|deleted file mode|old mode|new mode|GIT binary patch)/m.test(diff)) return [];
   const prefix = diff.slice(0, start + 1);
+  // The position keeps ids unique even if two hunks of a file had identical text.
   return diff
     .slice(start + 1)
     .split(/(?=^@@ )/m)
     .filter(Boolean)
-    .map((hunk) => ({ id: hash(prefix + hunk), patch: prefix + hunk }));
+    .map((hunk, position) => ({ id: hash(`${position}\0${prefix}${hunk}`), patch: prefix + hunk }));
 }
 function scan(file: string, diff: string): { warnings: string[]; blocked: boolean } {
   const warnings: string[] = [];
@@ -261,8 +243,8 @@ async function mergedIndex(
   index: string,
   dir: string,
 ): Promise<void> {
-  await git(path, ['read-tree', '-m', base, selected, staged], index);
-  const unmerged = (await git(path, ['ls-files', '-u', '-z'], index)).split('\0').filter(Boolean);
+  await git(path, ['read-tree', '-m', base, selected, staged], { index });
+  const unmerged = splitZ(await git(path, ['ls-files', '-u', '-z'], { index }));
   const groups = new Map<string, { mode: string; oid: string; stage: string }[]>();
   for (const record of unmerged) {
     const separator = record.indexOf('\t');
@@ -274,6 +256,23 @@ async function mergedIndex(
     groups.set(file, rows);
   }
   for (const [file, entries] of groups) {
+    // Added on both sides: a new file has no hunks, so the commit takes it whole and,
+    // like `git commit -- <file>`, its version replaces the staged one.
+    const selectedEntry = entries.find((e) => e.stage === '2');
+    if (
+      entries.length === 2 &&
+      selectedEntry &&
+      entries.some((e) => e.stage === '3') &&
+      entries.every((e) => e.mode === '100644' || e.mode === '100755')
+    ) {
+      await git(path, ['update-index', '--add', '--cacheinfo', selectedEntry.mode, selectedEntry.oid, file], { index });
+      continue;
+    }
+    // Deleted on both sides (the other half of a staged rename).
+    if (entries.length === 1 && entries[0].stage === '1') {
+      await git(path, ['update-index', '--force-remove', '--', file], { index });
+      continue;
+    }
     if (
       entries.length !== 3 ||
       entries.some((e) => e.mode !== '100644' && e.mode !== '100755') ||
@@ -294,8 +293,8 @@ async function mergedIndex(
     const merged = await git(path, ['merge-file', '-p', ...locations]).catch(() => {
       throw new Error(`Conflit avec les hunks déjà indexés : ${file}`);
     });
-    const oid = (await git(path, ['hash-object', '-w', '--stdin'], undefined, merged)).trim();
-    await git(path, ['update-index', '--add', '--cacheinfo', entries[0].mode, oid, file], index);
+    const oid = (await git(path, ['hash-object', '-w', '--stdin'], { input: merged })).trim();
+    await git(path, ['update-index', '--add', '--cacheinfo', entries[0].mode, oid, file], { index });
   }
 }
 
@@ -341,8 +340,8 @@ async function stagedTree(path: string, index: string, dir: string): Promise<str
     throw cause;
   });
   if (bytes) await writeFile(original, bytes);
-  else await git(path, ['read-tree', '--empty'], original);
-  return (await git(path, ['write-tree'], original)).trim();
+  else await git(path, ['read-tree', '--empty'], { index: original });
+  return (await git(path, ['write-tree'], { index: original })).trim();
 }
 /** Patch of a selection: the whole file, or its selected hunks in their original order. */
 function selectionPatch(plan: CommitPlan, snapshot: GitSnapshot, selection: CommitSelection): string {
@@ -377,22 +376,20 @@ async function prepareCommits(
   const prepared: PreparedCommit[] = [];
   for (const [n, step] of plan.commits.entries()) {
     const temporary = join(dir, `commit-${n}`);
-    await git(path, ['read-tree', base], temporary);
+    await git(path, ['read-tree', base], { index: temporary });
     for (const selection of step.selection)
       // --3way rebases later hunks on the commits already prepared from this snapshot.
-      await git(
-        path,
-        ['apply', '--cached', '--3way', '--whitespace=nowarn'],
-        temporary,
-        selectionPatch(plan, snapshot, selection),
-      );
-    const tree = (await git(path, ['write-tree'], temporary)).trim();
+      await git(path, ['apply', '--cached', '--3way', '--whitespace=nowarn'], {
+        index: temporary,
+        input: selectionPatch(plan, snapshot, selection),
+      });
+    const tree = (await git(path, ['write-tree'], { index: temporary })).trim();
     const baseTree = (await git(path, ['rev-parse', `${base}^{tree}`])).trim();
     if (tree === baseTree) throw new Error('Commit vide dans le plan.');
     const merged = join(dir, `merged-${n}`);
     await mergedIndex(path, base, tree, staged, merged, dir);
     prepared.push({ tree, index: temporary, merged, message: step.message });
-    staged = (await git(path, ['write-tree'], merged)).trim();
+    staged = (await git(path, ['write-tree'], { index: merged })).trim();
     base = tree;
   }
   return prepared;
@@ -407,7 +404,8 @@ async function commitStep(
   expectedHead: string | null,
   result: CommitResult,
 ): Promise<string> {
-  await git(path, ['commit', '--file=-'], step.index, step.message);
+  await assertNoGitOperation(path);
+  await git(path, ['commit', '--file=-'], { index: step.index, input: step.message });
   const oid = (await head(path))!;
   const actualTree = (await git(path, ['rev-parse', 'HEAD^{tree}'])).trim();
   const parents = (await git(path, ['rev-list', '--parents', '-n', '1', oid])).trim().split(' ').slice(1);
@@ -459,9 +457,9 @@ export class GitPlanner {
 
   /** `shared` describes the workspace whose dependency links (seen by Git as untracked files) stay out of the plan. */
   async prepareCommit(path: string, shared?: SharedDependencies | null): Promise<GitSnapshot> {
-    path = (await git(path, ['rev-parse', '--show-toplevel'])).trim();
+    path = await repositoryRoot(path);
     const links = await sharedDependencyLinks(shared, path);
-    await git(path, ['mktree'], undefined, '');
+    await git(path, ['mktree'], { input: '' });
     const before = {
       branch: await branch(path),
       head: await head(path),
@@ -476,21 +474,17 @@ export class GitPlanner {
       throw cause;
     });
     if (originalIndex) await writeFile(temporaryIndex, originalIndex);
-    else await git(path, ['read-tree', '--empty'], temporaryIndex);
+    else await git(path, ['read-tree', '--empty'], { index: temporaryIndex });
     // A freshly written copy otherwise makes racily-clean entries look older than
     // the index: Git can miss same-size changes with identical cached timestamps.
     // An old, nonzero timestamp (Git ignores zero) forces content checks without
     // touching the real index.
     await utimes(temporaryIndex, 1, 1);
     try {
-      const untracked = new Set(
-        (await git(path, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean),
+      const untracked = new Set(splitZ(await git(path, ['ls-files', '--others', '--exclude-standard', '-z'])));
+      const changed = splitZ(
+        await git(path, ['diff', '--name-only', '--no-renames', '-z', before.head ?? EMPTY], { index: temporaryIndex }),
       );
-      const changed = (
-        await git(path, ['diff', '--name-only', '--no-renames', '-z', before.head ?? EMPTY], temporaryIndex)
-      )
-        .split('\0')
-        .filter(Boolean);
       const paths = [...new Set([...changed, ...untracked])]
         .filter((file) => !links.some((link) => file === link || file.startsWith(`${link}/`)))
         .sort();
@@ -503,26 +497,31 @@ export class GitPlanner {
           ? await git(
               path,
               ['diff', '--no-index', '--binary', '--no-ext-diff', '--no-textconv', '--', '/dev/null', file],
-              temporaryIndex,
+              { index: temporaryIndex },
             )
           : await git(
               path,
               ['diff', '--binary', '--no-ext-diff', '--no-textconv', '--no-renames', before.head ?? EMPTY, '--', file],
-              temporaryIndex,
+              { index: temporaryIndex },
             );
         bytes += Buffer.byteLength(diff);
         if (bytes > LIMIT) throw new Error('Plan trop volumineux (4 Mio).');
         files.push({ path: file, diff, hunks: hunks(diff), ...scan(file, diff) });
       }
+      const after = {
+        branch: await branch(path),
+        head: await head(path),
+        manifest: await workspaceManifest(path),
+        index: await indexHash(path),
+      };
+      const work = manifestHash(after.manifest);
       if (
-        before.branch !== (await branch(path)) ||
-        before.head !== (await head(path)) ||
-        before.work !== (await workHash(path)) ||
-        before.index !== (await indexHash(path))
+        before.branch !== after.branch ||
+        before.head !== after.head ||
+        before.work !== work ||
+        before.index !== after.index
       )
-        throw new Error(
-          `État Git modifié pendant la collecte : recommencez. HEAD=${before.head !== (await head(path))} work=${before.work !== (await workHash(path))} index=${before.index !== (await indexHash(path))}`,
-        );
+        throw new Error('Le dépôt a changé pendant la préparation : relancez.');
       const snapshot: GitSnapshot = {
         root: path,
         id: randomUUID(),
@@ -533,7 +532,7 @@ export class GitPlanner {
         stagedDiff: await git(
           path,
           ['diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv', before.head ?? EMPTY],
-          temporaryIndex,
+          { index: temporaryIndex },
         ),
         log: before.head ? await git(path, ['log', '-15', '--format=%h %s']) : '',
         createdAt: Date.now(),
@@ -546,6 +545,7 @@ export class GitPlanner {
         path,
         snapshot,
         work: before.work,
+        manifest: after.manifest,
         index: before.index,
         branch: before.branch,
         used: false,
@@ -559,7 +559,7 @@ export class GitPlanner {
   async executeCommitPlan(path: string, raw: unknown): Promise<CommitResult> {
     const plan = parseCommitPlan(raw);
     const saved = this.snapshots.get(plan.snapshotId);
-    const top = (await git(path, ['rev-parse', '--show-toplevel'])).trim();
+    const top = await repositoryRoot(path);
     if (!saved || saved.path !== top || saved.used)
       throw new Error('Plan absent, expiré ou déjà exécuté : préparez une nouvelle sélection.');
     path = top;
@@ -571,17 +571,22 @@ export class GitPlanner {
     const dir = await mkdtemp(join(tmpdir(), 'cerebro-execute-'));
     const result: CommitResult = { commits: [], exclusions: [], error: null, pushId: null };
     try {
-      lock.handle = await open(`${index}.lock`, 'wx');
+      lock.handle = await lockIndex(index);
       this.gate.assertAvailable(path);
       if (!(await matchesSnapshot(saved, path))) throw new Error('État Git obsolète : préparez un nouveau plan.');
       result.exclusions = exclusions(plan, saved.snapshot);
       const prepared = await prepareCommits(path, plan, saved.snapshot, index, dir);
       // Everything, including index preservation, is checked before the first mutation.
       if (!(await matchesSnapshot(saved, path))) throw new Error('État Git obsolète avant exécution.');
+      await assertNoGitOperation(path);
       saved.used = true;
       await this.commitPrepared(path, saved, prepared, lock, result);
     } catch (cause) {
-      result.error = cause instanceof Error ? cause.message : String(cause);
+      result.error = errorMessage(cause);
+      // A refusal is only retryable while nothing was committed; afterwards the plan is half applied.
+      result.blocked = cause instanceof GitOperationInProgress && !result.commits.length;
+      if (cause instanceof GitOperationInProgress && result.commits.length)
+        result.error = `Plan appliqué partiellement : ${result.commits.length} commit(s) sur ${plan.commits.length} créé(s), puis arrêt car une autre opération Git est en cours (${cause.operation ?? 'inconnue'}). Vérifiez l’état du dépôt avant de commiter la suite.`;
     } finally {
       if (lock.handle) {
         await lock.handle.close();
@@ -596,7 +601,7 @@ export class GitPlanner {
 
   /**
    * Commits the prepared steps one at a time while holding the real index lock. Before each commit, the branch,
-   * the worktree and the index must be exactly as the previous step left them.
+   * HEAD and the index must be exactly as the previous step left them; the worktree is checked after each commit.
    */
   private async commitPrepared(
     path: string,
@@ -609,10 +614,10 @@ export class GitPlanner {
     let expectedIndex = saved.index;
     for (const step of prepared) {
       this.gate.assertAvailable(path);
+      // The worktree was hashed just before: by the final check of the plan, then after each commit below.
       if (
         saved.branch !== (await branch(path)) ||
         (await head(path)) !== expectedHead ||
-        saved.work !== (await workHash(path)) ||
         expectedIndex !== (await indexHash(path))
       )
         throw new Error('Modifications concurrentes : exécution interrompue.');
@@ -624,7 +629,7 @@ export class GitPlanner {
       await rename(`${lock.index}.lock`, lock.index);
       await lock.handle!.close();
       lock.handle = null;
-      lock.handle = await open(`${lock.index}.lock`, 'wx');
+      lock.handle = await lockIndex(lock.index);
       this.gate.assertAvailable(path);
       if (expectedIndex !== (await indexHash(path)))
         throw new Error('L’index a changé entre deux commits : exécution interrompue.');
@@ -634,9 +639,13 @@ export class GitPlanner {
     }
   }
 
+  /** Signatures of the files, read when the snapshot was taken (`workspaceManifest` format), while it is retained. */
+  snapshotManifest(id: string): Record<string, string> | null {
+    return this.snapshots.get(id)?.manifest ?? null;
+  }
   async verifySnapshot(path: string, id: string): Promise<GitSnapshot> {
     const saved = this.snapshots.get(id);
-    const top = (await git(path, ['rev-parse', '--show-toplevel'])).trim();
+    const top = await repositoryRoot(path);
     if (!saved || saved.path !== top) throw new Error('Sélection absente ou expirée.');
     if (!(await matchesSnapshot(saved, top))) throw new Error('Sélection obsolète : HEAD, index ou worktree a changé.');
     return saved.snapshot;

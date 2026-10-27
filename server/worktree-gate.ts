@@ -1,26 +1,38 @@
-import { resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { realpathSync } from 'node:fs';
 
+/**
+ * Physical identity of a path. A copy already deleted keeps the identity of its nearest remaining ancestor, so a
+ * data directory reached through a link still matches the realpath recorded while the copy existed.
+ */
 export function canonicalWorktreePath(path: string): string {
+  const absolute = resolve(path);
   try {
-    return realpathSync(path);
+    return realpathSync(absolute);
   } catch {
-    return resolve(path);
+    const parent = dirname(absolute);
+    return parent === absolute ? absolute : join(canonicalWorktreePath(parent), basename(absolute));
   }
+}
+
+/** Whether `path` is `root` or lies below it. Both are compared as given: canonicalize them first. */
+export function pathWithin(root: string, path: string): boolean {
+  const part = relative(root, path);
+  return part === '' || (part !== '..' && !part.startsWith(`..${sep}`) && !isAbsolute(part));
 }
 
 interface Lease {
   paths: string[];
   queued: (() => void)[];
 }
-const overlaps = (left: string, right: string): boolean =>
-  left === right || left.startsWith(right + sep) || right.startsWith(left + sep);
+const overlaps = (left: string, right: string): boolean => pathWithin(left, right) || pathWithin(right, left);
 
 /** Leases held on workspaces by Git operations; one instance is shared by every service of a server. */
 export class WorktreeGate {
   private readonly leases = new Set<Lease>();
 
   private leaseFor(path: string): Lease | undefined {
+    if (!this.leases.size) return undefined;
     const absolute = canonicalWorktreePath(path);
     return [...this.leases].find((lease) => lease.paths.some((root) => overlaps(root, absolute)));
   }
@@ -41,7 +53,14 @@ export class WorktreeGate {
     this.leases.add(lease);
     return () => {
       if (!this.leases.delete(lease)) return;
-      for (const send of lease.queued) send();
+      // Called from the callers' finally: a failing delivery must neither skip the next ones nor mask their error.
+      for (const send of lease.queued) {
+        try {
+          send();
+        } catch (cause) {
+          console.error('[worktrees] Saisie différée non transmise :', cause instanceof Error ? cause.message : cause);
+        }
+      }
     };
   }
 }

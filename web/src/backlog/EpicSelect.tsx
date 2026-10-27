@@ -1,12 +1,14 @@
-import type { Epic } from '../types.ts';
+import type { Epic } from '../../../shared/types.ts';
 
 export function EpicSelect({
   epics,
   value,
+  maxTitle = 60,
   onChange,
 }: {
   epics: Epic[];
   value: string;
+  maxTitle?: number;
   onChange: (id: string) => void;
 }) {
   if (epics.length === 0) return null;
@@ -15,7 +17,7 @@ export function EpicSelect({
       <option value="">Sans epic</option>
       {epics.map((epic) => (
         <option key={epic.id} value={epic.id}>
-          {epic.title.slice(0, 60)}
+          {epic.title.slice(0, maxTitle)}
         </option>
       ))}
     </select>

@@ -1,28 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { CerebroDatabase, Task } from './db.ts';
-export interface Finding {
-  id: string;
-  title: string;
-  severity: 'critical' | 'high' | 'medium' | 'low';
-  file: string;
-  line: number;
-  problem: string;
-  scenario: string;
-  expectedFix: string;
-  dependsOn: string[];
-  taskDependencies: string[];
-}
-export interface FindingReport {
-  title: string;
-  findings: Finding[];
-}
-export interface SavedReport extends FindingReport {
-  id: string;
-  sessionId: string;
-  createdAt: number;
-  epicId: string | null;
-  imported: Record<string, string>;
-}
+import type { CerebroDatabase } from './db.ts';
+import type { Task } from '../shared/types.ts';
+import type { FindingReport, SavedReport } from '../shared/backlog.ts';
 export const FINDING_INSTRUCTIONS =
   'Si des findings sont établis, publie aussi un JSON structuré via `cerebro-findings` sur son entrée standard : {title,findings:[{id,title,severity:"critical|high|medium|low",file,line,problem,scenario,expectedFix,dependsOn:[],taskDependencies:[]}]}. dependsOn référence des ids de findings ; taskDependencies des ids existants du backlog. Chaque finding doit être autonome et étayé. Cerebro permettra leur sélection et leur enregistrement direct dans le backlog. Pour un texte libre ou incomplet, conserve le flux habituel de discussion/reformulation. Ne crée pas de tâches sans demande explicite.';
 function string(v: unknown, max: number): string {
@@ -75,8 +54,10 @@ export function saveReport(db: CerebroDatabase, sessionId: string, raw: unknown)
   const report = parseReport(raw);
   const digest = createHash('sha256').update(JSON.stringify(report)).digest('hex');
   db.connection
-    .prepare('INSERT OR IGNORE INTO review_reports (id,session_id,digest,data,created_at) VALUES (?,?,?,?,?)')
-    .run(randomUUID(), sessionId, digest, JSON.stringify(report), Date.now());
+    .prepare(
+      'INSERT OR IGNORE INTO review_reports (id,session_id,digest,data,created_at,finding_count) VALUES (?,?,?,?,?,?)',
+    )
+    .run(randomUUID(), sessionId, digest, JSON.stringify(report), Date.now(), report.findings.length);
   return listReports(db, sessionId).find(
     (r) =>
       createHash('sha256')
@@ -140,8 +121,7 @@ export function importFindings(
     if (f.taskDependencies.some((id) => db.getTask(id)?.projectId !== session.projectId))
       throw new Error('Dépendance externe introuvable dans le projet.');
   }
-  db.connection.exec('BEGIN IMMEDIATE');
-  try {
+  return db.transaction(() => {
     // A report keeps its first destination across partial imports and retries. Without an
     // explicit choice, findings from an epic session extend that same epic.
     const targetId = report.epicId ?? ((epicId === undefined ? session.epic?.id : epicId) as string | null | undefined);
@@ -185,10 +165,6 @@ export function importFindings(
         db.connection
           .prepare('INSERT OR IGNORE INTO task_dependencies (task_id,depends_on_id) VALUES (?,?)')
           .run(imported[f.id], dep);
-    db.connection.exec('COMMIT');
     return { epic, tasks: created.map((t) => db.getTask(t.id)!), imported };
-  } catch (cause) {
-    db.connection.exec('ROLLBACK');
-    throw cause;
-  }
+  }, 'IMMEDIATE');
 }

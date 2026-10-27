@@ -1,9 +1,9 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { CommitSettings } from './db.ts';
-import type { GitCandidate } from './git-plan.ts';
 import { runHeadless, type JsonSchema } from './headless.ts';
+import type { CommitSettings } from '../shared/types.ts';
+import type { GitCandidate } from '../shared/git.ts';
 
 export interface CommitProposal {
   commits: { message: string; paths: string[] }[];
@@ -60,8 +60,8 @@ export function parseCommitProposal(raw: unknown, context: ProposalContext): Com
   return { commits: proposal.commits.map((step) => ({ message: step.message.trim(), paths: [...step.paths] })) };
 }
 
-/** The only inference is the wording/grouping. Git collection and mutation stay in the server. */
-export async function proposeCommits(context: ProposalContext, signal: AbortSignal): Promise<CommitProposal> {
+/** The only inference is the wording/grouping. Git collection and mutation stay in the server. Unchecked: see `parseCommitProposal`. */
+export async function draftCommits(context: ProposalContext, signal: AbortSignal): Promise<unknown> {
   const directory = await mkdtemp(join(tmpdir(), 'cerebro-message-'));
   try {
     const prompt = [
@@ -75,7 +75,7 @@ export async function proposeCommits(context: ProposalContext, signal: AbortSign
       JSON.stringify({ log: context.log, files: context.files.map(({ path, diff }) => ({ path, diff })) }),
     ].join('\n\n');
     const { agent, model, effort } = context.settings;
-    const result = await runHeadless({
+    return await runHeadless({
       agent,
       model,
       effort,
@@ -91,8 +91,11 @@ export async function proposeCommits(context: ProposalContext, signal: AbortSign
         failed: 'n’a pas préparé le message',
       },
     });
-    return parseCommitProposal(result, context);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+export async function proposeCommits(context: ProposalContext, signal: AbortSignal): Promise<CommitProposal> {
+  return parseCommitProposal(await draftCommits(context, signal), context);
 }

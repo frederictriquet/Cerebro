@@ -1,15 +1,13 @@
-import type { WorktreeView } from '../../../server/worktrees.ts';
+import type { StartingContentDiscard, WorktreeView } from '../../../shared/worktrees.ts';
+import { formatDateTime, plural } from '../format.ts';
 import { href } from '../route.ts';
 import { IntegrateStep } from './IntegrateStep.tsx';
 import {
   branchName,
   copyTitle,
   createdLabel,
-  dateLabel,
-  fileCount,
   journey,
   startingContentGroups,
-  type DiscardResult,
   type Resolver,
   type WorktreeActions,
 } from './model.ts';
@@ -32,7 +30,7 @@ export function WorktreeRow({
   /** Another Git action of the panel is running. */
   locked: boolean;
   showDetails: boolean;
-  result: DiscardResult | undefined;
+  result: StartingContentDiscard | undefined;
   resolver: Resolver | undefined;
   actions: WorktreeActions;
 }) {
@@ -125,14 +123,10 @@ export function WorktreeRow({
         <div className="worktree-counts">
           {view.dirty && !view.mergeInProgress ? (
             <span title="Fichiers modifiés et non commités dans la copie, contenu de départ compris.">
-              {fileCount(view.dirty)} non commité{view.dirty === 1 ? '' : 's'}
+              {plural(view.dirty, 'fichier non commité', 'fichiers non commités')}
             </span>
           ) : null}
-          {view.ahead ? (
-            <span>
-              {view.ahead} commit{view.ahead === 1 ? '' : 's'} à intégrer
-            </span>
-          ) : null}
+          {view.ahead ? <span>{plural(view.ahead, 'commit')} à intégrer</span> : null}
         </div>
         <div className="worktree-actions">
           {primary}
@@ -232,7 +226,7 @@ export function WorktreeRow({
           {view.autoCleanup && view.autoCleanup.status !== 'removed' ? (
             <p>
               Nettoyage automatique {view.autoCleanup.status === 'failed' ? 'échoué' : 'non effectué'} le{' '}
-              {dateLabel(view.autoCleanup.at)} : {view.autoCleanup.reasons.join(' ')}
+              {formatDateTime(view.autoCleanup.at)} : {view.autoCleanup.reasons.join(' ')}
             </p>
           ) : null}
           {view.ignored ? (

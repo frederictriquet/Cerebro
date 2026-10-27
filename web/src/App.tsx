@@ -1,6 +1,7 @@
-import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
-import { dismissPeerNotice, getPeerNotices, subscribeUnauthorized, type PeerNotice } from './api.ts';
+import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react';
+import { dismissPeerNotice, getPeerNotices, subscribeUnauthorized } from './api.ts';
 import { CouncilRunView } from './CouncilRunView.tsx';
+import { ErrorBoundary } from './ErrorBoundary.tsx';
 import { HomeView } from './HomeView.tsx';
 import { ProjectTabs } from './ProjectTabs.tsx';
 import { ProjectView } from './ProjectView.tsx';
@@ -10,6 +11,8 @@ import { Sidebar } from './Sidebar.tsx';
 import { SidebarRail, useSidebarLayout } from './SidebarRail.tsx';
 import { StoreProvider, useStore } from './store.tsx';
 import { useMachine, useRoute } from './route.ts';
+import { NowProvider, usePolling } from './polling.tsx';
+import type { PeerNotice } from '../../shared/machine.ts';
 
 function TokenScreen() {
   const [error, setError] = useState<string | null>(null);
@@ -63,24 +66,15 @@ function PeerNotices() {
   const { peersVersion } = useStore();
   const [notices, setNotices] = useState<PeerNotice[]>([]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = (): void => {
-      void getPeerNotices()
-        .then((list) => {
-          if (!cancelled) setNotices(list);
-        })
-        .catch(() => {
-          /* machine sans cette fonctionnalité : rien à afficher */
-        });
-    };
-    load();
-    const timer = window.setInterval(load, 15_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [peersVersion]);
+  // peersVersion relance le cycle : un changement de pairs se voit aussitôt.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- dépendance voulue : un nouveau fetcher relance usePolling.
+  const load = useCallback(() => getPeerNotices(), [peersVersion]);
+  usePolling(load, 15_000, {
+    onData: setNotices,
+    onError: () => {
+      /* machine sans cette fonctionnalité : rien à afficher */
+    },
+  });
 
   if (notices.length === 0) return null;
   const dismiss = (id: string): void => {
@@ -140,7 +134,9 @@ function Shell() {
       {navOpen ? (
         <button type="button" className="nav-backdrop" aria-label="Fermer le menu" onClick={() => setNavOpen(false)} />
       ) : null}
-      <Sidebar route={route} onNavigate={() => setNavOpen(false)} />
+      <ErrorBoundary zone="Barre latérale" className="error-boundary-sidebar">
+        <Sidebar route={route} onNavigate={() => setNavOpen(false)} />
+      </ErrorBoundary>
       <SidebarRail
         width={sidebar.width}
         hidden={sidebar.hidden}
@@ -148,18 +144,22 @@ function Shell() {
         onToggle={() => sidebar.setHidden(!sidebar.hidden)}
       />
       <main className="main">
-        <MachineCompatNotice />
-        <PeerNotices />
-        <ProjectTabs route={route} />
-        {route.kind === 'project' ? (
-          <ProjectView projectId={route.projectId} />
-        ) : route.kind === 'session' ? (
-          <SessionView sessionId={route.sessionId} />
-        ) : route.kind === 'council' ? (
-          <CouncilRunView key={route.councilId} councilId={route.councilId} />
-        ) : (
-          <HomeView />
-        )}
+        <ErrorBoundary zone="Bandeaux">
+          <MachineCompatNotice />
+          <PeerNotices />
+          <ProjectTabs route={route} />
+        </ErrorBoundary>
+        <ErrorBoundary zone="Vue principale" resetKey={routeKey}>
+          {route.kind === 'project' ? (
+            <ProjectView projectId={route.projectId} />
+          ) : route.kind === 'session' ? (
+            <SessionView sessionId={route.sessionId} />
+          ) : route.kind === 'council' ? (
+            <CouncilRunView key={route.councilId} councilId={route.councilId} />
+          ) : (
+            <HomeView />
+          )}
+        </ErrorBoundary>
       </main>
     </div>
   );
@@ -174,10 +174,15 @@ export function App() {
   if (locked) return <TokenScreen />;
 
   return (
-    <MachineWatchProvider>
-      <StoreProvider key={machine ?? 'local'}>
-        <Shell />
-      </StoreProvider>
-    </MachineWatchProvider>
+    <NowProvider>
+      <MachineWatchProvider>
+        {/* Clé par machine : changer de machine démonte tout l'arbre, donc les requêtes en vol d'un composant
+            ne peuvent plus mettre à jour l'interface (React ignore les setState après démontage). Inutile de
+            comparer apiBase() à celle du montage ; seuls les caches de module doivent inclure la machine dans leur clé. */}
+        <StoreProvider key={machine ?? 'local'}>
+          <Shell />
+        </StoreProvider>
+      </MachineWatchProvider>
+    </NowProvider>
   );
 }

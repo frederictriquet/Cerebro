@@ -9,7 +9,8 @@ const root = mkdtempSync(join(tmpdir(), 'cerebro-epic-review-'));
 process.env.HOME = root;
 process.env.CEREBRO_DATA_DIR = join(root, 'data');
 process.env.CODEX_HOME = join(root, 'codex');
-const { CerebroDatabase, DEFAULT_SESSION_DEFAULTS } = await import('../server/db.ts');
+const { CerebroDatabase } = await import('../server/db.ts');
+const { DEFAULT_SESSION_DEFAULTS } = await import('../shared/types.ts');
 const { CommandExecutor } = await import('../server/commands.ts');
 const { WorktreeGate } = await import('../server/worktree-gate.ts');
 const { EpicRunner } = await import('../server/epic-runner.ts');
@@ -144,7 +145,7 @@ test('the runner completes the review step prompt with the epic scope, other ste
       const review = f.db.createTask(f.project.id, reviewTaskText('Livraison'), null, epic.id);
       f.db.updateTask(review.id, { dependsOn: [work.id] });
       writeFileSync(join(f.repo, 'feature.txt'), 'x\n');
-      runner.start(epic.id, DEFAULT_SESSION_DEFAULTS);
+      await runner.start(epic.id, DEFAULT_SESSION_DEFAULTS);
       const until = async (predicate) => {
         for (let i = 0; i < 1000; i++) {
           runner.poke();
@@ -186,11 +187,11 @@ async function withRunner(f, run) {
   const workspaces = new EpicWorkspaces(f.db, gate);
   const launches = [];
   const sessions = {
-    async create(project, options, validate, contextPath, title, settings) {
+    async create(project, options, { validate, title, epicId } = {}) {
       const session = f.db.createSession(
         { id: randomUUID(), projectId: project.id, ...options, title, status: 'idle', agentSessionId: 'fake' },
         'token',
-        settings?.epicId,
+        epicId,
       );
       const context = workspaces.current(epic.id);
       const workspace = context
@@ -242,7 +243,7 @@ test('findings after a completed epic run continue in its original worktree, inc
   fixture(async (f) =>
     withRunner(f, async (r) => {
       const work = f.db.createTask(f.project.id, 'Implémenter', null, r.epic.id);
-      r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
+      await r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
       await r.until(() => r.latest().status === 'waiting-validation');
       const workspace = workspaceFor(f.db, r.launches[0].id);
       writeFileSync(join(workspace.path, 'feature.txt'), 'travail de l’epic\n');
@@ -275,7 +276,7 @@ test('findings after a completed epic run continue in its original worktree, inc
       const imported = importFindings(f.db, review.id, report.id, ['a', 'b']);
       assert.equal(imported.epic.id, r.epic.id);
       await r.restart();
-      const nextRun = r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
+      const nextRun = await r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
       assert.notEqual(nextRun.id, firstRun.id);
       assert.equal(nextRun.contextRoot, workspace.path);
       assert.equal(nextRun.baseHead, firstRun.baseHead);
@@ -309,7 +310,7 @@ test('findings after a completed epic run continue in its original worktree, inc
         commandId: command.id,
         completion: 'exit-zero',
       });
-      r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
+      await r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
       await r.until(() => r.latest().status === 'succeeded');
       assert.equal(r.commands.listRuns(check.id)[0].cwd, workspace.path);
       assert.match(r.commands.listRuns(check.id)[0].output, /travail de l’epic/);
@@ -323,7 +324,7 @@ test('findings from an active review step require replanning and wait for the re
   fixture(async (f) =>
     withRunner(f, async (r) => {
       const review = f.db.createTask(f.project.id, reviewTaskText('Livraison'), null, r.epic.id);
-      r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
+      await r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
       await r.until(() => r.latest().status === 'waiting-validation');
       const sessionId = r.latest().sessionId;
       const workspace = workspaceFor(f.db, sessionId);
@@ -351,7 +352,7 @@ test('a removed or missing epic worktree refuses continuation instead of copying
   fixture(async (f) =>
     withRunner(f, async (r) => {
       const work = f.db.createTask(f.project.id, 'Implémenter', null, r.epic.id);
-      r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
+      await r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
       await r.until(() => r.latest().status === 'waiting-validation');
       const workspace = workspaceFor(f.db, r.latest().sessionId);
       f.db.updateTask(work.id, { status: 'done' });
@@ -360,12 +361,12 @@ test('a removed or missing epic worktree refuses continuation instead of copying
       f.db.connection
         .prepare('UPDATE session_workspaces SET data=? WHERE session_id=?')
         .run(JSON.stringify({ ...workspace, removedAt: Date.now() }), workspace.sessionId);
-      assert.throws(() => r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS), /worktree.*introuvable/);
+      await assert.rejects(r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS), /worktree.*introuvable/);
       f.db.connection
         .prepare('UPDATE session_workspaces SET data=? WHERE session_id=?')
         .run(JSON.stringify(workspace), workspace.sessionId);
       git(f.repo, 'worktree', 'remove', '--force', workspace.root);
-      assert.throws(() => r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS), /worktree.*introuvable/);
+      await assert.rejects(r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS), /worktree.*introuvable/);
       assert.equal(r.runner.list(r.epic.id).length, 1);
       assert.equal(r.launches.length, 1);
     }),
@@ -377,7 +378,7 @@ test('successive runs in the shared project folder preserve the original epic re
       withRunner(f, async (r) => {
         const originalHead = git(f.repo, 'rev-parse', 'HEAD');
         const work = f.db.createTask(f.project.id, 'Implémenter', null, r.epic.id);
-        r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
+        await r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
         await r.until(() => r.latest().status === 'waiting-validation');
         writeFileSync(join(f.repo, 'feature.txt'), 'x\n');
         git(f.repo, 'add', '.');
@@ -385,7 +386,7 @@ test('successive runs in the shared project folder preserve the original epic re
         f.db.updateTask(work.id, { status: 'done' });
         await r.until(() => r.latest().status === 'succeeded');
         const fix = f.db.createTask(f.project.id, 'Corriger', null, r.epic.id);
-        r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
+        await r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
         assert.equal(r.latest().contextRoot, f.repo);
         assert.equal(r.latest().baseHead, originalHead);
         await r.until(() => r.latest().status === 'waiting-validation');
@@ -402,14 +403,14 @@ test('switching the project to shared mode keeps later epic runs in their origin
   fixture(async (f) =>
     withRunner(f, async (r) => {
       const work = f.db.createTask(f.project.id, 'Implémenter', null, r.epic.id);
-      r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
+      await r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
       await r.until(() => r.latest().status === 'waiting-validation');
       const workspace = workspaceFor(f.db, r.latest().sessionId);
       f.db.updateTask(work.id, { status: 'done' });
       await r.until(() => r.latest().status === 'succeeded');
       f.db.updateProject(f.project.id, { workspaceMode: 'shared' });
       const next = f.db.createTask(f.project.id, 'Suite', null, r.epic.id);
-      r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
+      await r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
       assert.equal(r.latest().contextRoot, workspace.path);
       await r.until(() => r.latest().status === 'waiting-validation');
       assert.equal(workspaceFor(f.db, r.latest().sessionId).mode, 'isolated');
@@ -424,7 +425,7 @@ test('switching a shared epic to isolation keeps later steps and reviews in its 
     async (f) =>
       withRunner(f, async (r) => {
         const work = f.db.createTask(f.project.id, 'Implémenter', null, r.epic.id);
-        r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
+        await r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
         await r.until(() => r.latest().status === 'waiting-validation');
         writeFileSync(join(f.repo, 'feature.txt'), 'travail partagé\n');
         f.db.updateTask(work.id, { status: 'done' });
@@ -432,7 +433,7 @@ test('switching a shared epic to isolation keeps later steps and reviews in its 
         f.db.updateProject(f.project.id, { workspaceMode: 'isolated' });
         await r.restart();
         const next = f.db.createTask(f.project.id, 'Corriger', null, r.epic.id);
-        r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
+        await r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
         assert.equal(r.latest().contextRoot, f.repo);
         await r.until(() => r.latest().status === 'waiting-validation');
         assert.equal(workspaceFor(f.db, r.latest().sessionId).mode, 'shared');
@@ -461,7 +462,7 @@ test('a command that starts an epic establishes one folder for later LLM steps',
       });
       const next = f.db.createTask(f.project.id, 'Continuer', null, r.epic.id);
       f.db.setTaskDependencies(next.id, [prepare.id]);
-      r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
+      await r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
       await r.until(() => r.latest().status === 'waiting-validation');
       assert.equal(r.latest().workspace.path, f.repo);
       assert.equal(workspaceFor(f.db, r.latest().sessionId).mode, 'shared');
@@ -485,7 +486,7 @@ test('unrelated shared sessions do not choose the context of a new isolated epic
     f.db.updateProject(f.project.id, { workspaceMode: 'isolated' });
     await withRunner(f, async (r) => {
       const task = f.db.createTask(f.project.id, 'Commencer', null, r.epic.id);
-      r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
+      await r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS);
       await r.until(() => r.latest().status === 'waiting-validation');
       assert.equal(workspaceFor(f.db, r.latest().sessionId).mode, 'isolated');
       assert.notEqual(r.latest().contextRoot, f.repo);
@@ -523,7 +524,7 @@ test('legacy epics with conflicting execution folders stay inspectable and refus
       }
       f.db.createTask(f.project.id, 'Corriger', null, r.epic.id);
       assert.equal(r.runner.list(r.epic.id).length, 2);
-      assert.throws(() => r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS), /plusieurs dossiers/);
+      await assert.rejects(r.runner.start(r.epic.id, DEFAULT_SESSION_DEFAULTS), /plusieurs dossiers/);
       assert.equal(r.launches.length, 0);
       assert.equal(f.db.connection.prepare('SELECT COUNT(*) AS total FROM epic_workspaces').get().total, 0);
     }),
@@ -595,13 +596,16 @@ test('a known run does not hide an earlier epic session that worked in another f
     assert.equal(existsSync(later.path), true);
   }));
 
-test('a consistent history is remembered as verified', async () =>
+test('a consistent history is resolved without being written, then remembered as verified at launch', async () =>
   fixture(async (f) => {
     const epic = f.db.createEpic(f.project.id, 'Livraison', '', null);
     const workspace = await createWorkspace(f.db, epicSession(f, epic.id).id, f.project);
     await joinWorkspace(f.db, epicSession(f, epic.id).id, workspace);
     knownRun(f, epic.id, workspace);
-    assert.deepEqual(epicWorkspaces(f).current(epic.id), { path: workspace.path, mode: 'isolated' });
+    const context = epicWorkspaces(f).current(epic.id);
+    assert.deepEqual(context, { path: workspace.path, mode: 'isolated' });
+    assert.deepEqual(savedContexts(f), []);
+    epicWorkspaces(f).remember(epic.id, context);
     assert.deepEqual(savedContexts(f), [
       { epic_id: epic.id, data: JSON.stringify({ path: workspace.path, mode: 'isolated' }), verified: 1 },
     ]);
@@ -629,6 +633,16 @@ test('contexts remembered by the former incomplete recovery are checked against 
       /diffère du dossier d’origine/,
     );
     assert.deepEqual(epicWorkspaces(f).current(consistent.id), { path: own.path, mode: 'isolated' });
+    assert.deepEqual(
+      savedContexts(f)
+        .map((row) => [row.epic_id, row.verified])
+        .sort(),
+      [
+        [conflicting.id, 0],
+        [consistent.id, 0],
+      ].sort(),
+    );
+    epicWorkspaces(f).remember(consistent.id, { path: own.path, mode: 'isolated' });
     assert.deepEqual(
       savedContexts(f)
         .map((row) => [row.epic_id, row.verified])

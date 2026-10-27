@@ -1,41 +1,22 @@
-import { ActivityStatus } from './ActivityStatus.tsx';
 import { Worktrees } from './worktrees/Worktrees.tsx';
 import { LlmUsageStats } from './LlmUsageStats.tsx';
 import { CouncilLaunch } from './CouncilLaunch.tsx';
-import { useState, type FormEvent } from 'react';
-import { go, useNow } from './route.ts';
-import { PathInput } from './PathInput.tsx';
+import { useState } from 'react';
+import { NewProjectForm } from './NewProjectForm.tsx';
+import { useNow } from './polling.tsx';
 import { useStore } from './store.tsx';
+import { ErrorBoundary } from './ErrorBoundary.tsx';
 import { SessionList } from './SessionList.tsx';
 
 export function HomeView() {
-  const { projects, sessions, createProject } = useStore();
+  const { projects, sessions } = useStore();
   const now = useNow();
-  const [name, setName] = useState('');
-  const [path, setPath] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
   const running = sessions.filter((s) => s.status === 'running' || s.status === 'starting').length;
   const waiting = sessions.filter((s) => s.status === 'waiting').length;
   const idle = sessions.filter((s) => s.status === 'idle').length;
   const live = sessions.filter((s) => s.status !== 'exited' || s.pendingFindings > 0);
-
-  const onCreate = async (e: FormEvent): Promise<void> => {
-    e.preventDefault();
-    setError(null);
-    setBusy(true);
-    try {
-      const project = await createProject(name.trim(), path.trim());
-      setName('');
-      setPath('');
-      go(`#/p/${project.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Création impossible');
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <div className="pane padded home">
@@ -58,26 +39,12 @@ export function HomeView() {
       </header>
 
       {projects.length === 0 ? (
-        <form className="card home-create" onSubmit={(e) => void onCreate(e)}>
-          <h2>Créer un projet</h2>
-          <label>
-            Nom
-            <input
-              required
-              autoComplete="off"
-              placeholder="Nom"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </label>
-          <label className="block">
-            Chemin
-            <PathInput required value={path} onChange={setPath} />
-          </label>
-          <button type="submit" className="btn primary" disabled={busy}>
-            <ActivityStatus active={busy}>{busy ? 'Création…' : 'Créer un projet'}</ActivityStatus>
-          </button>
-        </form>
+        <NewProjectForm
+          className="card home-create"
+          heading="Créer un projet"
+          submitLabel="Créer un projet"
+          onError={setError}
+        />
       ) : null}
 
       {error ? (
@@ -87,8 +54,12 @@ export function HomeView() {
       ) : null}
 
       <div className="home-panels">
-        <Worktrees />
-        <LlmUsageStats sessions={sessions} now={now} />
+        <ErrorBoundary zone="Copies de travail">
+          <Worktrees />
+        </ErrorBoundary>
+        <ErrorBoundary zone="Statistiques">
+          <LlmUsageStats sessions={sessions} now={now} />
+        </ErrorBoundary>
         <section className="card home-council" aria-label="Council">
           <h2>Council</h2>
           <p className="hint">Soumettez une question à plusieurs conseillers, relus anonymement puis synthétisés.</p>
@@ -99,7 +70,9 @@ export function HomeView() {
           {live.length === 0 ? (
             <p className="empty-hint">Aucune session en cours.</p>
           ) : (
-            <SessionList sessions={live} now={now} showProject onError={setError} />
+            <ErrorBoundary zone="Sessions">
+              <SessionList sessions={live} now={now} showProject onError={setError} />
+            </ErrorBoundary>
           )}
         </section>
       </div>

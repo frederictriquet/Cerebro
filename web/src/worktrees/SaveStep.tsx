@@ -1,12 +1,10 @@
-import type { WorktreeView } from '../../../server/worktrees.ts';
+import type { StartingContentDiscard, WorktreeView } from '../../../shared/worktrees.ts';
 import { href } from '../route.ts';
-import { sessionTitle } from '../format.ts';
+import { plural, pluralize, sessionTitle } from '../format.ts';
 import {
   branchName,
-  fileCount,
   originLabel,
   startingContentGroups,
-  type DiscardResult,
   type Journey,
   type Resolver,
   type WorktreeActions,
@@ -28,7 +26,7 @@ export function SaveStep({
   view: WorktreeView;
   plan: Journey;
   target: string;
-  result: DiscardResult | undefined;
+  result: StartingContentDiscard | undefined;
   resolver: Resolver | undefined;
   commitBlocked: boolean;
   showDetails: boolean;
@@ -50,15 +48,15 @@ export function SaveStep({
       {result && view.dirty ? (
         <p className="worktree-notice" role="status">
           {result.targetUpdate ? `Copie mise à jour avec ${branchName(result.targetUpdate.branch)}. ` : ''}
-          {result.restored.length ? `${fileCount(result.restored.length)} remis à l’état de la copie. ` : ''}
+          {result.restored.length ? `${plural(result.restored.length, 'fichier')} remis à l’état de la copie. ` : ''}
           {result.separated.length
-            ? `${fileCount(result.separated.length)} ${result.separated.length === 1 ? 'ne contient' : 'ne contiennent'} plus que le travail fait depuis la création. `
+            ? `${plural(result.separated.length, 'fichier')} ${result.separated.length === 1 ? 'ne contient' : 'ne contiennent'} plus que le travail fait depuis la création. `
             : ''}
           {result.settled?.length
-            ? `${fileCount(result.settled.length)} rattaché${result.settled.length === 1 ? '' : 's'} au travail de la conversation. `
+            ? `${plural(result.settled.length, 'fichier rattaché', 'fichiers rattachés')} au travail de la conversation. `
             : ''}
           {result.kept.length
-            ? `Non séparé${result.kept.length === 1 ? '' : 's'} : ${result.kept.map((step) => step.path).join(', ')}, à commiter tel${result.kept.length === 1 ? '' : 's'} quel${result.kept.length === 1 ? '' : 's'} ci-dessous.`
+            ? `${pluralize(result.kept.length, 'Non séparé')} : ${result.kept.map((step) => step.path).join(', ')}, à commiter ${pluralize(result.kept.length, 'tel quel', 'tels quels')} ci-dessous.`
             : ''}
         </p>
       ) : null}
@@ -72,7 +70,7 @@ export function SaveStep({
       {!view.mergeInProgress && plan.inherited.length ? (
         <div className="worktree-group">
           <p>
-            <strong>{fileCount(plan.inherited.length)} sans nouveau travail.</strong>{' '}
+            <strong>{plural(plan.inherited.length, 'fichier')} sans nouveau travail.</strong>{' '}
             {plan.inherited.length === 1 ? 'Ce fichier a' : 'Ces fichiers ont'} encore le contenu copié du dossier du
             projet à la création de la copie : ce n’est pas le travail de la conversation.
           </p>
@@ -94,8 +92,8 @@ export function SaveStep({
         <div className="worktree-group">
           <p>
             <strong>
-              {fileCount(separable.length)} mêlant contenu de départ et travail récent, séparable
-              {separable.length === 1 ? '' : 's'}.
+              {plural(separable.length, 'fichier')} mêlant contenu de départ et travail récent,{' '}
+              {pluralize(separable.length, 'séparable')}.
             </strong>{' '}
             Le contenu de départ peut en être retiré automatiquement, en gardant le travail fait dans la copie.
           </p>
@@ -112,7 +110,7 @@ export function SaveStep({
       {!view.mergeInProgress && plan.settled.length ? (
         <div className="worktree-group">
           <p>
-            <strong>{fileCount(plan.settled.length)} sans contenu de départ restant.</strong>{' '}
+            <strong>{plural(plan.settled.length, 'fichier')} sans contenu de départ restant.</strong>{' '}
             {plan.settled.length === 1
               ? 'Ses changements non commités ne contiennent'
               : 'Leurs changements non commités ne contiennent'}{' '}
@@ -137,10 +135,8 @@ export function SaveStep({
       {!view.mergeInProgress && plan.ownWork && view.dirty ? (
         <div className="worktree-group">
           <p>
-            <strong>
-              {fileCount(plan.ownWork)} modifié{plan.ownWork === 1 ? '' : 's'} par la conversation.
-            </strong>{' '}
-            Le commit automatique ne prend que les fichiers dont l’origine est vérifiable.
+            <strong>{plural(plan.ownWork, 'fichier modifié', 'fichiers modifiés')} par la conversation.</strong> Le
+            commit automatique ne prend que les fichiers dont l’origine est vérifiable.
           </p>
           <button type="button" className="btn" disabled={commitBlocked} onClick={() => actions.commit(view)}>
             Créer le commit
@@ -153,8 +149,7 @@ export function SaveStep({
             <>
               <p>
                 <strong>
-                  {fileCount(manual.length)} à commiter tel{manual.length === 1 ? '' : 's'} quel
-                  {manual.length === 1 ? '' : 's'}.
+                  {plural(manual.length, 'fichier')} à commiter {pluralize(manual.length, 'tel quel', 'tels quels')}.
                 </strong>{' '}
                 {manual.length === 1 ? 'Il mêle' : 'Ils mêlent'} contenu de départ et travail récent, sans séparation
                 automatique possible :

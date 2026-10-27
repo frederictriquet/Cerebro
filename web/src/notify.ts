@@ -1,44 +1,31 @@
+import { plural } from './format.ts';
 import { parseHash, parseMachine } from './route.ts';
-import type { Session } from './types.ts';
+import { readFlag, writeFlag } from './storage.ts';
+import type { Session } from '../../shared/types.ts';
 
 const MUTE_KEY = 'cerebro.mute';
 const DESKTOP_NOTIF_KEY = 'cerebro.desktopNotif';
 
 export function readMuted(): boolean {
-  try {
-    return localStorage.getItem(MUTE_KEY) === '1';
-  } catch {
-    return false;
-  }
+  return readFlag(MUTE_KEY, false);
 }
 
 export function writeMuted(muted: boolean): void {
-  try {
-    localStorage.setItem(MUTE_KEY, muted ? '1' : '0');
-  } catch {
-    /* quota / mode privé */
-  }
+  writeFlag(MUTE_KEY, muted);
 }
 
 // Notifications système (toaster du bureau). Activées par défaut ; sous certains bureaux Linux
 // elles jouent un son non contrôlable par la page, d'où cet interrupteur dédié.
 export function readDesktopNotif(): boolean {
-  try {
-    return localStorage.getItem(DESKTOP_NOTIF_KEY) !== '0';
-  } catch {
-    return true;
-  }
+  return readFlag(DESKTOP_NOTIF_KEY, true);
 }
 
 export function writeDesktopNotif(enabled: boolean): void {
-  try {
-    localStorage.setItem(DESKTOP_NOTIF_KEY, enabled ? '1' : '0');
-  } catch {
-    /* quota / mode privé */
-  }
+  writeFlag(DESKTOP_NOTIF_KEY, enabled);
 }
 
-export function armNotificationPermission(): void {
+/** Arme la demande de permission au premier geste ; renvoie la fonction qui retire l'écouteur. */
+export function armNotificationPermission(): () => void {
   const once = (): void => {
     if (typeof Notification === 'undefined') return;
     if (Notification.permission === 'default') {
@@ -46,6 +33,7 @@ export function armNotificationPermission(): void {
     }
   };
   window.addEventListener('pointerdown', once, { once: true });
+  return () => window.removeEventListener('pointerdown', once);
 }
 
 export function sessionIsOpenAndVisible(id: string, machineId?: string | null): boolean {
@@ -54,6 +42,15 @@ export function sessionIsOpenAndVisible(id: string, machineId?: string | null): 
   if (route.kind !== 'session' || route.sessionId !== id) return false;
   if (machineId === undefined) return true;
   return parseMachine(window.location.hash) === machineId;
+}
+
+/**
+ * Présence réelle de l'utilisateur devant la session : `visibilityState` reste « visible » pour
+ * une fenêtre non focalisée (autre application, second écran, poste laissé allumé), ce qui ne
+ * suffit pas à acquitter une alerte. Le filtrage des notifications garde sessionIsOpenAndVisible.
+ */
+export function sessionIsWatched(id: string, machineId?: string | null): boolean {
+  return sessionIsOpenAndVisible(id, machineId) && document.hasFocus();
 }
 
 function sessionHash(sessionId: string, machineId: string | null, panel?: 'findings'): string {
@@ -98,7 +95,7 @@ export function showFindingsNotification(session: Session, machineId?: string | 
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
   const count = session.pendingFindings;
   try {
-    const notification = new Notification(`Cerebro — ${count} finding${count > 1 ? 's' : ''} de review à traiter`, {
+    const notification = new Notification(`Cerebro — ${plural(count, 'finding')} de review à traiter`, {
       body: [session.epic ? `Epic « ${session.epic.title} »` : '', session.title].filter(Boolean).join(' — '),
       tag: `findings:${target ?? 'local'}:${session.id}`,
       silent: true,
@@ -201,7 +198,7 @@ function updateFavicon(kind: 'waiting' | 'idle' | 'none'): void {
 export function updateAttentionIndicators(waiting: number, done: number, findings = 0): void {
   const total = waiting + done;
   const mark = waiting > 0 ? '❓ ' : findings > 0 ? '📋 ' : done > 0 ? '✅ ' : '';
-  const suffix = findings > 0 ? ` · ${findings} finding${findings > 1 ? 's' : ''} à traiter` : '';
+  const suffix = findings > 0 ? ` · ${plural(findings, 'finding')} à traiter` : '';
   document.title = total > 0 ? `${mark}(${total}) Cerebro${suffix}` : 'Cerebro';
   updateFavicon(waiting > 0 ? 'waiting' : done > 0 ? 'idle' : 'none');
 }

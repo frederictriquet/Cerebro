@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import type { WorktreeInventory } from '../../../server/worktrees.ts';
+import type { WorktreeInventory } from '../../../shared/worktrees.ts';
 import { DelayedActionButton } from '../DelayedActionButton.tsx';
-import { sessionTitle } from '../format.ts';
+import { formatDateTime, sessionTitle } from '../format.ts';
 import { href } from '../route.ts';
-import { branchName, dateLabel } from './model.ts';
+import { branchName } from './model.ts';
 
 /** Copies already cleaned up: nothing to do, the entries can only be forgotten. */
 export function CleanedHistory({
@@ -70,7 +70,7 @@ export function CleanedHistory({
               </DelayedActionButton>
             </div>
             {showProject ? <span className="meta"> · {copy.projectName}</span> : null}
-            <p className="meta">Nettoyée le {dateLabel(copy.removedAt)}</p>
+            <p className="meta">Nettoyée le {formatDateTime(copy.removedAt)}</p>
             <details className="worktree-history-details">
               <summary>Détails techniques</summary>
               <p className="meta">Branche conservée : {branchName(copy.branch)}</p>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { readStored, useStoredFlag, writeStored } from './storage.ts';
 
 // Largeur et masquage de la barre latérale (bureau uniquement), mémorisés par ce navigateur.
 const WIDTH_KEY = 'cerebro.sidebarWidth';
@@ -12,43 +13,18 @@ function clampWidth(width: number): number {
 }
 
 function readWidth(): number {
-  try {
-    const value = Number(localStorage.getItem(WIDTH_KEY));
-    return Number.isFinite(value) && value > 0 ? clampWidth(value) : SIDEBAR_DEFAULT;
-  } catch {
-    return SIDEBAR_DEFAULT;
-  }
-}
-
-function readHidden(): boolean {
-  try {
-    return localStorage.getItem(HIDDEN_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function write(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    /* quota / mode privé */
-  }
+  const value = Number(readStored(WIDTH_KEY));
+  return Number.isFinite(value) && value > 0 ? clampWidth(value) : SIDEBAR_DEFAULT;
 }
 
 export function useSidebarLayout() {
   const [width, setWidthState] = useState(readWidth);
-  const [hidden, setHiddenState] = useState(readHidden);
+  const [hidden, setHidden] = useStoredFlag(HIDDEN_KEY, false);
 
   const setWidth = useCallback((next: number) => {
     const clamped = clampWidth(next);
     setWidthState(clamped);
-    write(WIDTH_KEY, String(clamped));
-  }, []);
-
-  const setHidden = useCallback((next: boolean) => {
-    setHiddenState(next);
-    write(HIDDEN_KEY, next ? '1' : '0');
+    writeStored(WIDTH_KEY, String(clamped));
   }, []);
 
   return { width, setWidth, hidden, setHidden };

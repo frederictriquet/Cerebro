@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { useAsyncAction } from '../async-action.ts';
 
 export function EpicForm({
   initialTitle = '',
@@ -15,19 +16,15 @@ export function EpicForm({
 }) {
   const [title, setTitle] = useState(initialTitle);
   const [description, setDescription] = useState(initialDescription);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const {
+    run: save,
+    busy,
+    error,
+  } = useAsyncAction(() => onSubmit(title, description), { fallback: 'Enregistrement impossible' });
 
   const submit = async (): Promise<void> => {
     if (busy || title.trim() === '') return;
-    setBusy(true);
-    setError(null);
-    try {
-      await onSubmit(title, description);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Enregistrement impossible');
-      setBusy(false);
-    }
+    await save();
   };
 
   return (

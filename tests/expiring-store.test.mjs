@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { ExpiringStore } from '../server/expiring-store.ts';
+test('entries expire after their time-to-live and the oldest are evicted beyond capacity', () => {
+  let now = 0;
+  const store = new ExpiringStore({ ttlMs: 100, maxEntries: 2, now: () => now });
+  store.set('a', 1);
+  now = 50;
+  store.set('b', 2);
+  assert.equal(store.get('a'), 1);
+  now = 60;
+  store.set('c', 3);
+  assert.equal(store.get('a'), undefined);
+  assert.equal(store.get('b'), 2);
+  assert.equal(store.size, 2);
+  now = 150;
+  assert.equal(store.get('b'), undefined);
+  assert.equal(store.get('c'), 3);
+  assert.equal(store.size, 1);
+  store.set('c', 4);
+  now = 249;
+  assert.equal(store.get('c'), 4);
+  now = 250;
+  assert.equal(store.size, 0);
+});

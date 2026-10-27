@@ -1,6 +1,9 @@
 import { connect } from 'node:net';
 
 const LOOPBACKS = ['127.0.0.1', '::1'] as const;
+// Serveur de dev Vite (web/vite.config.ts) : son origine est celle de l'interface en dev.
+export const VITE_DEV_HOST = '127.0.0.1';
+export const VITE_DEV_PORT = 5173;
 const PROBE_TIMEOUT_MS = 500;
 
 function isListening(host: string, port: number): Promise<boolean> {
