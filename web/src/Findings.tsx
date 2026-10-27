@@ -4,6 +4,7 @@ import { api } from './api.ts';
 import { href } from './route.ts';
 import { useStore } from './store.tsx';
 import type { Session } from './types.ts';
+import { errorMessage, plural } from './format.ts';
 import './findings.css';
 
 const SEVERITY: Record<Finding['severity'], string> = {
@@ -24,8 +25,8 @@ export function FindingsNotice({ reports, expanded, onToggle }: {
       </svg>
     </span>
     <span className="findings-notice-copy">
-      <strong>{total} finding{total > 1 ? 's' : ''} de review disponible{total > 1 ? 's' : ''}</strong>
-      <span>{reports.length} rapport{reports.length > 1 ? 's' : ''} · {remaining ? `${remaining} à examiner pour le backlog` : 'Tous les findings sont enregistrés dans le backlog'}</span>
+      <strong>{plural(total, 'finding de review disponible', 'findings de review disponibles')}</strong>
+      <span>{plural(reports.length, 'rapport')} · {remaining ? `${remaining} à examiner pour le backlog` : 'Tous les findings sont enregistrés dans le backlog'}</span>
     </span>
     <span className="findings-notice-action">{expanded ? 'Masquer les findings' : 'Examiner les findings'} <span aria-hidden="true">{expanded ? '▴' : '▾'}</span></span>
   </button>;
@@ -44,7 +45,7 @@ export function FindingsPanel({ sessionId, epic, reports, refresh }: {
   const run = async (action: () => Promise<void>): Promise<void> => {
     setBusy(true); setError(null);
     try { await action(); await refresh(); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { setError(errorMessage(cause)); }
     finally { setBusy(false); }
   };
   return <div className="findings-panel">
@@ -63,7 +64,7 @@ export function FindingsPanel({ sessionId, epic, reports, refresh }: {
         <header className="finding-report-header">
           <div>
             <h3 id={`report-${report.id}`}>{report.title}</h3>
-            <p className="meta">{report.findings.length} finding{report.findings.length > 1 ? 's' : ''} · <time dateTime={new Date(report.createdAt).toISOString()}>{new Date(report.createdAt).toLocaleString('fr-FR')}</time></p>
+            <p className="meta">{plural(report.findings.length, 'finding')} · <time dateTime={new Date(report.createdAt).toISOString()}>{new Date(report.createdAt).toLocaleString('fr-FR')}</time></p>
           </div>
           {available.length ? <button type="button" className="btn" disabled={busy} onClick={() => setChosen(previous => {
             const next = new Set(previous);
@@ -103,7 +104,7 @@ export function FindingsPanel({ sessionId, epic, reports, refresh }: {
           })}
         </div>
         <footer className="finding-report-footer">
-          <span role="status">{available.length ? `${selected.length} finding${selected.length > 1 ? 's' : ''} sélectionné${selected.length > 1 ? 's' : ''} sur ${available.length}` : 'Tous les findings de ce rapport sont dans le backlog.'}</span>
+          <span role="status">{available.length ? `${plural(selected.length, 'finding sélectionné', 'findings sélectionnés')} sur ${available.length}` : 'Tous les findings de ce rapport sont dans le backlog.'}</span>
           <div className="finding-import-actions">
             <div className="finding-report-routing">
               {report.epicId ? <p>Destination : {targetEpic ? <a href={href(`#/p/${targetEpic.projectId}`)}>Epic « {targetEpic.title} »</a> : 'epic supprimé'}</p> : <label>

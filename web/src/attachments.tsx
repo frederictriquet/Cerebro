@@ -1,5 +1,7 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type SyntheticEvent } from 'react';
+import { clipboardImage } from './api.ts';
+import { errorMessage } from './format.ts';
 
 // Images jointes à un champ de saisie : le texte affiche un jeton court « [Image #N] »
 // (comme Claude Code en terminal) et une miniature ; au moment d'envoyer, chaque jeton est
@@ -64,7 +66,7 @@ export function useImageAttachments(upload: (image: Blob) => Promise<string>, in
       (err: unknown) => {
         URL.revokeObjectURL(previewUrl);
         setItems((current) => current.filter((item) => item.n !== n));
-        onError(token, err instanceof Error ? err.message : 'Image non envoyée');
+        onError(token, errorMessage(err, 'Image non envoyée'));
       },
     );
     return token;
@@ -99,6 +101,88 @@ export function useImageAttachments(upload: (image: Blob) => Promise<string>, in
 
   const pending = items.some((item) => item.path === null);
   return { items, add, remove, expand, reset, prune, pending };
+}
+
+type Change = (text: string) => string;
+type TextField = HTMLTextAreaElement | HTMLInputElement;
+
+interface AttachedFieldsOptions<K extends string> {
+  upload: (image: Blob) => Promise<string>;
+  initial?: Attachment[];
+  /** Texte courant de chaque champ qui partage les images (une seule numérotation). */
+  texts: Record<K, string>;
+  /** Applique `change` au texte du champ `key`. */
+  edit: (key: K, change: Change) => void;
+  /** Envoi d'une image échoué : son jeton a déjà été retiré du texte. */
+  onError: (message: string) => void;
+  /** Ignore collages, dépôts et retraits (par exemple pendant un envoi). */
+  disabled?: boolean;
+}
+
+/**
+ * Câble des champs de saisie aux images jointes : une image collée ou déposée insère « [Image #N] »
+ * au curseur, effacer le jeton oublie l'image, et la retirer de la bande efface son jeton.
+ */
+export function useAttachedFields<K extends string>({ upload, initial, texts, edit, onError, disabled = false }: AttachedFieldsOptions<K>) {
+  const images = useImageAttachments(upload, initial);
+  const keys = Object.keys(texts) as K[];
+
+  const removeEverywhere = (token: string): void => {
+    for (const key of keys) edit(key, (text) => removeToken(text, token));
+  };
+
+  const attach = (key: K, image: File, field: TextField | null): void => {
+    if (disabled) return;
+    const start = field?.selectionStart ?? texts[key].length;
+    const end = field?.selectionEnd ?? start;
+    const token = images.add(image, (failed, message) => {
+      removeEverywhere(failed);
+      onError(message);
+    });
+    edit(key, (text) => insertToken(text, start, end, token));
+  };
+
+  const transfer = (key: K, data: DataTransfer | null, event: SyntheticEvent<TextField>): void => {
+    const image = clipboardImage(data);
+    if (image === null) return;
+    event.preventDefault();
+    attach(key, image, event.currentTarget);
+  };
+
+  const fieldProps = (key: K) => ({
+    onChange: (event: ChangeEvent<TextField>): void => {
+      const value = event.target.value;
+      edit(key, () => value);
+      images.prune(keys.map((k) => (k === key ? value : texts[k])).join('\n'));
+    },
+    onPaste: (event: ClipboardEvent<TextField>): void => transfer(key, event.clipboardData, event),
+    onDrop: (event: DragEvent<TextField>): void => transfer(key, event.dataTransfer, event),
+  });
+
+  const stripProps = {
+    items: images.items,
+    onRemove: (item: Attachment): void => {
+      if (disabled) return;
+      images.remove(item.n);
+      removeEverywhere(item.token);
+    },
+  };
+
+  return { images, attach, fieldProps, stripProps };
+}
+
+/** `useAttachedFields` pour un champ unique. */
+export function useAttachedField({ text, setText, ...options }: Omit<AttachedFieldsOptions<'text'>, 'texts' | 'edit'> & {
+  text: string;
+  setText: (change: Change) => void;
+}) {
+  const { images, attach, fieldProps, stripProps } = useAttachedFields({ ...options, texts: { text }, edit: (_key, change) => setText(change) });
+  return {
+    images,
+    attach: (image: File, field: TextField | null): void => attach('text', image, field),
+    fieldProps: fieldProps('text'),
+    stripProps,
+  };
 }
 
 export function AttachmentStrip({ items, onRemove }: { items: Attachment[]; onRemove: (item: Attachment) => void }) {

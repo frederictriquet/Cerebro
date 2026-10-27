@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, apiBase } from './api.ts';
 import type { Project } from './types.ts';
+import { errorMessage } from './format.ts';
 
 type VscodeOpen = { ready: false } | { ready: true; path: string };
 
@@ -34,7 +35,7 @@ export function CodeEditor({ project, onClose }: { project: Project; onClose: ()
         if (!opened.ready) timer = window.setTimeout(() => void load(), RETRY_MS);
         else setUrl(`${base}${opened.path}`);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'VS Code indisponible');
+        if (!cancelled) setError(errorMessage(err, 'VS Code indisponible'));
       }
     };
     void load();

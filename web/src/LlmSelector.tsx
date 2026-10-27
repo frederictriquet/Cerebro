@@ -3,6 +3,7 @@ import { AgentLabel } from './AgentLabel.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { useStore } from './store.tsx';
 import type { AgentInfo, Effort, LaunchSpec } from './types.ts';
+import { errorMessage } from './format.ts';
 
 export type LlmSelection = Pick<LaunchSpec, 'agent' | 'model' | 'effort'>;
 
@@ -40,7 +41,7 @@ export function LlmSelector({ agents, value, defaults, onChange, disabled = fals
     try {
       await refreshAgents();
     } catch (error) {
-      setRefreshError(error instanceof Error ? error.message : String(error));
+      setRefreshError(errorMessage(error));
     } finally {
       setRefreshing(false);
     }

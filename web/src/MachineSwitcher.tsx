@@ -17,9 +17,11 @@ import {
   type VersionInfo,
 } from './api.ts';
 import { playAlert, readMuted, showAlertNotification, showFindingsNotification } from './notify.ts';
-import { needsAttention } from './format.ts';
+import { needsAttention, plural } from './format.ts';
 import { goMachine, useMachine } from './route.ts';
-import { useStore } from './store.tsx';
+import { openReconnectingSocket } from './socket.ts';
+import { usePolling } from './polling.tsx';
+import { upsertById, useStore } from './store.tsx';
 import { parseEventsMessage, type Session } from './types.ts';
 
 interface WatchState {
@@ -60,14 +62,6 @@ function countAttention(list: Session[]): AttentionCounts {
     if (session.status === 'waiting') waiting += 1;
   }
   return { total, waiting };
-}
-
-function upsertSession(list: Session[], session: Session): Session[] {
-  const index = list.findIndex((item) => item.id === session.id);
-  if (index === -1) return [session, ...list];
-  const next = list.slice();
-  next[index] = session;
-  return next;
 }
 
 function usableVersion(value: unknown): VersionInfo | null {
@@ -152,9 +146,6 @@ function startWatcher(
   setState: Dispatch<SetStateAction<Record<string, WatchState>>>,
 ): () => void {
   let stopped = false;
-  let retry = 0;
-  let socket: WebSocket | null = null;
-  let timer: ReturnType<typeof setTimeout> | undefined;
   let sessions: Session[] = [];
 
   const publish = (online: boolean): void => {
@@ -174,23 +165,11 @@ function startWatcher(
     });
   };
 
-  const connect = (): void => {
-    if (stopped) return;
-    const next = new WebSocket(wsUrl('/ws/events', target.base));
-    socket = next;
-    next.addEventListener('open', () => {
-      if (stopped) return;
-      retry = 0;
+  const connection = openReconnectingSocket(wsUrl('/ws/events', target.base), {
+    onOpen: () => {
       publish(true);
-    });
-    next.addEventListener('message', (ev) => {
-      if (stopped || typeof ev.data !== 'string') return;
-      let raw: unknown;
-      try {
-        raw = JSON.parse(ev.data) as unknown;
-      } catch {
-        return;
-      }
+    },
+    onMessage: (raw, next) => {
       const msg = parseEventsMessage(raw);
       if (!msg) return;
       switch (msg.type) {
@@ -199,7 +178,7 @@ function startWatcher(
           publish(next.readyState === WebSocket.OPEN);
           break;
         case 'session':
-          sessions = upsertSession(sessions, msg.session);
+          sessions = upsertById(sessions, msg.session, 'start');
           publish(true);
           break;
         case 'session-deleted':
@@ -207,13 +186,13 @@ function startWatcher(
           publish(true);
           break;
         case 'alert':
-          sessions = upsertSession(sessions, msg.session);
+          sessions = upsertById(sessions, msg.session, 'start');
           publish(true);
           showAlertNotification(msg.session, target.machineId);
           if (!readMuted()) playAlert(msg.session.status);
           break;
         case 'findings-available':
-          sessions = upsertSession(sessions, msg.session);
+          sessions = upsertById(sessions, msg.session, 'start');
           publish(true);
           showFindingsNotification(msg.session, target.machineId);
           if (!readMuted()) playAlert('idle');
@@ -221,24 +200,14 @@ function startWatcher(
         case 'projects':
           break;
       }
-    });
-    next.addEventListener('close', () => {
-      if (stopped) return;
+    },
+    onClose: () => {
       publish(false);
-      const delay = Math.min(8_000, 400 * 2 ** retry);
-      retry += 1;
-      timer = setTimeout(connect, delay);
-    });
-    next.addEventListener('error', () => {
-      next.close();
-    });
-  };
-
-  connect();
+    },
+  });
   return () => {
     stopped = true;
-    if (timer !== undefined) clearTimeout(timer);
-    socket?.close();
+    connection.close();
   };
 }
 
@@ -248,26 +217,15 @@ export function MachineWatchProvider({ children }: { children: ReactNode }) {
   const [hidden, setHidden] = useState<Record<string, WatchState>>({});
 
   // Rechargée périodiquement : la version d'une machine distante change quand elle est mise à jour.
-  useEffect(() => {
-    let cancelled = false;
-    const load = (): void => {
-      void getMachines()
-        .then((data) => {
-          if (cancelled) return;
-          const parsed = usableMachines(data);
-          if (parsed) setInfo((prev) => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
-        })
-        .catch(() => {
-          /* pas de sélecteur si la liste est indisponible */
-        });
-    };
-    load();
-    const timer = window.setInterval(load, MACHINES_REFRESH_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
+  usePolling(getMachines, MACHINES_REFRESH_MS, {
+    onData: (data) => {
+      const parsed = usableMachines(data);
+      if (parsed) setInfo((prev) => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
+    },
+    onError: () => {
+      /* pas de sélecteur si la liste est indisponible */
+    },
+  });
 
   // Clé stable : un changement de version ne doit pas rouvrir les WebSocket de surveillance.
   const remoteIds = info?.remotes.map((remote) => remote.id).join(',') ?? '';
@@ -334,8 +292,8 @@ export function MachineSwitcher() {
         const detail =
           attention > 0
             ? counts.waiting > 0
-              ? `${counts.waiting} question(s), ${attention} à traiter`
-              : `${attention} terminée(s)`
+              ? `${plural(counts.waiting, 'question')}, ${attention} à traiter`
+              : `${plural(attention, 'terminée')}`
             : null;
         const title = [pill.name, status, pill.version, detail].filter(Boolean).join(' — ');
         const compat = pill.status?.compatibility ?? null;

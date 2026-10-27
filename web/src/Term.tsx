@@ -3,7 +3,9 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
 import { useEffect, useRef } from 'react';
 import { clipboardImage, readClipboardImage, uploadImage, wsUrl } from './api.ts';
+import { openReconnectingSocket, type ReconnectingSocket } from './socket.ts';
 import { parseTermServerMessage, type TermClientMessage } from './types.ts';
+import { errorMessage } from './format.ts';
 
 const FONT = 'ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace';
 
@@ -109,23 +111,21 @@ export function Term({
     term.open(host);
     term.focus();
 
-    const socketRef: { current: WebSocket | null } = { current: null };
-    let closed = false;
-    let retry = 0;
-    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let connection: ReconnectingSocket | null = null;
+    const socket = (): WebSocket | null => connection?.socket ?? null;
     let lastCols = 0;
     let lastRows = 0;
 
     const api: TermApi = {
       sendInput(data: string): boolean {
-        return send(socketRef.current, { type: 'input', data });
+        return send(socket(), { type: 'input', data });
       },
       sendArrow(direction: 'up' | 'down'): boolean {
         const application = term.modes.applicationCursorKeysMode;
         const data = direction === 'up'
           ? (application ? '\x1bOA' : '\x1b[A')
           : (application ? '\x1bOB' : '\x1b[B');
-        return send(socketRef.current, { type: 'input', data });
+        return send(socket(), { type: 'input', data });
       },
       focus(): void {
         term.focus();
@@ -143,7 +143,7 @@ export function Term({
       if (cols === lastCols && rows === lastRows) return;
       lastCols = cols;
       lastRows = rows;
-      send(socketRef.current, { type: 'resize', cols, rows });
+      send(socket(), { type: 'resize', cols, rows });
     };
 
     const doFit = (): void => {
@@ -157,7 +157,7 @@ export function Term({
     };
 
     const dataSub = term.onData((data) => {
-      send(socketRef.current, { type: 'input', data });
+      send(socket(), { type: 'input', data });
     });
     const selectionSub = term.onSelectionChange(() => {
       onSelectionRef.current?.(term.getSelection().trim() !== '');
@@ -169,10 +169,10 @@ export function Term({
     const sendImage = (image: Blob): void => {
       uploadImage(sessionId, image).then(
         (path) => {
-          send(socketRef.current, { type: 'input', data: `${path} ` });
+          send(socket(), { type: 'input', data: `${path} ` });
         },
         (err: unknown) => {
-          notice(`image non envoyée : ${err instanceof Error ? err.message : 'erreur'}`);
+          notice(`image non envoyée : ${errorMessage(err, 'erreur')}`);
         },
       );
     };
@@ -197,7 +197,7 @@ export function Term({
           else notice(`aucune image dans le presse-papiers (types : ${types})`);
         },
         (err: unknown) => {
-          notice(`presse-papiers illisible (types : ${types}) : ${err instanceof Error ? err.message : 'erreur'}`);
+          notice(`presse-papiers illisible (types : ${types}) : ${errorMessage(err, 'erreur')}`);
         },
       );
     };
@@ -208,25 +208,14 @@ export function Term({
     });
     ro.observe(host);
 
-    const connect = (): void => {
-      if (closed) return;
-      const socket = new WebSocket(wsUrl(`/ws/term/${sessionId}`));
-      socketRef.current = socket;
-      socket.addEventListener('open', () => {
-        retry = 0;
+    connection = openReconnectingSocket(wsUrl(`/ws/term/${sessionId}`), {
+      onOpen: () => {
         lastCols = 0;
         lastRows = 0;
         doFit();
         term.focus();
-      });
-      socket.addEventListener('message', (ev) => {
-        if (typeof ev.data !== 'string') return;
-        let raw: unknown;
-        try {
-          raw = JSON.parse(ev.data) as unknown;
-        } catch {
-          return;
-        }
+      },
+      onMessage: (raw) => {
         const msg = parseTermServerMessage(raw);
         if (!msg) return;
         if (msg.type === 'snapshot') {
@@ -235,36 +224,21 @@ export function Term({
         } else if (msg.type === 'output') {
           term.write(msg.data);
         }
-      });
-      socket.addEventListener('close', () => {
-        if (socketRef.current === socket) socketRef.current = null;
-        if (closed) return;
-        const delay = Math.min(8_000, 400 * 2 ** retry);
-        retry += 1;
-        retryTimer = setTimeout(connect, delay);
-      });
-      socket.addEventListener('error', () => {
-        socket.close();
-      });
-    };
-
-    connect();
+      },
+    });
     requestAnimationFrame(() => {
       doFit();
       term.focus();
     });
 
     return () => {
-      closed = true;
       onApiRef.current?.(null);
-      if (retryTimer !== undefined) clearTimeout(retryTimer);
+      connection.close();
       dataSub.dispose();
       selectionSub.dispose();
       onSelectionRef.current?.(false);
       host.removeEventListener('paste', onPaste, true);
       ro.disconnect();
-      socketRef.current?.close();
-      socketRef.current = null;
       term.dispose();
     };
   }, [sessionId]);

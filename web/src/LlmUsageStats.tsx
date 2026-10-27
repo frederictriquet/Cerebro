@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { AgentLabel } from './AgentLabel.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { getSessionTokenUsage, type SessionTokenUsage } from './api.ts';
 import { llmStats, type UsagePeriod } from './llm-stats.ts';
+import { usePolling } from './polling.tsx';
 import type { Session } from './types.ts';
 import './llm-stats.css';
 
@@ -14,19 +15,10 @@ export function LlmUsageStats({ sessions, now }: { sessions: readonly Session[];
   const [period, setPeriod] = useState<UsagePeriod>('7d');
   const [tokens, setTokens] = useState<SessionTokenUsage[] | null>(null);
   const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    const load = (): void => {
-      void getSessionTokenUsage().then((result) => {
-        if (cancelled) return;
-        setTokens(result);
-        setFailed(false);
-      }, () => { if (!cancelled) setFailed(true); });
-    };
-    load();
-    const timer = window.setInterval(load, 30_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, []);
+  usePolling(getSessionTokenUsage, 30_000, {
+    onData: (result) => { setTokens(result); setFailed(false); },
+    onError: () => setFailed(true),
+  });
   const stats = llmStats(sessions, period, now, tokens ?? []);
   const total = stats.reduce((sum, row) => sum + row.count, 0);
 

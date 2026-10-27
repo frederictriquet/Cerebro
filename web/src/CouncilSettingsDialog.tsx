@@ -1,18 +1,18 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { getCouncilSettings, getEffectiveCouncilSettings, listPersonas, putCouncilSettings } from './api.ts';
+import { useAsyncAction } from './async-action.ts';
 import { CouncilAdvisorList } from './CouncilAdvisorList.tsx';
 import { Modal } from './Dialog.tsx';
 import { LlmSelector } from './LlmSelector.tsx';
 import { PersonasDialog } from './PersonasDialog.tsx';
 import { useStore } from './store.tsx';
 import { MAX_ADVISORS, MIN_ADVISORS, type CouncilSettings, type Llm, type Persona } from './types.ts';
+import { errorMessage, plural } from './format.ts';
 import './council.css';
 
 // global : réglages de l'accueil ; projectId : surcharge propre au projet.
 export type CouncilSettingsScope = 'global' | { projectId: string };
-
-const message = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
 
 // Sans assignation, le serveur fait jouer la persona par l'agent du chairman.
 export function assignmentOf(settings: CouncilSettings, personaId: string): Llm {
@@ -44,8 +44,19 @@ export function CouncilSettingsDialog({ scope, onClose, onChange }: {
   // Dernière version enregistrée : sert de défaut à chaque LlmSelector.
   const [saved, setSaved] = useState<CouncilSettings | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<'save' | 'reset' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const saving = useAsyncAction(async (next: CouncilSettings) => {
+    if (projectId === null) await putCouncilSettings(next);
+    else await updateProject(projectId, { councilSettings: next });
+    onChange?.();
+    onClose();
+  }, { onError: setError });
+  const resetting = useAsyncAction(async (id: string) => {
+    await updateProject(id, { councilSettings: null });
+    onChange?.();
+    await loadSettings();
+  }, { onError: setError });
+  const busy = saving.busy ? 'save' : resetting.busy ? 'reset' : null;
   const [personasOpen, setPersonasOpen] = useState(false);
 
   const loadSettings = async (): Promise<void> => {
@@ -58,11 +69,11 @@ export function CouncilSettingsDialog({ scope, onClose, onChange }: {
       setPersonas(await listPersonas());
       setLoadError(null);
     } catch (cause) {
-      setLoadError(message(cause));
+      setLoadError(errorMessage(cause));
     }
   };
   useEffect(() => {
-    void Promise.all([loadPersonas(), loadSettings()]).catch(cause => setLoadError(message(cause)));
+    void Promise.all([loadPersonas(), loadSettings()]).catch(cause => setLoadError(errorMessage(cause)));
   }, [projectId]);
 
   const selected = settings !== null && personas !== null ? forCatalog(settings, personas).defaultPersonaIds.length : 0;
@@ -84,34 +95,12 @@ export function CouncilSettingsDialog({ scope, onClose, onChange }: {
 
   const save = async (): Promise<void> => {
     if (settings === null || personas === null || countError !== null) return;
-    setBusy('save');
-    setError(null);
-    try {
-      const next = forCatalog(settings, personas);
-      if (projectId === null) await putCouncilSettings(next);
-      else await updateProject(projectId, { councilSettings: next });
-      onChange?.();
-      onClose();
-    } catch (cause) {
-      setError(message(cause));
-    } finally {
-      setBusy(null);
-    }
+    await saving.run(forCatalog(settings, personas));
   };
 
   const reset = async (): Promise<void> => {
     if (projectId === null) return;
-    setBusy('reset');
-    setError(null);
-    try {
-      await updateProject(projectId, { councilSettings: null });
-      onChange?.();
-      await loadSettings();
-    } catch (cause) {
-      setError(message(cause));
-    } finally {
-      setBusy(null);
-    }
+    await resetting.run(projectId);
   };
 
   return <>
@@ -135,7 +124,7 @@ export function CouncilSettingsDialog({ scope, onClose, onChange }: {
             <p className="hint">Les personas cochées participent par défaut ; chacune est jouée par l’agent choisi ici, modifiable au lancement.</p>
             <CouncilAdvisorList personas={personas} checkedIds={settings.defaultPersonaIds} llmOf={id => assignmentOf(settings, id)} defaultsOf={id => saved === null ? undefined : assignmentOf(saved, id)} disabled={disabled} byDefault onToggle={toggle} onAssign={assign}/>
             <p className={countError ? 'form-error' : 'hint'} role={countError ? 'alert' : undefined}>
-              {countError ?? `${selected} participant${selected > 1 ? 's' : ''} par défaut.`}
+              {countError ?? `${plural(selected, 'participant')} par défaut.`}
             </p>
           </section>
           <section className="council-settings-section">

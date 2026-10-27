@@ -1,9 +1,10 @@
 import { useId, useState } from 'react';
 import { EpicReviewActions, useEpicRun } from './EpicReviewActions.tsx';
 import { FindingsLink } from './FindingsLink.tsx';
-import { isAwaiting } from './format.ts';
+import { isAwaiting, plural } from './format.ts';
 import { href, parseMachine } from './route.ts';
 import { SessionRow } from './SessionRow.tsx';
+import { useStoredFlag } from './storage.ts';
 import { groupSessions, type SessionGroup } from './session-groups.ts';
 import { useStore } from './store.tsx';
 import type { Project, Session } from './types.ts';
@@ -40,18 +41,10 @@ function EpicSessions({ group, now, project, onError }: {
   const { run } = useEpicRun(group.epic.id, 5000);
   const [actionError, setActionError] = useState<string | null>(null);
   const storageKey = `cerebro.sessionEpic.${JSON.stringify([parseMachine(window.location.hash), group.projectId, group.epic.id])}`;
-  const [open, setOpen] = useState(() => {
-    try {
-      const saved = localStorage.getItem(storageKey);
-      if (saved !== null) return saved !== 'closed';
-    } catch { /* Le repli reste disponible sans stockage local. */ }
-    return group.sessions.some((session) => session.status !== 'exited' || isAwaiting(session) || session.pendingFindings > 0);
-  });
-  const toggle = (): void => {
-    const next = !open;
-    setOpen(next);
-    try { localStorage.setItem(storageKey, next ? 'open' : 'closed'); } catch { /* mode privé / quota */ }
-  };
+  const [open, setOpen] = useStoredFlag(storageKey,
+    () => group.sessions.some((session) => session.status !== 'exited' || isAwaiting(session) || session.pendingFindings > 0),
+    ['open', 'closed']);
+  const toggle = (): void => setOpen(!open);
   const attention = group.sessions.filter(session => isAwaiting(session) || session.pendingFindings > 0).length;
   const pendingFindings = group.sessions.reduce((total, session) => total + session.pendingFindings, 0);
   const nextReview = group.sessions.find(session => session.pendingFindings > 0);
@@ -65,7 +58,7 @@ function EpicSessions({ group, now, project, onError }: {
           <span className="session-epic-heading">
             <span className="session-epic-title"><span className="epic-badge">Epic</span><span>{group.epic.title}</span></span>
             <span className="session-epic-summary">
-              <span>{group.sessions.length} session{group.sessions.length > 1 ? 's' : ''}</span>
+              <span>{plural(group.sessions.length, 'session')}</span>
               {running > 0 ? <span className="pill status running">{running} en cours</span> : null}
               {attention > 0 ? <span className="pill status waiting">{attention} à traiter</span> : null}
             </span>

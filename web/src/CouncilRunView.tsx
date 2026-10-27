@@ -1,20 +1,15 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { api, ApiError, apiBase, cancelCouncil, councilExportUrl, councilImageUrl, getCouncil } from './api.ts';
+import { api, ApiError, cancelCouncil, councilExportUrl, councilImageUrl, getCouncil } from './api.ts';
+import { useAsyncAction } from './async-action.ts';
 import { readDraft, writeDraft, type DraftImage } from './drafts.ts';
 import { Markdown } from './Markdown.tsx';
+import { usePolling } from './polling.tsx';
 import { go, href } from './route.ts';
 import { useStore } from './store.tsx';
-import type { Advisor, CouncilAnswer, CouncilPhase, CouncilReview, CouncilRun, CouncilStatus, CouncilSynthesis, Llm } from './types.ts';
+import type { Advisor, CouncilAnswer, CouncilPhase, CouncilReview, CouncilRun, CouncilSynthesis, Llm } from './types.ts';
+import { COUNCIL_STATUS_LABEL, errorMessage, formatDuration, truncate } from './format.ts';
 import './council.css';
-
-const STATUS_LABELS: Record<CouncilStatus, string> = {
-  running: 'En cours',
-  succeeded: 'Terminé',
-  failed: 'Échec',
-  cancelled: 'Annulé',
-  interrupted: 'Interrompu',
-};
 
 const STEPS: { phase: Exclude<CouncilPhase, 'finished'>; label: string; detail: string }[] = [
   { phase: 'answering', label: 'Réponses', detail: 'Chaque conseiller répond indépendamment à la question.' },
@@ -32,7 +27,7 @@ const SYNTHESIS_SECTIONS: { key: keyof CouncilSynthesis; label: string }[] = [
 
 type StepState = 'waiting' | 'running' | 'done' | 'failed' | 'skipped';
 
-const STEP_STATE_LABELS: Record<StepState, string> = {
+const STEP_STATE_LABEL: Record<StepState, string> = {
   waiting: 'en attente',
   running: 'en cours',
   done: 'terminé',
@@ -40,16 +35,8 @@ const STEP_STATE_LABELS: Record<StepState, string> = {
   skipped: '—',
 };
 
-const message = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
-
 function llmLabel(llm: Llm): string {
   return [llm.agent, llm.model ?? 'modèle par défaut', ...llm.effort === null ? [] : [`effort ${llm.effort}`]].join(' · ');
-}
-
-function duration(ms: number): string {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(seconds / 60);
-  return minutes === 0 ? `${seconds} s` : `${minutes} min ${String(seconds % 60).padStart(2, '0')} s`;
 }
 
 // Une étape sans fin enregistrée d'un run terminé a été coupée par l'annulation ou l'arrêt.
@@ -79,7 +66,7 @@ function synthesisState(run: CouncilRun): StepState {
 
 function StateBadge({ state, error }: { state: StepState; error?: string | null }) {
   return <span className={`council-state ${state}`} title={error ?? undefined}>
-    {state === 'running' ? <ActivityStatus>{STEP_STATE_LABELS[state]}</ActivityStatus> : STEP_STATE_LABELS[state]}
+    {state === 'running' ? <ActivityStatus>{STEP_STATE_LABEL[state]}</ActivityStatus> : STEP_STATE_LABEL[state]}
   </span>;
 }
 
@@ -119,8 +106,7 @@ function reportUrl(run: CouncilRun): string {
 }
 
 function quoted(question: string, max = 160): string {
-  const line = question.replace(/\s+/g, ' ').trim();
-  return `« ${line.length > max ? `${line.slice(0, max - 1)}…` : line} »`;
+  return `« ${truncate(question, max)} »`;
 }
 
 function backlogText(run: CouncilRun, synthesis: CouncilSynthesis): string {
@@ -189,23 +175,16 @@ function BacklogFollowUp({ run, synthesis, onClose }: { run: CouncilRun; synthes
   const { projects, createTask } = useStore();
   const [projectId, setProjectId] = useTargetProject(run);
   const [text, setText] = useState(() => backlogText(run, synthesis));
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<string | null>(null);
+  const { run: add, busy, error } = useAsyncAction(async (id: string, task: string) => {
+    await createTask(id, task);
+    setCreated(id);
+  });
 
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
     if (busy || projectId === '' || text.trim() === '') return;
-    setBusy(true);
-    setError(null);
-    try {
-      await createTask(projectId, text.trim());
-      setCreated(projectId);
-    } catch (cause) {
-      setError(message(cause));
-    } finally {
-      setBusy(false);
-    }
+    await add(projectId, text.trim());
   };
 
   if (created !== null) {
@@ -289,7 +268,7 @@ function Progress({ run, now, onCancel, cancelling }: { run: CouncilRun; now: nu
     </ol>
     <p className="council-progress-status">
       <ActivityStatus>{STEPS[current]?.detail ?? 'Démarrage…'}</ActivityStatus>
-      <span className="meta">{duration(now - run.startedAt)} écoulées</span>
+      <span className="meta">{formatDuration(now - run.startedAt, 'seconds')} écoulées</span>
     </p>
     <AdvisorTable run={run}/>
     <p className="meta">Chairman · {llmLabel(run.settings.chairman)} · synthèse <StateBadge state={synthesisState(run)}/></p>
@@ -409,7 +388,7 @@ function Outcome({ run }: { run: CouncilRun }) {
       ? 'Ce council a été annulé : les avis obtenus avant l’annulation sont conservés ci-dessous.'
       : 'Ce council n’a pas pu aboutir : les avis obtenus sont conservés ci-dessous.';
   return <div className={`council-outcome ${run.status}`} role="alert">
-    <p><strong>{STATUS_LABELS[run.status]}.</strong> {explanation}</p>
+    <p><strong>{COUNCIL_STATUS_LABEL[run.status]}.</strong> {explanation}</p>
     {run.error ? <p className="council-error">{run.error}</p> : null}
   </div>;
 }
@@ -417,44 +396,38 @@ function Outcome({ run }: { run: CouncilRun }) {
 // Suivi et rapport d'un council (#/c/<id>) : avancement par phase, puis synthèse, avis, relectures et suites.
 export function CouncilRunView({ councilId }: { councilId: string }) {
   const { projects } = useStore();
-  const [machineBase] = useState(apiBase);
   const [run, setRun] = useState<CouncilRun | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [missing, setMissing] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
+  // Le suivi efface déjà l'erreur à chaque réponse : l'annulation ne fait que la signaler.
+  const { run: cancelRun, busy: cancelling } = useAsyncAction(async (id: string) => setRun(await cancelCouncil(id)), {
+    onError: (message) => { if (message !== null) setError(message); },
+  });
   const [now, setNow] = useState(Date.now);
+  // Council terminé ou introuvable : le suivi s'arrête.
+  const [settled, setSettled] = useState(false);
 
-  useEffect(() => {
-    let disposed = false;
-    let timer: number | undefined;
-    const poll = async (): Promise<void> => {
-      if (disposed || apiBase() !== machineBase) return;
-      try {
-        const value = await getCouncil(councilId);
-        if (disposed) return;
-        setRun(value);
-        setError(null);
-        if (value.finishedAt !== null) {
-          // Rapport affiché : le résultat ne doit plus être notifié.
-          void api(`/api/operations/${encodeURIComponent(`council:${value.id}`)}/seen`, { method: 'POST' }).catch(() => {});
-          return;
-        }
-      } catch (cause) {
-        if (disposed) return;
-        if (cause instanceof ApiError && cause.status === 404) {
-          setMissing(true);
-          return;
-        }
-        setError(message(cause));
+  const load = useCallback(() => getCouncil(councilId), [councilId]);
+  usePolling(load, 1000, {
+    enabled: !settled,
+    onData: (value) => {
+      setRun(value);
+      setError(null);
+      if (value.finishedAt !== null) {
+        setSettled(true);
+        // Rapport affiché : le résultat ne doit plus être notifié.
+        void api(`/api/operations/${encodeURIComponent(`council:${value.id}`)}/seen`, { method: 'POST' }).catch(() => {});
       }
-      timer = window.setTimeout(() => void poll(), 1000);
-    };
-    void poll();
-    return () => {
-      disposed = true;
-      window.clearTimeout(timer);
-    };
-  }, [councilId, machineBase]);
+    },
+    onError: (cause) => {
+      if (cause instanceof ApiError && cause.status === 404) {
+        setMissing(true);
+        setSettled(true);
+        return;
+      }
+      setError(errorMessage(cause));
+    },
+  });
 
   const running = run !== null && run.finishedAt === null;
   useEffect(() => {
@@ -465,14 +438,7 @@ export function CouncilRunView({ councilId }: { councilId: string }) {
 
   const cancel = async (): Promise<void> => {
     if (run === null) return;
-    setCancelling(true);
-    try {
-      setRun(await cancelCouncil(run.id));
-    } catch (cause) {
-      setError(message(cause));
-    } finally {
-      setCancelling(false);
-    }
+    await cancelRun(run.id);
   };
 
   if (missing) {
@@ -491,7 +457,7 @@ export function CouncilRunView({ councilId }: { councilId: string }) {
   return <div className="pane padded council-view">
     <header className="pane-head">
       <div className="pane-head-main">
-        <h1>Council <span className={`council-run-status ${run.status}`}>{STATUS_LABELS[run.status].toLowerCase()}</span></h1>
+        <h1>Council <span className={`council-run-status ${run.status}`}>{COUNCIL_STATUS_LABEL[run.status].toLowerCase()}</span></h1>
         <p className="meta council-view-meta">
           {run.projectId === null
             ? 'Hors projet'
@@ -499,7 +465,7 @@ export function CouncilRunView({ councilId }: { councilId: string }) {
           {run.projectId !== null ? ` · ${run.readProject ? 'lecture du dépôt' : 'sans lecture du dépôt'}` : ''}
           {run.origin === 'slack' ? ' · lancé depuis Slack' : ''}
           {' · '}{new Date(run.startedAt).toLocaleString()}
-          {' · '}{duration((run.finishedAt ?? now) - run.startedAt)}
+          {' · '}{formatDuration((run.finishedAt ?? now) - run.startedAt, 'seconds')}
         </p>
       </div>
     </header>

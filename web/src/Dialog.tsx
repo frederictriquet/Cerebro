@@ -1,12 +1,14 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
 import type { Agent, LaunchSpec } from './types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
-import { api, clipboardImage, uploadProjectImage } from './api.ts';
+import { api, uploadProjectImage } from './api.ts';
 import type { WorkspaceContext } from '../../server/provenance.ts';
-import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
+import { useAsyncAction } from './async-action.ts';
+import { AttachmentStrip, useAttachedField } from './attachments.tsx';
+import { errorMessage } from './format.ts';
 
 // Modale native : Échap et un clic hors du contenu la ferment.
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
@@ -51,15 +53,60 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
   );
 }
 
-export function LaunchSessionDialog({
+/** Charge le périmètre affiché avant un lancement ; `load` doit rester stable entre les rendus. */
+export function usePrepared<T>(load: (() => Promise<T>) | null): { value: T | null; error: string | null } {
+  const [state, setState] = useState<{ value: T | null; error: string | null }>({ value: null, error: null });
+  useEffect(() => {
+    let cancelled = false;
+    setState({ value: null, error: null });
+    if (load) {
+      void load().then(
+        (value) => { if (!cancelled) setState({ value, error: null }); },
+        (cause: unknown) => { if (!cancelled) setState({ value: null, error: errorMessage(cause) }); },
+      );
+    }
+    return () => { cancelled = true; };
+  }, [load]);
+  return state;
+}
+
+type LaunchFormProps = Pick<Parameters<typeof NewSessionForm>[0], 'initialPrompt' | 'promptFor' | 'submitLabel' | 'launchDisabled' | 'autoFocus' | 'onLaunch'>;
+
+/** Modale de lancement : périmètre éventuel (`children`), puis le formulaire de session une fois le périmètre prêt. */
+export function LaunchDialog({
   title,
   projectId,
-  initialPrompt,
-  promptFor,
+  ready = true,
+  error = null,
+  children,
+  onClose,
+  ...form
+}: LaunchFormProps & {
+  title: string;
+  projectId: string;
+  ready?: boolean;
+  error?: string | null;
+  children?: ReactNode;
+  onClose: () => void;
+}) {
+  return (
+    <Modal title={title} onClose={onClose}>
+      {!ready && !error ? <p><ActivityStatus>Préparation du périmètre de review…</ActivityStatus></p> : null}
+      {ready ? (
+        <>
+          {children}
+          <NewSessionForm className="bare" projectId={projectId} {...form} onCancel={onClose} />
+        </>
+      ) : null}
+      {error ? <p className="form-error">{error}</p> : null}
+    </Modal>
+  );
+}
+
+export function LaunchSessionDialog({
   submitLabel,
   epicId,
-  onLaunch,
-  onClose,
+  ...props
 }: {
   title: string;
   projectId: string;
@@ -70,28 +117,14 @@ export function LaunchSessionDialog({
   onLaunch: (spec: LaunchSpec) => Promise<void>;
   onClose: () => void;
 }) {
-  const [workspace, setWorkspace] = useState<WorkspaceContext | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    setWorkspace(null);
-    if (epicId) void api<WorkspaceContext | null>(`/api/epics/${epicId}/workspace`).then(value => { if (!cancelled) setWorkspace(value); }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [epicId]);
+  const load = useCallback(() => api<WorkspaceContext | null>(`/api/epics/${epicId}/workspace`), [epicId]);
+  // Le dossier de l'epic est facultatif : le formulaire ne l'attend pas, et un échec de chargement reste silencieux.
+  const { value: workspace } = usePrepared(epicId ? load : null);
   const contextLabel = workspace ? workspace.mode === 'isolated' ? 'Poursuivre dans le worktree de l’epic' : 'Poursuivre dans le dossier d’origine de l’epic' : undefined;
   return (
-    <Modal title={title} onClose={onClose}>
+    <LaunchDialog {...props} submitLabel={submitLabel ?? contextLabel} autoFocus>
       {workspace ? <p className="hint">Dossier conservé pour cet epic : <code>{workspace.path}</code>. Le réglage des nouvelles conversations ne le modifie pas.</p> : null}
-      <NewSessionForm
-        className="bare"
-        projectId={projectId}
-        initialPrompt={initialPrompt}
-        promptFor={promptFor}
-        submitLabel={submitLabel ?? contextLabel}
-        autoFocus
-        onLaunch={onLaunch}
-        onCancel={onClose}
-      />
-    </Modal>
+    </LaunchDialog>
   );
 }
 
@@ -110,21 +143,21 @@ export function AddTaskDialog({
   const [text, setText] = useState(initialText);
   // Projet du backlog cible : celui de la session par défaut, mais un constat peut concerner un autre projet.
   const [targetId, setTargetId] = useState(projectId);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const images = useImageAttachments((image) => uploadProjectImage(targetId, image));
+  const { run: createTargetTask, busy, error, setError } = useAsyncAction(async () => {
+    await createTask(targetId, images.expand(text), sourceSessionId);
+    onClose();
+  }, { fallback: 'Ajout impossible' });
+  const { images, fieldProps, stripProps } = useAttachedField({
+    upload: (image) => uploadProjectImage(targetId, image),
+    text,
+    setText,
+    onError: (message) => setError(`Image non envoyée : ${message}`),
+    disabled: busy,
+  });
 
   const add = async (): Promise<void> => {
     if (busy || images.pending || text.trim() === '') return;
-    setBusy(true);
-    setError(null);
-    try {
-      await createTask(targetId, images.expand(text), sourceSessionId);
-      onClose();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Ajout impossible');
-      setBusy(false);
-    }
+    await createTargetTask();
   };
 
   return (
@@ -142,22 +175,7 @@ export function AddTaskDialog({
           value={text}
           disabled={busy}
           placeholder="Description de la tâche · Ctrl+V pour joindre une image"
-          onChange={(e) => {
-            setText(e.target.value);
-            images.prune(e.target.value);
-          }}
-          onPaste={(e) => {
-            const image = clipboardImage(e.clipboardData);
-            if (image === null) return;
-            e.preventDefault();
-            if (busy) return;
-            const { selectionStart, selectionEnd } = e.currentTarget;
-            const token = images.add(image, (failed, message) => {
-              setText((current) => removeToken(current, failed));
-              setError(`Image non envoyée : ${message}`);
-            });
-            setText((current) => insertToken(current, selectionStart, selectionEnd, token));
-          }}
+          {...fieldProps}
           onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
             if (isSubmitShortcut(e)) {
               e.preventDefault();
@@ -165,14 +183,7 @@ export function AddTaskDialog({
             }
           }}
         />
-        <AttachmentStrip
-          items={images.items}
-          onRemove={(item) => {
-            if (busy) return;
-            images.remove(item.n);
-            setText((current) => removeToken(current, item.token));
-          }}
-        />
+        <AttachmentStrip {...stripProps} />
         {projects.length > 1 ? (
           <label className="task-form-project">
             Backlog du projet

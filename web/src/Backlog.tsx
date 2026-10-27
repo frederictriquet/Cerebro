@@ -1,15 +1,18 @@
 import type { EpicRun } from '../../server/epic-runner.ts';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { api, clipboardImage, uploadProjectImage } from './api.ts';
-import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from './attachments.tsx';
+import { api, uploadProjectImage } from './api.ts';
+import { useAsyncAction } from './async-action.ts';
+import { AttachmentStrip, useAttachedField } from './attachments.tsx';
 import type { CommandRun, ProjectCommand } from '../../server/commands.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { LaunchSessionDialog } from './Dialog.tsx';
 import { EpicReviewActions, RUN_ACTIVE, useEpicRun } from './EpicReviewActions.tsx';
 import { EpicWorkspacePicker } from './EpicWorkspacePicker.tsx';
-import { STATUS_LABEL, WORKSPACE_TARGET, sessionTitle } from './format.ts';
+import { EPIC_RUN_STATUS_LABEL, errorMessage, pluralize, STATUS_LABEL, TASK_STATUS_LABEL, WORKSPACE_TARGET, sessionTitle } from './format.ts';
 import { href } from './route.ts';
+import { usePolling } from './polling.tsx';
 import { StatusDot } from './StatusDot.tsx';
+import { useStoredFlag } from './storage.ts';
 import { useStore } from './store.tsx';
 import type { Epic, Session, Task } from './types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
@@ -18,11 +21,19 @@ export function taskTitle(text: string): string {
   return text.split('\n').find((line) => line.trim() !== '')?.trim() ?? text;
 }
 
-const TASK_STATUS_LABEL: Record<Task['status'], string> = {
-  todo: 'À faire',
-  started: 'En cours',
-  done: 'Terminée',
-};
+/** Titre d'une tâche tronqué pour une liste, une option ou un titre de modale. */
+function taskLabel(task: Pick<Task, 'text'>, max: number): string {
+  return taskTitle(task.text).slice(0, max);
+}
+
+function TaskSessionLink({ session }: { session: Session }) {
+  return (
+    <a className="task-session" href={href(`#/s/${session.id}`)} title={STATUS_LABEL[session.status]}>
+      <StatusDot status={session.status} title={STATUS_LABEL[session.status]} />
+      {sessionTitle(session.title)}
+    </a>
+  );
+}
 
 // Tâches de `tasks` dont `id` dépend, directement ou non : en dépendre créerait un cycle.
 function dependents(id: string, tasks: Task[]): Set<string> {
@@ -99,8 +110,18 @@ export function Backlog({ projectId }: { projectId: string }) {
   const [startingEpic, setStartingEpic] = useState<{ epic: Epic; prompt: string } | null>(null);
   const [launching, setLaunching] = useState<Set<string>>(() => new Set());
   const [creatingEpic, setCreatingEpic] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const images = useImageAttachments((image) => uploadProjectImage(projectId, image));
+  const { run: addTask, busy } = useAsyncAction(async () => {
+    await createTask(projectId, images.expand(draft), undefined, epicIds.has(draftEpic) ? draftEpic : null);
+    setDraft('');
+    images.reset();
+  }, { fallback: 'Ajout impossible', onError: setError });
+  const { images, fieldProps, stripProps } = useAttachedField({
+    upload: (image) => uploadProjectImage(projectId, image),
+    text: draft,
+    setText: setDraft,
+    onError: (message) => setError(`Image non envoyée : ${message}`),
+    disabled: busy,
+  });
   const [composer, setComposer] = useState<'llm' | 'command'>('llm');
   const llmTab = useRef<HTMLButtonElement>(null);
   const commandTab = useRef<HTMLButtonElement>(null);
@@ -112,7 +133,7 @@ export function Backlog({ projectId }: { projectId: string }) {
     try {
       await action();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Lancement impossible');
+      setError(errorMessage(err, 'Lancement impossible'));
       throw err;
     } finally {
       setLaunching((current) => {
@@ -125,23 +146,13 @@ export function Backlog({ projectId }: { projectId: string }) {
 
   const add = async (): Promise<void> => {
     if (busy || images.pending || draft.trim() === '') return;
-    setBusy(true);
-    setError(null);
-    try {
-      await createTask(projectId, images.expand(draft), undefined, epicIds.has(draftEpic) ? draftEpic : null);
-      setDraft('');
-      images.reset();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Ajout impossible');
-    } finally {
-      setBusy(false);
-    }
+    await addTask();
   };
 
   const deleteDone = (): void => {
     setError(null);
     void deleteCompletedBacklog(projectId).catch((err: unknown) =>
-      setError(err instanceof Error ? err.message : 'Suppression impossible'),
+      setError(errorMessage(err, 'Suppression impossible')),
     );
   };
 
@@ -172,7 +183,7 @@ export function Backlog({ projectId }: { projectId: string }) {
       launching={launching.has(task.id)}
       session={sessions.find((s) => s.id === task.sessionId)}
       source={sessions.find((s) => s.id === task.sourceSessionId)}
-      onStart={() => { if(task.execution?.type==='command') void api(`/api/tasks/${task.id}/start`,{method:'POST'}).catch(cause=>setError(String(cause))); else setStarting(task); }}
+      onStart={() => { if(task.execution?.type==='command') void api(`/api/tasks/${task.id}/start`,{method:'POST'}).catch(cause=>setError(errorMessage(cause))); else setStarting(task); }}
       onError={setError}
     />
   );
@@ -238,22 +249,7 @@ export function Backlog({ projectId }: { projectId: string }) {
             value={draft}
             disabled={busy}
             placeholder={`Nouvelle tâche (${SUBMIT_HINT} pour ajouter) · Ctrl+V pour joindre une image`}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              images.prune(e.target.value);
-            }}
-            onPaste={(e) => {
-              const image = clipboardImage(e.clipboardData);
-              if (image === null) return;
-              e.preventDefault();
-              if (busy) return;
-              const { selectionStart, selectionEnd } = e.currentTarget;
-              const token = images.add(image, (failed, message) => {
-                setDraft((current) => removeToken(current, failed));
-                setError(`Image non envoyée : ${message}`);
-              });
-              setDraft((current) => insertToken(current, selectionStart, selectionEnd, token));
-            }}
+            {...fieldProps}
             onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
               if (isSubmitShortcut(e)) {
                 e.preventDefault();
@@ -261,14 +257,7 @@ export function Backlog({ projectId }: { projectId: string }) {
               }
             }}
           />
-          <AttachmentStrip
-            items={images.items}
-            onRemove={(item) => {
-              if (busy) return;
-              images.remove(item.n);
-              setDraft((current) => removeToken(current, item.token));
-            }}
-          />
+          <AttachmentStrip {...stripProps} />
           <div className="task-add-actions">
             <EpicSelect epics={ownEpics} value={selectedEpic} onChange={setDraftEpic} />
             <button type="submit" className="btn primary" disabled={busy || images.pending || draft.trim() === ''}>
@@ -311,7 +300,7 @@ export function Backlog({ projectId }: { projectId: string }) {
           showDone={showDone}
           launching={launching.has(epic.id)}
           renderTask={renderTask}
-          onStart={(prompt) => { const members=own.filter(t=>t.epicId===epic.id&&t.status!=='done');if(members.every(t=>t.execution?.type==='command'))void api(`/api/epics/${epic.id}/start`,{method:'POST',body:'{}'}).catch(cause=>setError(String(cause)));else setStartingEpic({ epic, prompt }); }}
+          onStart={(prompt) => { const members=own.filter(t=>t.epicId===epic.id&&t.status!=='done');if(members.every(t=>t.execution?.type==='command'))void api(`/api/epics/${epic.id}/start`,{method:'POST',body:'{}'}).catch(cause=>setError(errorMessage(cause)));else setStartingEpic({ epic, prompt }); }}
           onError={setError}
         />
       ))}
@@ -326,7 +315,7 @@ export function Backlog({ projectId }: { projectId: string }) {
       {error ? <p className="form-error">{error}</p> : null}
       {starting ? (
         <LaunchSessionDialog
-          title={`Traiter : ${taskTitle(starting.text).slice(0, 80)}`}
+          title={`Traiter : ${taskLabel(starting, 80)}`}
           projectId={projectId}
           epicId={starting.epicId}
           initialPrompt={starting.text}
@@ -354,14 +343,6 @@ export function Backlog({ projectId }: { projectId: string }) {
   );
 }
 
-const RUN_STATUS_LABEL: Record<EpicRun['status'], string> = {
-  running: 'en cours',
-  'waiting-validation': 'en attente de validation',
-  blocked: 'bloqué',
-  failed: 'en échec',
-  stopped: 'arrêté',
-  succeeded: 'terminé',
-};
 const RUN_RESULT_LABEL: Record<string, string> = {
   'declared-done': 'déclarée terminée',
   validated: 'validée',
@@ -381,7 +362,7 @@ function runAction(run: EpicRun, name: 'stop' | 'resume'): Promise<unknown> {
   return api(`/api/epic-runs/${run.id}/${name}`, { method: 'POST', body: JSON.stringify({ replan: name === 'resume' }) });
 }
 
-function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (id: string) => string; onChanged: () => Promise<void> }) {
+function EpicRunView({ run, labelOf, onChanged }: { run: EpicRun; labelOf: (id: string) => string; onChanged: () => Promise<void> }) {
   const { updateTask } = useStore();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -390,7 +371,7 @@ function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (
     setPending(true);
     void api(`/api/epic-runs/${run.id}/auto-validation`, { method: 'PATCH', body: JSON.stringify({ enabled }) })
       .then(() => { setError(null); return onChanged(); })
-      .catch((cause: unknown) => setError(String(cause)))
+      .catch((cause: unknown) => setError(errorMessage(cause)))
       .finally(() => setPending(false));
   };
   const action = (name: 'stop' | 'resume' | 'validate'): void => {
@@ -404,7 +385,7 @@ function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (
         setError(null);
         return onChanged();
       })
-      .catch((cause: unknown) => setError(String(cause)))
+      .catch((cause: unknown) => setError(errorMessage(cause)))
       .finally(() => setPending(false));
   };
   const needsAction = RUN_NEEDS_ACTION.includes(run.status);
@@ -418,16 +399,16 @@ function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (
         }}
       >
         <summary>
-          Ordonnanceur : <span className={`epic-run-status ${run.status}`}>{RUN_STATUS_LABEL[run.status]}</span> — {results.length}/{run.order.length} résultat{results.length > 1 ? 's' : ''}
+          Ordonnanceur : <span className={`epic-run-status ${run.status}`}>{EPIC_RUN_STATUS_LABEL[run.status]}</span> — {results.length}/{run.order.length} {pluralize(results.length, 'résultat')}
         </summary>
-        <p>Étape courante : {run.currentTaskId ? taskLabel(run.currentTaskId) : 'aucune'}</p>
+        <p>Étape courante : {run.currentTaskId ? labelOf(run.currentTaskId) : 'aucune'}</p>
         <p>Espace : {run.contextRoot}</p>
         {!needsAction && run.error ? <p>{run.error}</p> : null}
         {results.length > 0 ? (
           <ul>
             {results.map(([id, result]) => (
               <li key={id}>
-                {taskLabel(id)} : {RUN_RESULT_LABEL[result] ?? result}
+                {labelOf(id)} : {RUN_RESULT_LABEL[result] ?? result}
               </li>
             ))}
           </ul>
@@ -444,7 +425,7 @@ function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (
       {needsAction && run.error && !run.workspaceConflict ? <p className="epic-run-reason">{run.error}</p> : null}
       {awaitingValidation ? (
         <p className="epic-run-reason">
-          Étape à valider : {taskLabel(run.currentTaskId!)}. Vérifiez le résultat et les critères de la tâche,
+          Étape à valider : {labelOf(run.currentTaskId!)}. Vérifiez le résultat et les critères de la tâche,
           puis marquez cette étape terminée pour poursuivre l’epic.
           Reprendre et recalculer actualise le plan, sans valider le travail.
         </p>
@@ -478,14 +459,19 @@ function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (
 
 const EMPTY_COMMAND = JSON.stringify({ name: '', executable: '', args: [], cwd: '.', timeoutSeconds: 300 }, null, 2);
 
-function EpicSelect({ epics, value, onChange }: { epics: Epic[]; value: string; onChange: (id: string) => void }) {
+function EpicSelect({ epics, value, maxTitle = 60, onChange }: {
+  epics: Epic[];
+  value: string;
+  maxTitle?: number;
+  onChange: (id: string) => void;
+}) {
   if (epics.length === 0) return null;
   return (
     <select value={value} onChange={(e) => onChange(e.target.value)} aria-label="Epic de la tâche">
       <option value="">Sans epic</option>
       {epics.map((epic) => (
         <option key={epic.id} value={epic.id}>
-          {epic.title.slice(0, 60)}
+          {epic.title.slice(0, maxTitle)}
         </option>
       ))}
     </select>
@@ -532,7 +518,7 @@ function CommandTasks({
       setLoaded(true);
     } catch (cause) {
       if (loadGeneration.current !== generation) return;
-      setError(cause instanceof Error ? cause.message : 'Chargement des commandes impossible');
+      setError(errorMessage(cause, 'Chargement des commandes impossible'));
       setLoaded(true);
     }
   }, [projectId]);
@@ -560,7 +546,7 @@ function CommandTasks({
         setText('');
         setError(null);
       })
-      .catch((cause: unknown) => setError(String(cause)));
+      .catch((cause: unknown) => setError(errorMessage(cause)));
   };
 
   const saveCommand = (): void => {
@@ -568,7 +554,7 @@ function CommandTasks({
     try {
       body = JSON.parse(raw);
     } catch (cause) {
-      setError(String(cause));
+      setError(errorMessage(cause));
       return;
     }
     void api<ProjectCommand>(`/api/projects/${projectId}/commands`, { method: 'POST', body: JSON.stringify(body) })
@@ -577,7 +563,7 @@ function CommandTasks({
         await refresh();
         setSelected(command.id);
       })
-      .catch((cause: unknown) => setError(String(cause)));
+      .catch((cause: unknown) => setError(errorMessage(cause)));
   };
 
   const commandConfig = (
@@ -640,7 +626,8 @@ function CommandTasks({
 function CommandRunView({task,onActive}:{task:Task;onActive:(active:boolean)=>void}) {
   const detail=useRef<HTMLDetailsElement>(null);
   const [runs,setRuns]=useState<CommandRun[]>([]);
-  useEffect(()=>{const refresh=async():Promise<void>=>{const runs=await api<CommandRun[]>(`/api/tasks/${task.id}/runs`);setRuns(runs);onActive(runs[0]?.status==='running');};void refresh().catch(()=>{});const timer=window.setInterval(()=>void refresh().catch(()=>{}),1000);return()=>window.clearInterval(timer);},[task.id]);
+  const load=useCallback(()=>api<CommandRun[]>(`/api/tasks/${task.id}/runs`),[task.id]);
+  usePolling(load,1000,{onData:runs=>{setRuns(runs);onActive(runs[0]?.status==='running');}});
   const run=runs[0];
   useEffect(()=>{if(detail.current?.open&&run?.finishedAt)void api(`/api/operations/${encodeURIComponent(run.id)}/seen`,{method:'POST'}).catch(()=>{});},[run?.id,run?.finishedAt]);
   return <details ref={detail} onToggle={e=>{if(e.currentTarget.open&&run?.finishedAt)void api(`/api/operations/${encodeURIComponent(run.id)}/seen`,{method:'POST'}).catch(()=>{});}}><summary>Commande — {run?.status??'non exécutée'}{run?.status==='succeeded'&&task.status!=='done'?' ; travail à valider':''}</summary>
@@ -664,19 +651,11 @@ function EpicForm({
 }) {
   const [title, setTitle] = useState(initialTitle);
   const [description, setDescription] = useState(initialDescription);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const { run: save, busy, error } = useAsyncAction(() => onSubmit(title, description), { fallback: 'Enregistrement impossible' });
 
   const submit = async (): Promise<void> => {
     if (busy || title.trim() === '') return;
-    setBusy(true);
-    setError(null);
-    try {
-      await onSubmit(title, description);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Enregistrement impossible');
-      setBusy(false);
-    }
+    await save();
   };
 
   return (
@@ -735,24 +714,8 @@ function EpicBlock({
   const { projects, updateEpic, deleteEpic } = useStore();
   const project = projects.find((p) => p.id === epic.projectId);
   const workspaceMode = project?.workspaceMode ?? 'isolated';
-  const collapsedKey = `cerebro.epicCollapsed.${epic.id}`;
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(collapsedKey) === '1';
-    } catch {
-      return false;
-    }
-  });
-  const toggleCollapsed = (): void => {
-    const next = !collapsed;
-    setCollapsed(next);
-    try {
-      if (next) localStorage.setItem(collapsedKey, '1');
-      else localStorage.removeItem(collapsedKey);
-    } catch {
-      /* quota / mode privé : le repli reste utilisable sans persistance */
-    }
-  };
+  const [collapsed, setCollapsed] = useStoredFlag(`cerebro.epicCollapsed.${epic.id}`, false);
+  const toggleCollapsed = (): void => setCollapsed(!collapsed);
   const [editing, setEditing] = useState(false);
   const { run, refresh: refreshRun } = useEpicRun(epic.id);
   const members = projectTasks.filter((t) => t.epicId === epic.id);
@@ -770,16 +733,16 @@ function EpicBlock({
   const continuesWorktree = continuesEpic && run.workspace!.mode === 'isolated';
   // The server refuses a new run while one is active; a failed one is taken over by « Reprendre » in the run view.
   const runHoldsEpic = run !== null && (RUN_ACTIVE.includes(run.status) || run.status === 'failed');
-  const taskLabel = (id: string): string => {
+  const labelOf = (id: string): string => {
     const task = byId.get(id);
-    return task ? taskTitle(task.text).slice(0, 80) : id;
+    return task ? taskLabel(task, 80) : id;
   };
   // Displayed in creation order; the number gives the processing rank (dependency order).
   const shown = showDone ? members : members.filter((t) => t.status !== 'done');
   const startHint = open.length === 0
     ? 'Aucune tâche ouverte dans cet epic'
     : outsideBlockers.length > 0
-      ? `Attend des tâches hors de l'epic : ${outsideBlockers.map((t) => taskTitle(t.text).slice(0, 60)).join(' · ')}`
+      ? `Attend des tâches hors de l'epic : ${outsideBlockers.map((t) => taskLabel(t, 60)).join(' · ')}`
       : activeSession !== undefined
         ? 'Une session traite déjà cet epic'
         : `Le serveur ordonnance les ${open.length} tâche(s) selon leurs dépendances${continuesEpic ? `, dans ${run.workspace!.path}` : ''}`;
@@ -794,16 +757,13 @@ function EpicBlock({
         </button>
         <div className="task-row-meta">
           <span className={`pill task-status ${members.length > 0 && open.length === 0 ? 'done' : ''}`}>
-            {doneCount}/{members.length} terminée{doneCount > 1 ? 's' : ''}
+            {doneCount}/{members.length} {pluralize(doneCount, 'terminée')}
           </span>
           <span className="epic-progress" aria-hidden="true">
             <span style={{ width: members.length === 0 ? 0 : `${(doneCount / members.length) * 100}%` }} />
           </span>
           {activeSession ? (
-            <a className="task-session" href={href(`#/s/${activeSession.id}`)} title={STATUS_LABEL[activeSession.status]}>
-              <StatusDot status={activeSession.status} title={STATUS_LABEL[activeSession.status]} />
-              {sessionTitle(activeSession.title)}
-            </a>
+            <TaskSessionLink session={activeSession} />
           ) : null}
         </div>
         <div className="row-actions">
@@ -831,13 +791,13 @@ function EpicBlock({
             Éditer
           </button>
           <DelayedActionButton
-            onAction={() => void deleteEpic(epic.id).catch((err: unknown) => onError(err instanceof Error ? err.message : 'Suppression impossible'))}
+            onAction={() => void deleteEpic(epic.id).catch((err: unknown) => onError(errorMessage(err, 'Suppression impossible')))}
           >
             Supprimer l'epic
           </DelayedActionButton>
         </div>
       </div>
-      {run ? <EpicRunView run={run} taskLabel={taskLabel} onChanged={refreshRun} /> : null}
+      {run ? <EpicRunView run={run} labelOf={labelOf} onChanged={refreshRun} /> : null}
       {editing ? (
         <EpicForm
           initialTitle={epic.title}
@@ -905,7 +865,7 @@ function TaskRow({
   };
 
   const run = (fn: () => Promise<unknown>, fallback: string): void => {
-    void fn().catch((err: unknown) => onError(err instanceof Error ? err.message : fallback));
+    void fn().catch((err: unknown) => onError(errorMessage(err, fallback)));
   };
 
   const save = (): void => {
@@ -932,14 +892,11 @@ function TaskRow({
         <div className="task-row-meta">
           <span className={`pill task-status ${pill.className}`}>{pill.label}</span>
           {session ? (
-            <a className="task-session" href={href(`#/s/${session.id}`)} title={STATUS_LABEL[session.status]}>
-              <StatusDot status={session.status} title={STATUS_LABEL[session.status]} />
-              {sessionTitle(session.title)}
-            </a>
+            <TaskSessionLink session={session} />
           ) : null}
           {blockers.length > 0 && task.status !== 'done' ? (
             <span className="task-blockers">
-              Attend : {blockers.map((t) => taskTitle(t.text).slice(0, 60)).join(' · ')}
+              Attend : {blockers.map((t) => taskLabel(t, 60)).join(' · ')}
             </span>
           ) : null}
         </div>
@@ -997,7 +954,7 @@ function TaskRow({
                 {dependencies.length === 0 ? <span className="meta">aucune tâche</span> : null}
                 {dependencies.map((dep) => (
                   <span key={dep.id} className={`task-dep ${dep.status}`}>
-                    {taskTitle(dep.text).slice(0, 60)}
+                    {taskLabel(dep, 60)}
                     <button
                       type="button"
                       className="task-dep-remove"
@@ -1018,7 +975,7 @@ function TaskRow({
                     <option value="">Ajouter une dépendance…</option>
                     {candidates.map((t) => (
                       <option key={t.id} value={t.id}>
-                        {taskTitle(t.text).slice(0, 80)}
+                        {taskLabel(t, 80)}
                         {t.status === 'done' ? ' (terminée)' : ''}
                       </option>
                     ))}
@@ -1028,19 +985,12 @@ function TaskRow({
               {epics.length > 0 ? (
                 <div className="task-deps">
                   <span className="meta">Epic :</span>
-                  <select
+                  <EpicSelect
+                    epics={epics}
                     value={task.epicId ?? ''}
-                    onChange={(e) =>
-                      run(() => updateTask(task.id, { epicId: e.target.value === '' ? null : e.target.value }), 'Changement d\'epic impossible')
-                    }
-                  >
-                    <option value="">Sans epic</option>
-                    {epics.map((e) => (
-                      <option key={e.id} value={e.id}>
-                        {e.title.slice(0, 80)}
-                      </option>
-                    ))}
-                  </select>
+                    maxTitle={80}
+                    onChange={(id) => run(() => updateTask(task.id, { epicId: id === '' ? null : id }), 'Changement d\'epic impossible')}
+                  />
                 </div>
               ) : null}
               <div className="row-actions">

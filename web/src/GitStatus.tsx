@@ -1,7 +1,9 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { useEffect, useId, useState } from 'react';
+import { useCallback, useId, useState } from 'react';
 import { api } from './api.ts';
+import { plural } from './format.ts';
 import { GitActions } from './GitActions.tsx';
+import { usePolling } from './polling.tsx';
 import { parseGitInfo, type GitInfo } from './types.ts';
 
 export function GitStatus({ projectId }: { projectId: string }) {
@@ -10,29 +12,22 @@ export function GitStatus({ projectId }: { projectId: string }) {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const previewId = useId();
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = async (): Promise<void> => {
-      try {
-        const raw = await api<unknown>(`/api/projects/${projectId}/git${expanded ? '?commits=true' : ''}`);
-        const parsed = parseGitInfo(raw);
-        if (!parsed) throw new Error('Réponse Git invalide');
-        if (!cancelled) {
-          setGit(parsed);
-          setPreviewError(expanded && !parsed.pendingCommits && !parsed.pendingCommitsError && (parsed.ahead ?? 0) > 0
-            ? 'Aperçu indisponible sur cette machine.' : null);
-        }
-      } catch {
-        if (!cancelled && expanded) setPreviewError('Impossible de charger les commits. Nouvelle tentative dans quelques instants.');
-      }
-    };
-    void load();
-    const timer = window.setInterval(() => void load(), 10_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
+  const load = useCallback(async (): Promise<GitInfo> => {
+    const raw = await api<unknown>(`/api/projects/${projectId}/git${expanded ? '?commits=true' : ''}`);
+    const parsed = parseGitInfo(raw);
+    if (!parsed) throw new Error('Réponse Git invalide');
+    return parsed;
   }, [projectId, expanded]);
+  usePolling(load, 10_000, {
+    onData: (parsed) => {
+      setGit(parsed);
+      setPreviewError(expanded && !parsed.pendingCommits && !parsed.pendingCommitsError && (parsed.ahead ?? 0) > 0
+        ? 'Aperçu indisponible sur cette machine.' : null);
+    },
+    onError: () => {
+      if (expanded) setPreviewError('Impossible de charger les commits. Nouvelle tentative dans quelques instants.');
+    },
+  });
 
   if (!git) return null;
   if (git.branch === null) return <p className="git-line meta">Pas un dépôt git</p>;
@@ -44,7 +39,7 @@ export function GitStatus({ projectId }: { projectId: string }) {
       <span className="pill">{git.branch}</span>
       <GitActions projectId={projectId} git={git} pendingCommits={count > 0 ? <button type="button" className="git-ahead-toggle" aria-expanded={expanded} aria-controls={previewId}
         onClick={() => { setExpanded(value => !value); setPreviewError(null); }}>
-        <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {count} commit{count === 1 ? '' : 's'} à pousser
+        <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {plural(count, 'commit')} à pousser
       </button> : null} />
     </div>
     {expanded && count > 0 ? <section id={previewId} className="git-pending-preview" aria-label="Commits à pousser">

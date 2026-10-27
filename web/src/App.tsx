@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react';
 import { dismissPeerNotice, getPeerNotices, setApiBase, subscribeUnauthorized, type PeerNotice } from './api.ts';
 import { CouncilRunView } from './CouncilRunView.tsx';
 import { HomeView } from './HomeView.tsx';
@@ -10,6 +10,7 @@ import { Sidebar } from './Sidebar.tsx';
 import { SidebarRail, useSidebarLayout } from './SidebarRail.tsx';
 import { StoreProvider, useStore } from './store.tsx';
 import { useMachine, useRoute } from './route.ts';
+import { NowProvider, usePolling } from './polling.tsx';
 
 function TokenScreen() {
   const [error, setError] = useState<string | null>(null);
@@ -70,24 +71,14 @@ function PeerNotices() {
   const { peersVersion } = useStore();
   const [notices, setNotices] = useState<PeerNotice[]>([]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = (): void => {
-      void getPeerNotices()
-        .then((list) => {
-          if (!cancelled) setNotices(list);
-        })
-        .catch(() => {
-          /* machine sans cette fonctionnalité : rien à afficher */
-        });
-    };
-    load();
-    const timer = window.setInterval(load, 15_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [peersVersion]);
+  // peersVersion relance le cycle : un changement de pairs se voit aussitôt.
+  const load = useCallback(() => getPeerNotices(), [peersVersion]);
+  usePolling(load, 15_000, {
+    onData: setNotices,
+    onError: () => {
+      /* machine sans cette fonctionnalité : rien à afficher */
+    },
+  });
 
   if (notices.length === 0) return null;
   const dismiss = (id: string): void => {
@@ -183,10 +174,15 @@ export function App() {
   if (locked) return <TokenScreen />;
 
   return (
-    <MachineWatchProvider>
-      <StoreProvider key={machine ?? 'local'}>
-        <Shell />
-      </StoreProvider>
-    </MachineWatchProvider>
+    <NowProvider>
+      <MachineWatchProvider>
+        {/* Clé par machine : changer de machine démonte tout l'arbre, donc les requêtes en vol d'un composant
+            ne peuvent plus mettre à jour l'interface (React ignore les setState après démontage). Inutile de
+            comparer apiBase() à celle du montage ; seuls les caches de module doivent inclure la machine dans leur clé. */}
+        <StoreProvider key={machine ?? 'local'}>
+          <Shell />
+        </StoreProvider>
+      </MachineWatchProvider>
+    </NowProvider>
   );
 }

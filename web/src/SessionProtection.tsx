@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useAsyncAction } from './async-action.ts';
 import { useStore } from './store.tsx';
 import type { Session } from './types.ts';
 
@@ -6,18 +6,11 @@ export const SESSION_PROTECTED_HINT = 'Session protégée. Décochez sa protecti
 
 export function SessionProtection({ session, onError }: { session: Session; onError: (message: string) => void }) {
   const { setSessionProtected } = useStore();
-  const [busy, setBusy] = useState(false);
-
-  const change = async (value: boolean): Promise<void> => {
-    setBusy(true);
-    try {
-      await setSessionProtected(session.id, value);
-    } catch (error) {
-      onError(error instanceof Error ? error.message : 'Modification de la protection impossible');
-    } finally {
-      setBusy(false);
-    }
-  };
+  // Seuls les échecs remontent : le lancement n'efface pas l'erreur affichée par le parent.
+  const { run: change, busy } = useAsyncAction((value: boolean) => setSessionProtected(session.id, value), {
+    fallback: 'Modification de la protection impossible',
+    onError: (message) => { if (message !== null) onError(message); },
+  });
 
   return (
     <label

@@ -1,6 +1,5 @@
+import { formatDateTime } from './format.ts';
 import type { SessionWorktree } from './types.ts';
-
-const removalDate = (at: number): string => new Date(at).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 /** Arrêter ou supprimer une conversation peut retirer sa copie : la reprise devient alors impossible. */
 export const RELEASE_HINT = 'Si sa copie de travail ne contient rien à conserver (aucun changement, commits intégrés, aucun fichier ignoré), elle sera nettoyée automatiquement ; la conversation restera consultable mais ne pourra plus être reprise.';
@@ -8,7 +7,7 @@ export const RELEASE_HINT = 'Si sa copie de travail ne contient rien à conserve
 /** Pourquoi une conversation terminée ne peut plus reprendre, ou null si sa copie existe encore. */
 export function resumeBlockedReason(worktree: SessionWorktree | null): string | null {
   if (worktree === null || !worktree.removed) return null;
-  const when = worktree.removedAt !== null ? ` le ${removalDate(worktree.removedAt)}` : '';
+  const when = worktree.removedAt !== null ? ` le ${formatDateTime(worktree.removedAt)}` : '';
   return worktree.removedAutomatically
     ? `Copie de travail nettoyée automatiquement${when}, à la fin de la conversation : elle ne contenait rien à conserver. L’historique reste consultable, mais la conversation ne peut plus être reprise ; elle n’est pas redirigée vers le dossier du projet. Sa branche est conservée.`
     : `Copie de travail retirée${when}. L’historique reste consultable, mais la conversation ne peut plus être reprise dans cette copie. Sa branche est conservée.`;

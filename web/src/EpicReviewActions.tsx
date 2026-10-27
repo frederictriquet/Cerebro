@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { EpicRun } from '../../server/epic-runner.ts';
 import { api } from './api.ts';
 import { LaunchSessionDialog } from './Dialog.tsx';
 import { useStore } from './store.tsx';
+import { errorMessage } from './format.ts';
+import { usePolling } from './polling.tsx';
 
 export const RUN_ACTIVE: EpicRun['status'][] = ['running', 'waiting-validation', 'blocked'];
 
@@ -11,15 +13,8 @@ const REVIEW_TASK_TITLE = 'Code review du travail de l’epic';
 
 export function useEpicRun(epicId: string, intervalMs = 1000): { run: EpicRun | null; refresh: () => Promise<void> } {
   const [run, setRun] = useState<EpicRun | null>(null);
-  const refresh = useCallback(async (): Promise<void> => {
-    const runs = await api<EpicRun[]>(`/api/epics/${epicId}/runs`);
-    setRun(runs[0] ?? null);
-  }, [epicId]);
-  useEffect(() => {
-    void refresh().catch(() => {});
-    const timer = window.setInterval(() => void refresh().catch(() => {}), intervalMs);
-    return () => window.clearInterval(timer);
-  }, [refresh, intervalMs]);
+  const load = useCallback(() => api<EpicRun[]>(`/api/epics/${epicId}/runs`), [epicId]);
+  const refresh = usePolling(load, intervalMs, { onData: (runs) => setRun(runs[0] ?? null) });
   return { run, refresh };
 }
 
@@ -48,7 +43,7 @@ export function EpicReviewActions({ epic, run, onError }: {
           type="button"
           className="btn"
           title="Ajoute une dernière tâche de review, qui attend toutes les autres et travaille dans le même worktree"
-          onClick={() => void api(`/api/epics/${epic.id}/review-task`, { method: 'POST' }).catch((err: unknown) => onError(err instanceof Error ? err.message : 'Ajout impossible'))}
+          onClick={() => void api(`/api/epics/${epic.id}/review-task`, { method: 'POST' }).catch((err: unknown) => onError(errorMessage(err, 'Ajout impossible')))}
         >
           Ajouter une étape de review
         </button>

@@ -2,18 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SessionTask, SessionTaskStatus } from '../../server/session-tasks.ts';
 import { api } from './api.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
+import { errorMessage, plural, SESSION_TASK_STATUS_LABEL } from './format.ts';
+import { usePolling } from './polling.tsx';
 import './session-tasks.css';
 
-const LABELS: Record<SessionTaskStatus, string> = {
-  todo: 'À faire', in_progress: 'En cours', blocked: 'Bloquée', done: 'Terminée', cancelled: 'Annulée',
-};
-const COUNT_LABELS: Record<SessionTaskStatus, string> = {
-  todo: 'à faire', in_progress: 'en cours', blocked: 'bloquée', done: 'terminée', cancelled: 'annulée',
-};
-export const TASK_STATE_LABELS = {
-  todo: 'À faire', in_progress: 'En cours', blocked: 'Blocage',
-  done: 'Tous les objectifs sont terminés ou annulés', cancelled: 'Tous les objectifs sont annulés', empty: 'Aucune sous-tâche',
-};
+// « à faire » et « en cours » sont invariables ; les autres états s'accordent avec le nombre.
+const INVARIABLE: readonly SessionTaskStatus[] = ['todo', 'in_progress'];
 
 export function sessionTasksState(tasks: readonly SessionTask[]): SessionTaskStatus | 'empty' {
   for (const status of ['blocked', 'in_progress', 'todo'] as const) {
@@ -26,22 +20,12 @@ export function sessionTasksState(tasks: readonly SessionTask[]): SessionTaskSta
 export function useSessionTasks(sessionId: string) {
   const [data, setData] = useState<{ sessionId: string; tasks: SessionTask[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const requestId = useRef(0);
-  const refresh = useCallback(async (): Promise<void> => {
-    const current = ++requestId.current;
-    try {
-      const tasks = await api<SessionTask[]>(`/api/sessions/${sessionId}/tasks`);
-      if (requestId.current === current) { setData({ sessionId, tasks }); setError(null); }
-    } catch (cause) {
-      if (requestId.current === current) setError(String(cause));
-    }
-  }, [sessionId]);
-  useEffect(() => {
-    setData(null); setError(null);
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 3000);
-    return () => { window.clearInterval(timer); requestId.current++; };
-  }, [refresh]);
+  const load = useCallback(() => api<SessionTask[]>(`/api/sessions/${sessionId}/tasks`), [sessionId]);
+  useEffect(() => { setData(null); setError(null); }, [load]);
+  const refresh = usePolling(load, 3000, {
+    onData: (tasks) => { setData({ sessionId, tasks }); setError(null); },
+    onError: (cause) => setError(errorMessage(cause)),
+  });
   return { tasks: data?.sessionId === sessionId ? data.tasks : [], loaded: data?.sessionId === sessionId, error, refresh };
 }
 
@@ -65,14 +49,16 @@ export function SessionTasksPanel({ sessionId, tasks, loaded, error, refresh }: 
       await api(`${base}${id ? `/${id}` : ''}`, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       after?.();
       await refresh();
-    } catch (cause) { setSaveError(String(cause)); }
+    } catch (cause) { setSaveError(errorMessage(cause)); }
     finally { setBusy(false); }
   };
-  const counts = (Object.keys(LABELS) as SessionTaskStatus[])
+  const counts = (Object.keys(SESSION_TASK_STATUS_LABEL) as SessionTaskStatus[])
     .map(status => ({ status, count: tasks.filter(task => task.status === status).length }))
     .filter(({ count }) => count > 0);
-  const summary = counts.map(({ status, count }) =>
-    `${count} ${COUNT_LABELS[status]}${count > 1 && ['blocked', 'done', 'cancelled'].includes(status) ? 's' : ''}`);
+  const summary = counts.map(({ status, count }) => {
+    const label = SESSION_TASK_STATUS_LABEL[status].toLowerCase();
+    return plural(count, label, INVARIABLE.includes(status) ? label : undefined);
+  });
   return <div className="session-tasks">
     <div className="session-tasks-toolbar">
       <h2>Sous-tâches</h2>
@@ -125,7 +111,7 @@ export function SessionTasksPanel({ sessionId, tasks, loaded, error, refresh }: 
         <div className="session-task-heading">
           <select aria-label={`Statut : ${task.title}`} value={task.status} disabled={busy}
             onChange={event => void mutate('PATCH', task.id, { status: event.target.value })}>
-            {Object.entries(LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            {Object.entries(SESSION_TASK_STATUS_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
           {task.note ? <button type="button" className="session-task-title" aria-expanded={expanded.has(task.id)}
             title={expanded.has(task.id) ? 'Masquer la note' : 'Afficher la note'} onClick={() => setExpanded(previous => {

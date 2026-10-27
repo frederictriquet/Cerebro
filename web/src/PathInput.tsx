@@ -1,6 +1,7 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api.ts';
+import { errorMessage } from './format.ts';
 
 interface DirListing {
   path: string;
@@ -41,7 +42,7 @@ export function PathInput({
         await load('', false);
         return;
       }
-      setError(err instanceof Error ? err.message : 'Lecture impossible');
+      setError(errorMessage(err, 'Lecture impossible'));
     } finally {
       setLoading(false);
     }

@@ -299,6 +299,10 @@ function asString(v: unknown): string | null {
   return typeof v === 'string' ? v : null;
 }
 
+function parseItems<T>(v: unknown, parse: (item: unknown) => T | null): T[] {
+  return Array.isArray(v) ? v.map(parse).filter((item): item is T => item !== null) : [];
+}
+
 function asNumber(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
@@ -347,16 +351,11 @@ export function parsePersona(v: unknown): Persona | null {
 }
 
 export function parsePersonaList(v: unknown): Persona[] {
-  if (!Array.isArray(v)) return [];
-  return v.map(parsePersona).filter((p): p is Persona => p !== null);
+  return parseItems(v, parsePersona);
 }
 
 const COUNCIL_STATUSES: readonly CouncilStatus[] = ['running', 'succeeded', 'failed', 'cancelled', 'interrupted'];
 const COUNCIL_PHASES: readonly CouncilPhase[] = ['answering', 'reviewing', 'synthesizing', 'finished'];
-
-function asText(v: unknown): string | null {
-  return typeof v === 'string' ? v : null;
-}
 
 function parseAdvisor(v: unknown): Advisor | null {
   if (!isRecord(v)) return null;
@@ -364,7 +363,7 @@ function parseAdvisor(v: unknown): Advisor | null {
   const personaId = asString(v.personaId);
   const name = asString(v.name);
   if (llm === null || personaId === null || name === null) return null;
-  return { ...llm, personaId, name, description: asText(v.description) ?? '', prompt: asText(v.prompt) ?? '' };
+  return { ...llm, personaId, name, description: asString(v.description) ?? '', prompt: asString(v.prompt) ?? '' };
 }
 
 function parseCouncilAnswer(v: unknown): CouncilAnswer | null {
@@ -372,7 +371,7 @@ function parseCouncilAnswer(v: unknown): CouncilAnswer | null {
   const advisorId = asString(v.advisorId);
   if (advisorId === null) return null;
   return {
-    advisorId, text: asText(v.text), error: asText(v.error),
+    advisorId, text: asString(v.text), error: asString(v.error),
     startedAt: asNumber(v.startedAt) ?? 0, finishedAt: asNumber(v.finishedAt),
   };
 }
@@ -382,10 +381,10 @@ function parseCouncilReview(v: unknown): CouncilReview | null {
   const advisorId = asString(v.advisorId);
   if (advisorId === null) return null;
   const ranking = Array.isArray(v.ranking)
-    ? v.ranking.flatMap((r) => (isRecord(r) && typeof r.letter === 'string' ? [{ letter: r.letter, reason: asText(r.reason) ?? '' }] : []))
+    ? v.ranking.flatMap((r) => (isRecord(r) && typeof r.letter === 'string' ? [{ letter: r.letter, reason: asString(r.reason) ?? '' }] : []))
     : [];
   return {
-    advisorId, ranking, blindSpot: asText(v.blindSpot), missed: asText(v.missed), error: asText(v.error),
+    advisorId, ranking, blindSpot: asString(v.blindSpot), missed: asString(v.missed), error: asString(v.error),
     startedAt: asNumber(v.startedAt) ?? 0, finishedAt: asNumber(v.finishedAt),
   };
 }
@@ -400,14 +399,10 @@ function parseCouncilImage(v: unknown): CouncilImage | null {
 function parseCouncilSynthesis(v: unknown): CouncilSynthesis | null {
   if (!isRecord(v)) return null;
   return {
-    agreements: asText(v.agreements) ?? '', disagreements: asText(v.disagreements) ?? '',
-    blindSpots: asText(v.blindSpots) ?? '', recommendation: asText(v.recommendation) ?? '',
-    firstAction: asText(v.firstAction) ?? '',
+    agreements: asString(v.agreements) ?? '', disagreements: asString(v.disagreements) ?? '',
+    blindSpots: asString(v.blindSpots) ?? '', recommendation: asString(v.recommendation) ?? '',
+    firstAction: asString(v.firstAction) ?? '',
   };
-}
-
-function parseItems<T>(v: unknown, parse: (item: unknown) => T | null): T[] {
-  return Array.isArray(v) ? v.map(parse).filter((item): item is T => item !== null) : [];
 }
 
 export function parseCouncilRun(v: unknown): CouncilRun | null {
@@ -425,10 +420,10 @@ export function parseCouncilRun(v: unknown): CouncilRun | null {
   }
   return {
     id, projectId: asString(v.projectId), origin: v.origin === 'slack' ? 'slack' : 'web', question,
-    context: asText(v.context) ?? '', images: parseItems(v.images, parseCouncilImage), readProject: v.readProject === true, settings,
+    context: asString(v.context) ?? '', images: parseItems(v.images, parseCouncilImage), readProject: v.readProject === true, settings,
     advisors: parseItems(v.advisors, parseAdvisor), status, phase, letters,
     answers: parseItems(v.answers, parseCouncilAnswer), reviews: parseItems(v.reviews, parseCouncilReview),
-    synthesis: parseCouncilSynthesis(v.synthesis), error: asText(v.error), startedAt, finishedAt: asNumber(v.finishedAt),
+    synthesis: parseCouncilSynthesis(v.synthesis), error: asString(v.error), startedAt, finishedAt: asNumber(v.finishedAt),
   };
 }
 
@@ -586,38 +581,19 @@ export function parseEpic(v: unknown): Epic | null {
 }
 
 export function parseEpicList(v: unknown): Epic[] {
-  if (!Array.isArray(v)) return [];
-  return v.map(parseEpic).filter((e): e is Epic => e !== null);
+  return parseItems(v, parseEpic);
 }
 
 export function parseTaskList(v: unknown): Task[] {
-  if (!Array.isArray(v)) return [];
-  const out: Task[] = [];
-  for (const item of v) {
-    const t = parseTask(item);
-    if (t) out.push(t);
-  }
-  return out;
+  return parseItems(v, parseTask);
 }
 
 export function parseProjectList(v: unknown): Project[] {
-  if (!Array.isArray(v)) return [];
-  const out: Project[] = [];
-  for (const item of v) {
-    const p = parseProject(item);
-    if (p) out.push(p);
-  }
-  return out;
+  return parseItems(v, parseProject);
 }
 
 export function parseSessionList(v: unknown): Session[] {
-  if (!Array.isArray(v)) return [];
-  const out: Session[] = [];
-  for (const item of v) {
-    const s = parseSession(item);
-    if (s) out.push(s);
-  }
-  return out;
+  return parseItems(v, parseSession);
 }
 
 export function parseGitInfo(v: unknown): GitInfo | null {

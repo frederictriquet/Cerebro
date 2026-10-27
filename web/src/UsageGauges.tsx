@@ -1,5 +1,5 @@
 import { AgentLabel } from './AgentLabel.tsx';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   getUpdates,
   getUsage,
@@ -10,8 +10,9 @@ import {
   type AgentUsage,
   type UsageWindow,
 } from './api.ts';
-import { relativeTime } from './format.ts';
-import { useNow } from './route.ts';
+import { errorMessage, formatDateTime, formatDuration, relativeTime } from './format.ts';
+import { useNow, usePolling } from './polling.tsx';
+import { useStoredFlag } from './storage.ts';
 
 /** Why a team login has no gauge: /usage hits the same endpoint and gets no percent. */
 const GROK_USAGE_HINT = [
@@ -24,14 +25,6 @@ const REFRESH_MS = 60_000;
 // While a CLI updates, follow it closely.
 const UPDATING_REFRESH_MS = 3_000;
 const DAY_MS = 86_400_000;
-
-function untilReset(resetsAt: string, now: number): string {
-  const minutes = Math.max(0, Math.round((Date.parse(resetsAt) - now) / 60_000));
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} h ${String(minutes % 60).padStart(2, '0')}`;
-  return `${Math.floor(hours / 24)} j ${hours % 24} h`;
-}
 
 function resetDate(resetsAt: string): string {
   return new Date(resetsAt).toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
@@ -76,14 +69,10 @@ function Gauge({ window, now }: { window: UsageWindow; now: number }) {
       </div>
       <span className={`gauge-value ${level(window.percent)}`} title={title}>{percent} %</span>
       {window.resetsAt === null ? null : (
-        <span className="gauge-reset">réinit. dans {untilReset(window.resetsAt, now)}</span>
+        <span className="gauge-reset">réinit. dans {formatDuration(Date.parse(window.resetsAt) - now)}</span>
       )}
     </>
   );
-}
-
-function fullDate(iso: string): string {
-  return new Date(iso).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
 /** Login status: a firm deadline when the CLI records one (Claude), otherwise the last renewal. */
@@ -93,15 +82,15 @@ function AuthLine({ auth, now }: { auth: AgentAuth; now: number }) {
     const left = Date.parse(auth.loginExpiresAt) - now;
     const tone = left <= DAY_MS ? 'high' : left <= 3 * DAY_MS ? 'warn' : 'ok';
     return (
-      <span className={`auth-line ${tone}`} title={`Le jeton de renouvellement expire le ${fullDate(auth.loginExpiresAt)}`}>
-        {left <= 0 ? 'Reconnexion requise' : `Reconnexion dans ${untilReset(auth.loginExpiresAt, now)}`}
+      <span className={`auth-line ${tone}`} title={`Le jeton de renouvellement expire le ${formatDateTime(auth.loginExpiresAt)}`}>
+        {left <= 0 ? 'Reconnexion requise' : `Reconnexion dans ${formatDuration(left)}`}
       </span>
     );
   }
   const expired = auth.accessExpiresAt !== null && Date.parse(auth.accessExpiresAt) <= now;
   const title = [
     "Renouvelée automatiquement : la date de reconnexion n'est pas publiée par le CLI",
-    auth.accessExpiresAt === null ? null : `jeton d'accès valable jusqu'au ${fullDate(auth.accessExpiresAt)}`,
+    auth.accessExpiresAt === null ? null : `jeton d'accès valable jusqu'au ${formatDateTime(auth.accessExpiresAt)}`,
     expired ? 'il sera renouvelé au prochain lancement' : null,
   ].filter(Boolean).join('\n');
   return (
@@ -118,10 +107,10 @@ function UpdateLine({ update, onChange }: { update: AgentUpdate; onChange: (next
   const [failed, setFailed] = useState<string | null>(null);
   const act = (call: () => Promise<AgentUpdate>): void => {
     setFailed(null);
-    void call().then(onChange, (cause: unknown) => setFailed(cause instanceof Error ? cause.message : String(cause)));
+    void call().then(onChange, (cause: unknown) => setFailed(errorMessage(cause)));
   };
   const lastFailure = update.lastRun !== null && !update.lastRun.ok ? update.lastRun : null;
-  const checked = update.checkedAt === null ? null : `vérifié le ${fullDate(update.checkedAt)}`;
+  const checked = update.checkedAt === null ? null : `vérifié le ${formatDateTime(update.checkedAt)}`;
   return (
     <div className="update-line">
       <span className="update-version" title={[update.error, checked].filter(Boolean).join('\n')}>
@@ -156,7 +145,7 @@ function UpdateLine({ update, onChange }: { update: AgentUpdate; onChange: (next
       </label>
       {lastFailure === null ? null : (
         <p className="usage-error" title={lastFailure.output}>
-          Échec de la mise à jour ({fullDate(lastFailure.at)}) : {lastFailure.output.split('\n').at(-1)}
+          Échec de la mise à jour ({formatDateTime(lastFailure.at)}) : {lastFailure.output.split('\n').at(-1)}
         </p>
       )}
       {failed === null ? null : <p className="usage-error">{failed}</p>}
@@ -199,66 +188,23 @@ function AgentGauges({
 }
 
 export function UsageGauges() {
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem('cerebro.usageCollapsed') === '1';
-    } catch {
-      return false;
-    }
-  });
-  const toggleCollapsed = (): void => {
-    const next = !collapsed;
-    setCollapsed(next);
-    try {
-      localStorage.setItem('cerebro.usageCollapsed', next ? '1' : '0');
-    } catch {
-      /* Le panneau reste utilisable si le stockage est indisponible. */
-    }
-  };
+  const [collapsed, setCollapsed] = useStoredFlag('cerebro.usageCollapsed', false);
+  const toggleCollapsed = (): void => setCollapsed(!collapsed);
   const [usage, setUsage] = useState<AgentUsage[] | null>(null);
   const [failed, setFailed] = useState(false);
-  const now = useNow(REFRESH_MS);
+  const now = useNow();
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = (): void => {
-      void getUsage()
-        .then((result) => {
-          if (cancelled) return;
-          setUsage(result);
-          setFailed(false);
-        })
-        .catch(() => {
-          if (!cancelled) setFailed(true);
-        });
-    };
-    load();
-    const timer = window.setInterval(load, REFRESH_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
+  usePolling(getUsage, REFRESH_MS, {
+    onData: (result) => {
+      setUsage(result);
+      setFailed(false);
+    },
+    onError: () => setFailed(true),
+  });
 
   const [updates, setUpdates] = useState<AgentUpdate[]>([]);
   const updating = updates.some((u) => u.updating);
-  useEffect(() => {
-    let cancelled = false;
-    const load = (): void => {
-      void getUpdates().then(
-        (result) => {
-          if (!cancelled) setUpdates(result);
-        },
-        () => {},
-      );
-    };
-    load();
-    const timer = window.setInterval(load, updating ? UPDATING_REFRESH_MS : REFRESH_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [updating]);
+  usePolling(getUpdates, updating ? UPDATING_REFRESH_MS : REFRESH_MS, { onData: setUpdates, onError: () => {} });
   const replaceUpdate = (next: AgentUpdate): void => {
     setUpdates((current) => current.map((u) => (u.agent === next.agent ? next : u)));
   };

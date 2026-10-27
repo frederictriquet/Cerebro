@@ -1,5 +1,6 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useState } from 'react';
+import { useAsyncAction } from './async-action.ts';
 import { Modal } from './Dialog.tsx';
 import { useStore } from './store.tsx';
 import { LlmSelector, type LlmSelection } from './LlmSelector.tsx';
@@ -15,14 +16,7 @@ export function CommitSettingsDialog({project,onClose}:{project:Project;onClose:
     return {agent,model,effort};
   });
   const [resolution,setResolution]=useState<ResolutionSettings>(()=>({...project.resolutionSettings,mode:normalizeMode(project.resolutionSettings.mode)}));
-  const [busy,setBusy]=useState(false);
-  const [error,setError]=useState<string|null>(null);
-  const save=async():Promise<void>=>{
-    setBusy(true);setError(null);
-    try{await updateProject(project.id,{commitSettings:settings,resolutionSettings:resolution});onClose();}
-    catch(cause){setError(cause instanceof Error?cause.message:String(cause));}
-    finally{setBusy(false);}
-  };
+  const {run:save,busy,error}=useAsyncAction(async()=>{await updateProject(project.id,{commitSettings:settings,resolutionSettings:resolution});onClose();});
   return <Modal title="Réglages LLM" onClose={onClose}>
     <form className="commit-settings" onSubmit={event=>{event.preventDefault();void save();}}>
       <section className="commit-settings-section" aria-labelledby="commit-settings-commits">

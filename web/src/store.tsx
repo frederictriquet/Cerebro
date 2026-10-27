@@ -9,7 +9,8 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { api, wsUrl } from './api.ts';
+import { api, apiPath, fetchParsed, wsUrl } from './api.ts';
+import { openReconnectingSocket } from './socket.ts';
 import {
   armNotificationPermission,
   playAlert,
@@ -106,28 +107,17 @@ function sortSessions(list: Session[]): Session[] {
   return [...list].sort((a, b) => b.createdAt - a.createdAt);
 }
 
-function upsertTask(list: Task[], task: Task): Task[] {
-  const i = list.findIndex((t) => t.id === task.id);
-  if (i === -1) return [...list, task];
+/** Remplace l'élément de même id, sinon l'ajoute en tête (start) ou en fin de liste. */
+export function upsertById<T extends { id: string }>(list: readonly T[], item: T, insert: 'start' | 'end' = 'end'): T[] {
+  const i = list.findIndex((existing) => existing.id === item.id);
+  if (i === -1) return insert === 'start' ? [item, ...list] : [...list, item];
   const next = list.slice();
-  next[i] = task;
-  return next;
-}
-
-function upsertEpic(list: Epic[], epic: Epic): Epic[] {
-  const i = list.findIndex((e) => e.id === epic.id);
-  if (i === -1) return [...list, epic];
-  const next = list.slice();
-  next[i] = epic;
+  next[i] = item;
   return next;
 }
 
 function upsertSession(list: Session[], session: Session): Session[] {
-  const i = list.findIndex((s) => s.id === session.id);
-  if (i === -1) return sortSessions([session, ...list]);
-  const next = list.slice();
-  next[i] = session;
-  return sortSessions(next);
+  return sortSessions(upsertById(list, session, 'start'));
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -193,27 +183,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    let closed = false;
-    let retry = 0;
-    let ws: WebSocket | null = null;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const connect = (): void => {
-      if (closed) return;
-      const socket = new WebSocket(wsUrl('/ws/events'));
-      ws = socket;
-      socket.addEventListener('open', () => {
-        retry = 0;
+    const connection = openReconnectingSocket(wsUrl('/ws/events'), {
+      onOpen: () => {
         setConnected(true);
-      });
-      socket.addEventListener('message', (ev) => {
-        if (typeof ev.data !== 'string') return;
-        let raw: unknown;
-        try {
-          raw = JSON.parse(ev.data) as unknown;
-        } catch {
-          return;
-        }
+      },
+      onMessage: (raw) => {
         const msg = parseEventsMessage(raw);
         if (!msg) return;
         switch (msg.type) {
@@ -232,13 +206,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             setTasks((list) => list.map((t) => (t.sessionId === msg.id ? { ...t, sessionId: null } : t)));
             break;
           case 'task':
-            setTasks((list) => upsertTask(list, msg.task));
+            setTasks((list) => upsertById(list, msg.task));
             break;
           case 'task-deleted':
             setTasks((list) => list.filter((t) => t.id !== msg.id));
             break;
           case 'epic':
-            setEpics((list) => upsertEpic(list, msg.epic));
+            setEpics((list) => upsertById(list, msg.epic));
             setSessions((list) => list.map((session) => session.epic?.id === msg.epic.id
               ? { ...session, epic: { id: msg.epic.id, title: msg.epic.title } } : session));
             break;
@@ -262,40 +236,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             if (!mutedRef.current) playAlert('idle');
             break;
         }
-      });
-      socket.addEventListener('close', () => {
+      },
+      onClose: () => {
         setConnected(false);
-        if (closed) return;
-        const delay = Math.min(8_000, 400 * 2 ** retry);
-        retry += 1;
-        timer = setTimeout(connect, delay);
-      });
-      socket.addEventListener('error', () => {
-        socket.close();
-      });
-    };
-
-    connect();
+      },
+    });
     return () => {
-      closed = true;
-      if (timer !== undefined) clearTimeout(timer);
-      ws?.close();
+      connection.close();
     };
   }, []);
 
   const createProject = useCallback(async (name: string, path: string): Promise<Project> => {
-    const raw = await api<unknown>('/api/projects', {
+    const project = await fetchParsed('/api/projects', parseProject, 'projet', {
       method: 'POST',
       body: JSON.stringify({ name, path }),
     });
-    const project = parseProject(raw);
-    if (!project) throw new Error('Réponse projet invalide');
     setProjects((list) => (list.some((p) => p.id === project.id) ? list : [...list, project]));
     return project;
   }, []);
 
   const deleteProject = useCallback(async (id: string): Promise<void> => {
-    await api<unknown>(`/api/projects/${id}`, { method: 'DELETE' });
+    await api<unknown>(apiPath`/api/projects/${id}`, { method: 'DELETE' });
     setProjects((list) => list.filter((p) => p.id !== id));
     setSessions((list) => list.filter((s) => s.projectId !== id));
     setTasks((list) => list.filter((t) => t.projectId !== id));
@@ -316,12 +277,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const createSession = useCallback(
     async (projectId: string, spec: LaunchSpec): Promise<Session> => {
-      const raw = await api<unknown>(`/api/projects/${projectId}/sessions`, {
+      const session = await fetchParsed(apiPath`/api/projects/${projectId}/sessions`, parseSession, 'session', {
         method: 'POST',
         body: JSON.stringify(spec),
       });
-      const session = parseSession(raw);
-      if (!session) throw new Error('Réponse session invalide');
       setSessions((list) => upsertSession(list, session));
       return session;
     },
@@ -329,57 +288,49 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   );
 
   const killSession = useCallback(async (id: string): Promise<void> => {
-    await api<unknown>(`/api/sessions/${id}/kill`, { method: 'POST' });
+    await api<unknown>(apiPath`/api/sessions/${id}/kill`, { method: 'POST' });
   }, []);
 
   const resumeSession = useCallback(async (id: string): Promise<Session> => {
-    const raw = await api<unknown>(`/api/sessions/${id}/resume`, { method: 'POST' });
-    const session = parseSession(raw);
-    if (!session) throw new Error('Réponse session invalide');
+    const session = await fetchParsed(apiPath`/api/sessions/${id}/resume`, parseSession, 'session', { method: 'POST' });
     setSessions((list) => upsertSession(list, session));
     return session;
   }, []);
 
   const deleteSession = useCallback(async (id: string): Promise<void> => {
-    await api<unknown>(`/api/sessions/${id}`, { method: 'DELETE' });
+    await api<unknown>(apiPath`/api/sessions/${id}`, { method: 'DELETE' });
     setSessions((list) => list.filter((s) => s.id !== id));
   }, []);
 
   const purgeProjectSessions = useCallback(async (projectId: string): Promise<void> => {
-    await api<unknown>(`/api/projects/${projectId}/purge`, { method: 'POST' });
+    await api<unknown>(apiPath`/api/projects/${projectId}/purge`, { method: 'POST' });
     const raw = await api<unknown>('/api/sessions');
     setSessions(sortSessions(parseSessionList(raw)));
   }, []);
 
   const setSessionProtected = useCallback(async (id: string, value: boolean): Promise<void> => {
-    const raw = await api<unknown>(`/api/sessions/${id}/protection`, {
+    const session = await fetchParsed(apiPath`/api/sessions/${id}/protection`, parseSession, 'session', {
       method: 'PATCH',
       body: JSON.stringify({ protected: value }),
     });
-    const session = parseSession(raw);
-    if (!session) throw new Error('Réponse session invalide');
     setSessions((list) => upsertSession(list, session));
   }, []);
 
   const renameSession = useCallback(async (id: string, title: string): Promise<Session> => {
-    const raw = await api<unknown>(`/api/sessions/${id}`, {
+    const session = await fetchParsed(apiPath`/api/sessions/${id}`, parseSession, 'session', {
       method: 'PATCH',
       body: JSON.stringify({ title }),
     });
-    const session = parseSession(raw);
-    if (!session) throw new Error('Réponse session invalide');
     setSessions((list) => upsertSession(list, session));
     return session;
   }, []);
 
   const updateProject = useCallback(
     async (id: string, patch: ProjectPatch): Promise<Project> => {
-      const raw = await api<unknown>(`/api/projects/${id}`, {
+      const project = await fetchParsed(apiPath`/api/projects/${id}`, parseProject, 'projet', {
         method: 'PATCH',
         body: JSON.stringify(patch),
       });
-      const project = parseProject(raw);
-      if (!project) throw new Error('Réponse projet invalide');
       setProjects((list) => list.map((item) => (item.id === project.id ? project : item)));
       return project;
     },
@@ -387,7 +338,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   );
 
   const sendSessionInput = useCallback(async (id: string, data: string): Promise<void> => {
-    await api<unknown>(`/api/sessions/${id}/input`, {
+    await api<unknown>(apiPath`/api/sessions/${id}/input`, {
       method: 'POST',
       body: JSON.stringify({ data }),
     });
@@ -395,13 +346,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const createTask = useCallback(
     async (projectId: string, text: string, sourceSessionId?: string, epicId?: string | null): Promise<Task> => {
-      const raw = await api<unknown>(`/api/projects/${projectId}/tasks`, {
+      const task = await fetchParsed(apiPath`/api/projects/${projectId}/tasks`, parseTask, 'tâche', {
         method: 'POST',
         body: JSON.stringify({ text, sourceSessionId, epicId: epicId ?? null }),
       });
-      const task = parseTask(raw);
-      if (!task) throw new Error('Réponse tâche invalide');
-      setTasks((list) => upsertTask(list, task));
+      setTasks((list) => upsertById(list, task));
       return task;
     },
     [],
@@ -409,23 +358,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const updateTask = useCallback(
     async (id: string, patch: TaskPatch): Promise<Task> => {
-      const raw = await api<unknown>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
-      const task = parseTask(raw);
-      if (!task) throw new Error('Réponse tâche invalide');
-      setTasks((list) => upsertTask(list, task));
+      const task = await fetchParsed(apiPath`/api/tasks/${id}`, parseTask, 'tâche', { method: 'PATCH', body: JSON.stringify(patch) });
+      setTasks((list) => upsertById(list, task));
       return task;
     },
     [],
   );
 
   const deleteTask = useCallback(async (id: string): Promise<void> => {
-    await api<unknown>(`/api/tasks/${id}`, { method: 'DELETE' });
+    await api<unknown>(apiPath`/api/tasks/${id}`, { method: 'DELETE' });
     setTasks((list) => list.filter((t) => t.id !== id).map((t) => (t.dependsOn.includes(id) ? { ...t, dependsOn: t.dependsOn.filter((d) => d !== id) } : t)));
   }, []);
 
   const deleteCompletedBacklog = useCallback(async (projectId: string): Promise<void> => {
     const { taskIds, epicIds } = await api<{ taskIds: string[]; epicIds: string[] }>(
-      `/api/projects/${projectId}/backlog/completed`, { method: 'DELETE' },
+      apiPath`/api/projects/${projectId}/backlog/completed`, { method: 'DELETE' },
     );
     const deletedTasks = new Set(taskIds);
     const deletedEpics = new Set(epicIds);
@@ -437,49 +384,45 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const startTask = useCallback(
     async (id: string, spec: LaunchSpec): Promise<Session> => {
-      const raw = await api<{ task: unknown; session: unknown }>(`/api/tasks/${id}/start`, {
+      const raw = await api<{ task: unknown; session: unknown }>(apiPath`/api/tasks/${id}/start`, {
         method: 'POST',
         body: JSON.stringify(spec),
       });
       const session = parseSession(raw.session);
-      if (!session) throw new Error('Réponse session invalide');
+      if (!session) throw new Error('Réponse du serveur invalide (session)');
       const task = parseTask(raw.task);
       setSessions((list) => upsertSession(list, session));
-      if (task) setTasks((list) => upsertTask(list, task));
+      if (task) setTasks((list) => upsertById(list, task));
       return session;
     },
     [],
   );
 
   const createEpic = useCallback(async (projectId: string, title: string, description?: string): Promise<Epic> => {
-    const raw = await api<unknown>(`/api/projects/${projectId}/epics`, {
+    const epic = await fetchParsed(apiPath`/api/projects/${projectId}/epics`, parseEpic, 'epic', {
       method: 'POST',
       body: JSON.stringify({ title, description }),
     });
-    const epic = parseEpic(raw);
-    if (!epic) throw new Error('Réponse epic invalide');
-    setEpics((list) => upsertEpic(list, epic));
+    setEpics((list) => upsertById(list, epic));
     return epic;
   }, []);
 
   const updateEpic = useCallback(async (id: string, patch: { title?: string; description?: string }): Promise<Epic> => {
-    const raw = await api<unknown>(`/api/epics/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
-    const epic = parseEpic(raw);
-    if (!epic) throw new Error('Réponse epic invalide');
-    setEpics((list) => upsertEpic(list, epic));
+    const epic = await fetchParsed(apiPath`/api/epics/${id}`, parseEpic, 'epic', { method: 'PATCH', body: JSON.stringify(patch) });
+    setEpics((list) => upsertById(list, epic));
     setSessions((list) => list.map((session) => session.epic?.id === epic.id
       ? { ...session, epic: { id: epic.id, title: epic.title } } : session));
     return epic;
   }, []);
 
   const deleteEpic = useCallback(async (id: string): Promise<void> => {
-    await api<unknown>(`/api/epics/${id}`, { method: 'DELETE' });
+    await api<unknown>(apiPath`/api/epics/${id}`, { method: 'DELETE' });
     setEpics((list) => list.filter((e) => e.id !== id));
     setTasks((list) => list.map((t) => (t.epicId === id ? { ...t, epicId: null } : t)));
   }, []);
 
   const startEpic = useCallback(async (id: string, spec: LaunchSpec): Promise<EpicRun> => {
-    return api<EpicRun>(`/api/epics/${id}/start`, { method: 'POST', body: JSON.stringify(spec) });
+    return api<EpicRun>(apiPath`/api/epics/${id}/start`, { method: 'POST', body: JSON.stringify(spec) });
   }, []);
 
   const markSeen = useCallback(async (id: string): Promise<void> => {
@@ -487,7 +430,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       list.map((s) => (s.id === id ? { ...s, attention: false } : s)),
     );
     try {
-      await api<unknown>(`/api/sessions/${id}/seen`, { method: 'POST' });
+      await api<unknown>(apiPath`/api/sessions/${id}/seen`, { method: 'POST' });
     } catch {
       /* le prochain snapshot corrigera */
     }

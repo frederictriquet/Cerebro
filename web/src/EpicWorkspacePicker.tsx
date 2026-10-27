@@ -1,31 +1,30 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import type { EpicWorkspaceOptions } from '../../server/epic-workspace.ts';
 import { api } from './api.ts';
+import { useAsyncAction } from './async-action.ts';
 import { href } from './route.ts';
-
-const message = (cause: unknown): string => cause instanceof Error ? cause.message : String(cause);
+import { errorMessage, plural } from './format.ts';
 
 export function EpicWorkspacePicker({ epicId, onResolved }: { epicId: string; onResolved: () => Promise<void> }) {
   const [options, setOptions] = useState<EpicWorkspaceOptions | null>(null);
   const [path, setPath] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
+  const { run: keep, busy: pending } = useAsyncAction(async (chosen: string) => {
+    await api(`/api/epics/${epicId}/workspace`, {method:'POST', body:JSON.stringify({path: chosen})});
+    await onResolved();
+  }, { onError: setError });
   useEffect(() => {
     let active = true;
     setOptions(null); setPath(''); setError(null);
     void api<EpicWorkspaceOptions>(`/api/epics/${epicId}/workspace-options`)
       .then(result => { if (active) setOptions(result); })
-      .catch(cause => { if (active) setError(message(cause)); });
+      .catch(cause => { if (active) setError(errorMessage(cause)); });
     return () => { active = false; };
   }, [epicId]);
   const choose = (event: FormEvent): void => {
     event.preventDefault();
     if (!path || pending) return;
-    setPending(true); setError(null);
-    void api(`/api/epics/${epicId}/workspace`, {method:'POST', body:JSON.stringify({path})})
-      .then(onResolved)
-      .catch(cause => setError(message(cause)))
-      .finally(() => setPending(false));
+    void keep(path);
   };
   return (
     <form className="epic-workspace-picker" onSubmit={choose}>
@@ -43,7 +42,7 @@ export function EpicWorkspacePicker({ epicId, onResolved }: { epicId: string; on
           {choice.unavailableReason ? <p className="form-error">{choice.unavailableReason}</p> : (
             <p>{choice.branch ? `Branche ${choice.branch}` : choice.head ? 'HEAD détachée' : 'Dossier sans Git'}
               {choice.head ? ` · ${choice.head.slice(0, 8)}` : ''}
-              {choice.changes ? ` · ${choice.changes.length} fichier${choice.changes.length > 1 ? 's' : ''} modifié${choice.changes.length > 1 ? 's' : ''}` : ' · État des fichiers indisponible'}</p>
+              {choice.changes ? ` · ${plural(choice.changes.length, 'fichier modifié', 'fichiers modifiés')}` : ' · État des fichiers indisponible'}</p>
           )}
           {choice.changes && choice.changes.length > 0 ? (
             <details><summary>Voir les fichiers modifiés</summary><ul>

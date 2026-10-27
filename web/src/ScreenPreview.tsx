@@ -1,13 +1,19 @@
-import { useEffect, useLayoutEffect, useState, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from './api.ts';
 import { parseScreenLines } from './types.ts';
+import { errorMessage } from './format.ts';
 
 const POPOVER_WIDTH = 440;
 
-export function usePreviewController(): { open: boolean; toggle: () => void } {
+/** Bouton « Aperçu » et fenêtre des dernières lignes du terminal, placés séparément par l'appelant. */
+export function useSessionPreview(sessionId: string): { button: ReactNode; popover: ReactNode } {
   const [open, setOpen] = useState(false);
-  return { open, toggle: () => setOpen((value) => !value) };
+  const anchorRef = useRef<HTMLSpanElement>(null);
+  return {
+    button: <PreviewButton pressed={open} onToggle={() => setOpen((value) => !value)} anchorRef={anchorRef} />,
+    popover: open ? <ScreenPopover sessionId={sessionId} anchorRef={anchorRef} /> : null,
+  };
 }
 
 function tailLines(lines: string[]): string[] {
@@ -16,7 +22,7 @@ function tailLines(lines: string[]): string[] {
   return lines.slice(Math.max(0, end - 8), end);
 }
 
-export function ScreenPopover({
+function ScreenPopover({
   sessionId,
   anchorRef,
 }: {
@@ -42,7 +48,7 @@ export function ScreenPopover({
         setLines(tailLines(parsed));
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Aperçu indisponible');
+        setError(errorMessage(err, 'Aperçu indisponible'));
       }
     })();
     return () => {
@@ -83,7 +89,7 @@ export function ScreenPopover({
   );
 }
 
-export function PreviewButton({
+function PreviewButton({
   pressed,
   onToggle,
   anchorRef,

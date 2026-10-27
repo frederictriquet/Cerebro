@@ -1,5 +1,5 @@
 import { AgentLabel } from './AgentLabel.tsx';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   acquireGeneralSlack,
   getGeneralSlack,
@@ -9,17 +9,18 @@ import {
   type SlackSettings,
   type SlackStatus,
 } from './api.ts';
-import { needsAttention, relativeTime, sessionTitle } from './format.ts';
-import { FindingsLink } from './FindingsLink.tsx';
+import { errorMessage, needsAttention, relativeTime, sessionTitle } from './format.ts';
 import { AppVersion, MachineSwitcher } from './MachineSwitcher.tsx';
-import { href, useNow, type Route } from './route.ts';
+import { href, type Route } from './route.ts';
+import { useNow } from './polling.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { UsageGauges } from './UsageGauges.tsx';
 import { WorktreeLabel } from './WorktreeLabel.tsx';
 import { SessionEpicBadge } from './SessionEpicBadge.tsx';
 import type { Session } from './types.ts';
-import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPreview.tsx';
+import { useSessionPreview } from './ScreenPreview.tsx';
+import { attentionTone, SessionAttention } from './SessionMeta.tsx';
 
 export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () => void }) {
   const { sessions, connected, muted, setMuted, desktopNotif, setDesktopNotif } = useStore();
@@ -132,7 +133,7 @@ function SlackPanel({ status, onChange }: { status: SlackStatus; onChange: (stat
       onChange(await updateSlackSettings(patch));
     } catch (err) {
       onChange(previous);
-      setError(err instanceof Error ? err.message : 'Enregistrement impossible');
+      setError(errorMessage(err, 'Enregistrement impossible'));
     }
   };
 
@@ -198,7 +199,7 @@ function GeneralSlackLead() {
         if (!cancelled) setStatus(value);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'État de la prise de main indisponible');
+        if (!cancelled) setError(errorMessage(err, 'État de la prise de main indisponible'));
       });
     return () => {
       cancelled = true;
@@ -213,7 +214,7 @@ function GeneralSlackLead() {
     try {
       setStatus(await acquireGeneralSlack());
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Prise de main impossible');
+      setError(errorMessage(err, 'Prise de main impossible'));
     } finally {
       setBusy(false);
     }
@@ -253,9 +254,8 @@ function AttentionItem({
   now: number;
   onNavigate: () => void;
 }) {
-  const tone = session.status === 'waiting' ? 'waiting' : 'idle';
-  const preview = usePreviewController();
-  const anchorRef = useRef<HTMLSpanElement>(null);
+  const tone = attentionTone(session);
+  const preview = useSessionPreview(session.id);
   return (
     <li className="attention-item">
       <a
@@ -263,7 +263,7 @@ function AttentionItem({
         className={`attention-link ${tone} ${active ? 'active' : ''}`}
         onClick={onNavigate}
       >
-        <StatusDot status={session.status === 'waiting' ? 'waiting' : 'idle'} />
+        <StatusDot status={tone} />
         <span className="session-link-title">{sessionTitle(session.title)}</span>
         <span className="meta">
           <AgentLabel agent={session.agent} /> · {relativeTime(session.updatedAt, now)}
@@ -276,11 +276,10 @@ function AttentionItem({
         ) : null}
       </a>
       <div className="attention-extra">
-        <FindingsLink sessionId={session.id} count={session.pendingFindings} onNavigate={onNavigate} />
-        {session.attentionReason ? <p className={`reason-line ${tone}`}>{session.attentionReason}</p> : null}
-        <PreviewButton pressed={preview.open} onToggle={preview.toggle} anchorRef={anchorRef} />
+        <SessionAttention session={session} onNavigate={onNavigate} />
+        {preview.button}
       </div>
-      {preview.open ? <ScreenPopover sessionId={session.id} anchorRef={anchorRef} /> : null}
+      {preview.popover}
     </li>
   );
 }

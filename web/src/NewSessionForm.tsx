@@ -1,11 +1,11 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
-import { clipboardImage, uploadProjectImage } from './api.ts';
-import { AttachmentStrip, insertToken, removeToken, restoredAttachment, useImageAttachments } from './attachments.tsx';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { uploadProjectImage } from './api.ts';
+import { AttachmentStrip, restoredAttachment, useAttachedField } from './attachments.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { LlmSelector, llmChoices } from './LlmSelector.tsx';
 import { readDraft, writeDraft } from './drafts.ts';
-import { MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from './format.ts';
+import { errorMessage, MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from './format.ts';
 import { useStore } from './store.tsx';
 import { DEFAULT_SESSION_DEFAULTS, MODE_CHOICES, normalizeMode, type Agent, type Effort, type LaunchSpec, type Mode } from './types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
@@ -61,10 +61,18 @@ export function NewSessionForm({
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const queuedPrompt = useRef<string | null>(null);
-  const images = useImageAttachments(
-    (image) => uploadProjectImage(projectId, image),
-    draft?.images.map((i) => restoredAttachment(i.n, i.token, i.path)),
-  );
+  // Image collée ou déposée : « [Image #N] » est inséré au curseur, et remplacé par le chemin
+  // du fichier au lancement (les agents lisent les images référencées par chemin).
+  const { images, fieldProps, stripProps } = useAttachedField({
+    upload: (image) => uploadProjectImage(projectId, image),
+    initial: draft?.images.map((i) => restoredAttachment(i.n, i.token, i.path)),
+    text: prompt,
+    setText: (change) => {
+      setPromptEdited(true);
+      setPrompt(change);
+    },
+    onError: (message) => setError(`Image non envoyée : ${message}`),
+  });
 
   // Sérialiser les modifications rapides évite qu'une réponse ancienne remplace le dernier choix.
   const saveDefaults = useCallback((patch: Partial<LaunchSpec>): void => {
@@ -75,7 +83,7 @@ export function NewSessionForm({
         await updateProject(projectId, { sessionDefaults: patch });
         setDefaultsError(null);
       } catch (err) {
-        setDefaultsError(err instanceof Error ? err.message : 'Enregistrement impossible');
+        setDefaultsError(errorMessage(err, 'Enregistrement impossible'));
       } finally {
         setSavingDefaults((count) => count - 1);
       }
@@ -138,32 +146,6 @@ export function NewSessionForm({
     if (autoFocus) promptRef.current?.focus();
   }, [autoFocus]);
 
-  // Image collée ou déposée : « [Image #N] » est inséré au curseur, et remplacé par le chemin
-  // du fichier au lancement (les agents lisent les images référencées par chemin).
-  const attachImage = (image: File): void => {
-    setPromptEdited(true);
-    const el = promptRef.current;
-    const start = el?.selectionStart ?? prompt.length;
-    const end = el?.selectionEnd ?? prompt.length;
-    const token = images.add(image, (failed, message) => {
-      setPrompt((current) => removeToken(current, failed));
-      setError(`Image non envoyée : ${message}`);
-    });
-    setPrompt((current) => insertToken(current, start, end, token));
-  };
-  const onPromptPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
-    const image = clipboardImage(event.clipboardData);
-    if (image === null) return;
-    event.preventDefault();
-    attachImage(image);
-  };
-  const onPromptDrop = (event: DragEvent<HTMLTextAreaElement>): void => {
-    const image = clipboardImage(event.dataTransfer);
-    if (image === null) return;
-    event.preventDefault();
-    attachImage(image);
-  };
-
   const launch = async (): Promise<void> => {
     if (launchDisabled || available.length === 0 || busy || images.pending) return;
     setError(null);
@@ -180,7 +162,7 @@ export function NewSessionForm({
       if (draftKey !== undefined) setDraftError(writeDraft(draftKey, { prompt: '', images: [] }));
       images.reset();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Lancement impossible');
+      setError(errorMessage(err, 'Lancement impossible'));
     } finally {
       setBusy(false);
     }
@@ -237,28 +219,15 @@ export function NewSessionForm({
         <textarea
           rows={initialPrompt === undefined || initialPrompt === '' ? 5 : 10}
           value={prompt}
-          onChange={(e) => {
-            setPromptEdited(true);
-            setPrompt(e.target.value);
-            images.prune(e.target.value);
-          }}
+          {...fieldProps}
           onBlur={() => {
             if (promptEdited && !images.pending && expandedPrompt !== queuedPrompt.current) saveDefaults({ prompt: expandedPrompt });
           }}
           onKeyDown={onKeyDown}
-          onPaste={onPromptPaste}
-          onDrop={onPromptDrop}
           ref={promptRef}
           placeholder={`${SUBMIT_HINT} pour lancer · Ctrl+V ou glisser-déposer pour joindre une image`}
         />
-        <AttachmentStrip
-          items={images.items}
-          onRemove={(item) => {
-            setPromptEdited(true);
-            images.remove(item.n);
-            setPrompt((current) => removeToken(current, item.token));
-          }}
-        />
+        <AttachmentStrip {...stripProps} />
       </label>
       {error ? <p className="form-error">{error}</p> : null}
       {draftError ? <p className="form-error">Brouillon non sauvegardé : {draftError}</p> : null}

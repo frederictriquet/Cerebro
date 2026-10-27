@@ -3,11 +3,13 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { StartingContentPlan, StartingContentStep, StartingOrigin, WorktreeInventory, WorktreeView } from '../../server/worktrees.ts';
 import type { GitSnapshot } from '../../server/git-plan.ts';
 import { api, apiBase } from './api.ts';
+import { useAsyncAction } from './async-action.ts';
 import { Modal } from './Dialog.tsx';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { href } from './route.ts';
-import { AGENT_LABEL, MODE_CHIP, sessionTitle } from './format.ts';
+import { usePolling } from './polling.tsx';
+import { AGENT_LABEL, errorMessage, formatDateTime, MODE_CHIP, plural, pluralize, sessionTitle } from './format.ts';
 import { useStore } from './store.tsx';
 import { normalizeMode, type Session, type WorkspaceMode } from './types.ts';
 import './worktrees.css';
@@ -17,10 +19,8 @@ const INVENTORY_REFRESH_MS = 30_000;
 /** Last inventory per machine and scope, shown on remount so the panel keeps its height while it refreshes. */
 const inventoryCache = new Map<string, WorktreeInventory>();
 const cacheKey = (machineBase: string, path: string): string => `${machineBase}|${path}`;
-const createdLabel = (view: WorktreeView): string => dateLabel(view.createdAt);
-const dateLabel = (at: number): string => new Date(at).toLocaleString('fr-FR', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' });
+const createdLabel = (view: WorktreeView): string => formatDateTime(view.createdAt);
 const copyTitle = (view: WorktreeView): string => sessionTitle(view.session?.title ?? view.sessionTitle ?? `Conversation supprimée · ${createdLabel(view)}`);
-const fileCount = (count: number): string => `${count} fichier${count===1?'':'s'}`;
 function originLabel(origin: StartingOrigin | null, target: string): string {
   if(!origin)return 'ce contenu n’existe plus que dans cette copie';
   if(origin.kind==='target-commit')return `déjà dans ${target} · ${origin.commit.slice(0,7)} ${origin.subject}`;
@@ -59,13 +59,13 @@ function journey(view: WorktreeView): Journey {
   const integrate: StepState = view.integration==='integrated' ? 'done' : !view.ahead ? 'waiting' : view.mergeBlockers.length ? 'blocked' : 'todo';
   let status: string; let next: string | null;
   if(view.error){status='État indisponible';next=null;}
-  else if(view.mergeInProgress){status='Conflits à résoudre';next=view.conflicts.length?`Résolvez les conflits dans la copie (${fileCount(view.conflicts.length)}), puis terminez la mise à jour.`:'Les conflits sont résolus : terminez la mise à jour.';}
+  else if(view.mergeInProgress){status='Conflits à résoudre';next=view.conflicts.length?`Résolvez les conflits dans la copie (${plural(view.conflicts.length,'fichier')}), puis terminez la mise à jour.`:'Les conflits sont résolus : terminez la mise à jour.';}
   else if(dirty&&!view.ahead&&!changes?.count){status='Copie de départ';next='Aucun travail de la conversation : la copie ne contient que le contenu copié du projet.';}
-  else if(dirty&&(inherited.length||mixed.some(file=>file.separable))){status='Contenu de départ à retirer';next=`Retirez le contenu copié du projet à la création (${fileCount(inherited.length+mixed.filter(file=>file.separable).length+settled.length)}), pour ne garder que le travail de la conversation.`;}
-  else if(dirty&&settled.length){status='Contenu de départ à retirer';next=`Le contenu de départ a déjà disparu de ${fileCount(settled.length)} : « Retirer le contenu de départ » ${settled.length===1?'le rattache':'les rattache'} au travail de la conversation, sans ${settled.length===1?'le':'les'} modifier.`;}
-  else if(dirty&&ownWork){status='Travail à enregistrer';next=mixed.length?`Créez le commit du travail de la conversation, puis commitez tel${mixed.length===1?'':'s'} quel${mixed.length===1?'':'s'} ${fileCount(mixed.length)} après lecture de ${mixed.length===1?'son':'leur'} diff.`:'Créez le commit du travail de la conversation.';}
-  else if(dirty&&mixed.length){status='Fichiers à commiter tels quels';next=`Lisez le diff de ${fileCount(mixed.length)} qui mêlent contenu de départ et travail récent, puis commitez-${mixed.length===1?'le tel quel':'les tels quels'}.`;}
-  else if(dirty){status='Changements à examiner';next=`Examinez ${fileCount(view.dirty!)} : leur origine ne peut pas être vérifiée automatiquement.`;}
+  else if(dirty&&(inherited.length||mixed.some(file=>file.separable))){status='Contenu de départ à retirer';next=`Retirez le contenu copié du projet à la création (${plural(inherited.length+mixed.filter(file=>file.separable).length+settled.length,'fichier')}), pour ne garder que le travail de la conversation.`;}
+  else if(dirty&&settled.length){status='Contenu de départ à retirer';next=`Le contenu de départ a déjà disparu de ${plural(settled.length,'fichier')} : « Retirer le contenu de départ » ${settled.length===1?'le rattache':'les rattache'} au travail de la conversation, sans ${settled.length===1?'le':'les'} modifier.`;}
+  else if(dirty&&ownWork){status='Travail à enregistrer';next=mixed.length?`Créez le commit du travail de la conversation, puis commitez ${pluralize(mixed.length,'tel quel','tels quels')} ${plural(mixed.length,'fichier')} après lecture de ${mixed.length===1?'son':'leur'} diff.`:'Créez le commit du travail de la conversation.';}
+  else if(dirty&&mixed.length){status='Fichiers à commiter tels quels';next=`Lisez le diff de ${plural(mixed.length,'fichier')} qui mêlent contenu de départ et travail récent, puis commitez-${mixed.length===1?'le tel quel':'les tels quels'}.`;}
+  else if(dirty){status='Changements à examiner';next=`Examinez ${plural(view.dirty!,'fichier')} : leur origine ne peut pas être vérifiée automatiquement.`;}
   else if(view.ahead&&conflicts?.length){status='Conflits prévus';next=`Mettez la copie à jour avec ${target} pour résoudre ${conflicts.length===1?'le conflit':'les conflits'} dans la copie.`;}
   else if(view.ahead&&otherBlockers.length){status='Intégration bloquée';next=otherBlockers[0];}
   else if(view.ahead){status='Prêt à intégrer';next=`Intégrez ${view.ahead===1?'le commit':`les ${view.ahead} commits`} dans ${target}.`;}
@@ -81,7 +81,7 @@ function Step({number,title,state,children}:{number:number;title:string;state:St
     {children?<div className="worktree-step-body">{children}</div>:null}
   </li>;
 }
-interface Confirmation { kind:'merge'|'remove';token:string;view:WorktreeView;machineBase:string }
+interface Confirmation { kind:'merge'|'remove';token:string;view:WorktreeView }
 
 interface Reviewed { snapshotId:string;paths:string[] }
 function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReviewed?:(reviewed:Reviewed)=>void}) {
@@ -90,10 +90,10 @@ function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReview
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState<string|null>(null);
   const load=async():Promise<void>=>{
-    const machine=apiBase();setBusy(true);setError(null);
-    try{const value=await api<GitSnapshot>(`/api/worktrees/${view.id}/git/prepare-commit`,{method:'POST'});if(machine===apiBase()){setSnapshot(value);setChecked(new Set());}}
-    catch(cause){if(machine===apiBase())setError(cause instanceof Error?cause.message:String(cause));}
-    finally{if(machine===apiBase())setBusy(false);}
+    setBusy(true);setError(null);
+    try{const value=await api<GitSnapshot>(`/api/worktrees/${view.id}/git/prepare-commit`,{method:'POST'});setSnapshot(value);setChecked(new Set());}
+    catch(cause){setError(errorMessage(cause));}
+    finally{setBusy(false);}
   };
   const files=snapshot?.files.filter(file=>!view.changesSinceCreation||view.changesSinceCreation.files.includes(file.path));
   return <div className="worktree-diffs">
@@ -107,7 +107,7 @@ function WorktreeDiffs({view,onCommitReviewed}:{view:WorktreeView;onCommitReview
         <pre>{file.diff}</pre>
       </>}
     </details>)}
-    {snapshot&&onCommitReviewed?<button type="button" className="btn" disabled={!checked.size} onClick={()=>onCommitReviewed({snapshotId:snapshot.id,paths:[...checked]})}>Commiter avec {checked.size} fichier{checked.size===1?'':'s'} examiné{checked.size===1?'':'s'}</button>:null}
+    {snapshot&&onCommitReviewed?<button type="button" className="btn" disabled={!checked.size} onClick={()=>onCommitReviewed({snapshotId:snapshot.id,paths:[...checked]})}>Commiter avec {plural(checked.size,'fichier examiné','fichiers examinés',{zeroPlural:true})}</button>:null}
   </div>;
 }
 
@@ -116,36 +116,28 @@ interface DiscardResult { restored:string[];separated:string[];settled:string[];
 type Resolver = Pick<Session,'id'|'title'>;
 /** Preview, then removal of the content copied from the project when the copy was created. */
 function StartingContentDialog({view,onClose,onDone,onResolving}:{view:WorktreeView;onClose:()=>void;onDone:(result:DiscardResult)=>void;onResolving:(session:Resolver)=>void}) {
-  const [machineBase]=useState(apiBase);
   const {projects}=useStore();
   const settings=projects.find(project=>project.id===view.projectId)?.resolutionSettings;
   const [plan,setPlan]=useState<StartingContentPlan|null>(null);
-  const [busy,setBusy]=useState<'loading'|'running'|'resolving'|null>('loading');
+  const [loading,setLoading]=useState(true);
   const [error,setError]=useState<string|null>(null);
+  const discard=useAsyncAction(async()=>{const result=await api<DiscardResult>(`/api/worktrees/${view.id}/discard-inherited`,{method:'POST',body:JSON.stringify({confirmed:[...confirmed].map(([path,version])=>({path,version}))})});onDone(result);},{onError:setError});
+  // The files left for a manual review go to a session working in the copy, with the project's LLM settings.
+  const resolution=useAsyncAction(async()=>{const session=await api<Session>(`/api/worktrees/${view.id}/resolve-starting-content`,{method:'POST'});onResolving(session);},{onError:setError});
+  const busy=loading?'loading':discard.busy?'running':resolution.busy?'resolving':null;
   // Kept files checked as holding only the conversation's work, with the content they were checked with.
   const [confirmed,setConfirmed]=useState<Map<string,string>>(()=>new Map());
   const target=branchName(view.targetBranch);
   useEffect(()=>{
     let disposed=false;
     api<StartingContentPlan>(`/api/worktrees/${view.id}/starting-content`)
-      .then(value=>{if(!disposed&&apiBase()===machineBase)setPlan(value);})
-      .catch(cause=>{if(!disposed&&apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));})
-      .finally(()=>{if(!disposed&&apiBase()===machineBase)setBusy(null);});
+      .then(value=>{if(!disposed)setPlan(value);})
+      .catch(cause=>{if(!disposed)setError(errorMessage(cause));})
+      .finally(()=>{if(!disposed)setLoading(false);});
     return()=>{disposed=true;};
-  },[view.id,machineBase]);
-  const run=async():Promise<void>=>{
-    setBusy('running');setError(null);
-    try{const result=await api<DiscardResult>(`/api/worktrees/${view.id}/discard-inherited`,{method:'POST',body:JSON.stringify({confirmed:[...confirmed].map(([path,version])=>({path,version}))})});if(apiBase()===machineBase)onDone(result);}
-    catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
-    finally{if(apiBase()===machineBase)setBusy(null);}
-  };
-  // The files left for a manual review go to a session working in the copy, with the project's LLM settings.
-  const resolve=async():Promise<void>=>{
-    setBusy('resolving');setError(null);
-    try{const session=await api<Session>(`/api/worktrees/${view.id}/resolve-starting-content`,{method:'POST'});if(apiBase()===machineBase)onResolving(session);}
-    catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
-    finally{if(apiBase()===machineBase)setBusy(null);}
-  };
+  },[view.id]);
+  const run=discard.run;
+  const resolve=resolution.run;
   const actionable=plan?.steps.some(step=>step.action!=='keep')||confirmed.size>0;
   const confirm=(step:StartingContentStep,checked:boolean):void=>setConfirmed(current=>{const next=new Map(current);if(checked&&step.version)next.set(step.path,step.version);else next.delete(step.path);return next;});
   const toReview=plan?.steps.filter(step=>step.action==='keep').length??0;
@@ -177,10 +169,9 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   const path=projectId?`/api/projects/${projectId}/worktrees`:'/api/worktrees';
   const machineBase=apiBase();
   const [inventory,setInventory]=useState<WorktreeInventory|null>(()=>inventoryCache.get(cacheKey(machineBase,path))??null);
-  const [loadedBase,setLoadedBase]=useState<string|null>(()=>inventoryCache.has(cacheKey(machineBase,path))?machineBase:null);
   const [loadError,setLoadError]=useState<string|null>(null);
-  const [error,setError]=useState<string|null>(null);
-  const [busy,setBusy]=useState<string|null>(null);
+  // A worktree action at a time.
+  const {run:perform,busy,error,setError}=useAsyncAction((operation:()=>Promise<void>)=>operation());
   const [historyBusy,setHistoryBusy]=useState<Set<string>>(()=>new Set());
   const [confirmation,setConfirmation]=useState<Confirmation|null>(null);
   const [discarding,setDiscarding]=useState<WorktreeView|null>(null);
@@ -189,91 +180,65 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
   const [committing,setCommitting]=useState<WorktreeView|null>(null);
   const [reviewed,setReviewed]=useState<Reviewed|null>(null);
   const [expanded,setExpanded]=useState<Set<string>>(()=>new Set());
-  const refresh=useCallback(async():Promise<void>=>{
-    try{const result=await api<WorktreeInventory>(path);if(apiBase()===machineBase){inventoryCache.set(cacheKey(machineBase,path),result);setInventory(result);setLoadedBase(machineBase);setLoadError(null);}}
-    catch(cause){if(apiBase()===machineBase)setLoadError(cause instanceof Error?cause.message:String(cause));}
-  },[path,machineBase]);
+  const load=useCallback(()=>api<WorktreeInventory>(path),[path]);
   useEffect(()=>{
     const cached=inventoryCache.get(cacheKey(machineBase,path))??null;
-    setInventory(cached);setLoadedBase(cached?machineBase:null);setConfirmation(null);setDiscarding(null);setResults(new Map());setResolvers(new Map());setCommitting(null);setReviewed(null);setError(null);setLoadError(null);setBusy(null);setHistoryBusy(new Set());setExpanded(new Set());
-    let disposed=false;let loading=false;let timer:number|undefined;
-    const load=async():Promise<void>=>{
-      if(disposed||loading)return;
-      loading=true;timer=undefined;
-      try{if(!document.hidden)await refresh();}
-      finally{loading=false;if(!disposed)timer=window.setTimeout(()=>void load(),INVENTORY_REFRESH_MS);}
-    };
-    const visible=():void=>{if(!document.hidden&&!loading){if(timer!==undefined)window.clearTimeout(timer);timer=undefined;void load();}};
-    document.addEventListener('visibilitychange',visible);void load();
-    return()=>{disposed=true;if(timer!==undefined)window.clearTimeout(timer);document.removeEventListener('visibilitychange',visible);};
-  },[refresh]);
+    setInventory(cached);setConfirmation(null);setDiscarding(null);setResults(new Map());setResolvers(new Map());setCommitting(null);setReviewed(null);setError(null);setLoadError(null);setHistoryBusy(new Set());setExpanded(new Set());
+  },[load]);
+  const refresh=usePolling(load,INVENTORY_REFRESH_MS,{
+    onData:result=>{inventoryCache.set(cacheKey(machineBase,path),result);setInventory(result);setLoadError(null);},
+    onError:cause=>setLoadError(errorMessage(cause)),
+  });
   const prepare=async(view:WorktreeView,kind:'merge'|'remove'):Promise<void>=>{
-    if(apiBase()!==machineBase)return;
-    setBusy(view.id);setError(null);
-    try{const prepared=await api<{token:string;view:WorktreeView}>(`/api/worktrees/${view.id}/prepare-${kind}`,{method:'POST'});if(apiBase()===machineBase)setConfirmation({kind,...prepared,machineBase});}
-    catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
-    finally{if(apiBase()===machineBase)setBusy(null);}
+    await perform(async()=>{const prepared=await api<{token:string;view:WorktreeView}>(`/api/worktrees/${view.id}/prepare-${kind}`,{method:'POST'});setConfirmation({kind,...prepared});});
   };
   const run=async():Promise<void>=>{
-    if(!confirmation||confirmation.machineBase!==apiBase())return;
-    const {view,kind,token}=confirmation;setBusy(view.id);setError(null);
-    try{
+    if(!confirmation)return;
+    const {view,kind,token}=confirmation;
+    await perform(async()=>{
       await api(`/api/worktrees/${view.id}/${kind}`,{method:'POST',body:JSON.stringify({token})});
-      if(apiBase()!==machineBase)return;
       setConfirmation(null);await refresh();window.setTimeout(()=>void refresh(),500);
-    }catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
-    finally{if(apiBase()===machineBase)setBusy(null);}
+    });
   };
   /** A synchronous Git action on one copy, followed by a refresh. */
   const act=async(view:WorktreeView,action:string):Promise<void>=>{
-    if(apiBase()!==machineBase)return;
-    setBusy(view.id);setError(null);
-    try{await api(`/api/worktrees/${view.id}/${action}`,{method:'POST'});if(apiBase()===machineBase)await refresh();}
-    catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
-    finally{if(apiBase()===machineBase)setBusy(null);}
+    await perform(async()=>{await api(`/api/worktrees/${view.id}/${action}`,{method:'POST'});await refresh();});
   };
   const chooseTarget=async(view:WorktreeView,branch:string):Promise<void>=>{
-    if(apiBase()!==machineBase)return;
-    setBusy(view.id);setError(null);
-    try{await api(`/api/worktrees/${view.id}/target`,{method:'PATCH',body:JSON.stringify({branch})});if(apiBase()===machineBase)await refresh();}
-    catch(cause){if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
-    finally{if(apiBase()===machineBase)setBusy(null);}
+    await perform(async()=>{await api(`/api/worktrees/${view.id}/target`,{method:'PATCH',body:JSON.stringify({branch})});await refresh();});
   };
   const toggle=(id:string):void=>setExpanded(current=>{const next=new Set(current);if(next.has(id))next.delete(id);else next.add(id);return next;});
   const open=(id:string):void=>setExpanded(current=>new Set(current).add(id));
   const deleteHistory=async(ids:string[],actionKey:string):Promise<void>=>{
-    if(apiBase()!==machineBase)return;
     // Only disable the action being executed: disabling another delayed button cancels its timer.
     setHistoryBusy(current=>new Set(current).add(actionKey));setError(null);
     try {
       await api('/api/worktrees/history',{method:'DELETE',body:JSON.stringify({ids})});
-      if(apiBase()!==machineBase)return;
       // Invalidate other scopes on this machine too, so remounting cannot restore deleted entries.
       for(const [key,value] of inventoryCache)if(key.startsWith(`${machineBase}|`))inventoryCache.set(key,{...value,cleaned:value.cleaned?.filter(copy=>!ids.includes(copy.id))??[]});
       setInventory(current=>current?{...current,cleaned:current.cleaned?.filter(copy=>!ids.includes(copy.id))??[]}:current);
       await refresh();
-    } catch(cause) {if(apiBase()===machineBase)setError(cause instanceof Error?cause.message:String(cause));}
-    finally {if(apiBase()===machineBase)setHistoryBusy(current=>{const next=new Set(current);next.delete(actionKey);return next;});}
+    } catch(cause) {setError(errorMessage(cause));}
+    finally {setHistoryBusy(current=>{const next=new Set(current);next.delete(actionKey);return next;});}
   };
-  const visibleInventory=loadedBase===machineBase?inventory:null;
-  const copies=visibleInventory?.worktrees.filter(view=>view.managed&&!view.primary)??[];
-  const other=visibleInventory?.worktrees.filter(view=>!view.managed||view.primary)??[];
+  const copies=inventory?.worktrees.filter(view=>view.managed&&!view.primary)??[];
+  const other=inventory?.worktrees.filter(view=>!view.managed||view.primary)??[];
   // Absent des serveurs antérieurs au nettoyage automatique.
-  const cleaned=visibleInventory?.cleaned??[];
-  const historyOnly=!!projectId&&workspaceMode==='shared'&&!!visibleInventory&&copies.length===0&&other.every(view=>view.primary)&&!loadError&&!visibleInventory.errors.length;
-  if(projectId&&workspaceMode==='shared'&&visibleInventory&&copies.length===0&&cleaned.length===0&&other.every(view=>view.primary)&&!loadError&&!error&&!visibleInventory.errors.length)return null;
+  const cleaned=inventory?.cleaned??[];
+  const historyOnly=!!projectId&&workspaceMode==='shared'&&!!inventory&&copies.length===0&&other.every(view=>view.primary)&&!loadError&&!inventory.errors.length;
+  if(projectId&&workspaceMode==='shared'&&inventory&&copies.length===0&&cleaned.length===0&&other.every(view=>view.primary)&&!loadError&&!error&&!inventory.errors.length)return null;
   return <section className="card worktrees-panel" aria-label="Copies de travail des conversations">
-    {!historyOnly?<><div className="worktrees-heading"><h2>Copies de travail <span className="pill">{visibleInventory?copies.length:'…'}</span></h2>
+    {!historyOnly?<><div className="worktrees-heading"><h2>Copies de travail <span className="pill">{inventory?copies.length:'…'}</span></h2>
       <button type="button" className="btn" onClick={()=>void refresh()}>Actualiser</button>
     </div>
     <p className="worktrees-explanation">{workspaceMode==='shared'?'Ce projet utilise directement son dossier. Ses anciennes copies isolées restent accessibles ici.':'Chaque conversation travaille dans sa copie, sur sa propre branche. Pour récupérer son travail : l’enregistrer (commit) dans la copie, régler les conflits éventuels avec la branche du projet, l’intégrer, puis le publier avec « Push ». Une copie sans rien à conserver est nettoyée automatiquement à la fin de sa conversation.'}</p></>:null}
     {loadError?<p className="form-error" role="alert">{loadError}</p>:null}
     {error?<p className="form-error" role="alert">{error}</p>:null}
-    {visibleInventory?.errors.map(message=><p className="form-error" key={message}>{message}</p>)}
-    {!historyOnly&&visibleInventory&&copies.length===0?<p className="empty-hint">Aucune copie de conversation à traiter.</p>:null}
+    {inventory?.errors.map(message=><p className="form-error" key={message}>{message}</p>)}
+    {!historyOnly&&inventory&&copies.length===0?<p className="empty-hint">Aucune copie de conversation à traiter.</p>:null}
     <ul className="worktree-list">
       {copies.map(view=>{
-        const operationBusy=view.operation?.status==='running';const disabled=busy!==null||operationBusy;
+        const operationBusy=view.operation?.status==='running';const disabled=busy||operationBusy;
         const showDetails=expanded.has(view.id);const changes=view.changesSinceCreation;
         const plan=journey(view);const target=branchName(view.targetBranch);
         const commitBlocked=disabled||!!view.error||view.mergeInProgress||view.activeSessions.some(session=>session.status!=='idle');
@@ -306,8 +271,8 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
               {plan.next?<p className="worktree-guidance">{plan.next}</p>:null}
             </div>
             <div className="worktree-counts">
-              {view.dirty&&!view.mergeInProgress?<span title="Fichiers modifiés et non commités dans la copie, contenu de départ compris.">{fileCount(view.dirty)} non commité{view.dirty===1?'':'s'}</span>:null}
-              {view.ahead?<span>{view.ahead} commit{view.ahead===1?'':'s'} à intégrer</span>:null}
+              {view.dirty&&!view.mergeInProgress?<span title="Fichiers modifiés et non commités dans la copie, contenu de départ compris.">{plural(view.dirty,'fichier non commité','fichiers non commités')}</span>:null}
+              {view.ahead?<span>{plural(view.ahead,'commit')} à intégrer</span>:null}
             </div>
             <div className="worktree-actions">
               {primary}
@@ -328,32 +293,32 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
                 :!view.dirty?<p>Aucun changement non commité : tout le travail de la copie est dans ses commits.</p>:null}
                 {result&&view.dirty?<p className="worktree-notice" role="status">
                   {result.targetUpdate?`Copie mise à jour avec ${branchName(result.targetUpdate.branch)}. `:''}
-                  {result.restored.length?`${fileCount(result.restored.length)} remis à l’état de la copie. `:''}
-                  {result.separated.length?`${fileCount(result.separated.length)} ${result.separated.length===1?'ne contient':'ne contiennent'} plus que le travail fait depuis la création. `:''}
-                  {result.settled?.length?`${fileCount(result.settled.length)} rattaché${result.settled.length===1?'':'s'} au travail de la conversation. `:''}
-                  {result.kept.length?`Non séparé${result.kept.length===1?'':'s'} : ${result.kept.map(step=>step.path).join(', ')}, à commiter tel${result.kept.length===1?'':'s'} quel${result.kept.length===1?'':'s'} ci-dessous.`:''}
+                  {result.restored.length?`${plural(result.restored.length,'fichier')} remis à l’état de la copie. `:''}
+                  {result.separated.length?`${plural(result.separated.length,'fichier')} ${result.separated.length===1?'ne contient':'ne contiennent'} plus que le travail fait depuis la création. `:''}
+                  {result.settled?.length?`${plural(result.settled.length,'fichier rattaché','fichiers rattachés')} au travail de la conversation. `:''}
+                  {result.kept.length?`${pluralize(result.kept.length,'Non séparé')} : ${result.kept.map(step=>step.path).join(', ')}, à commiter ${pluralize(result.kept.length,'tel quel','tels quels')} ci-dessous.`:''}
                 </p>:null}
                 {resolver?<p className="worktree-notice" role="status">Session de résolution lancée dans la copie : <a href={href(`#/s/${resolver.id}`)}>{sessionTitle(resolver.title)}</a>. Une fois son tour terminé, relisez ses changements dans les diffs, puis retirez le contenu de départ restant.</p>:null}
                 {!view.mergeInProgress&&plan.inherited.length?<div className="worktree-group">
-                  <p><strong>{fileCount(plan.inherited.length)} sans nouveau travail.</strong> {plan.inherited.length===1?'Ce fichier a':'Ces fichiers ont'} encore le contenu copié du dossier du projet à la création de la copie : ce n’est pas le travail de la conversation.</p>
+                  <p><strong>{plural(plan.inherited.length,'fichier')} sans nouveau travail.</strong> {plan.inherited.length===1?'Ce fichier a':'Ces fichiers ont'} encore le contenu copié du dossier du projet à la création de la copie : ce n’est pas le travail de la conversation.</p>
                   <ul className="worktree-files">{(view.startingContent??[]).filter(file=>file.state==='inherited').map(file=><li key={file.path}><code>{file.path}</code> <span className={file.origin?'meta':'worktree-warning'}>— {originLabel(file.origin,target)}</span></li>)}</ul>
                 </div>:null}
                 {!view.mergeInProgress&&separable.length?<div className="worktree-group">
-                  <p><strong>{fileCount(separable.length)} mêlant contenu de départ et travail récent, séparable{separable.length===1?'':'s'}.</strong> Le contenu de départ peut en être retiré automatiquement, en gardant le travail fait dans la copie.</p>
+                  <p><strong>{plural(separable.length,'fichier')} mêlant contenu de départ et travail récent, {pluralize(separable.length,'séparable')}.</strong> Le contenu de départ peut en être retiré automatiquement, en gardant le travail fait dans la copie.</p>
                   <ul className="worktree-files">{separable.map(file=><li key={file.path}><code>{file.path}</code> <span className="meta">— contenu de départ {originLabel(file.origin,target)}</span></li>)}</ul>
                 </div>:null}
                 {!view.mergeInProgress&&plan.settled.length?<div className="worktree-group">
-                  <p><strong>{fileCount(plan.settled.length)} sans contenu de départ restant.</strong> {plan.settled.length===1?'Ses changements non commités ne contiennent':'Leurs changements non commités ne contiennent'} plus que du travail récent : le contenu de départ en a été retiré, par la conversation ou par une session de résolution.</p>
+                  <p><strong>{plural(plan.settled.length,'fichier')} sans contenu de départ restant.</strong> {plan.settled.length===1?'Ses changements non commités ne contiennent':'Leurs changements non commités ne contiennent'} plus que du travail récent : le contenu de départ en a été retiré, par la conversation ou par une session de résolution.</p>
                   <ul className="worktree-files">{plan.settled.map(file=><li key={file.path}><code>{file.path}</code> <span className="meta">— contenu de départ {originLabel(file.origin,target)}</span></li>)}</ul>
                 </div>:null}
                 {!view.mergeInProgress&&removable&&view.dirty?<button type="button" className="btn primary" disabled={commitBlocked} onClick={startDiscard}>Retirer le contenu de départ…</button>:null}
                 {!view.mergeInProgress&&plan.ownWork&&view.dirty?<div className="worktree-group">
-                  <p><strong>{fileCount(plan.ownWork)} modifié{plan.ownWork===1?'':'s'} par la conversation.</strong> Le commit automatique ne prend que les fichiers dont l’origine est vérifiable.</p>
+                  <p><strong>{plural(plan.ownWork,'fichier modifié','fichiers modifiés')} par la conversation.</strong> Le commit automatique ne prend que les fichiers dont l’origine est vérifiable.</p>
                   <button type="button" className="btn" disabled={commitBlocked} onClick={()=>setCommitting(view)}>Créer le commit</button>
                 </div>:null}
                 {!view.mergeInProgress&&view.dirty&&(manual.length||!changes)?<div className="worktree-group">
                   {manual.length?<>
-                    <p><strong>{fileCount(manual.length)} à commiter tel{manual.length===1?'':'s'} quel{manual.length===1?'':'s'}.</strong> {manual.length===1?'Il mêle':'Ils mêlent'} contenu de départ et travail récent, sans séparation automatique possible :</p>
+                    <p><strong>{plural(manual.length,'fichier')} à commiter {pluralize(manual.length,'tel quel','tels quels')}.</strong> {manual.length===1?'Il mêle':'Ils mêlent'} contenu de départ et travail récent, sans séparation automatique possible :</p>
                     <ul className="worktree-files">{manual.map(file=><li key={file.path}><code>{file.path}</code> <span className="worktree-warning">— {file.origin?`contenu de départ ${originLabel(file.origin,target)}, mais le travail récent touche les mêmes lignes ou a déjà été commité`:'contenu de départ introuvable'}</span></li>)}</ul>
                     <p className="meta">Pour terminer cette étape, {manual.length===1?'lisez son diff puis cochez-le : le commit emportera aussi son':'lisez leur diff puis cochez-les : le commit emportera aussi leur'} contenu de départ. S’il diffère de {target}, l’écart apparaîtra comme conflit à l’étape 2 et se résoudra dans la copie. Pour ne garder que le travail de la conversation, confiez plutôt {manual.length===1?'ce fichier':'ces fichiers'} à l’IA : une session sépare le contenu de départ dans la copie, sans rien commiter. Une fois ce tri fait, validez {manual.length===1?'le fichier':'les fichiers'} dans la même fenêtre après lecture de {manual.length===1?'son':'leur'} diff : {manual.length===1?'il est rattaché':'ils sont rattachés'} au travail de la conversation.</p>
                     <button type="button" className="btn" disabled={commitBlocked} onClick={startDiscard}>Résoudre avec l’IA ou valider…</button>
@@ -374,9 +339,9 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
                 :!view.ahead?<p>{view.integration==='integrated'?'Rien à régler : tout le travail commité est déjà dans la cible.':'Rien à intégrer pour l’instant.'}</p>
                 :!view.behind?<p>La copie contient déjà tous les commits de {target} : aucun conflit possible.</p>
                 :view.integrationConflicts===null?<p><ActivityStatus active>Recherche des conflits avec {target}…</ActivityStatus></p>
-                :view.integrationConflicts.length===0?<p>Aucun conflit prévu avec {target}, qui a reçu {view.behind} commit{view.behind===1?'':'s'} depuis la création de la copie.</p>
+                :view.integrationConflicts.length===0?<p>Aucun conflit prévu avec {target}, qui a reçu {plural(view.behind,'commit')} depuis la création de la copie.</p>
                 :<>
-                  <p>Les commits de la copie et ceux de {target} modifient les mêmes lignes de {fileCount(view.integrationConflicts.length)} :</p>
+                  <p>Les commits de la copie et ceux de {target} modifient les mêmes lignes de {plural(view.integrationConflicts.length,'fichier')} :</p>
                   <ul className="worktree-files">{view.integrationConflicts.map(file=><li key={file}><code>{file}</code></li>)}</ul>
                   <p className="meta">Mettez d’abord la copie à jour avec {target} : les conflits se résolvent alors dans la copie, sans toucher au dossier du projet.</p>
                   {view.dirty?<p className="worktree-warning">Terminez d’abord l’étape 1 : la copie doit être entièrement commitée.</p>:null}
@@ -402,7 +367,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
             {view.operation?.output?<details><summary>Résultat Git</summary><pre>{view.operation.output}</pre></details>:null}
             <details className="worktree-cleanup"><summary>Retirer cette copie</summary>
               <p>Le retrait est distinct de la suppression de la conversation. Il est disponible uniquement quand les changements sont intégrés et qu’aucune donnée locale ne risque d’être effacée. Il a lieu automatiquement à l’arrêt ou à la suppression de la conversation quand ces conditions sont réunies.</p>
-              {view.autoCleanup&&view.autoCleanup.status!=='removed'?<p>Nettoyage automatique {view.autoCleanup.status==='failed'?'échoué':'non effectué'} le {dateLabel(view.autoCleanup.at)} : {view.autoCleanup.reasons.join(' ')}</p>:null}
+              {view.autoCleanup&&view.autoCleanup.status!=='removed'?<p>Nettoyage automatique {view.autoCleanup.status==='failed'?'échoué':'non effectué'} le {formatDateTime(view.autoCleanup.at)} : {view.autoCleanup.reasons.join(' ')}</p>:null}
               {view.ignored?<p>{view.ignored} fichier(s) ignoré(s) par Git sont présents (par exemple dépendances ou configuration locale). Ce ne sont pas des changements à intégrer ; ils sont conservés et empêchent le retrait de la copie.</p>:null}
               {view.removeBlockers.length?<ul>{view.removeBlockers.map(reason=><li key={reason}>{reason}</li>)}</ul>:null}
               <button type="button" className="btn danger-ghost" disabled={disabled||view.removeBlockers.length>0} onClick={()=>void prepare(view,'remove')}>Retirer la copie</button>
@@ -419,7 +384,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
           <DelayedActionButton disabled={historyBusy.has(copy.id)} title={`Supprimer de l’historique : ${sessionTitle(copy.session?.title??copy.sessionTitle??'Conversation supprimée')}. Branche et conversation conservées.`} onAction={()=>void deleteHistory([copy.id],copy.id)}>Supprimer</DelayedActionButton>
         </div>
         {!projectId?<span className="meta"> · {copy.projectName}</span>:null}
-        <p className="meta">Nettoyée le {dateLabel(copy.removedAt)}</p>
+        <p className="meta">Nettoyée le {formatDateTime(copy.removedAt)}</p>
         <details className="worktree-history-details"><summary>Détails techniques</summary>
           <p className="meta">Branche conservée : {branchName(copy.branch)}</p>
           <p className="path">Ancien dossier supprimé : {copy.path}</p>
@@ -436,7 +401,7 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
         {view.primary&&view.projectExists&&view.projectId?<button type="button" className="btn" onClick={()=>setCommitting(view)}>Commit / push du projet</button>:null}
       </details>)}
     </details>:null}
-    {confirmation&&confirmation.machineBase===machineBase?<Modal title={confirmation.kind==='merge'?`Intégrer dans ${branchName(confirmation.view.targetBranch)}`:'Retirer la copie de travail'} onClose={()=>setConfirmation(null)}>
+    {confirmation?<Modal title={confirmation.kind==='merge'?`Intégrer dans ${branchName(confirmation.view.targetBranch)}`:'Retirer la copie de travail'} onClose={()=>setConfirmation(null)}>
       <p>{copyTitle(confirmation.view)}</p><p>Copie : {confirmation.view.path}</p><p>Projet cible : {confirmation.view.targetPath} · {branchName(confirmation.view.targetBranch)}</p>
       {confirmation.kind==='merge'?<>
         <p>Les commits de cette copie seront intégrés au projet par un merge. Les contrôles Git habituels s’appliquent.</p>
@@ -444,13 +409,13 @@ export function Worktrees({projectId,workspaceMode}:{projectId?:string;workspace
         <p>Ensuite, publiez avec « Push » dans l’en-tête du projet. La conversation peut continuer dans sa copie ; ses nouveaux changements pourront être intégrés plus tard.</p>
       </>:<p>La copie propre et intégrée sera retirée. Sa branche, ses commits et la conversation seront conservés. Cette conversation ne pourra plus reprendre dans la copie supprimée.</p>}
       {error?<p className="form-error" role="alert">{error}</p>:null}
-      <div className="row-actions"><button type="button" className={`btn ${confirmation.kind==='merge'?'primary':'danger-ghost'}`} disabled={busy!==null} onClick={()=>void run()}><ActivityStatus active={busy!==null}>{busy!==null?(confirmation.kind==='merge'?'Intégration…':'Retrait de la copie…'):(confirmation.kind==='merge'?`Intégrer dans ${branchName(confirmation.view.targetBranch)}`:'Retirer la copie')}</ActivityStatus></button><button type="button" className="btn" disabled={busy!==null} onClick={()=>setConfirmation(null)}>Annuler</button></div>
+      <div className="row-actions"><button type="button" className={`btn ${confirmation.kind==='merge'?'primary':'danger-ghost'}`} disabled={busy} onClick={()=>void run()}><ActivityStatus active={busy}>{busy?(confirmation.kind==='merge'?'Intégration…':'Retrait de la copie…'):(confirmation.kind==='merge'?`Intégrer dans ${branchName(confirmation.view.targetBranch)}`:'Retirer la copie')}</ActivityStatus></button><button type="button" className="btn" disabled={busy} onClick={()=>setConfirmation(null)}>Annuler</button></div>
     </Modal>:null}
-    {discarding&&loadedBase===machineBase?<StartingContentDialog view={discarding} onClose={()=>setDiscarding(null)} onDone={result=>{
+    {discarding&&inventory?<StartingContentDialog view={discarding} onClose={()=>setDiscarding(null)} onDone={result=>{
       setResults(current=>new Map(current).set(discarding.id,result));setDiscarding(null);open(discarding.id);void refresh();
     }} onResolving={session=>{
       setResolvers(current=>new Map(current).set(discarding.id,session));setDiscarding(null);open(discarding.id);void refresh();
     }}/>:null}
-    {committing&&loadedBase===machineBase?<AutomaticCommitDialog projectId={committing.projectId??''} reviewed={reviewed??undefined} endpoint={committing.primary?undefined:`/api/worktrees/${committing.id}/git`} push={committing.primary} scopeLabel={committing.primary?'Tous les changements du dossier partagé du projet':`Fichiers vérifiables de la copie · ${copyTitle(committing)}`} onClose={()=>{setCommitting(null);setReviewed(null);void refresh();}}/>:null}
+    {committing&&inventory?<AutomaticCommitDialog projectId={committing.projectId??''} reviewed={reviewed??undefined} endpoint={committing.primary?undefined:`/api/worktrees/${committing.id}/git`} push={committing.primary} scopeLabel={committing.primary?'Tous les changements du dossier partagé du projet':`Fichiers vérifiables de la copie · ${copyTitle(committing)}`} onClose={()=>{setCommitting(null);setReviewed(null);void refresh();}}/>:null}
   </section>;
 }

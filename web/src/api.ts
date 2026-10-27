@@ -83,6 +83,18 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return request<T>(`${base}${path}`, local, init);
 }
 
+/** Construit un chemin d'API en encodant chaque valeur interpolée : apiPath`/api/sessions/${id}/kill`. */
+export function apiPath(strings: TemplateStringsArray, ...params: (string | number)[]): string {
+  return strings.reduce((path, part, i) => `${path}${encodeURIComponent(params[i - 1])}${part}`);
+}
+
+/** Appelle l'API et valide la réponse ; what nomme l'objet attendu dans l'erreur. */
+export async function fetchParsed<T>(path: string, parse: (raw: unknown) => T | null, what: string, init?: RequestInit): Promise<T> {
+  const value = parse(await api<unknown>(path, init));
+  if (value === null) throw new Error(`Réponse du serveur invalide (${what})`);
+  return value;
+}
+
 export interface VersionInfo {
   version: string;
   commit: string | null;
@@ -140,12 +152,12 @@ export async function readClipboardImage(): Promise<Blob | null> {
 
 // Stocke l'image côté serveur et renvoie son chemin absolu, que l'agent sait lire.
 export async function uploadImage(sessionId: string, image: Blob): Promise<string> {
-  return postImage(`/api/sessions/${sessionId}/attachments`, image);
+  return postImage(apiPath`/api/sessions/${sessionId}/attachments`, image);
 }
 
 // Variante pour le prompt d'une nouvelle session : la session n'existe pas encore.
 export async function uploadProjectImage(projectId: string, image: Blob): Promise<string> {
-  return postImage(`/api/projects/${projectId}/attachments`, image);
+  return postImage(apiPath`/api/projects/${projectId}/attachments`, image);
 }
 
 // Image collée dans un council : dossier du projet, ou dossier commun des councils hors projet.
@@ -203,11 +215,11 @@ export interface PeerNotice {
 }
 
 export function getProjectSlack(projectId: string): Promise<ProjectSlackStatus> {
-  return api<ProjectSlackStatus>(`/api/projects/${projectId}/slack`);
+  return api<ProjectSlackStatus>(apiPath`/api/projects/${projectId}/slack`);
 }
 
 export function acquireProjectSlack(projectId: string): Promise<ProjectSlackStatus> {
-  return api<ProjectSlackStatus>(`/api/projects/${projectId}/slack/acquire`, { method: 'POST' });
+  return api<ProjectSlackStatus>(apiPath`/api/projects/${projectId}/slack/acquire`, { method: 'POST' });
 }
 
 export function getPeerNotices(): Promise<PeerNotice[]> {
@@ -215,7 +227,7 @@ export function getPeerNotices(): Promise<PeerNotice[]> {
 }
 
 export function dismissPeerNotice(id: string): Promise<void> {
-  return api<void>(`/api/peer/notices/${encodeURIComponent(id)}/dismiss`, { method: 'POST' });
+  return api<void>(apiPath`/api/peer/notices/${id}/dismiss`, { method: 'POST' });
 }
 
 export interface UsageWindow {
@@ -283,11 +295,11 @@ export function checkUpdates(): Promise<AgentUpdate[]> {
 }
 
 export function startUpdate(agent: Agent): Promise<AgentUpdate> {
-  return api<AgentUpdate>(`/api/updates/${agent}`, { method: 'POST' });
+  return api<AgentUpdate>(apiPath`/api/updates/${agent}`, { method: 'POST' });
 }
 
 export function setAutoUpdate(agent: Agent, auto: boolean): Promise<AgentUpdate> {
-  return api<AgentUpdate>(`/api/updates/${agent}`, { method: 'PATCH', body: JSON.stringify({ auto }) });
+  return api<AgentUpdate>(apiPath`/api/updates/${agent}`, { method: 'PATCH', body: JSON.stringify({ auto }) });
 }
 
 async function postImage(url: string, image: Blob): Promise<string> {
@@ -301,41 +313,34 @@ async function postImage(url: string, image: Blob): Promise<string> {
 
 export type PersonaInput = Pick<Persona, 'name' | 'description' | 'prompt'>;
 
-function parsed<T>(value: T | null, what: string): T {
-  if (value === null) throw new Error(`Réponse du serveur invalide (${what})`);
-  return value;
-}
-
 export async function listPersonas(): Promise<Persona[]> {
   return parsePersonaList(await api<unknown>('/api/personas'));
 }
 
 export async function createPersona(input: PersonaInput): Promise<Persona> {
-  return parsed(parsePersona(await api<unknown>('/api/personas', { method: 'POST', body: JSON.stringify(input) })), 'persona');
+  return fetchParsed('/api/personas', parsePersona, 'persona', { method: 'POST', body: JSON.stringify(input) });
 }
 
 export async function updatePersona(id: string, patch: Partial<PersonaInput>): Promise<Persona> {
-  const raw = await api<unknown>(`/api/personas/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) });
-  return parsed(parsePersona(raw), 'persona');
+  return fetchParsed(apiPath`/api/personas/${id}`, parsePersona, 'persona', { method: 'PATCH', body: JSON.stringify(patch) });
 }
 
 export function deletePersona(id: string): Promise<void> {
-  return api<void>(`/api/personas/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return api<void>(apiPath`/api/personas/${id}`, { method: 'DELETE' });
 }
 
 export async function getCouncilSettings(): Promise<CouncilSettings> {
-  return parsed(parseCouncilSettings(await api<unknown>('/api/council/settings')), 'réglages du council');
+  return fetchParsed('/api/council/settings', parseCouncilSettings, 'réglages du council');
 }
 
 // Réglages appliqués au lancement : surcharge du projet, sinon réglages globaux (projectId null).
 export async function getEffectiveCouncilSettings(projectId: string | null): Promise<CouncilSettings> {
-  const query = projectId === null ? '' : `?projectId=${encodeURIComponent(projectId)}`;
-  return parsed(parseCouncilSettings(await api<unknown>(`/api/council/settings/effective${query}`)), 'réglages du council');
+  const path = projectId === null ? '/api/council/settings/effective' : apiPath`/api/council/settings/effective?projectId=${projectId}`;
+  return fetchParsed(path, parseCouncilSettings, 'réglages du council');
 }
 
 export async function putCouncilSettings(settings: CouncilSettings): Promise<CouncilSettings> {
-  const raw = await api<unknown>('/api/council/settings', { method: 'PUT', body: JSON.stringify(settings) });
-  return parsed(parseCouncilSettings(raw), 'réglages du council');
+  return fetchParsed('/api/council/settings', parseCouncilSettings, 'réglages du council', { method: 'PUT', body: JSON.stringify(settings) });
 }
 
 export interface CouncilStartInput {
@@ -352,31 +357,31 @@ export interface CouncilStartInput {
 }
 
 export async function startCouncil(input: CouncilStartInput): Promise<CouncilRun> {
-  return parsed(parseCouncilRun(await api<unknown>('/api/councils', { method: 'POST', body: JSON.stringify(input) })), 'council');
+  return fetchParsed('/api/councils', parseCouncilRun, 'council', { method: 'POST', body: JSON.stringify(input) });
 }
 
 export async function getCouncil(id: string): Promise<CouncilRun> {
-  return parsed(parseCouncilRun(await api<unknown>(`/api/councils/${encodeURIComponent(id)}`)), 'council');
+  return fetchParsed(apiPath`/api/councils/${id}`, parseCouncilRun, 'council');
 }
 
 // projectId absent : tous les councils ; null : ceux lancés hors projet.
 export async function listCouncils(projectId?: string | null): Promise<CouncilRun[]> {
-  const query = projectId === undefined ? '' : `?projectId=${projectId === null ? 'none' : encodeURIComponent(projectId)}`;
-  return parseCouncilRunList(await api<unknown>(`/api/councils${query}`));
+  const path = projectId === undefined ? '/api/councils' : apiPath`/api/councils?projectId=${projectId ?? 'none'}`;
+  return parseCouncilRunList(await api<unknown>(path));
 }
 
 export async function cancelCouncil(id: string): Promise<CouncilRun> {
-  return parsed(parseCouncilRun(await api<unknown>(`/api/councils/${encodeURIComponent(id)}/cancel`, { method: 'POST' })), 'council');
+  return fetchParsed(apiPath`/api/councils/${id}/cancel`, parseCouncilRun, 'council', { method: 'POST' });
 }
 
 export function deleteCouncil(id: string): Promise<void> {
-  return api<void>(`/api/councils/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return api<void>(apiPath`/api/councils/${id}`, { method: 'DELETE' });
 }
 
 export function councilImageUrl(id: string, n: number): string {
-  return `${base}/api/councils/${encodeURIComponent(id)}/images/${n}`;
+  return base + apiPath`/api/councils/${id}/images/${n}`;
 }
 
 export function councilExportUrl(id: string): string {
-  return `${base}/api/councils/${encodeURIComponent(id)}/export`;
+  return base + apiPath`/api/councils/${id}/export`;
 }

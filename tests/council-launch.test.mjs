@@ -5,13 +5,14 @@ import { setImmediate } from 'node:timers/promises';
 import * as jsx from 'react/jsx-runtime';
 import { moduleRunnerTransform, transformWithOxc } from 'vite';
 import * as format from '../web/src/format.ts';
+import * as localStore from '../web/src/storage.ts';
 import * as types from '../web/src/types.ts';
 import { withoutPersona } from '../server/council.ts';
 
 // Exécute les vrais composants et leurs handlers en mémoire, avec le transformateur
 // Vite déjà installé. Aucun DOM, serveur ou appel de CLI n'est nécessaire.
-async function compile(name) {
-  const url = new URL(`../web/src/${name}.tsx`, import.meta.url);
+async function compile(name, extension = 'tsx') {
+  const url = new URL(`../web/src/${name}.${extension}`, import.meta.url);
   const source = await readFile(url, 'utf8');
   const { code } = await transformWithOxc(source, url.pathname, { jsx: { runtime: 'automatic' } });
   const transformed = await moduleRunnerTransform(code, null, url.pathname, source);
@@ -27,7 +28,7 @@ async function compile(name) {
   };
 }
 
-const [loadLaunch, loadSettings, loadAdvisorList, loadAttachments] = await Promise.all([compile('CouncilLaunch'), compile('CouncilSettingsDialog'), compile('CouncilAdvisorList'), compile('attachments')]);
+const [loadLaunch, loadSettings, loadAdvisorList, loadAttachments, loadAsyncAction] = await Promise.all([compile('CouncilLaunch'), compile('CouncilSettingsDialog'), compile('CouncilAdvisorList'), compile('attachments'), compile('async-action', 'ts')]);
 // Composants dont le rendu est déplié dans l'arbre, pour inspecter leurs éléments.
 const inlined = new Map();
 const CLAUDE = { agent: 'claude', model: null, effort: null };
@@ -107,6 +108,7 @@ async function fixture(t, projectId, setup = () => {}) {
       return [slots[index], next => { slots[index] = typeof next === 'function' ? next(slots[index]) : next; }];
     },
     useId: () => 'id',
+    useCallback: fn => fn,
     useRef(initial) {
       const { slots } = current;
       const index = current.index++;
@@ -116,7 +118,7 @@ async function fixture(t, projectId, setup = () => {}) {
     useEffect(effect, deps) {
       const { slots, effects } = current;
       const index = current.index++;
-      if (!slots[index] || deps.some((value, i) => !Object.is(value, slots[index][i]))) effects.push(effect);
+      if (!deps || !slots[index] || deps.some((value, i) => !Object.is(value, slots[index][i]))) effects.push(effect);
       slots[index] = deps;
     },
   };
@@ -141,12 +143,15 @@ async function fixture(t, projectId, setup = () => {}) {
   const modules = {
     react: hooks, 'react/jsx-runtime': jsx, './types.ts': types, './council.css': {},
     './ActivityStatus.tsx': { ActivityStatus() {} },
-    './AgentLabel.tsx': { AgentLogo() {} }, './format.ts': { relativeTime: () => '', AGENT_LABEL: format.AGENT_LABEL },
+    './AgentLabel.tsx': { AgentLogo() {} }, './format.ts': { ...format, relativeTime: () => '' },
     './DelayedActionButton.tsx': { DelayedActionButton() {} },
     './LlmSelector.tsx': { LlmSelector }, './PersonasDialog.tsx': { PersonasDialog }, './Dialog.tsx': { Modal },
-    './route.ts': { useNow: () => 0, go: target => f.navigations.push(target), href: value => value },
+    './route.ts': { go: target => f.navigations.push(target), href: value => value },
+    // Sans minuterie : seul le chargement explicite (refresh) interroge l'API.
+    './polling.tsx': { useNow: () => 0, usePolling: (fetcher, _ms, { onData, onError }) => () => fetcher().then(onData, onError) },
     './store.tsx': { useStore: () => store },
     './drafts.ts': {},
+    './storage.ts': localStore,
     './api.ts': {
       clipboardImage: () => null,
       async uploadCouncilImage() { throw new Error('aucun envoi d’image attendu'); },
@@ -171,6 +176,7 @@ async function fixture(t, projectId, setup = () => {}) {
     },
   };
   modules['./attachments.tsx'] = await loadAttachments(modules);
+  modules['./async-action.ts'] = await loadAsyncAction(modules);
   modules['./CouncilAdvisorList.tsx'] = await loadAdvisorList(modules);
   const { CouncilAdvisorList } = modules['./CouncilAdvisorList.tsx'];
   // Rendu hors montage : l'onglet actif est sans incidence, tous les panneaux sont dans l'arbre.
