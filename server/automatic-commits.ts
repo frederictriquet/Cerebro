@@ -9,6 +9,7 @@ import { parseCommitProposal, proposeCommits, type ProposalContext, type CommitP
 import { assertWorktreeAvailable, canonicalWorktreePath } from './worktree-gate.ts';
 import { workspaceFor } from './provenance.ts';
 import { INHERITED_WARNING } from './session-git.ts';
+import { errorMessage } from './errors.ts';
 
 export interface AutomaticCommit {
   id:string;scope:string;path:string;projectId:string|null;sessionId:string|null;settings:CommitSettings;
@@ -134,7 +135,7 @@ export class AutomaticCommits {
       operation.status='succeeded';
     }catch(cause){
       operation.status=signal.aborted?'cancelled':cause instanceof CommitBlocked?'blocked':'failed';
-      operation.error=signal.aborted?'Préparation annulée.':cause instanceof Error?cause.message:String(cause);
+      operation.error=signal.aborted?'Préparation annulée.':errorMessage(cause);
     }finally{
       operation.phase='finished';operation.finishedAt=Date.now();this.save(operation);this.onComplete(operation);
     }

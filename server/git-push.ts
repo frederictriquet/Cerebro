@@ -2,6 +2,7 @@ import { assertWorktreeAvailable } from './worktree-gate.ts';
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
+import { errorMessage } from './errors.ts';
 
 const exec = promisify(execFile);
 const LIMIT = 64 * 1024;
@@ -51,7 +52,7 @@ export async function startPush(path: string, options: PushOptions = {}): Promis
   active.set(key, op);
   latest.set(key, op);
   void execute(path, op, options).catch((cause: unknown) => {
-    op.error = cause instanceof Error ? cause.message : String(cause);
+    op.error = errorMessage(cause);
     op.status = 'failed';
   }).finally(() => {
     op.finishedAt = Date.now();
@@ -103,7 +104,7 @@ async function execute(path: string, op: PushOperation, options: PushOptions): P
       result.status = result.exitCode === 0 ? 'succeeded' : 'failed';
     } catch (cause) {
       result.status = 'failed';
-      result.output += cause instanceof Error ? cause.message : String(cause);
+      result.output += errorMessage(cause);
     }
   }
   op.status = op.remotes.every((remote) => remote.status === 'succeeded') ? 'succeeded' : 'failed';

@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { Agent } from './db.ts';
+import { errorMessage } from './errors.ts';
 
 export interface UsageWindow {
   label: string;
@@ -50,9 +51,6 @@ const CLAUDE_WINDOWS: readonly [key: string, label: string, minutes: number][] =
   ['seven_day_sonnet', 'Semaine Sonnet', 10_080],
 ];
 
-function errorText(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
 
 function windowLabel(minutes: number): string {
   if (minutes === 300) return '5 h';
@@ -171,7 +169,7 @@ function readAuth(read: () => AgentAuth): AgentAuth {
     return read();
   } catch (cause) {
     const missing = (cause as NodeJS.ErrnoException).code === 'ENOENT';
-    return { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: missing ? 'Non connecté' : errorText(cause) };
+    return { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: missing ? 'Non connecté' : errorMessage(cause) };
   }
 }
 
@@ -307,8 +305,8 @@ export class UsageTracker {
         })
         .catch((cause: unknown) => {
           // Keep the last good figures and say why they are not refreshed.
-          this.claude = { ...this.claude, error: errorText(cause) };
-          this.claudeAuth ??= { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: errorText(cause) };
+          this.claude = { ...this.claude, error: errorMessage(cause) };
+          this.claudeAuth ??= { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: errorMessage(cause) };
         })
         .finally(() => {
           this.claudePending = null;
@@ -321,7 +319,7 @@ export class UsageTracker {
       try {
         this.codex = readCodex();
       } catch (cause) {
-        this.codex = { ...this.codex, error: errorText(cause) };
+        this.codex = { ...this.codex, error: errorMessage(cause) };
       }
       this.codexAuth = readAuth(readCodexAuth);
       this.grokAuth = readAuth(readGrokAuth);

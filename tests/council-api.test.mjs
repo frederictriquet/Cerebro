@@ -6,12 +6,14 @@ import {join} from 'node:path';
 import {after,mock,test} from 'node:test';
 const root=mkdtempSync(join(tmpdir(),'cerebro-council-api-'));process.env.HOME=root;process.env.CEREBRO_DATA_DIR=join(root,'data');process.env.CODEX_HOME=join(root,'codex');
 delete process.env.CEREBRO_BIND_TOKEN;delete process.env.CEREBRO_SLACK_TOKEN;delete process.env.CEREBRO_SLACK_USER;
-const {CouncilRuns}=await import('../server/council-runner.ts');
+const {CouncilRuns,UPLOAD_RETENTION_MS}=await import('../server/council-runner.ts');
 const {ANSWER_SCHEMA,REVIEW_SCHEMA}=await import('../server/council.ts');
 const {UpdateManager}=await import('../server/updates.ts');const {PeerSync}=await import('../server/peers.ts');
-const {buildServer}=await import('../server/index.ts');
+const {buildServer}=await import('../server/index.ts');const {getAgentAvailability}=await import('../server/agents.ts');
 mock.method(UpdateManager.prototype,'start',()=>{});mock.method(PeerSync.prototype,'sync',async function(){this.markReady();this.markSynced();});
-mock.method(CouncilRuns.prototype,'availableAgents',async()=>['claude','codex']);
+// Agents installés, modifiables par test.
+let installed=['claude','codex','grok'];
+mock.method(CouncilRuns.prototype,'availableAgents',async()=>installed);
 // Réponses canoniques ; `hold` suspend les réponses jusqu'à l'annulation.
 const calls=[];let hold=false;
 mock.method(CouncilRuns.prototype,'invoke',async options=>{
@@ -128,9 +130,9 @@ test('council API: settings, project override, runs, cancel, export and persiste
  }finally{hold=false;await app.close();}
 });
 
-test('council API: attached images are uploaded, validated, passed to every call, served and deleted with the run', async () => {
+test('council API: attached images are uploaded, validated, owned by the run, passed to every call, served and deleted with it', async () => {
  const {existsSync}=await import('node:fs');
- const app=await buildServer();const send=(method,url,payload)=>app.inject({method,url,...(payload===undefined?{}:{payload})});
+ let app=await buildServer();const send=(method,url,payload)=>app.inject({method,url,...(payload===undefined?{}:{payload})});
  const png=Buffer.from('89504e470d0a1a0a0000000d49484452','hex');
  try{
   // Dépôt hors projet, puis dans un projet.
@@ -168,9 +170,18 @@ test('council API: attached images are uploaded, validated, passed to every call
   response=await send('POST','/api/councils',{requestId,projectId:project.id,question:'Que montre [Image #2] ?',context:'Comparer avec [Image #1].',readProject:false,participants,images:[{n:2,path:projectPath},{n:1,path}]});
   assert.equal(response.statusCode,202,response.body);
   let run=await settled(send,requestId);assert.equal(run.status,'succeeded',run.error);
-  assert.deepEqual(run.images,[{n:1,path},{n:2,path:projectPath}]);
+  // Le run référence ses propres fichiers, rangés sous le projet, et non ceux déposés.
+  const ownDir=new RegExp(`/attachments/project-${project.id}/council-${requestId}/`);
+  assert.deepEqual(run.images.map(image=>image.n),[1,2]);
+  for(const image of run.images){assert.match(image.path,ownDir);assert.ok(existsSync(image.path));}
+  const owned=run.images.map(image=>image.path);
   assert.equal(calls.length,5);
-  for(const call of calls){assert.deepEqual(call.images,[path,projectPath]);assert.match(call.prompt,/\[Image #1\], \[Image #2\]/);}
+  for(const call of calls){assert.deepEqual(call.images,owned);assert.match(call.prompt,/\[Image #1\], \[Image #2\]/);}
+  // Le même fichier déposé repris par un second council (brouillon rejoué) : chacun a sa propre image.
+  calls.length=0;const replay=randomUUID();
+  assert.equal((await send('POST','/api/councils',{requestId:replay,question:'Et [Image #1] ?',participants,images:[{n:1,path}]})).statusCode,202);
+  run=await settled(send,replay);assert.equal(run.status,'succeeded',run.error);
+  assert.match(run.images[0].path,new RegExp(`/attachments/council/council-${replay}/1\\.png$`));
   // Sans image, l'option n'est pas transmise.
   calls.length=0;const plain=randomUUID();
   assert.equal((await send('POST','/api/councils',{requestId:plain,question:'Sans image ?',participants})).statusCode,202);
@@ -181,13 +192,61 @@ test('council API: attached images are uploaded, validated, passed to every call
   response=await send('GET',`/api/councils/${requestId}/images/1`);assert.equal(response.statusCode,200);assert.equal(response.headers['content-type'],'image/png');assert.deepEqual(response.rawPayload,png);
   assert.equal((await send('GET',`/api/councils/${requestId}/images/3`)).statusCode,404);
   assert.equal((await send('GET',`/api/councils/${randomUUID()}/images/1`)).statusCode,404);
-  assert.match((await send('GET',`/api/councils/${requestId}/export`)).body,new RegExp(`## Images jointes\\n\\n- \\[Image #1\\] : ${path}\\n- \\[Image #2\\] : ${projectPath}`));
+  assert.match((await send('GET',`/api/councils/${requestId}/export`)).body,new RegExp(`## Images jointes\\n\\n- \\[Image #1\\] : ${owned[0]}\\n- \\[Image #2\\] : ${owned[1]}`));
 
-  // La suppression du run efface ses images.
+  // La suppression du run efface ses images, pas les fichiers déposés ni celles de l'autre council.
   assert.equal((await send('DELETE',`/api/councils/${requestId}`)).statusCode,204);
-  assert.ok(!existsSync(path)&&!existsSync(projectPath));
-  assert.ok(existsSync(outside));
+  assert.ok(owned.every(file=>!existsSync(file)));
+  assert.ok(existsSync(path)&&existsSync(projectPath)&&existsSync(outside));
+  response=await send('GET',`/api/councils/${replay}/images/1`);assert.equal(response.statusCode,200);assert.deepEqual(response.rawPayload,png);
+  assert.equal((await send('DELETE',`/api/councils/${replay}`)).statusCode,204);
+  assert.ok(!existsSync(join(root,'data','attachments','council',`council-${replay}`))&&existsSync(path));
+
+  // Le dépôt hors projet, désormais sans run, est purgé au démarrage une fois son délai de grâce écoulé ;
+  // un dépôt récent est conservé pour un brouillon rejoué.
+  const {utimesSync}=await import('node:fs');
+  response=await app.inject({method:'POST',url:'/api/council/attachments',payload:png,headers:{'content-type':'image/png'}});
+  const recent=response.json().path;
+  const old=new Date(Date.now()-UPLOAD_RETENTION_MS-60_000);utimesSync(path,old,old);
+  await app.close();app=await buildServer();
+  assert.ok(!existsSync(path)&&existsSync(recent)&&existsSync(projectPath));
  }finally{await app.close();}
+});
+
+test('upload purge removes stale council uploads unless a legacy run still references them', async () => {
+ const {existsSync,writeFileSync,utimesSync}=await import('node:fs');
+ const {CerebroDatabase}=await import('../server/db.ts');
+ const db=new CerebroDatabase(join(root,'purge-uploads.db'));
+ try{
+  const dir=join(root,'data','attachments','council');mkdirSync(join(dir,'council-kept'),{recursive:true});
+  const stale=join(dir,'stale.png');const legacyShared=join(dir,'legacy.png');const fresh=join(dir,'fresh.png');const owned=join(dir,'council-kept','1.png');
+  for(const file of [stale,legacyShared,fresh,owned])writeFileSync(file,'png');
+  const old=new Date(Date.now()-UPLOAD_RETENTION_MS-60_000);for(const file of [stale,legacyShared,owned])utimesSync(file,old,old);
+  db.saveCouncilRun({id:randomUUID(),projectId:null,origin:'web',question:'?',context:'',images:[{n:1,path:legacyShared}],readProject:false,advisors:[],status:'succeeded',phase:'finished',letters:{},answers:[],reviews:[],synthesis:null,error:null,startedAt:1,finishedAt:2});
+  const councils=new CouncilRuns(db);
+  assert.equal(councils.purgeUploads(),1);
+  assert.ok(!existsSync(stale)&&existsSync(legacyShared)&&existsSync(fresh)&&existsSync(owned));
+  councils.purgeUploads(Date.now()+UPLOAD_RETENTION_MS+60_000);
+  assert.ok(!existsSync(fresh)&&existsSync(legacyShared)&&existsSync(owned));
+ }finally{db.close();}
+});
+
+test('deleting a run saved before run-owned images keeps an upload another council still references', async () => {
+ const {existsSync,writeFileSync}=await import('node:fs');
+ const {CerebroDatabase}=await import('../server/db.ts');
+ const db=new CerebroDatabase(join(root,'legacy-images.db'));
+ try{
+  const dir=join(root,'data','attachments','council');mkdirSync(dir,{recursive:true});
+  const shared=join(dir,'shared.png');const alone=join(dir,'alone.png');writeFileSync(shared,'png');writeFileSync(alone,'png');
+  const legacy=(images)=>({id:randomUUID(),projectId:null,origin:'web',question:'?',context:'',images,readProject:false,advisors:[],status:'succeeded',phase:'finished',letters:{},answers:[],reviews:[],synthesis:null,error:null,startedAt:1,finishedAt:2});
+  const first=legacy([{n:1,path:shared},{n:2,path:alone}]);const second=legacy([{n:1,path:shared}]);
+  db.saveCouncilRun(first);db.saveCouncilRun(second);
+  const councils=new CouncilRuns(db);
+  councils.delete(first.id);
+  assert.ok(existsSync(shared)&&!existsSync(alone));
+  councils.delete(second.id);
+  assert.ok(!existsSync(shared));
+ }finally{db.close();}
 });
 
 test('project deletion cancels and awaits all its councils before removing their reports', async (t) => {
@@ -245,4 +304,28 @@ test('project deletion cancels and awaits all its councils before removing their
   await deletion;
   await app.close();
  }
+});
+
+test('council API: an agent that is not installed is refused at launch, before any call',async()=>{
+ const app=await buildServer();const send=(method,url,payload)=>app.inject({method,url,...(payload===undefined?{}:{payload})});
+ try{
+  // Les réglages acceptent une CLI absente ; le lancement la refuse avant les 2N appels.
+  let response=await send('PUT','/api/council/settings',{assignments:{},defaultPersonaIds:['contrarian','outsider'],chairman:{agent:'grok',model:null,effort:null},readProject:false});
+  assert.equal(response.statusCode,200,response.body);
+  installed=['claude','codex'];calls.length=0;
+  const requestId=randomUUID();
+  response=await send('POST','/api/councils',{requestId,question:'Q ?',participants:[{personaId:'contrarian',agent:'claude'},{personaId:'outsider',agent:'codex'}]});
+  assert.equal(response.statusCode,400,response.body);assert.equal(response.json().error,'Agent non installé : chairman (grok).');
+  response=await send('POST','/api/councils',{requestId:randomUUID(),question:'Q ?',participants:[{personaId:'contrarian',agent:'grok'},{personaId:'outsider',agent:'codex'}]});
+  assert.equal(response.statusCode,400,response.body);assert.match(response.json().error,/^Agent non installé : Contrarien \(grok\), chairman \(grok\)\.$/);
+  assert.equal(calls.length,0);assert.equal((await send('GET',`/api/councils/${requestId}`)).statusCode,404);
+ }finally{installed=['claude','codex','grok'];await app.close();}
+});
+
+test('agent availability is cached and shared, and only re-detected on demand',async()=>{
+ const first=getAgentAvailability();
+ assert.equal(getAgentAvailability(),first);
+ const refreshed=getAgentAvailability(true);
+ assert.notEqual(refreshed,first);assert.equal(getAgentAvailability(),refreshed);
+ assert.deepEqual((await refreshed).map(entry=>entry.agent),['claude','codex','grok']);
 });

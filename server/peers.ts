@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { DATA_DIR, loadRemotes, MACHINE_NAME } from './config.ts';
 import type { CerebroDatabase, Project } from './db.ts';
 import { compatibility, VERSION_INFO, versionInfoFrom, versionLabel, type Compatibility, type VersionInfo } from './version.ts';
+import { errorMessage } from './errors.ts';
 
 /*
  * Coordination entre instances Cerebro qui partagent le même bot Slack. Un projet présent sur
@@ -437,7 +438,7 @@ export class PeerSync {
         if (payload.instanceId !== this.instanceId) this.mutate(() => this.absorb(payload));
         if (this.remoteErrors.delete(remote.id)) console.log(`[peers] ${remote.name} de nouveau joignable`);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         // Une machine éteinte échoue à chaque tour : ne journaliser que les changements.
         if (this.remoteErrors.get(remote.id) !== message) console.warn(`[peers] ${remote.name} : ${message}`);
         this.remoteErrors.set(remote.id, message);

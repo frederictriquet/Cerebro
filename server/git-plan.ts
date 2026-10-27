@@ -5,6 +5,7 @@ import { lstat, mkdtemp, open, readFile, readlink, rename, rm, utimes, writeFile
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { startPush } from './git-push.ts';
+import { errorMessage } from './errors.ts';
 
 const LIMIT = 4 * 1024 * 1024;
 const EMPTY = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -272,7 +273,7 @@ export async function executeCommitPlan(path: string, raw: unknown): Promise<Com
       expectedHead = oid;
       if (saved.work !== await workHash(path)) throw new Error('Le worktree a changé pendant le commit (hook ou édition externe) : vérification requise.');
     }
-  } catch (cause) { result.error = cause instanceof Error ? cause.message : String(cause); }
+  } catch (cause) { result.error = errorMessage(cause); }
   finally {
     if (lock) { await lock.close(); await rm(`${index}.lock`, { force: true }); }
     await rm(dir, { recursive: true, force: true }); locks.delete(index);

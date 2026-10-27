@@ -37,10 +37,15 @@ test('task, review and command launches keep the epic folder after changing the 
    db.connection.prepare('INSERT INTO epic_runs VALUES (?,?,?)').run(run.id,epic.id,JSON.stringify(run));
    db.updateProject(p.id,{workspaceMode:mode==='isolated'?'shared':'isolated'});
    const context=(await send('GET',`/api/epics/${epic.id}/workspace`)).json();assert.deepEqual(context,{path:workspace.path,mode});
+   // Reading the epic's folder never fixes it: only a launch does.
+   const saved=()=>db.connection.prepare('SELECT data,verified FROM epic_workspaces WHERE epic_id=?').all(epic.id).map(row=>({...row}));
+   assert.equal((await send('GET',`/api/epics/${epic.id}/runs`)).statusCode,200);assert.equal((await send('GET',`/api/epics/${epic.id}/workspace-options`)).statusCode,200);
+   assert.deepEqual(saved(),[]);
    const reopened=new CerebroDatabase();try{assert.deepEqual(epicWorkspace(reopened,epic.id),context);}finally{reopened.close();}
    const count=git(repo,'worktree','list','--porcelain').split('\n').filter(line=>line.startsWith('worktree ')).length;
    const review=await send('POST',`/api/epics/${epic.id}/review`,{agent:'codex'});assert.equal(review.statusCode,201,review.body);
    assert.equal(workspaceFor(db,review.json().id).path,workspace.path);assert.equal(workspaceFor(db,review.json().id).mode,mode);
+   assert.deepEqual(saved().map(row=>[JSON.parse(row.data).path,row.verified]),[[workspace.path,1]]);
    const fix=db.createTask(p.id,'Corriger seul',null,epic.id);
    const started=await send('POST',`/api/tasks/${fix.id}/start`,{agent:'codex'});assert.equal(started.statusCode,201,started.body);
    assert.equal(workspaceFor(db,started.json().session.id).path,workspace.path);assert.equal(workspaceFor(db,started.json().session.id).mode,mode);
@@ -198,4 +203,15 @@ test('review step is added once, depends on every task; epic review needs a fini
   assert.equal((await send('GET',`/api/sessions/${review.id}/findings`)).json().find(item=>item.id===report.id).epicId,epic.id);
   assert.equal(launches.length,1);
  }finally{socket?.terminate();await app.close();}
+});
+
+test('route errors carry the message without the Error: prefix',async()=>{
+ const app=await buildServer();
+ try{
+  const p=db.createProject('Erreurs',repo);const epic=db.createEpic(p.id,'Vide','',null);
+  const started=await app.inject({method:'POST',url:`/api/epics/${epic.id}/start`,payload:{agent:'codex'}});
+  assert.equal(started.statusCode,409);assert.deepEqual(started.json(),{error:'Aucune tâche ouverte.'});
+  const stopped=await app.inject({method:'POST',url:`/api/epic-runs/${randomUUID()}/stop`});
+  assert.equal(stopped.statusCode,409);assert.deepEqual(stopped.json(),{error:'Exécution introuvable.'});
+ }finally{await app.close();}
 });

@@ -6,15 +6,17 @@ import { CouncilError, CouncilRuns } from './council-runner.ts';
 import { exportMarkdown, validateCouncilSettings } from './council.ts';
 import type { CerebroDatabase } from './db.ts';
 import { imageMediaType } from './headless.ts';
+import { errorMessage } from './errors.ts';
 
 // Réglages globaux, lancement, suivi et export des councils ; le gestionnaire est renvoyé pour câblage.
 export function registerCouncilRoutes(app: FastifyInstance, db: CerebroDatabase): CouncilRuns {
   const councils = new CouncilRuns(db);
+  councils.startUploadPurge();
   const attempt = async (reply: FastifyReply, run: () => Promise<unknown>, status = 200): Promise<unknown> => {
     try {
       return reply.code(status).send(await run());
     } catch (cause) {
-      return reply.code(cause instanceof CouncilError ? cause.statusCode : 500).send({ error: cause instanceof Error ? cause.message : String(cause) });
+      return reply.code(cause instanceof CouncilError ? cause.statusCode : 500).send({ error: errorMessage(cause) });
     }
   };
 

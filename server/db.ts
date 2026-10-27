@@ -388,10 +388,11 @@ export class CerebroDatabase {
       CREATE TABLE IF NOT EXISTS project_commands (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS operation_results (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS notification_turns (session_id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, ended_at INTEGER, custom_at INTEGER, relayed_at INTEGER, automatic_at INTEGER);
-      CREATE TABLE IF NOT EXISTS epic_runs (id TEXT PRIMARY KEY, epic_id TEXT NOT NULL, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS epic_runs (id TEXT PRIMARY KEY, epic_id TEXT NOT NULL REFERENCES epics(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS epic_workspaces (epic_id TEXT PRIMARY KEY REFERENCES epics(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS command_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, data TEXT NOT NULL);
     `);
+    this.cascadeEpicRuns();
     // Contextes mémorisés avant la vérification complète des historiques : ils seront recontrôlés.
     const epicWorkspaceColumns = this.connection.prepare('PRAGMA table_info(epic_workspaces)').all() as unknown as { name: string }[];
     if (!epicWorkspaceColumns.some((column) => column.name === 'verified')) this.connection.exec('ALTER TABLE epic_workspaces ADD COLUMN verified INTEGER NOT NULL DEFAULT 0');
@@ -505,6 +506,27 @@ export class CerebroDatabase {
       // Aucun rapprochement sur le titre : deux epics peuvent porter le même nom.
       if (candidates.length === 1) save.run(candidates[0].id, candidates[0].title, session.id);
     }
+  }
+
+  // Les exécutions d'un epic supprimé disparaissent avec lui ; les anciennes bases sans clé étrangère sont reconstruites et purgées.
+  private cascadeEpicRuns(): void {
+    const row = this.connection.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'epic_runs'").get() as { sql: string };
+    if (!/REFERENCES\s+epics/i.test(row.sql)) {
+      this.connection.exec('BEGIN');
+      try {
+        this.connection.exec(`
+          CREATE TABLE epic_runs_new (id TEXT PRIMARY KEY, epic_id TEXT NOT NULL REFERENCES epics(id) ON DELETE CASCADE, data TEXT NOT NULL);
+          INSERT INTO epic_runs_new (rowid, id, epic_id, data) SELECT rowid, id, epic_id, data FROM epic_runs WHERE epic_id IN (SELECT id FROM epics);
+          DROP TABLE epic_runs;
+          ALTER TABLE epic_runs_new RENAME TO epic_runs;
+          COMMIT;
+        `);
+      } catch (error) {
+        this.connection.exec('ROLLBACK');
+        throw error;
+      }
+    }
+    this.connection.exec('CREATE INDEX IF NOT EXISTS epic_runs_epic_id ON epic_runs(epic_id)');
   }
 
   // SQLite ne permet pas de modifier une contrainte CHECK : on reconstruit la table.

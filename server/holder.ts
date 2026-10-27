@@ -7,6 +7,7 @@ import * as headlessPackage from '@xterm/headless';
 import * as pty from 'node-pty';
 import { processTree, signalProcesses } from './proc.ts';
 import type { ProcessInfo } from './proc.ts';
+import { errorMessage } from './errors.ts';
 
 // @xterm/headless is CommonJS at runtime despite exposing ESM-shaped typings.
 const Terminal = (headlessPackage as unknown as { default: typeof headlessPackage }).default.Terminal;
@@ -102,7 +103,7 @@ function run(configPath: string): void {
     report(error);
     terminal.dispose();
     // The terminal log is what the UI replays for an exited session: show the failure there.
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     terminalLog.end(`\x1b[31mImpossible de lancer « ${config.cmd} » : ${message}\x1b[0m\r\n`);
     writeFileSync(exitPath, `${JSON.stringify({ exitCode: 1, signal: 0, at: Date.now() })}\n`, { mode: 0o600 });
     return;

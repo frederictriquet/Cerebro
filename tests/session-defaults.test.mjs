@@ -134,7 +134,7 @@ test('les étapes automatiques d’une epic préservent le formulaire et transme
     const second = db.createTask(project.id, 'Deuxième tâche', null, epic.id);
     db.setTaskDependencies(second.id, [first.id]);
     const options = { ...saved, mode: 'plan', prompt: 'Instructions de l’epic' };
-    runner.start(epic.id, options);
+    await runner.start(epic.id, options);
     const waitForStep = async (taskId) => {
       for (let i = 0; i < 200; i++) {
         runner.poke();

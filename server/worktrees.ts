@@ -12,6 +12,7 @@ import { currentPush } from './git-push.ts';
 import { sharedDependencyLinks } from './git-plan.ts';
 import { assertWorktreeAvailable, canonicalWorktreePath, lockWorktrees } from './worktree-gate.ts';
 import { workspaceFileSignature } from './workspace-files.ts';
+import { errorMessage } from './errors.ts';
 
 const exec = promisify(execFile);
 async function git(path: string, args: string[], env: Record<string, string> = {}): Promise<string> {
@@ -332,7 +333,7 @@ export class WorktreeManager {
       const workspace = JSON.parse(row.data) as Workspace;
       if (workspace.mode !== 'isolated' || workspace.removedAt || registeredSessions.has(workspace.sessionId)) continue;
       try { await rememberWorktree(this.db, workspace); }
-      catch (cause) { if (!records(this.db).some(r => r.sessionId === workspace.sessionId)) errors.push(`Espace ${workspace.root} : ${String(cause)}`); }
+      catch (cause) { if (!records(this.db).some(r => r.sessionId === workspace.sessionId)) errors.push(`Espace ${workspace.root} : ${errorMessage(cause)}`); }
     }
     const known = records(this.db);
     const projects = this.db.listProjects();
@@ -359,7 +360,7 @@ export class WorktreeManager {
             managed: false, expectedBranch: worktree.branch, targetBranch: target, createdAt: Date.now(), removedAt: null,
           });
         }
-      } catch (cause) { errors.push(`Dépôt ${anchor} : ${String(cause)}`); }
+      } catch (cause) { errors.push(`Dépôt ${anchor} : ${errorMessage(cause)}`); }
     }
     return errors;
   }
@@ -522,7 +523,7 @@ export class WorktreeManager {
       if (view.head !== (await git(record.path,['rev-parse','HEAD'])).trim() || view.branch !== await git(record.path,['symbolic-ref','--quiet','HEAD']).then(text=>text.trim(),()=>null)
         || view.targetHead !== (record.targetBranch ? await git(record.path,['rev-parse','--verify',record.targetBranch]).then(text=>text.trim(),()=>null) : null)) throw new WorktreeError('Les références ont changé pendant la collecte : actualisez.');
     } catch (cause) {
-      view.error = cause instanceof Error ? cause.message : String(cause); view.integration='unknown'; view.fingerprint=null;
+      view.error = errorMessage(cause); view.integration='unknown'; view.fingerprint=null;
       view.mergeBlockers=[view.error]; view.removeBlockers=[view.error];
     }
     return view;
@@ -914,7 +915,7 @@ export class WorktreeManager {
           catch(cause){await git(view.path,['read-tree','-m','-u',commit,head]);throw cause;}
         }catch(cause){
           await putBack(written,file=>file.current);
-          throw new WorktreeError(`La copie n’a pas pu être mise à jour avec ${branchLabel(view.targetBranch)} : ${cause instanceof Error?cause.message:String(cause)}\nLes fichiers de la copie ont été remis dans leur état précédent.`);
+          throw new WorktreeError(`La copie n’a pas pu être mise à jour avec ${branchLabel(view.targetBranch)} : ${errorMessage(cause)}\nLes fichiers de la copie ont été remis dans leur état précédent.`);
         }
       }else if(inHead.length)await git(view.path,['reset','--quiet','HEAD','--',...inHead.map(path=>`:(literal)${path}`)]);
       await putBack(written,file=>file.write!);
@@ -1005,7 +1006,7 @@ export class WorktreeManager {
         operation.output=operation.automatic?'Copie nettoyée automatiquement après la fin de la conversation : rien n’était à conserver. Branche, commits et conversation conservés.':'Worktree supprimé ; branche, commits et conversation conservés.';
       }
       operation.status='succeeded';
-    } catch(cause) {operation.status='failed';operation.error=cause instanceof Error?cause.message:String(cause);}
+    } catch(cause) {operation.status='failed';operation.error=errorMessage(cause);}
     finally {operation.finishedAt=Date.now();this.saveOperation(operation);}
   }
   /**
@@ -1053,7 +1054,7 @@ export class WorktreeManager {
       decision=result?.status==='succeeded'?{status:'removed',at:Date.now(),reasons:[]}:{status:'failed',at:Date.now(),reasons:[result?.error??'Retrait interrompu.']};
     } catch(cause) {
       if(this.closed)return;
-      decision={status:'kept',at:Date.now(),reasons:(cause instanceof Error?cause.message:String(cause)).split('\n').filter(Boolean)};
+      decision={status:'kept',at:Date.now(),reasons:(errorMessage(cause)).split('\n').filter(Boolean)};
     }
     // Re-read synchronously: the removal, a rename or an archive may have updated the record meanwhile.
     const fresh=records(this.db).find(r=>r.id===id);

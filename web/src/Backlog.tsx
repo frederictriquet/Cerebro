@@ -442,6 +442,7 @@ function EpicRunView({ run, taskLabel, onChanged }: { run: EpicRun; taskLabel: (
       ) : null}
       {run.workspaceConflict ? <EpicWorkspacePicker epicId={run.epicId} onResolved={async () => { setError(null); await onChanged(); }} /> : null}
       {needsAction && run.error && !run.workspaceConflict ? <p className="epic-run-reason">{run.error}</p> : null}
+      {run.workspaceError && !run.workspaceConflict && run.workspaceError !== run.error ? <p className="epic-run-reason">{run.workspaceError}</p> : null}
       {awaitingValidation ? (
         <p className="epic-run-reason">
           Étape à valider : {taskLabel(run.currentTaskId!)}. Vérifiez le résultat et les critères de la tâche,

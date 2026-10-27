@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { query, type ModelInfo } from '@anthropic-ai/claude-agent-sdk';
 import { getAgentAvailability, type Tuning } from './agents.ts';
 import type { Agent, Effort } from './db.ts';
+import { errorMessage } from './errors.ts';
 
 const execFileAsync = promisify(execFile);
 const DISCOVERY_TIMEOUT_MS = 20_000;
@@ -192,14 +193,15 @@ const DISCOVERERS: Partial<Record<Agent, () => Promise<AgentCatalog>>> = {
 };
 
 export function refreshCatalog(): Promise<void> {
-  // Agent non installé : pas de découverte, on garde le repli sans warning.
-  pending ??= getAgentAvailability()
+  // Agent non installé : pas de découverte, on garde le repli sans warning. Redétecte les CLI installées
+  // depuis, ce qui renouvelle aussi le cache des disponibilités.
+  pending ??= getAgentAvailability(true)
     .then((availability) => Promise.all(Object.entries(DISCOVERERS)
       .filter(([agent]) => availability.some((a) => a.agent === agent && a.available))
       .map(([agent, discover]) => discover()
         .then((catalog) => { catalogs[agent as Agent] = catalog; })
         .catch((error: unknown) => {
-          console.warn(`Catalogue ${agent} indisponible, liste par défaut : ${error instanceof Error ? error.message : String(error)}`);
+          console.warn(`Catalogue ${agent} indisponible, liste par défaut : ${errorMessage(error)}`);
         }))))
     .then(() => {})
     .finally(() => { pending = null; });

@@ -336,7 +336,7 @@ test('local edits, unintegrated commits, ignored files and concurrent uses block
  const head=f.commit();await kept(/commits restent/);git(own.path,'reset','--hard','HEAD~1');
  writeFileSync(join(own.path,'ignored'),'local config\n');await kept(/ignoré/);rmSync(join(own.path,'ignored'));
  const run={id:'command',cwd:own.path,status:'running'};f.db.connection.prepare('INSERT INTO command_runs VALUES (?,?,?)').run(run.id,'task',JSON.stringify(run));await kept(/commande/);f.db.connection.prepare('DELETE FROM command_runs').run();
- const epic={id:'epic-run',projectId:f.project.id,status:'running',contextRoot:f.repo};f.db.connection.prepare('INSERT INTO epic_runs VALUES (?,?,?)').run(epic.id,'epic',JSON.stringify(epic));await kept(/epic/);f.db.connection.prepare('DELETE FROM epic_runs').run();
+ const epic={id:'epic-run',projectId:f.project.id,status:'running',contextRoot:f.repo};f.db.connection.prepare('INSERT INTO epic_runs VALUES (?,?,?)').run(epic.id,f.db.createEpic(f.project.id,'Epic','',null).id,JSON.stringify(epic));await kept(/epic/);f.db.connection.prepare('DELETE FROM epic_runs').run();
  const step=randomUUID();f.db.createSession({id:step,projectId:f.project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Next step',status:'idle',agentSessionId:'fake'},'token');
  await joinWorkspace(f.db,step,f.workspace);await kept(/Session Next step/);f.db.updateSession(step,{status:'exited'});
  const release=lockWorktrees([own.path]);try{await kept(/opération Git/);}finally{release();}

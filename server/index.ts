@@ -11,6 +11,7 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type WebSocket from 'ws';
 import { EpicRunner } from './epic-runner.ts';
+import { errorMessage } from './errors.ts';
 import { assertEpicWorkspace, epicWorkspace, epicWorkspaceOptions, rememberEpicWorkspace, withEpicWorkspace } from './epic-workspace.ts';
 import { epicReviewInstructions, epicReviewScope, isReviewTask, reviewTaskText } from './epic-review.ts';
 import { CommandExecutor } from './commands.ts';
@@ -33,8 +34,8 @@ import { gitSummary } from './git-summary.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
 import { incompatibleMessage, PeerSync, syncPayloadFrom } from './peers.ts';
 import { importFindings, listReports, saveReport } from './findings.ts';
-import { prepareReview, verifyReview, reviewInstructions } from './review.ts';
-import { prepareSessionGit, executeSessionCommit, sessionReviewContext, sessionGitContext } from './session-git.ts';
+import { ReviewStore, reviewInstructions } from './review.ts';
+import { SessionGitScopes, sessionGitContext } from './session-git.ts';
 import { sessionProvenance, workspaceFor } from './provenance.ts';
 import { assertLoopbackPortFree } from './ports.ts';
 import { registerRemoteGateway } from './remotes.ts';
@@ -72,7 +73,7 @@ async function orError<T>(reply: FastifyReply, run: () => Promise<T>): Promise<{
     return { ok: true, value: await run() };
   } catch (cause) {
     const status = cause instanceof SessionProtectionError ? 409 : cause instanceof CouncilError ? cause.statusCode : 500;
-    return { ok: false, reply: error(reply, status, cause instanceof Error ? cause.message : String(cause)) };
+    return { ok: false, reply: error(reply, status, errorMessage(cause)) };
   }
 }
 
@@ -226,6 +227,8 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
   const notifier = new SlackNotifier(sessions, db, peers);
   const vscode = new VscodeServer();
+  const reviews = new ReviewStore();
+  const sessionGit = new SessionGitScopes(db);
 
   installGrokHook();
   await sessions.initialize();
@@ -284,7 +287,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   const worktrees=registerWorktreeRoutes(app,db);
   registerSessionTaskRoutes(app, db, (id, token) => sessions.tokenMatches(id, token));
-  const automaticCommits=registerAutomaticCommitRoutes(app,db,worktrees);
+  const automaticCommits=registerAutomaticCommitRoutes(app,db,worktrees,sessionGit);
   registerPersonaRoutes(app, db);
   const councils=registerCouncilRoutes(app,db);
   sessions.withProjectDeletion=(id,remove)=>councils.withProjectDeletion(id,remove);
@@ -318,12 +321,15 @@ export async function buildServer(): Promise<FastifyInstance> {
   // Copies whose conversation ended while the server was down, or before automatic cleanup existed.
   void worktrees.resumeAutomaticCleanup();
   commands.onChange = run => {
+    epicRunner.commandChanged(run);
     epicRunner.poke();
     const task = db.getTask(run.taskId);
     if(task&&run.finishedAt!==null)notifier.operations.record({id:run.id,projectId:task.projectId,sessionId:null,kind:'command',ok:run.status==='succeeded',summary:`${run.command.name} : ${run.status}, code ${run.exitCode??'inconnu'}${run.error?` ; ${run.error}`:''} ; clôture du travail distincte.`,startedAt:run.startedAt,finishedAt:run.finishedAt});
     if (task) broadcast({type:'task',task});
   };
   sessions.onEvent((event) => {
+    // Sessions, their copies and project folders all feed the recovery of an epic's folder.
+    epicRunner.sessionChanged(event);
     epicRunner.poke();
     if (event.type === 'turn-complete') return;
     broadcast(event);
@@ -455,7 +461,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/prepare-review', async (request, reply) => {
     const project = db.getProject(request.params.id);
     if (!project) return error(reply, 404, 'Projet introuvable');
-    const result = await orError(reply, () => prepareReview(project.path));
+    const result = await orError(reply, () => reviews.prepare(project.path));
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/review', async (request, reply) => {
@@ -464,12 +470,12 @@ export async function buildServer(): Promise<FastifyInstance> {
     const body = bodyRecord(request.body);
     if (typeof body?.reviewId !== 'string') return error(reply, 400, 'reviewId requis');
     const id = body.reviewId;
-    const result = await orError(reply, () => verifyReview(project.path, id));
+    const result = await orError(reply, () => reviews.verify(project.path, id));
     if (!result.ok) return result.reply;
     const launch = bodyRecord(body.launch) ?? {};
     const prepared = result.value;
     return launchSession(reply, project, {...launch, prompt: `${typeof launch.prompt === 'string' ? launch.prompt : ''}\n\n${reviewInstructions(prepared.root, {...prepared, context: undefined}, prepared.context)}`}, s => s,
-      async () => { await verifyReview(project.path, id); });
+      async () => { await reviews.verify(project.path, id); });
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/prepare-commit', async (request, reply) => {
@@ -584,7 +590,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.post<{ Params: { id: string } }>('/api/sessions/:id/git/prepare-commit', async (request, reply) => {
     if (db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');
-    const result = await orError(reply, () => prepareSessionGit(db, request.params.id));
+    const result = await orError(reply, () => sessionGit.prepare(request.params.id));
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.get<{Params:{id:string}}>('/api/sessions/:id/git/context',async(request,reply)=>{
@@ -594,7 +600,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post<{ Params: { id: string } }>('/api/sessions/:id/git/commit', async (request, reply) => {
     if (db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');
     const startedAt=Date.now();
-    const result = await orError(reply, () => executeSessionCommit(request.params.id, request.body));
+    const result = await orError(reply, () => sessionGit.executeCommit(request.params.id, request.body));
     if(result.ok){const id=`commit:${String(bodyRecord(request.body)?.snapshotId)}`;result.value.operationId=id;notifier.operations.record({id,projectId:db.getSession(request.params.id)!.projectId,sessionId:request.params.id,kind:'commit',ok:!result.value.error,summary:result.value.error??result.value.commits.map(c=>`${c.hash} ${c.title}`).join(' ; '),startedAt,finishedAt:Date.now()});}
     return result.ok ? reply.send(result.value) : result.reply;
   });
@@ -607,11 +613,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     const session = db.getSession(request.params.id);
     if (!session) return error(reply, 404, 'Session introuvable');
     const body = bodyRecord(request.body);
-    const result = await orError(reply, () => sessionReviewContext(session.id, body?.selection));
+    const result = await orError(reply, () => sessionGit.reviewContext(session.id, body?.selection));
     if (!result.ok) return result.reply;
     const project = db.getProject(session.projectId)!;
     const launch = bodyRecord(body?.launch) ?? {};
-    return launchSession(reply, project, {...launch, prompt: `${typeof launch.prompt === 'string' ? launch.prompt : ''}\n\n${result.value.prompt}`}, session => session, async () => { await sessionReviewContext(session.id, body?.selection); });
+    return launchSession(reply, project, {...launch, prompt: `${typeof launch.prompt === 'string' ? launch.prompt : ''}\n\n${result.value.prompt}`}, session => session, async () => { await sessionGit.reviewContext(session.id, body?.selection); });
   });
 
   app.get<{ Params: { id: string } }>('/api/sessions/:id/provenance', async (request, reply) => {
@@ -630,7 +636,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.get<{ Params: { id: string } }>('/api/sessions/:id/findings', async request => listReports(db, request.params.id));
   app.post<{ Params: { id: string } }>('/api/sessions/:id/findings', async (request, reply) => {
     try { return reply.send(publishFindings(request.params.id, request.body)); }
-    catch (cause) { return error(reply, 400, String(cause)); }
+    catch (cause) { return error(reply, 400, errorMessage(cause)); }
   });
   app.post<{ Params: { id: string; report: string } }>('/api/sessions/:id/findings/:report/import', async (request, reply) => {
     try {
@@ -641,7 +647,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       const session = db.getSession(request.params.id);
       if (session) broadcast({ type: 'session', session });
       return reply.send(result);
-    } catch (cause) { return error(reply, 400, String(cause)); }
+    } catch (cause) { return error(reply, 400, errorMessage(cause)); }
   });
 
   app.get('/api/sessions', async () => db.listSessions());
@@ -751,7 +757,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.get<{ Params: { id: string } }>('/api/projects/:id/commands', async request => commands.commands(request.params.id));
   app.post<{ Params: { id: string } }>('/api/projects/:id/commands', async (request, reply) => {
     try { return reply.code(201).send(commands.configure(request.params.id, request.body)); }
-    catch (cause) { return error(reply, 400, String(cause)); }
+    catch (cause) { return error(reply, 400, errorMessage(cause)); }
   });
   app.get<{ Params: { id: string } }>('/api/tasks/:id/runs', async request => commands.listRuns(request.params.id));
   app.post<{ Params: { id: string } }>('/api/command-runs/:id/stop', async (request, reply) => commands.stop(request.params.id) ? reply.send({ok:true}) : error(reply, 409, 'Commande non active'));
@@ -783,7 +789,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (!epic.ok) return error(reply, 400, epic.message);
     let execution;
     try { execution = commands.execution(request.params.id, body?.execution); }
-    catch (cause) { return error(reply, 400, String(cause)); }
+    catch (cause) { return error(reply, 400, errorMessage(cause)); }
     const task = db.createTask(request.params.id, text, source, epic.id, execution);
     broadcast({ type: 'task', task });
     return reply.code(201).send(task);
@@ -797,7 +803,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     const changes: { text?: string; status?: TaskStatus; execution?:TaskExecution; dependsOn?: string[]; epicId?: string | null } = {};
     if (body.execution !== undefined) {
       try { changes.execution = commands.execution(db.getTask(request.params.id)!.projectId, body.execution); }
-      catch (cause) { return error(reply, 400, String(cause)); }
+      catch (cause) { return error(reply, 400, errorMessage(cause)); }
     }
     if (body.text !== undefined) {
       const text = taskText(body.text);
@@ -860,10 +866,10 @@ export async function buildServer(): Promise<FastifyInstance> {
         const run = await (task.epicId ? withEpicWorkspace(db,task.epicId,start) : start());
         return reply.code(202).send({task:db.getTask(task.id),run});
       }
-      catch (cause) { return error(reply, 409, String(cause)); }
+      catch (cause) { return error(reply, 409, errorMessage(cause)); }
     }
     try { const context=task.epicId?epicWorkspace(db,task.epicId):null;if(context)assertEpicWorkspace(db,context); }
-    catch(cause){return error(reply,409,String(cause));}
+    catch(cause){return error(reply,409,errorMessage(cause));}
     return launchSession(reply, project, request.body, (session) => {
       const updated = db.updateTask(task.id, { status: 'started', sessionId: session.id });
       if (updated !== null) broadcast({ type: 'task', task: updated });
@@ -899,19 +905,19 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.get<{ Params: { id: string } }>('/api/epics/:id/runs', async request => epicRunner.list(request.params.id));
   app.get<{ Params: { id: string } }>('/api/epics/:id/workspace', async (request, reply) => {
     if (!db.getEpic(request.params.id)) return error(reply,404,'Epic introuvable');
-    try{return reply.send(epicWorkspace(db,request.params.id));}catch(cause){return error(reply,409,String(cause));}
+    try{return reply.send(epicWorkspace(db,request.params.id));}catch(cause){return error(reply,409,errorMessage(cause));}
   });
   app.get<{ Params: { id: string } }>('/api/epics/:id/workspace-options', async (request, reply) => {
     if (!db.getEpic(request.params.id)) return error(reply,404,'Epic introuvable');
     try { return reply.send(await epicWorkspaceOptions(db,request.params.id)); }
-    catch (cause) { return error(reply,409,cause instanceof Error?cause.message:String(cause)); }
+    catch (cause) { return error(reply,409,errorMessage(cause)); }
   });
   app.post<{ Params: { id: string } }>('/api/epics/:id/workspace', async (request, reply) => {
     if (!db.getEpic(request.params.id)) return error(reply,404,'Epic introuvable');
     const path=bodyRecord(request.body)?.path;
     if(typeof path!=='string'||!path.trim()||path.length>4096)return error(reply,400,'Le chemin du dossier est requis.');
     try { return reply.send(await withEpicWorkspace(db,request.params.id,async()=>epicRunner.selectWorkspace(request.params.id,path))); }
-    catch (cause) { return error(reply,409,cause instanceof Error?cause.message:String(cause)); }
+    catch (cause) { return error(reply,409,errorMessage(cause)); }
   });
   app.post<{ Params: { id: string } }>('/api/epics/:id/start', async (request, reply) => {
     const epic=db.getEpic(request.params.id);
@@ -919,8 +925,8 @@ export async function buildServer(): Promise<FastifyInstance> {
     const body=bodyRecord(request.body)??{};
     const options=parseSessionDefaults(db.getProject(epic.projectId)!.sessionDefaults, {...body,prompt:typeof body.prompt==='string'?body.prompt:''});
     if(!options)return error(reply,400,'Réglages de session invalides');
-    try{return reply.code(202).send(epicRunner.start(epic.id,options));}
-    catch(cause){return error(reply,409,String(cause));}
+    try{return reply.code(202).send(await epicRunner.start(epic.id,options));}
+    catch(cause){return error(reply,409,errorMessage(cause));}
   });
   // Code review du travail d'une epic terminée, arrêtée ou échouée : une session rejoint le worktree des étapes.
   app.post<{ Params: { id: string } }>('/api/epics/:id/review', async (request, reply) => {
@@ -938,7 +944,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       const workspace=epicWorkspace(db,epic.id);if(workspace)assertEpicWorkspace(db,workspace);
       scope = await epicReviewScope(db, {...run,workspace,contextRoot:workspace?.path??run.contextRoot});
     }
-    catch (cause) { return error(reply, 409, cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { return error(reply, 409, errorMessage(cause)); }
     const prompt = `${defaults.prompt}\n\n${epicReviewInstructions(epic.title, scope)}`.trim();
     try {
       const session = await sessions.create(project, {...defaults, prompt}, undefined, scope.path, `Review de l’epic « ${epic.title} »`.slice(0, 120), { rememberDefaults: false, epicId: epic.id });
@@ -951,7 +957,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post<{ Params: { id: string } }>('/api/worktrees/:id/resolve-starting-content', async (request, reply) => {
     let resolution;
     try { resolution = await worktrees.startingContentResolution(request.params.id); }
-    catch (cause) { return error(reply, cause instanceof WorktreeError ? cause.statusCode : 409, cause instanceof Error ? cause.message : String(cause)); }
+    catch (cause) { return error(reply, cause instanceof WorktreeError ? cause.statusCode : 409, errorMessage(cause)); }
     const {view, workspace, plan} = resolution;
     const project = view.projectId ? db.getProject(view.projectId) : null;
     if (!project) return error(reply, 409, 'Le projet de cette copie a été retiré : aucune session ne peut y être lancée.');
@@ -982,15 +988,15 @@ export async function buildServer(): Promise<FastifyInstance> {
     return reply.code(201).send(task);
   });
   app.post<{ Params: { id: string } }>('/api/epic-runs/:id/stop', async (request,reply)=>{
-    try{return reply.send(await epicRunner.stop(request.params.id));}catch(cause){return error(reply,409,String(cause));}
+    try{return reply.send(epicRunner.stop(request.params.id));}catch(cause){return error(reply,409,errorMessage(cause));}
   });
   app.post<{ Params: { id: string } }>('/api/epic-runs/:id/resume', async (request,reply)=>{
-    try{return reply.send(epicRunner.resume(request.params.id,bodyRecord(request.body)?.replan===true));}catch(cause){return error(reply,409,String(cause));}
+    try{return reply.send(epicRunner.resume(request.params.id,bodyRecord(request.body)?.replan===true));}catch(cause){return error(reply,409,errorMessage(cause));}
   });
   app.patch<{ Params: { id: string } }>('/api/epic-runs/:id/auto-validation', async (request,reply)=>{
     const enabled=bodyRecord(request.body)?.enabled;
     if(typeof enabled!=='boolean')return error(reply,400,'enabled doit être un booléen.');
-    try{return reply.send(epicRunner.setAutoValidate(request.params.id,enabled));}catch(cause){return error(reply,409,String(cause));}
+    try{return reply.send(epicRunner.setAutoValidate(request.params.id,enabled));}catch(cause){return error(reply,409,errorMessage(cause));}
   });
 
   app.post<{ Params: { id: string } }>('/api/sessions/:id/kill', async (request, reply) => {
@@ -1174,14 +1180,14 @@ export async function buildServer(): Promise<FastifyInstance> {
     const session = backlogSession(request, reply);
     if (!session) return reply;
     try { return reply.send(publishFindings(session.id, request.body)); }
-    catch (cause) { return error(reply, 400, String(cause)); }
+    catch (cause) { return error(reply, 400, errorMessage(cause)); }
   });
   app.post<{ Params: { id: string; taskId:string } }>('/api/backlog/:id/tasks/:taskId/result', async (request,reply)=>{
     const session=backlogSession(request,reply);if(!session)return reply;
     const body=bodyRecord(request.body);
     if(!['failed','blocked','waiting-validation'].includes(String(body?.status))||typeof body?.message!=='string'||body.message.length>2000)return error(reply,400,'Résultat invalide.');
     try{return reply.send(epicRunner.report(session.id,request.params.taskId,body.status as 'failed'|'blocked'|'waiting-validation',body.message));}
-    catch(cause){return error(reply,409,String(cause));}
+    catch(cause){return error(reply,409,errorMessage(cause));}
   });
   app.get<{ Params: { id: string } }>('/api/backlog/:id', async (request, reply) => {
     const session = backlogSession(request, reply);

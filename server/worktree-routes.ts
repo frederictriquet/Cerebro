@@ -4,12 +4,13 @@ import { WorktreeError, WorktreeManager } from './worktrees.ts';
 import { prepareCommit, executeCommitPlan, verifySnapshot } from './git-plan.ts';
 import { currentPush } from './git-push.ts';
 import { assertWorktreeAvailable } from './worktree-gate.ts';
+import { errorMessage } from './errors.ts';
 
 export function registerWorktreeRoutes(app: FastifyInstance, db: CerebroDatabase): WorktreeManager {
   const manager=new WorktreeManager(db);
   const attempt=async(reply:FastifyReply,run:()=>Promise<unknown>,status=200):Promise<unknown>=>{
     try{return reply.code(status).send(await run());}
-    catch(cause){return reply.code(cause instanceof WorktreeError?cause.statusCode:409).send({error:cause instanceof Error?cause.message:String(cause)});}
+    catch(cause){return reply.code(cause instanceof WorktreeError?cause.statusCode:409).send({error:errorMessage(cause)});}
   };
   app.get('/api/worktrees',async(_request,reply)=>attempt(reply,()=>manager.list()));
   app.delete('/api/worktrees/history',async(request,reply)=>attempt(reply,async()=>{

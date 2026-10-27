@@ -21,6 +21,7 @@ import { normalizeProjectName, type PeerSync } from './peers.ts';
 import { formatQuestions, interpretAnswer } from './questions.ts';
 import type { AgentQuestion } from './questions.ts';
 import type { SessionEvent, SessionManager } from './sessions.ts';
+import { errorMessage } from './errors.ts';
 
 type MessageKind = 'alert' | 'notify' | 'ask';
 
@@ -803,7 +804,7 @@ export class SlackNotifier {
           prompt: command.text,
         }, undefined, undefined, undefined, { rememberDefaults: false });
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
+        const reason = errorMessage(error);
         await this.postThreadReply(channel, message.ts, `:x: Impossible de créer la session : ${escapeMrkdwn(reason)}`);
         return;
       }
@@ -895,7 +896,7 @@ export class SlackNotifier {
       text = councilSlackText(await this.councils.finished(run.id) ?? run, project?.name ?? null);
     } catch (error) {
       this.logError(error);
-      text = `:x: Council impossible : ${escapeMrkdwn(error instanceof Error ? error.message : String(error))}`;
+      text = `:x: Council impossible : ${escapeMrkdwn(errorMessage(error))}`;
     }
     try {
       for (const chunk of splitMessage(text)) await this.postThreadReply(channel, threadTs, chunk);
@@ -916,7 +917,7 @@ export class SlackNotifier {
       text = slackMarkdown(factual ?? await answerQuestion(this.db, question));
     } catch (error) {
       this.logError(error);
-      text = `:x: Impossible de répondre : ${escapeMrkdwn(error instanceof Error ? error.message : String(error))}`;
+      text = `:x: Impossible de répondre : ${escapeMrkdwn(errorMessage(error))}`;
     }
     try {
       for (const chunk of splitMessage(text)) await this.postThreadReply(channel, threadTs, chunk);

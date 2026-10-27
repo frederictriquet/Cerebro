@@ -5,15 +5,23 @@ import { promisify } from 'node:util';
 import type { CerebroDatabase } from './db.ts';
 import { workspaceAt, type WorkspaceContext, type Workspace } from './provenance.ts';
 import { canonicalWorktreePath, assertWorktreeAvailable } from './worktree-gate.ts';
+import { errorMessage } from './errors.ts';
 
 const contextOf = (workspace: Pick<Workspace, 'mode' | 'path'>): WorkspaceContext => ({ mode: workspace.mode, path: workspace.path });
 const sameContext = (left: WorkspaceContext, right: WorkspaceContext): boolean =>
   left.mode === right.mode && canonicalWorktreePath(left.path) === canonicalWorktreePath(right.path);
 
+/** Called once a step is launched in `context`: from then on the epic's folder is fixed. */
 export function rememberEpicWorkspace(db: CerebroDatabase, epicId: string, context: WorkspaceContext): WorkspaceContext {
   db.connection.prepare('INSERT OR IGNORE INTO epic_workspaces (epic_id,data,verified) VALUES (?,?,1)').run(epicId, JSON.stringify(context));
-  const saved = JSON.parse((db.connection.prepare('SELECT data FROM epic_workspaces WHERE epic_id=?').get(epicId) as {data:string}).data) as WorkspaceContext;
+  const row = db.connection.prepare('SELECT data,verified FROM epic_workspaces WHERE epic_id=?').get(epicId) as {data:string;verified:number};
+  const saved = JSON.parse(row.data) as WorkspaceContext;
   if (!sameContext(saved, context)) throw new Error('Le dossier de cette étape diffère du dossier d’origine de l’epic. Aucun agent lancé.');
+  if (!row.verified) {
+    // Remembered by an earlier, incomplete recovery: it only becomes authoritative once the whole history agrees.
+    assertSingleFolder([saved, ...historyContexts(db, epicId)]);
+    db.connection.prepare('UPDATE epic_workspaces SET verified=1 WHERE epic_id=?').run(epicId);
+  }
   return saved;
 }
 
@@ -109,7 +117,8 @@ export interface EpicWorkspaceOptions {
   choices: EpicWorkspaceChoice[];
 }
 const execFileAsync = promisify(execFile);
-async function gitInfo(path: string, args: string[]): Promise<string | null> {
+/** Output of a read-only git command, or null when it fails. */
+export async function gitInfo(path: string, args: string[]): Promise<string | null> {
   try { return (await execFileAsync('git', ['--no-optional-locks', '-C', path, ...args], {encoding:'utf8', timeout:5000, maxBuffer:2*1024*1024})).stdout.trimEnd(); }
   catch { return null; }
 }
@@ -125,7 +134,7 @@ export async function epicWorkspaceOptions(db: CerebroDatabase, epicId: string):
   const choices = await Promise.all(workspaceChoices(db, epicId).map(async context => {
     let unavailableReason: string | null = null;
     try { assertEpicWorkspace(db, context); }
-    catch (cause) { unavailableReason = cause instanceof Error ? cause.message : String(cause); }
+    catch (cause) { unavailableReason = errorMessage(cause); }
     const [branch, head, status] = unavailableReason ? [null, null, null] : await Promise.all([
       gitInfo(context.path, ['branch', '--show-current']),
       gitInfo(context.path, ['rev-parse', '--verify', 'HEAD']),
@@ -155,21 +164,23 @@ export function selectEpicWorkspace(db: CerebroDatabase, epicId: string, path: s
   return context;
 }
 
-/** Recover old epics from persisted execution/provenance, never from the project's current preference. */
+/**
+ * Recover old epics from persisted execution/provenance, never from the project's current preference.
+ * Read-only: launches fix the folder through rememberEpicWorkspace.
+ */
 export function epicWorkspace(db: CerebroDatabase, epicId: string): WorkspaceContext | null {
   const saved = db.connection.prepare('SELECT data,verified FROM epic_workspaces WHERE epic_id=?').get(epicId) as {data:string;verified:number} | undefined;
   if (saved?.verified) return JSON.parse(saved.data) as WorkspaceContext;
   const contexts = historyContexts(db, epicId);
   if (saved) {
-    // Remembered by an earlier, incomplete recovery: it only becomes authoritative once the whole history agrees.
+    // Remembered by an earlier, incomplete recovery: usable only while the whole history agrees.
     const context = JSON.parse(saved.data) as WorkspaceContext;
     assertSingleFolder([context, ...contexts]);
-    db.connection.prepare('UPDATE epic_workspaces SET verified=1 WHERE epic_id=?').run(epicId);
     return context;
   }
   if (!contexts.length) return null;
   assertSingleFolder(contexts);
-  return rememberEpicWorkspace(db, epicId, contexts.find(context => context.mode !== 'unknown') ?? contexts[0]);
+  return contexts.find(context => context.mode !== 'unknown') ?? contexts[0];
 }
 
 export function assertEpicWorkspace(db: CerebroDatabase, context: WorkspaceContext): void {

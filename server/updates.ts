@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { AGENTS } from './agents.ts';
 import { DATA_DIR } from './config.ts';
 import type { Agent } from './db.ts';
+import { errorMessage } from './errors.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -34,9 +35,6 @@ const OUTPUT_TAIL = 2_000;
 
 const VERSION = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/;
 
-function errorText(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -117,7 +115,7 @@ function loadAuto(): Record<Agent, boolean> {
     const saved = isRecord(value) && isRecord(value.auto) ? value.auto : {};
     for (const agent of AGENTS) if (typeof saved[agent] === 'boolean') auto[agent] = saved[agent];
   } catch (error) {
-    console.error('[updates] réglages illisibles :', errorText(error));
+    console.error('[updates] réglages illisibles :', errorMessage(error));
   }
   return auto;
 }
@@ -200,7 +198,7 @@ export class UpdateManager {
       installed = await installedVersion(agent);
     } catch (cause) {
       const missing = (cause as NodeJS.ErrnoException).code === 'ENOENT';
-      Object.assign(current, { installed: null, latest: null, available: false, checkedAt: missing ? null : new Date().toISOString(), error: errorText(cause) });
+      Object.assign(current, { installed: null, latest: null, available: false, checkedAt: missing ? null : new Date().toISOString(), error: errorMessage(cause) });
       return;
     }
     current.installed = installed;
@@ -208,7 +206,7 @@ export class UpdateManager {
       current.latest = await LATEST[agent]();
       current.error = null;
     } catch (cause) {
-      current.error = `Vérification impossible : ${errorText(cause)}`;
+      current.error = `Vérification impossible : ${errorMessage(cause)}`;
     }
     current.available = current.latest !== null && isNewer(current.latest, installed);
     current.checkedAt = new Date().toISOString();
@@ -230,16 +228,17 @@ export class UpdateManager {
       const pending = execFileAsync(agent, ['update'], {
         timeout: UPDATE_TIMEOUT_MS,
         maxBuffer: 4 * 1024 * 1024,
-        env: { ...process.env, CODEX_NON_INTERACTIVE: '1' },
+        // Codex's own switch for unattended runs: only its process gets it.
+        env: agent === 'codex' ? { ...process.env, CODEX_NON_INTERACTIVE: '1' } : process.env,
       });
-      // No one to answer a prompt: an empty stdin makes it fail instead of hanging.
+      // No one to answer a prompt: an empty stdin makes any CLI fail instead of hanging.
       pending.child.stdin?.end();
       const { stdout, stderr } = await pending;
       output = `${stdout}\n${stderr}`;
       ok = true;
     } catch (cause) {
       const failed = cause as { stdout?: string; stderr?: string; killed?: boolean };
-      output = `${failed.stdout ?? ''}\n${failed.stderr ?? ''}\n${failed.killed === true ? 'Délai dépassé' : errorText(cause)}`;
+      output = `${failed.stdout ?? ''}\n${failed.stderr ?? ''}\n${failed.killed === true ? 'Délai dépassé' : errorMessage(cause)}`;
     }
     await this.check(agent);
     // Exit 0 without a new version (e.g. a CLI that only reports) is not a success.

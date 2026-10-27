@@ -9,7 +9,7 @@ const root=mkdtempSync(join(tmpdir(),'cerebro-auto-commits-'));
 process.env.HOME=root;process.env.CEREBRO_DATA_DIR=join(root,'data');process.env.CODEX_HOME=join(root,'codex');
 const {CerebroDatabase}=await import('../server/db.ts');
 const {AutomaticCommits}=await import('../server/automatic-commits.ts');
-const {prepareSessionGit,executeSessionCommit}=await import('../server/session-git.ts');
+const {SessionGitScopes}=await import('../server/session-git.ts');
 const {proposeCommits}=await import('../server/commit-proposal.ts');
 const {runHeadless}=await import('../server/headless.ts');
 const {prepareCommit}=await import('../server/git-plan.ts');
@@ -112,7 +112,7 @@ test('a reviewed diff lifts its warning only while unchanged, and never for a de
 test('unknown session attribution requires intervention and never calls the model',async()=>fixture(async f=>{
  const id=randomUUID();f.db.createSession({id,projectId:f.project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Legacy',status:'exited',agentSessionId:'fake'},'token');
  writeFileSync(join(f.repo,'file'),'legacy work\n');
- const context={...f.context,scope:`sessions/${id}`,sessionId:id,prepare:()=>prepareSessionGit(f.db,id),execute:plan=>executeSessionCommit(id,plan)};
+ const sessionGit=new SessionGitScopes(f.db);const context={...f.context,scope:`sessions/${id}`,sessionId:id,prepare:()=>sessionGit.prepare(id),execute:plan=>sessionGit.executeCommit(id,plan)};
  const result=await f.finish(await f.manager.start(context,randomUUID(),true));assert.equal(result.status,'blocked');assert.match(result.error,/en-tête du projet/);assert.equal(f.calls,0);assert.equal(git(f.repo,'rev-list','--count','HEAD'),'1');
 }));
 test('Git hooks are respected and existing staged files outside the selected scope are preserved',async()=>fixture(async f=>{
@@ -226,7 +226,7 @@ test('a copy holding only content inherited from the project says there is nothi
  writeFileSync(join(f.repo,'file'),'uncommitted in the project\n');
  const id=randomUUID();f.db.createSession({id,projectId:f.project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Step',status:'exited',agentSessionId:'fake'},'token');
  const workspace=await createWorkspace(f.db,id,f.project);
- const context={...f.context,scope:`sessions/${id}`,path:workspace.root,sessionId:id,prepare:()=>prepareSessionGit(f.db,id),execute:plan=>executeSessionCommit(id,plan)};
+ const sessionGit=new SessionGitScopes(f.db);const context={...f.context,scope:`sessions/${id}`,path:workspace.root,sessionId:id,prepare:()=>sessionGit.prepare(id),execute:plan=>sessionGit.executeCommit(id,plan)};
  const result=await f.finish(await f.manager.start(context,randomUUID(),false));assert.equal(result.status,'blocked');
  assert.match(result.error,/Rien de nouveau à commiter/);assert.match(result.exclusions[0].reason,/inchangé depuis/);assert.equal(f.calls,0);
 }));
