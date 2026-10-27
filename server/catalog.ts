@@ -70,7 +70,9 @@ async function discoverClaude(): Promise<AgentCatalog> {
   const { stdout } = await execFileAsync('which', ['claude']);
   let release = (): void => {};
   const prompt = (async function* () {
-    await new Promise<void>((resolve) => { release = resolve; });
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
   })();
   const session = query({
     prompt,
@@ -101,8 +103,13 @@ async function discoverClaude(): Promise<AgentCatalog> {
     if (models.length === 0) throw new Error('aucun modèle');
     // The alias resolving to the same model id as the CLI default row (e.g. `fable` for `default`).
     const defaultId = fallbackDefault?.resolvedModel;
-    const defaultModel = aliases.find((info) => defaultId !== undefined && info.resolvedModel === defaultId)?.value ?? models[0]!.value;
-    return { models, efforts: fallbackDefault === undefined ? CLAUDE_EFFORTS : modelEfforts(fallbackDefault), defaultModel };
+    const defaultModel =
+      aliases.find((info) => defaultId !== undefined && info.resolvedModel === defaultId)?.value ?? models[0]!.value;
+    return {
+      models,
+      efforts: fallbackDefault === undefined ? CLAUDE_EFFORTS : modelEfforts(fallbackDefault),
+      defaultModel,
+    };
   } finally {
     clearTimeout(timer);
     session.close();
@@ -125,16 +132,19 @@ async function discoverGrok(): Promise<AgentCatalog> {
   const entries = Object.entries(cache.models).flatMap(([id, entry]) => {
     const info = isRecord(entry) && isRecord(entry.info) ? entry.info : null;
     if (info === null || info.hidden === true) return [];
-    const efforts = info.supports_reasoning_effort === true && Array.isArray(info.reasoning_efforts)
-      ? sortEfforts(info.reasoning_efforts.map((e: unknown) => (isRecord(e) ? e.value : null)).filter(isEffort))
-      : [];
+    const efforts =
+      info.supports_reasoning_effort === true && Array.isArray(info.reasoning_efforts)
+        ? sortEfforts(info.reasoning_efforts.map((e: unknown) => (isRecord(e) ? e.value : null)).filter(isEffort))
+        : [];
     const value = typeof info.id === 'string' ? info.id : id;
-    return [{
-      value,
-      label: typeof info.name === 'string' ? info.name : value,
-      description: typeof info.description === 'string' ? info.description : '',
-      efforts,
-    }];
+    return [
+      {
+        value,
+        label: typeof info.name === 'string' ? info.name : value,
+        description: typeof info.description === 'string' ? info.description : '',
+        efforts,
+      },
+    ];
   });
   // Ordre de `grok models` ; les modèles absents de sa sortie viennent ensuite.
   const rank = (value: string): number => {
@@ -157,7 +167,12 @@ async function readCodexDefaultModel(): Promise<string | null> {
   }
   const firstTable = text.search(/^\s*\[/m);
   const topLevel = firstTable === -1 ? text : text.slice(0, firstTable);
-  return /^[ \t]*"?model"?[ \t]*=[ \t]*(?:"([^"\n]*)"|'([^'\n]*)')/m.exec(topLevel)?.slice(1).find((v) => v !== undefined) ?? null;
+  return (
+    /^[ \t]*"?model"?[ \t]*=[ \t]*(?:"([^"\n]*)"|'([^'\n]*)')/m
+      .exec(topLevel)
+      ?.slice(1)
+      .find((v) => v !== undefined) ?? null
+  );
 }
 
 // `codex debug models` : catalogue JSON de la CLI installée (même source que `model/list` de
@@ -171,13 +186,19 @@ async function discoverCodex(): Promise<AgentCatalog> {
   if (!isRecord(data) || !Array.isArray(data.models)) throw new Error('sortie de `codex debug models` illisible');
   const models = data.models
     .filter((m): m is Record<string, unknown> => isRecord(m) && m.visibility === 'list' && typeof m.slug === 'string')
-    .sort((a, b) => (typeof a.priority === 'number' ? a.priority : Infinity) - (typeof b.priority === 'number' ? b.priority : Infinity))
+    .sort(
+      (a, b) =>
+        (typeof a.priority === 'number' ? a.priority : Infinity) -
+        (typeof b.priority === 'number' ? b.priority : Infinity),
+    )
     .map((m) => ({
       value: m.slug as string,
-      label: typeof m.display_name === 'string' ? m.display_name : m.slug as string,
+      label: typeof m.display_name === 'string' ? m.display_name : (m.slug as string),
       description: typeof m.description === 'string' ? m.description : '',
       efforts: Array.isArray(m.supported_reasoning_levels)
-        ? sortEfforts(m.supported_reasoning_levels.map((l: unknown) => (isRecord(l) ? l.effort : null)).filter(isEffort))
+        ? sortEfforts(
+            m.supported_reasoning_levels.map((l: unknown) => (isRecord(l) ? l.effort : null)).filter(isEffort),
+          )
         : [],
     }));
   if (models.length === 0) throw new Error('aucun modèle');
@@ -194,15 +215,27 @@ const DISCOVERERS: Partial<Record<Agent, () => Promise<AgentCatalog>>> = {
 export function refreshCatalog(): Promise<void> {
   // Agent non installé : pas de découverte, on garde le repli sans warning.
   pending ??= getAgentAvailability()
-    .then((availability) => Promise.all(Object.entries(DISCOVERERS)
-      .filter(([agent]) => availability.some((a) => a.agent === agent && a.available))
-      .map(([agent, discover]) => discover()
-        .then((catalog) => { catalogs[agent as Agent] = catalog; })
-        .catch((error: unknown) => {
-          console.warn(`Catalogue ${agent} indisponible, liste par défaut : ${error instanceof Error ? error.message : String(error)}`);
-        }))))
+    .then((availability) =>
+      Promise.all(
+        Object.entries(DISCOVERERS)
+          .filter(([agent]) => availability.some((a) => a.agent === agent && a.available))
+          .map(([agent, discover]) =>
+            discover()
+              .then((catalog) => {
+                catalogs[agent as Agent] = catalog;
+              })
+              .catch((error: unknown) => {
+                console.warn(
+                  `Catalogue ${agent} indisponible, liste par défaut : ${error instanceof Error ? error.message : String(error)}`,
+                );
+              }),
+          ),
+      ),
+    )
     .then(() => {})
-    .finally(() => { pending = null; });
+    .finally(() => {
+      pending = null;
+    });
   return pending;
 }
 

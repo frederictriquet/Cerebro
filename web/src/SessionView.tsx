@@ -28,42 +28,93 @@ import { SessionEpicBadge } from './SessionEpicBadge.tsx';
 
 type SessionDrawer = 'provenance' | 'findings' | 'tasks' | null;
 
-function useFindingsReports(sessionId:string) {
-  const [reports,setReports]=useState<SavedReport[]>([]);
-  const refresh=useCallback(async():Promise<void>=>setReports(await api<SavedReport[]>(`/api/sessions/${sessionId}/findings`)),[sessionId]);
-  useEffect(()=>{setReports([]);void refresh().catch(()=>{});const timer=window.setInterval(()=>void refresh().catch(()=>{}),3000);return()=>window.clearInterval(timer);},[refresh]);
-  return {reports,refresh};
+function useFindingsReports(sessionId: string) {
+  const [reports, setReports] = useState<SavedReport[]>([]);
+  const refresh = useCallback(
+    async (): Promise<void> => setReports(await api<SavedReport[]>(`/api/sessions/${sessionId}/findings`)),
+    [sessionId],
+  );
+  useEffect(() => {
+    setReports([]);
+    void refresh().catch(() => {});
+    const timer = window.setInterval(() => void refresh().catch(() => {}), 3000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+  return { reports, refresh };
 }
 
 function useProvenance(sessionId: string) {
   const [data, setData] = useState<Provenance | null>(null);
   const [error, setError] = useState<string | null>(null);
   const refresh = useCallback(async (): Promise<void> => {
-    try { setData(await api<Provenance>(`/api/sessions/${sessionId}/provenance`)); setError(null); }
-    catch (cause) { setError(String(cause)); }
+    try {
+      setData(await api<Provenance>(`/api/sessions/${sessionId}/provenance`));
+      setError(null);
+    } catch (cause) {
+      setError(String(cause));
+    }
   }, [sessionId]);
-  useEffect(() => { setData(null); setError(null); void refresh(); }, [refresh]);
+  useEffect(() => {
+    setData(null);
+    setError(null);
+    void refresh();
+  }, [refresh]);
   return { data, error, refresh };
 }
 
 const WORKSPACE_PILL: Record<Provenance['workspace']['mode'], { label: string; title: string }> = {
-  isolated: { label: 'copie isolée', title: 'Cette conversation travaille dans sa propre copie du dépôt (worktree), sur sa propre branche' },
-  shared: { label: 'dossier partagé', title: 'Cette conversation travaille directement dans le dossier du projet, partagé avec les autres conversations' },
-  unknown: { label: 'provenance inconnue', title: 'Cerebro ne sait pas attribuer les changements à cette conversation' },
+  isolated: {
+    label: 'copie isolée',
+    title: 'Cette conversation travaille dans sa propre copie du dépôt (worktree), sur sa propre branche',
+  },
+  shared: {
+    label: 'dossier partagé',
+    title: 'Cette conversation travaille directement dans le dossier du projet, partagé avec les autres conversations',
+  },
+  unknown: {
+    label: 'provenance inconnue',
+    title: 'Cerebro ne sait pas attribuer les changements à cette conversation',
+  },
 };
 
 function ProvenancePanel({ data, error, refresh }: ReturnType<typeof useProvenance>) {
-  return <>
-    {error ? <p className="form-error">{error}</p> : null}
-    {data ? <>
-      <p>{data.workspace.path} — branche {data.workspace.branch ?? 'partagée'}</p>
-      {data.workspace.mode==='shared'?<p>Cette conversation utilise le dossier du projet et sa branche courante, partagés avec les autres conversations qui y travaillent directement. Ses actions Git portent sur le projet entier.</p>:<><p>{data.workspace.reason}</p><p className="hint">{data.warning}</p></>}
-      <p>Changements initiaux exclus de l’attribution : {data.workspace.initialDirty.join(', ') || 'aucun'}</p>
-      {data.changes.map(c => <p key={c.path}>{c.path} — {c.certainty} : {c.reason}</p>)}
-      {data.commits.map(c => <p key={c.hash}>{c.hash} — {c.title} ({c.certainty})</p>)}
-    </> : null}
-    <button className="btn" onClick={() => void refresh()}>Actualiser</button>
-  </>;
+  return (
+    <>
+      {error ? <p className="form-error">{error}</p> : null}
+      {data ? (
+        <>
+          <p>
+            {data.workspace.path} — branche {data.workspace.branch ?? 'partagée'}
+          </p>
+          {data.workspace.mode === 'shared' ? (
+            <p>
+              Cette conversation utilise le dossier du projet et sa branche courante, partagés avec les autres
+              conversations qui y travaillent directement. Ses actions Git portent sur le projet entier.
+            </p>
+          ) : (
+            <>
+              <p>{data.workspace.reason}</p>
+              <p className="hint">{data.warning}</p>
+            </>
+          )}
+          <p>Changements initiaux exclus de l’attribution : {data.workspace.initialDirty.join(', ') || 'aucun'}</p>
+          {data.changes.map((c) => (
+            <p key={c.path}>
+              {c.path} — {c.certainty} : {c.reason}
+            </p>
+          ))}
+          {data.commits.map((c) => (
+            <p key={c.hash}>
+              {c.hash} — {c.title} ({c.certainty})
+            </p>
+          ))}
+        </>
+      ) : null}
+      <button className="btn" onClick={() => void refresh()}>
+        Actualiser
+      </button>
+    </>
+  );
 }
 
 function delay(ms: number): Promise<void> {
@@ -87,7 +138,15 @@ const QUICK_KEYS: readonly { label: string; data: string; confirm: boolean; arro
 
 function PencilIcon() {
   return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      aria-hidden="true"
+    >
       <path d="M12 20h9" />
       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
     </svg>
@@ -189,7 +248,15 @@ function TitleEditor({ sessionId, title }: { sessionId: string; title: string })
 
 function ImageIcon() {
   return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      aria-hidden="true"
+    >
       <rect x="3" y="3" width="18" height="18" rx="2" />
       <circle cx="9" cy="9" r="2" />
       <path d="m21 15-5-5L5 21" />
@@ -278,13 +345,7 @@ function QuickReply({
     <div className="quick-bar">
       <div className="quick-keys">
         {QUICK_KEYS.map((key) => (
-          <button
-            key={key.label}
-            type="button"
-            className="btn"
-            disabled={disabled}
-            onClick={() => press(key)}
-          >
+          <button key={key.label} type="button" className="btn" disabled={disabled} onClick={() => press(key)}>
             {key.label}
           </button>
         ))}
@@ -325,7 +386,11 @@ function QuickReply({
         >
           <ImageIcon />
         </button>
-        <button type="submit" className="btn primary" disabled={disabled || sending || images.pending || text.trim().length === 0}>
+        <button
+          type="submit"
+          className="btn primary"
+          disabled={disabled || sending || images.pending || text.trim().length === 0}
+        >
           Envoyer
         </button>
       </form>
@@ -376,7 +441,12 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const [drawer, setDrawer] = useState<SessionDrawer>(null);
   const showDrawer = (next: SessionDrawer): void => {
     const route = parseHash(window.location.hash);
-    if (next !== 'findings' && route.kind === 'session' && route.sessionId === sessionId && route.panel === 'findings') {
+    if (
+      next !== 'findings' &&
+      route.kind === 'session' &&
+      route.sessionId === sessionId &&
+      route.panel === 'findings'
+    ) {
       window.history.replaceState(window.history.state, '', href(`#/s/${sessionId}`));
     }
     setDrawer(next);
@@ -387,7 +457,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     setDrawer(null);
     const onNavigate = (): void => {
       const route = parseHash(window.location.hash);
-      if (route.kind === 'session' && route.sessionId === sessionId) setDrawer(route.panel === 'findings' ? 'findings' : null);
+      if (route.kind === 'session' && route.sessionId === sessionId)
+        setDrawer(route.panel === 'findings' ? 'findings' : null);
     };
     onNavigate();
     window.addEventListener('hashchange', onNavigate);
@@ -430,9 +501,16 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             <TitleEditor key={session.id} sessionId={session.id} title={session.title} />
           </div>
           <p className="session-meta">
-            <span className="pill"><AgentLabel agent={session.agent} /></span>
+            <span className="pill">
+              <AgentLabel agent={session.agent} />
+            </span>
             <span className="pill">{MODE_LABEL[session.mode]}</span>
-            {session.model !== null ? <span className="pill">{agents.find((a) => a.agent === session.agent)?.models.find((m) => m.value === session.model)?.label ?? session.model}</span> : null}
+            {session.model !== null ? (
+              <span className="pill">
+                {agents.find((a) => a.agent === session.agent)?.models.find((m) => m.value === session.model)?.label ??
+                  session.model}
+              </span>
+            ) : null}
             {session.effort !== null ? <span className="pill">effort {session.effort}</span> : null}
             {provenance.data ? (
               <button
@@ -455,8 +533,11 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               aria-label={`Sous-tâches : ${sessionTasks.error ? 'suivi indisponible' : TASK_STATE_LABELS[taskState]}`}
               onClick={() => toggleDrawer('tasks')}
             >
-              Sous-tâches{sessionTasks.loaded ? ` · ${sessionTasks.tasks.filter(task => task.status === 'done').length}/${sessionTasks.tasks.length}` : ''}
-              {sessionTasks.tasks.some(task => task.status === 'blocked') ? ' · blocage' : ''}
+              Sous-tâches
+              {sessionTasks.loaded
+                ? ` · ${sessionTasks.tasks.filter((task) => task.status === 'done').length}/${sessionTasks.tasks.length}`
+                : ''}
+              {sessionTasks.tasks.some((task) => task.status === 'blocked') ? ' · blocage' : ''}
               {sessionTasks.error ? ' · indisponible' : ''}
             </button>
             <WorktreeLabel worktree={session.worktree} />
@@ -481,27 +562,65 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           <div className="row-actions">
             <SessionGitActions sessionId={session.id} live={live} />
             {session.status !== 'exited' ? (
-              <button type="button" className="btn" title={isolated ? `Arrête la conversation. ${RELEASE_HINT}` : undefined} onClick={() => void act(() => killSession(session.id))}>
+              <button
+                type="button"
+                className="btn"
+                title={isolated ? `Arrête la conversation. ${RELEASE_HINT}` : undefined}
+                onClick={() => void act(() => killSession(session.id))}
+              >
                 Arrêter
               </button>
             ) : null}
             {session.status === 'exited' && session.agentSessionId ? (
-              <button type="button" className="btn primary" disabled={resumeBlocked !== null} title={resumeBlocked ?? undefined} onClick={() => void act(() => resumeSession(session.id))}>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={resumeBlocked !== null}
+                title={resumeBlocked ?? undefined}
+                onClick={() => void act(() => resumeSession(session.id))}
+              >
                 Reprendre
               </button>
             ) : null}
-            <DelayedActionButton disabled={session.protected} title={session.protected ? SESSION_PROTECTED_HINT : isolated ? `Supprime la conversation. ${RELEASE_HINT} Sinon, elle reste dans l’inventaire des copies de travail.` : 'Supprime la conversation'} onAction={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}>
+            <DelayedActionButton
+              disabled={session.protected}
+              title={
+                session.protected
+                  ? SESSION_PROTECTED_HINT
+                  : isolated
+                    ? `Supprime la conversation. ${RELEASE_HINT} Sinon, elle reste dans l’inventaire des copies de travail.`
+                    : 'Supprime la conversation'
+              }
+              onAction={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}
+            >
               Supprimer
             </DelayedActionButton>
           </div>
         </div>
       </header>
       {error ? <p className="form-error session-error">{error}</p> : null}
-      {session.status === 'exited' && resumeBlocked !== null ? <p className="session-notice" role="status">{resumeBlocked}</p> : null}
-      <FindingsNotice reports={findings.reports} expanded={drawer === 'findings'} onToggle={() => toggleDrawer('findings')} />
+      {session.status === 'exited' && resumeBlocked !== null ? (
+        <p className="session-notice" role="status">
+          {resumeBlocked}
+        </p>
+      ) : null}
+      <FindingsNotice
+        reports={findings.reports}
+        expanded={drawer === 'findings'}
+        onToggle={() => toggleDrawer('findings')}
+      />
       {drawer !== null ? (
-        <section id={drawer === 'findings' ? 'session-findings' : undefined} className={`session-drawer${drawer === 'findings' ? ' findings-drawer' : ''}`} aria-label={drawer === 'findings' ? 'Résultats de la review' : undefined}>
-          <button type="button" className="btn session-drawer-close" aria-label="Fermer" onClick={() => showDrawer(null)}>
+        <section
+          id={drawer === 'findings' ? 'session-findings' : undefined}
+          className={`session-drawer${drawer === 'findings' ? ' findings-drawer' : ''}`}
+          aria-label={drawer === 'findings' ? 'Résultats de la review' : undefined}
+        >
+          <button
+            type="button"
+            className="btn session-drawer-close"
+            aria-label="Fermer"
+            onClick={() => showDrawer(null)}
+          >
             ×
           </button>
           {drawer === 'tasks' ? (
@@ -509,7 +628,13 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           ) : drawer === 'provenance' ? (
             <ProvenancePanel {...provenance} />
           ) : (
-            <FindingsPanel key={session.id} sessionId={session.id} epic={session.epic} reports={findings.reports} refresh={findings.refresh} />
+            <FindingsPanel
+              key={session.id}
+              sessionId={session.id}
+              epic={session.epic}
+              reports={findings.reports}
+              refresh={findings.refresh}
+            />
           )}
         </section>
       ) : null}

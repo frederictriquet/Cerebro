@@ -17,15 +17,23 @@ export function LlmUsageStats({ sessions, now }: { sessions: readonly Session[];
   useEffect(() => {
     let cancelled = false;
     const load = (): void => {
-      void getSessionTokenUsage().then((result) => {
-        if (cancelled) return;
-        setTokens(result);
-        setFailed(false);
-      }, () => { if (!cancelled) setFailed(true); });
+      void getSessionTokenUsage().then(
+        (result) => {
+          if (cancelled) return;
+          setTokens(result);
+          setFailed(false);
+        },
+        () => {
+          if (!cancelled) setFailed(true);
+        },
+      );
     };
     load();
     const timer = window.setInterval(load, 30_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
   const stats = llmStats(sessions, period, now, tokens ?? []);
   const total = stats.reduce((sum, row) => sum + row.count, 0);
@@ -38,7 +46,8 @@ export function LlmUsageStats({ sessions, now }: { sessions: readonly Session[];
           <p>
             <span className="llm-stats-total" aria-live="polite" aria-atomic="true">
               <b>{number.format(total)}</b> {total === 1 ? 'session' : 'sessions'}
-            </span> · Répartition par agent
+            </span>{' '}
+            · Répartition par agent
           </p>
         </div>
         <ChoiceGroup<UsagePeriod>
@@ -56,10 +65,15 @@ export function LlmUsageStats({ sessions, now }: { sessions: readonly Session[];
 
       <div className="llm-stats-body">
         <div className="llm-stats-bar" aria-hidden="true">
-          {stats.filter((row) => row.count > 0).map((row) => (
-            <span key={row.agent} className={`llm-stats-segment llm-tone-${row.agent}`}
-              style={{ width: `${row.count / total * 100}%` }} />
-          ))}
+          {stats
+            .filter((row) => row.count > 0)
+            .map((row) => (
+              <span
+                key={row.agent}
+                className={`llm-stats-segment llm-tone-${row.agent}`}
+                style={{ width: `${(row.count / total) * 100}%` }}
+              />
+            ))}
         </div>
 
         <ul className="llm-stats-agents">
@@ -73,15 +87,25 @@ export function LlmUsageStats({ sessions, now }: { sessions: readonly Session[];
                 </span>
               </div>
               {row.tokens === null ? (
-                <div className="llm-stats-tokens meta">{tokens === null && !failed ? 'Chargement des tokens…' : 'Tokens indisponibles'}</div>
+                <div className="llm-stats-tokens meta">
+                  {tokens === null && !failed ? 'Chargement des tokens…' : 'Tokens indisponibles'}
+                </div>
               ) : (
                 <div className="llm-stats-tokens">
                   <b>{number.format(row.tokens.inputTokens + row.tokens.outputTokens)}</b> tokens
-                  <span title={`Entrée : ${number.format(row.tokens.inputTokens)} · Sortie : ${number.format(row.tokens.outputTokens)} · Cache lu : ${number.format(row.tokens.cachedInputTokens)} · Cache écrit : ${number.format(row.tokens.cacheWriteInputTokens)}`}>
+                  <span
+                    title={`Entrée : ${number.format(row.tokens.inputTokens)} · Sortie : ${number.format(row.tokens.outputTokens)} · Cache lu : ${number.format(row.tokens.cachedInputTokens)} · Cache écrit : ${number.format(row.tokens.cacheWriteInputTokens)}`}
+                  >
                     Entrée {compact.format(row.tokens.inputTokens)} · Sortie {compact.format(row.tokens.outputTokens)}
-                    {row.tokens.cachedInputTokens > 0 ? ` · dont ${compact.format(row.tokens.cachedInputTokens)} en cache` : ''}
+                    {row.tokens.cachedInputTokens > 0
+                      ? ` · dont ${compact.format(row.tokens.cachedInputTokens)} en cache`
+                      : ''}
                   </span>
-                  {row.measured < row.count || row.partial ? <span>Relevé partiel · {row.measured}/{row.count} sessions · journaux disponibles</span> : null}
+                  {row.measured < row.count || row.partial ? (
+                    <span>
+                      Relevé partiel · {row.measured}/{row.count} sessions · journaux disponibles
+                    </span>
+                  ) : null}
                 </div>
               )}
               <div className="llm-stats-detail">

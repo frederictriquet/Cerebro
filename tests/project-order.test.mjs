@@ -94,9 +94,13 @@ test('l’API valide, diffuse et conserve le nouvel ordre après redémarrage', 
       projects.push(response.json());
     }
     await app.ready();
-    socket = await app.injectWS('/ws/events', {}, {
-      onInit: (ws) => ws.on('message', (data) => messages.push(JSON.parse(data.toString()))),
-    });
+    socket = await app.injectWS(
+      '/ws/events',
+      {},
+      {
+        onInit: (ws) => ws.on('message', (data) => messages.push(JSON.parse(data.toString()))),
+      },
+    );
     const original = ids(projects);
     for (const payload of [{}, { ids: null }, { ids: 'alpha' }, { ids: [null] }, { ids: [original[0], original[0]] }]) {
       assert.equal((await send('PUT', '/api/projects/order', payload)).statusCode, 400);
@@ -107,10 +111,12 @@ test('l’API valide, diffuse et conserve le nouvel ordre après redémarrage', 
     assert.deepEqual(ids((await send('GET', '/api/projects')).json()), original);
 
     const order = [original[2], original[0], original[1]];
-    const broadcast = new Promise((resolve) => socket.on('message', (data) => {
-      const message = JSON.parse(data.toString());
-      if (message.type === 'projects') resolve(message);
-    }));
+    const broadcast = new Promise((resolve) =>
+      socket.on('message', (data) => {
+        const message = JSON.parse(data.toString());
+        if (message.type === 'projects') resolve(message);
+      }),
+    );
     const response = await send('PUT', '/api/projects/order', { ids: order });
     assert.equal(response.statusCode, 200);
     assert.deepEqual(ids(response.json()), order);

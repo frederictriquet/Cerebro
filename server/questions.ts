@@ -33,7 +33,11 @@ export function parseQuestions(toolInput: unknown): AgentQuestion[] | null {
     if (question === null) continue;
     const options = (Array.isArray(item.options) ? item.options : [])
       .filter(isRecord)
-      .map((option) => ({ label: text(option.label), description: text(option.description), preview: text(option.preview) }))
+      .map((option) => ({
+        label: text(option.label),
+        description: text(option.description),
+        preview: text(option.preview),
+      }))
       .filter((option): option is QuestionOption => option.label !== null);
     questions.push({ question, header: text(item.header), multiSelect: item.multiSelect === true, options });
   }
@@ -55,7 +59,10 @@ export function formatQuestions(questions: AgentQuestion[]): string {
   const blocks = questions.map((question, index) => {
     const title = questions.length > 1 ? `*Question ${index + 1}/${questions.length}*` : '*Question*';
     const header = question.header === null ? '' : ` · _${escapeMrkdwn(question.header)}_`;
-    const lines = [`${title}${header}${question.multiSelect ? ' · _plusieurs choix possibles_' : ''}`, escapeMrkdwn(question.question)];
+    const lines = [
+      `${title}${header}${question.multiSelect ? ' · _plusieurs choix possibles_' : ''}`,
+      escapeMrkdwn(question.question),
+    ];
     question.options.forEach((option, optionIndex) => {
       const description = option.description === null ? '' : ` — ${escapeMrkdwn(option.description)}`;
       lines.push(`>*${optionIndex + 1}.* ${escapeMrkdwn(option.label)}${description}`);
@@ -66,7 +73,9 @@ export function formatQuestions(questions: AgentQuestion[]): string {
   const single = questions.length === 1;
   const multi = questions.some((question) => question.multiSelect);
   const examples = [
-    single ? '`2`' : `\`${questions.map((_, index) => (index % 3) + 1).join(' ')}\` (une réponse par question, dans l'ordre)`,
+    single
+      ? '`2`'
+      : `\`${questions.map((_, index) => (index % 3) + 1).join(' ')}\` (une réponse par question, dans l'ordre)`,
     ...(multi ? ['`1,3` pour plusieurs choix'] : []),
     'ou du texte libre',
   ];
@@ -78,7 +87,10 @@ export function formatQuestions(questions: AgentQuestion[]): string {
  * Returns null when the reply is not a valid numeric answer (it is then forwarded as free text).
  */
 export function interpretAnswer(questions: AgentQuestion[], reply: string): string | null {
-  const tokens = reply.trim().split(/[\s;]+/).filter((token) => token !== '');
+  const tokens = reply
+    .trim()
+    .split(/[\s;]+/)
+    .filter((token) => token !== '');
   if (tokens.length !== questions.length) return null;
   const parts: string[] = [];
   for (const [index, question] of questions.entries()) {

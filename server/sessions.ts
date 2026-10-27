@@ -24,7 +24,15 @@ import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError } from 
 import type { AgentQuestion } from './questions.ts';
 import { archiveSessionWorktree } from './worktrees.ts';
 import { assertWorktreeAvailable, deferWorktreeInput } from './worktree-gate.ts';
-import { createWorkspace, createWorkspaceInContext, joinWorkspace, workspaceAt, workspaceFor, type Workspace, type WorkspaceContext } from './provenance.ts';
+import {
+  createWorkspace,
+  createWorkspaceInContext,
+  joinWorkspace,
+  workspaceAt,
+  workspaceFor,
+  type Workspace,
+  type WorkspaceContext,
+} from './provenance.ts';
 import { assertEpicWorkspace, epicWorkspace, rememberEpicWorkspace, withEpicWorkspace } from './epic-workspace.ts';
 import { findProcessesByArgument, isAlive, processTree, signalProcesses } from './proc.ts';
 
@@ -40,9 +48,7 @@ export type SessionEvent =
   | { type: 'turn-complete'; id: string; message: string | null };
 
 export type TerminalEvent =
-  | { type: 'snapshot'; data: string }
-  | { type: 'output'; data: string }
-  | { type: 'exit'; exitCode: number | null };
+  { type: 'snapshot'; data: string } | { type: 'output'; data: string } | { type: 'exit'; exitCode: number | null };
 
 interface Runtime {
   agent: Agent;
@@ -85,7 +91,11 @@ const IDLE_DELAY_MS = 20_000;
 const DORMANT_AFTER_MS = 60 * 60_000;
 
 function isDormant(session: Session, now: number): boolean {
-  return session.pendingFindings === 0 && (session.status === 'idle' || session.status === 'exited') && now - session.updatedAt >= DORMANT_AFTER_MS;
+  return (
+    session.pendingFindings === 0 &&
+    (session.status === 'idle' || session.status === 'exited') &&
+    now - session.updatedAt >= DORMANT_AFTER_MS
+  );
 }
 const SCREEN_CHECK_DELAY_MS = 2_000;
 const CATCH_UP_DELAY_MS = 4_000;
@@ -111,7 +121,11 @@ const HOLDER_KILL_WAIT_MS = 2_000;
 
 function titleFor(agent: Agent, prompt: string): string {
   // Pasted images arrive as long attachment paths: show them as a short marker in the title.
-  const text = prompt.split(ATTACHMENTS_DIR).join('\0').replace(/\0\/\S+/g, '[image]').trim();
+  const text = prompt
+    .split(ATTACHMENTS_DIR)
+    .join('\0')
+    .replace(/\0\/\S+/g, '[image]')
+    .trim();
   return text === '' ? `${agent} session` : text.slice(0, 120);
 }
 
@@ -121,8 +135,13 @@ function ptyEnvironment(sessionId: string, token: string): Record<string, string
   // Strip markers that make a CLI think it runs nested inside another agent session
   // (e.g. when Cerebro itself is started from Claude Code): they disable transcripts/resume.
   for (const key of Object.keys(env)) {
-    if (key === 'CLAUDECODE' || key === 'CLAUDE_PID' || key === 'CLAUDE_EFFORT' || key === 'GROK_READ_ONLY_SANDBOX'
-      || /^CLAUDE_CODE_(ENTRYPOINT|SSE_PORT|CHILD_SESSION|SESSION_ID|SESSION_ATTENDED|EXECPATH|MESSAGING_)/.test(key)) {
+    if (
+      key === 'CLAUDECODE' ||
+      key === 'CLAUDE_PID' ||
+      key === 'CLAUDE_EFFORT' ||
+      key === 'GROK_READ_ONLY_SANDBOX' ||
+      /^CLAUDE_CODE_(ENTRYPOINT|SSE_PORT|CHILD_SESSION|SESSION_ID|SESSION_ATTENDED|EXECPATH|MESSAGING_)/.test(key)
+    ) {
       delete env[key];
     }
     // Agents reach Slack only through cerebro-notify: never hand them the bot token.
@@ -167,7 +186,10 @@ function removeFile(path: string): void {
   }
 }
 
-function createTerminal(cols = 120, rows = 32): {
+function createTerminal(
+  cols = 120,
+  rows = 32,
+): {
   terminal: import('@xterm/headless').Terminal;
   serializer: SerializeAddon;
 } {
@@ -242,26 +264,56 @@ export class SessionManager {
     for (const listener of this.eventListeners) listener(event);
   }
 
-  async create(project: Project, overrides: Partial<SessionDefaults> = {}, validate?: () => Promise<void>, contextPath?: string, title?: string, options: { rememberDefaults?: boolean; epicId?: string | null; workspace?: WorkspaceContext } = {}): Promise<Session> {
-    const create = (): Promise<Session> => this.createInContext(project, overrides, validate, contextPath, title, options);
+  async create(
+    project: Project,
+    overrides: Partial<SessionDefaults> = {},
+    validate?: () => Promise<void>,
+    contextPath?: string,
+    title?: string,
+    options: { rememberDefaults?: boolean; epicId?: string | null; workspace?: WorkspaceContext } = {},
+  ): Promise<Session> {
+    const create = (): Promise<Session> =>
+      this.createInContext(project, overrides, validate, contextPath, title, options);
     return options.epicId ? withEpicWorkspace(this.db, options.epicId, create) : create();
   }
 
-  private async createInContext(project: Project, overrides: Partial<SessionDefaults>, validate: (() => Promise<void>) | undefined, contextPath: string | undefined, title: string | undefined, options: { rememberDefaults?: boolean; epicId?: string | null; workspace?: WorkspaceContext }): Promise<Session> {
+  private async createInContext(
+    project: Project,
+    overrides: Partial<SessionDefaults>,
+    validate: (() => Promise<void>) | undefined,
+    contextPath: string | undefined,
+    title: string | undefined,
+    options: { rememberDefaults?: boolean; epicId?: string | null; workspace?: WorkspaceContext },
+  ): Promise<Session> {
     const current = this.db.getProject(project.id);
     if (current === null) throw new Error('Projet introuvable');
     // An explicit workspace (a copy to repair) is joined whatever the project's current preference.
-    const context = options.epicId ? epicWorkspace(this.db, options.epicId) : options.workspace ?? null;
+    const context = options.epicId ? epicWorkspace(this.db, options.epicId) : (options.workspace ?? null);
     if (options.epicId && context) assertEpicWorkspace(this.db, context);
     // Automated launches must not replace the user's form settings with generated instructions.
-    const defaults = options.rememberDefaults === false
-      ? resolveSessionDefaults(current.sessionDefaults, overrides)
-      : this.rememberDefaults(project.id, overrides);
-    const path=context?.path??(current.workspaceMode==='shared'?current.path:contextPath??current.path);
+    const defaults =
+      options.rememberDefaults === false
+        ? resolveSessionDefaults(current.sessionDefaults, overrides)
+        : this.rememberDefaults(project.id, overrides);
+    const path = context?.path ?? (current.workspaceMode === 'shared' ? current.path : (contextPath ?? current.path));
     assertWorktreeAvailable(path);
     // A context inside an existing copy (next epic step) reuses it instead of copying the copy.
-    const joined=context||current.workspaceMode==='shared'||!contextPath?null:workspaceAt(this.db,contextPath);
-    return this.launch({...current,path}, defaults.agent, defaults.mode, defaults, defaults.prompt, null, null, validate, joined, title, options.epicId, context);
+    const joined =
+      context || current.workspaceMode === 'shared' || !contextPath ? null : workspaceAt(this.db, contextPath);
+    return this.launch(
+      { ...current, path },
+      defaults.agent,
+      defaults.mode,
+      defaults,
+      defaults.prompt,
+      null,
+      null,
+      validate,
+      joined,
+      title,
+      options.epicId,
+      context,
+    );
   }
 
   rememberDefaults(projectId: string, overrides: Partial<SessionDefaults>): SessionDefaults {
@@ -277,16 +329,27 @@ export class SessionManager {
     const oldSession = this.db.getSession(id);
     if (oldSession === null) throw new Error('Session introuvable');
     if (oldSession.status !== 'exited') throw new Error("La session n'est pas terminée");
-    if (oldSession.agentSessionId === null) throw new Error("Cette session ne peut pas être reprise");
+    if (oldSession.agentSessionId === null) throw new Error('Cette session ne peut pas être reprise');
     const project = this.db.getProject(oldSession.projectId);
     if (project === null) throw new Error('Projet introuvable');
-    const workspace=workspaceFor(this.db,id);
-    if(workspace?.removedAt)throw new Error(workspace.removedAutomatically
-      ?'La copie de travail de cette conversation a été nettoyée automatiquement à sa fin, car elle ne contenait rien à conserver. La conversation reste consultable mais ne peut plus être reprise : Cerebro ne la reprend pas dans le dossier du projet.'
-      :'Le worktree a été supprimé ; la conversation reste consultable mais ne peut plus être reprise dans cet espace.');
-    assertWorktreeAvailable(workspace?.path??project.path);
+    const workspace = workspaceFor(this.db, id);
+    if (workspace?.removedAt)
+      throw new Error(
+        workspace.removedAutomatically
+          ? 'La copie de travail de cette conversation a été nettoyée automatiquement à sa fin, car elle ne contenait rien à conserver. La conversation reste consultable mais ne peut plus être reprise : Cerebro ne la reprend pas dans le dossier du projet.'
+          : 'Le worktree a été supprimé ; la conversation reste consultable mais ne peut plus être reprise dans cet espace.',
+      );
+    assertWorktreeAvailable(workspace?.path ?? project.path);
     const tuning = { model: oldSession.model, effort: oldSession.effort };
-    return this.launch(project, oldSession.agent, oldSession.mode, tuning, '', oldSession.agentSessionId, oldSession.id);
+    return this.launch(
+      project,
+      oldSession.agent,
+      oldSession.mode,
+      tuning,
+      '',
+      oldSession.agentSessionId,
+      oldSession.id,
+    );
   }
 
   private async launch(
@@ -308,17 +371,21 @@ export class SessionManager {
     const token = this.db.getHookToken(id) ?? randomBytes(32).toString('hex');
     let session: Session;
     if (existingId === null) {
-      session = this.db.createSession({
-        id,
-        projectId: project.id,
-        agent,
-        mode,
-        ...tuning,
-        prompt,
-        title: title ?? titleFor(agent, prompt),
-        status: 'starting',
-        agentSessionId: command.agentSessionId,
-      }, token, epicId);
+      session = this.db.createSession(
+        {
+          id,
+          projectId: project.id,
+          agent,
+          mode,
+          ...tuning,
+          prompt,
+          title: title ?? titleFor(agent, prompt),
+          status: 'starting',
+          agentSessionId: command.agentSessionId,
+        },
+        token,
+        epicId,
+      );
     } else {
       this.db.setHookToken(id, token);
       const updated = this.db.updateSession(id, {
@@ -334,10 +401,17 @@ export class SessionManager {
 
     let cwd = project.path;
     try {
-      const workspace = existingId !== null ? workspaceFor(this.db, id) : context ? await createWorkspaceInContext(this.db, id, project, context) : joined ? await joinWorkspace(this.db, id, joined) : await createWorkspace(this.db, id, project);
+      const workspace =
+        existingId !== null
+          ? workspaceFor(this.db, id)
+          : context
+            ? await createWorkspaceInContext(this.db, id, project, context)
+            : joined
+              ? await joinWorkspace(this.db, id, joined)
+              : await createWorkspace(this.db, id, project);
       cwd = workspace?.path ?? project.path;
-      if(workspace?.removedAt)throw new Error('Le worktree de cette conversation a été supprimé.');
-      if (epicId && workspace) rememberEpicWorkspace(this.db, epicId, {path:workspace.path,mode:workspace.mode});
+      if (workspace?.removedAt) throw new Error('Le worktree de cette conversation a été supprimé.');
+      if (epicId && workspace) rememberEpicWorkspace(this.db, epicId, { path: workspace.path, mode: workspace.mode });
       assertWorktreeAvailable(cwd);
       if (validate) await validate();
       assertWorktreeAvailable(cwd);
@@ -476,8 +550,10 @@ export class SessionManager {
   private handleHolderMessage(id: string, runtime: Runtime, message: Record<string, unknown>): void {
     if (this.runtimes.get(id) !== runtime) return;
     if (message.type === 'hello') {
-      if (typeof message.cols === 'number' && Number.isInteger(message.cols) && message.cols > 0) runtime.cols = message.cols;
-      if (typeof message.rows === 'number' && Number.isInteger(message.rows) && message.rows > 0) runtime.rows = message.rows;
+      if (typeof message.cols === 'number' && Number.isInteger(message.cols) && message.cols > 0)
+        runtime.cols = message.cols;
+      if (typeof message.rows === 'number' && Number.isInteger(message.rows) && message.rows > 0)
+        runtime.rows = message.rows;
       return;
     }
     if (message.type === 'snapshot' && typeof message.data === 'string') {
@@ -609,7 +685,8 @@ export class SessionManager {
     if (runtime.focusTimer !== null) clearTimeout(runtime.focusTimer);
     runtime.focusTimer = setTimeout(() => {
       runtime.focusTimer = null;
-      if (runtime.focusMode && this.runtimes.get(id) === runtime) this.sendHolder(runtime, { type: 'input', data: '\x1b[O' });
+      if (runtime.focusMode && this.runtimes.get(id) === runtime)
+        this.sendHolder(runtime, { type: 'input', data: '\x1b[O' });
     }, FOCUS_OUT_DELAY_MS);
   }
 
@@ -741,9 +818,15 @@ export class SessionManager {
   writeInput(id: string, data: string): boolean {
     const runtime = this.runtimes.get(id);
     if (runtime === undefined) return false;
-    const origin=this.db.getSession(id);
-    const cwd=workspaceFor(this.db,id)?.path??(origin?this.db.getProject(origin.projectId)?.path:undefined);
-    if(cwd&&deferWorktreeInput(cwd,()=>{this.writeInput(id,data);}))return true;
+    const origin = this.db.getSession(id);
+    const cwd = workspaceFor(this.db, id)?.path ?? (origin ? this.db.getProject(origin.projectId)?.path : undefined);
+    if (
+      cwd &&
+      deferWorktreeInput(cwd, () => {
+        this.writeInput(id, data);
+      })
+    )
+      return true;
     if (!this.sendHolder(runtime, { type: 'input', data })) return false;
     const session = this.db.getSession(id);
     if (data.includes('\r') && (session?.status === 'waiting' || session?.status === 'idle')) {
@@ -798,7 +881,9 @@ export class SessionManager {
     if (project === null) return false;
     const projectSessions = this.db.listProjectSessions(projectId);
     if (projectSessions.some((session) => session.protected)) {
-      throw new SessionProtectionError('Ce projet contient des sessions protégées. Décochez leur protection avant de le supprimer.');
+      throw new SessionProtectionError(
+        'Ce projet contient des sessions protégées. Décochez leur protection avant de le supprimer.',
+      );
     }
     if (projectSessions.some((session) => this.deleting.has(session.id))) {
       throw new SessionProtectionError('Suppression déjà en cours pour une session de ce projet.');
@@ -807,7 +892,7 @@ export class SessionManager {
     try {
       await this.withProjectDeletion(projectId, async () => {
         await Promise.all(projectSessions.map((session) => this.stopProcesses(session.id)));
-        await Promise.all(projectSessions.map(session=>archiveSessionWorktree(this.db,session.id)));
+        await Promise.all(projectSessions.map((session) => archiveSessionWorktree(this.db, session.id)));
         const roots = projectSessions.map((session) => workspaceFor(this.db, session.id)?.root ?? null);
         this.db.deleteProject(projectId);
         projectSessions.forEach((session, index) => this.onSessionReleased(session.id, roots[index] ?? null));
@@ -840,12 +925,13 @@ export class SessionManager {
   async delete(id: string): Promise<boolean> {
     const session = this.db.getSession(id);
     if (session === null) return false;
-    if (session.protected) throw new SessionProtectionError('Session protégée. Décochez sa protection avant de la supprimer.');
+    if (session.protected)
+      throw new SessionProtectionError('Session protégée. Décochez sa protection avant de la supprimer.');
     if (this.deleting.has(id)) throw new SessionProtectionError('Suppression déjà en cours pour cette session.');
     this.deleting.add(id);
     try {
       await this.stopProcesses(id);
-      await archiveSessionWorktree(this.db,id);
+      await archiveSessionWorktree(this.db, id);
       const root = workspaceFor(this.db, id)?.root ?? null;
       this.db.deleteSession(id);
       this.onSessionReleased(id, root);
@@ -870,7 +956,10 @@ export class SessionManager {
     }
     const holders = findProcessesByArgument(holderArgument);
     if (holders.length === 0) return;
-    this.logHolderError(id, new Error(`Holder toujours actif après l'arrêt, SIGKILL (pid ${holders.map((h) => h.pid).join(', ')})`));
+    this.logHolderError(
+      id,
+      new Error(`Holder toujours actif après l'arrêt, SIGKILL (pid ${holders.map((h) => h.pid).join(', ')})`),
+    );
     const targets = holders.flatMap((holder) => processTree(holder.pid));
     signalProcesses(targets, 'SIGKILL');
     const killDeadline = Date.now() + HOLDER_KILL_WAIT_MS;
@@ -1005,7 +1094,7 @@ export class SessionManager {
   }
 
   private logHolderError(id: string, error: unknown): void {
-    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
     appendFileSync(this.holderLogPath(id), `${new Date().toISOString()} ${message}\n`, { mode: 0o600 });
   }
 

@@ -19,8 +19,14 @@ test('les sessions restent dans l’ordre de création après une mise à jour p
   try {
     const project = db.createProject('Projet', root);
     const base = {
-      projectId: project.id, agent: 'claude', mode: 'auto', model: null, effort: null,
-      prompt: 'p', status: 'idle', agentSessionId: null,
+      projectId: project.id,
+      agent: 'claude',
+      mode: 'auto',
+      model: null,
+      effort: null,
+      prompt: 'p',
+      status: 'idle',
+      agentSessionId: null,
     };
     db.createSession({ ...base, id: 'older', title: 'ancienne' }, 't');
     db.createSession({ ...base, id: 'newer', title: 'récente' }, 't');
@@ -28,8 +34,14 @@ test('les sessions restent dans l’ordre de création après une mise à jour p
     db.connection.exec("UPDATE sessions SET created_at = 20, updated_at = 20 WHERE id = 'newer'");
     db.updateSession('older', { title: 'touchée ensuite' });
     assert.ok(db.getSession('older').updatedAt > db.getSession('newer').updatedAt);
-    assert.deepEqual(db.listSessions().map((session) => session.id), ['newer', 'older']);
-    assert.deepEqual(db.listProjectSessions(project.id).map((session) => session.id), ['newer', 'older']);
+    assert.deepEqual(
+      db.listSessions().map((session) => session.id),
+      ['newer', 'older'],
+    );
+    assert.deepEqual(
+      db.listProjectSessions(project.id).map((session) => session.id),
+      ['newer', 'older'],
+    );
   } finally {
     db.close();
   }

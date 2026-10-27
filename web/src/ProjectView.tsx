@@ -49,8 +49,8 @@ function SlackLead({ projectId }: { projectId: string }) {
   if (status.conflict) {
     return (
       <p className="peer-conflict" role="alert">
-        Même nom que sur {status.peerMachine ?? 'une autre machine'}, mais un autre dépôt git : les commandes Slack de ce
-        projet sont bloquées sur les deux machines. Renomme l'un des projets.
+        Même nom que sur {status.peerMachine ?? 'une autre machine'}, mais un autre dépôt git : les commandes Slack de
+        ce projet sont bloquées sur les deux machines. Renomme l'un des projets.
       </p>
     );
   }
@@ -76,7 +76,13 @@ function SlackLead({ projectId }: { projectId: string }) {
   return (
     <div className="slack-lead">
       <label className="slack-toggle" title={state}>
-        <input type="checkbox" checked={local} disabled={local || busy} onChange={() => void acquire()} aria-label={state} />
+        <input
+          type="checkbox"
+          checked={local}
+          disabled={local || busy}
+          onChange={() => void acquire()}
+          aria-label={state}
+        />
         Slack
       </label>
       {error ? <span className="form-error">{error}</span> : null}
@@ -104,7 +110,10 @@ function WorkspaceModeControl({ project }: { project: Project }) {
   };
 
   return (
-    <div className="workspace-mode" title="Dossier des nouveaux contextes de travail. Les epics déjà commencés conservent leur dossier d’origine, y compris pour les corrections de review.">
+    <div
+      className="workspace-mode"
+      title="Dossier des nouveaux contextes de travail. Les epics déjà commencés conservent leur dossier d’origine, y compris pour les corrections de review."
+    >
       <ChoiceGroup<WorkspaceMode>
         compact
         label="Travail des conversations"
@@ -114,7 +123,8 @@ function WorkspaceModeControl({ project }: { project: Project }) {
           {
             value: 'isolated',
             label: 'Worktree Git par conversation',
-            title: 'Les nouvelles conversations indépendantes utilisent un worktree Git. Les étapes d’un epic commencé continuent dans son dossier d’origine.',
+            title:
+              'Les nouvelles conversations indépendantes utilisent un worktree Git. Les étapes d’un epic commencé continuent dans son dossier d’origine.',
           },
           {
             value: 'shared',
@@ -124,20 +134,17 @@ function WorkspaceModeControl({ project }: { project: Project }) {
         ]}
         onChange={(mode) => void change(mode)}
       />
-      {error ? <span className="form-error" role="alert">{error}</span> : null}
+      {error ? (
+        <span className="form-error" role="alert">
+          {error}
+        </span>
+      ) : null}
     </div>
   );
 }
 
 export function ProjectView({ projectId }: { projectId: string }) {
-  const {
-    projects,
-    sessions,
-    createSession,
-    purgeProjectSessions,
-    deleteProject,
-    updateProject,
-  } = useStore();
+  const { projects, sessions, createSession, purgeProjectSessions, deleteProject, updateProject } = useStore();
   const project = projects.find((p) => p.id === projectId);
   const kids = sessions.filter((s) => s.projectId === projectId);
   const now = useNow();
@@ -151,7 +158,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
   const [editColor, setEditColor] = useState<string | null>(null);
   const [editBusy, setEditBusy] = useState(false);
   const [codeOpen, setCodeOpen] = useState(false);
-  const [commitSettingsOpen,setCommitSettingsOpen]=useState(false);
+  const [commitSettingsOpen, setCommitSettingsOpen] = useState(false);
   const [councilOpen, setCouncilOpen] = useState(false);
 
   useEffect(() => {
@@ -276,7 +283,9 @@ export function ProjectView({ projectId }: { projectId: string }) {
           ) : (
             <div className="project-title-row">
               <h1>
-                {project.color ? <span className="project-color-dot" title="Couleur du projet" aria-hidden="true" /> : null}
+                {project.color ? (
+                  <span className="project-color-dot" title="Couleur du projet" aria-hidden="true" />
+                ) : null}
                 {project.name}
               </h1>
               <span className="path">{project.path}</span>
@@ -286,8 +295,17 @@ export function ProjectView({ projectId }: { projectId: string }) {
           )}
         </div>
         <div className="row-actions">
-          <button type="button" className="btn" onClick={()=>setCommitSettingsOpen(true)}>Réglages LLM</button>
-          <button type="button" className="btn" onClick={() => setCouncilOpen(true)} title="Soumettre une question à un conseil de LLM">Council</button>
+          <button type="button" className="btn" onClick={() => setCommitSettingsOpen(true)}>
+            Réglages LLM
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setCouncilOpen(true)}
+            title="Soumettre une question à un conseil de LLM"
+          >
+            Council
+          </button>
           <button type="button" className="btn" onClick={() => setCodeOpen(true)} title="Ouvrir le projet dans VS Code">
             VS Code
           </button>
@@ -296,7 +314,15 @@ export function ProjectView({ projectId }: { projectId: string }) {
               Éditer
             </button>
           )}
-          <DelayedActionButton onAction={onDeleteProject} disabled={hasProtectedSessions} title={hasProtectedSessions ? 'Décochez la protection des sessions de ce projet avant de le supprimer.' : 'Supprime le projet et ses conversations ; les worktrees restent dans l’inventaire global'}>
+          <DelayedActionButton
+            onAction={onDeleteProject}
+            disabled={hasProtectedSessions}
+            title={
+              hasProtectedSessions
+                ? 'Décochez la protection des sessions de ce projet avant de le supprimer.'
+                : 'Supprime le projet et ses conversations ; les worktrees restent dans l’inventaire global'
+            }
+          >
             Supprimer
           </DelayedActionButton>
         </div>
@@ -304,10 +330,14 @@ export function ProjectView({ projectId }: { projectId: string }) {
           <GitStatus key={project.id} projectId={project.id} />
         </div>
       </header>
-      {commitSettingsOpen?<CommitSettingsDialog project={project} onClose={()=>setCommitSettingsOpen(false)}/>:null}
-      {councilOpen ? <Modal title={`Council · ${project.name}`} onClose={() => setCouncilOpen(false)}>
-        <CouncilLaunch projectId={project.id}/>
-      </Modal> : null}
+      {commitSettingsOpen ? (
+        <CommitSettingsDialog project={project} onClose={() => setCommitSettingsOpen(false)} />
+      ) : null}
+      {councilOpen ? (
+        <Modal title={`Council · ${project.name}`} onClose={() => setCouncilOpen(false)}>
+          <CouncilLaunch projectId={project.id} />
+        </Modal>
+      ) : null}
 
       {error ? <p className="form-error">{error}</p> : null}
 
@@ -315,7 +345,9 @@ export function ProjectView({ projectId }: { projectId: string }) {
       <div className="project-columns">
         <section className="card project-panel session-table-wrap">
           <div className="project-panel-head">
-            <h2>Sessions <span className="pill project-panel-count">{kids.length}</span></h2>
+            <h2>
+              Sessions <span className="pill project-panel-count">{kids.length}</span>
+            </h2>
             {dormantCount > 0 ? (
               <DelayedActionButton
                 onAction={onPurge}

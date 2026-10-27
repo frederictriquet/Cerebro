@@ -1,64 +1,213 @@
-.session-tasks, .session-tasks-indicator { --task-color: var(--muted); }
-.session-tasks [data-state='todo'], .session-tasks-indicator[data-state='todo'] { --task-color: var(--muted); }
-.session-tasks [data-state='in_progress'], .session-tasks-indicator[data-state='in_progress'] { --task-color: var(--accent); }
-.session-tasks [data-state='blocked'], .session-tasks-indicator[data-state='blocked'] { --task-color: var(--waiting); }
-.session-tasks [data-state='done'], .session-tasks-indicator[data-state='done'] { --task-color: var(--running); }
-.session-tasks [data-state='cancelled'], .session-tasks-indicator[data-state='cancelled'] { --task-color: #b39bce; }
+.session-tasks,
+.session-tasks-indicator {
+  --task-color: var(--muted);
+}
+.session-tasks [data-state='todo'],
+.session-tasks-indicator[data-state='todo'] {
+  --task-color: var(--muted);
+}
+.session-tasks [data-state='in_progress'],
+.session-tasks-indicator[data-state='in_progress'] {
+  --task-color: var(--accent);
+}
+.session-tasks [data-state='blocked'],
+.session-tasks-indicator[data-state='blocked'] {
+  --task-color: var(--waiting);
+}
+.session-tasks [data-state='done'],
+.session-tasks-indicator[data-state='done'] {
+  --task-color: var(--running);
+}
+.session-tasks [data-state='cancelled'],
+.session-tasks-indicator[data-state='cancelled'] {
+  --task-color: #b39bce;
+}
 .pill.session-tasks-indicator {
   gap: 5px;
   color: var(--task-color);
   border-color: color-mix(in srgb, var(--task-color) 45%, var(--line));
   background: color-mix(in srgb, var(--task-color) 10%, var(--bg-1));
 }
-.pill.session-tasks-indicator:hover, .pill.session-tasks-indicator.active {
+.pill.session-tasks-indicator:hover,
+.pill.session-tasks-indicator.active {
   color: var(--task-color);
   border-color: var(--task-color);
   background: color-mix(in srgb, var(--task-color) 18%, var(--bg-1));
 }
-.session-tasks-indicator::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--task-color); }
-.session-tasks { font-size: 12px; }
-.session-tasks-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
-.session-tasks h2 { margin: 0; font-size: 12px; font-weight: 600; }
-.session-task-counts { display: flex; flex-wrap: wrap; gap: 3px 10px; font-size: 11px; }
-.session-task-counts span { display: inline-flex; align-items: center; gap: 4px; color: var(--task-color); }
-.session-task-counts span::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--task-color); }
-.session-tasks-tools { display: flex; gap: 4px; margin-left: auto; }
-.session-tasks .btn { min-height: 26px; padding: 3px 7px; font-size: 11px; }
-.session-tasks .session-task-icon { display: inline-flex; align-items: center; justify-content: center; width: 26px; padding: 3px; }
-.session-task-distribution { display: flex; gap: 2px; height: 3px; margin: 6px 0 3px; overflow: hidden; border-radius: 2px; }
-.session-task-distribution span { min-width: 3px; background: var(--task-color); }
-.session-task-list { list-style: none; margin: 4px 0 0; padding: 0; }
-.session-task { padding: 3px 0; border-bottom: 1px solid var(--line); }
-.session-task:last-child { border-bottom: 0; }
-.session-task-heading { display: grid; grid-template-columns: 92px minmax(0, 1fr) 26px; align-items: center; gap: 8px; }
+.session-tasks-indicator::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--task-color);
+}
+.session-tasks {
+  font-size: 12px;
+}
+.session-tasks-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+.session-tasks h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+.session-task-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  font-size: 11px;
+}
+.session-task-counts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--task-color);
+}
+.session-task-counts span::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--task-color);
+}
+.session-tasks-tools {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.session-tasks .btn {
+  min-height: 26px;
+  padding: 3px 7px;
+  font-size: 11px;
+}
+.session-tasks .session-task-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 3px;
+}
+.session-task-distribution {
+  display: flex;
+  gap: 2px;
+  height: 3px;
+  margin: 6px 0 3px;
+  overflow: hidden;
+  border-radius: 2px;
+}
+.session-task-distribution span {
+  min-width: 3px;
+  background: var(--task-color);
+}
+.session-task-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+.session-task {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line);
+}
+.session-task:last-child {
+  border-bottom: 0;
+}
+.session-task-heading {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) 26px;
+  align-items: center;
+  gap: 8px;
+}
 .session-task-heading select {
-  width: 100%; min-height: 26px; padding: 3px 4px; font-size: 11px;
+  width: 100%;
+  min-height: 26px;
+  padding: 3px 4px;
+  font-size: 11px;
   color: var(--task-color);
   border-color: color-mix(in srgb, var(--task-color) 25%, var(--line));
   background: color-mix(in srgb, var(--task-color) 7%, var(--bg-1));
 }
-.session-task-heading select option { color: var(--text); background: var(--bg-1); }
+.session-task-heading select option {
+  color: var(--text);
+  background: var(--bg-1);
+}
 .session-task-title {
-  display: flex; align-items: center; gap: 5px; min-width: 0; padding: 3px 0;
-  border: 0; border-radius: 3px; background: transparent; color: var(--text);
-  font: inherit; line-height: 1.4; text-align: left; overflow-wrap: anywhere; white-space: pre-wrap;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 3px 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  line-height: 1.4;
+  text-align: left;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
-button.session-task-title { cursor: pointer; }
-button.session-task-title:hover { color: var(--accent); }
-button.session-task-title:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
-.session-task-chevron { flex-shrink: 0; color: var(--muted); }
-.session-task-title[aria-expanded='true'] .session-task-chevron { transform: rotate(90deg); }
-.session-task.done .session-task-title { color: var(--muted); }
-.session-task.cancelled .session-task-title { color: var(--muted); text-decoration: line-through; }
+button.session-task-title {
+  cursor: pointer;
+}
+button.session-task-title:hover {
+  color: var(--accent);
+}
+button.session-task-title:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+.session-task-chevron {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.session-task-title[aria-expanded='true'] .session-task-chevron {
+  transform: rotate(90deg);
+}
+.session-task.done .session-task-title {
+  color: var(--muted);
+}
+.session-task.cancelled .session-task-title {
+  color: var(--muted);
+  text-decoration: line-through;
+}
 .session-drawer .session-task-note {
-  margin: 2px 34px 4px 100px; color: var(--muted); font-size: 11px; line-height: 1.5;
-  white-space: pre-wrap; overflow-wrap: anywhere;
+  margin: 2px 34px 4px 100px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
-.session-task-form { display: grid; gap: 5px; margin: 6px 0; padding: 7px; border: 1px solid var(--line); border-radius: var(--radius); }
-.session-task-form input, .session-task-form textarea { padding: 5px 7px; font-size: 12px; }
-.session-task-form .row-actions { gap: 5px; }
+.session-task-form {
+  display: grid;
+  gap: 5px;
+  margin: 6px 0;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.session-task-form input,
+.session-task-form textarea {
+  padding: 5px 7px;
+  font-size: 12px;
+}
+.session-task-form .row-actions {
+  gap: 5px;
+}
 @media (max-width: 540px) {
-  .session-task-counts { order: 3; flex-basis: 100%; }
-  .session-task-heading { grid-template-columns: 83px minmax(0, 1fr) 26px; gap: 6px; }
-  .session-drawer .session-task-note { margin-left: 89px; }
+  .session-task-counts {
+    order: 3;
+    flex-basis: 100%;
+  }
+  .session-task-heading {
+    grid-template-columns: 83px minmax(0, 1fr) 26px;
+    gap: 6px;
+  }
+  .session-drawer .session-task-note {
+    margin-left: 89px;
+  }
 }

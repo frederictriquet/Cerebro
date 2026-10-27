@@ -147,10 +147,7 @@ function hiddenTargets(remoteIds: string[], current: string | null): WatchTarget
   return targets;
 }
 
-function startWatcher(
-  target: WatchTarget,
-  setState: Dispatch<SetStateAction<Record<string, WatchState>>>,
-): () => void {
+function startWatcher(target: WatchTarget, setState: Dispatch<SetStateAction<Record<string, WatchState>>>): () => void {
   let stopped = false;
   let retry = 0;
   let socket: WebSocket | null = null;
@@ -307,7 +304,8 @@ export function MachineSwitcher() {
       id: null,
       name: info.local.name,
       status: null,
-      version: info.local.version === null ? 'version inconnue' : `cette machine, Cerebro ${versionLabel(info.local.version)}`,
+      version:
+        info.local.version === null ? 'version inconnue' : `cette machine, Cerebro ${versionLabel(info.local.version)}`,
     },
     ...info.remotes.map((remote) => ({
       id: remote.id,
@@ -397,10 +395,9 @@ export function MachineCompatNotice() {
       <div className="peer-notice compat-notice" role="alert">
         <span>
           {remote.name} n'est pas compatible avec cette machine
-          {distant && local
-            ? ` (Cerebro ${versionLabel(distant)} ; ici Cerebro ${versionLabel(local)})`
-            : ''}
-          . Certaines actions risquent d'échouer et la coordination Slack est suspendue : mettez à jour l'une des deux machines.
+          {distant && local ? ` (Cerebro ${versionLabel(distant)} ; ici Cerebro ${versionLabel(local)})` : ''}.
+          Certaines actions risquent d'échouer et la coordination Slack est suspendue : mettez à jour l'une des deux
+          machines.
         </span>
       </div>
     </div>

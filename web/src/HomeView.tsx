@@ -80,7 +80,11 @@ export function HomeView() {
         </form>
       ) : null}
 
-      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {error ? (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      ) : null}
 
       <div className="home-panels">
         <Worktrees />

@@ -19,7 +19,10 @@ const { PeerSync } = await import('../server/peers.ts');
 const { CommandExecutor } = await import('../server/commands.ts');
 const { buildServer } = await import('../server/index.ts');
 mock.method(UpdateManager.prototype, 'start', () => {});
-mock.method(PeerSync.prototype, 'sync', async function () { this.markReady(); this.markSynced(); });
+mock.method(PeerSync.prototype, 'sync', async function () {
+  this.markReady();
+  this.markSynced();
+});
 
 after(() => {
   mock.restoreAll();
@@ -66,13 +69,19 @@ test('la purge supprime les epics terminés et leurs tâches, conserve les autre
     }
     await app.ready();
     const messages = [];
-    socket = await app.injectWS('/ws/events', {}, {
-      onInit: (ws) => ws.on('message', (data) => messages.push(JSON.parse(data.toString()))),
-    });
-    const updated = new Promise((resolve) => socket.on('message', (data) => {
-      const message = JSON.parse(data.toString());
-      if (message.type === 'task' && message.task.id === kept[0].id) resolve(message.task);
-    }));
+    socket = await app.injectWS(
+      '/ws/events',
+      {},
+      {
+        onInit: (ws) => ws.on('message', (data) => messages.push(JSON.parse(data.toString()))),
+      },
+    );
+    const updated = new Promise((resolve) =>
+      socket.on('message', (data) => {
+        const message = JSON.parse(data.toString());
+        if (message.type === 'task' && message.task.id === kept[0].id) resolve(message.task);
+      }),
+    );
     const response = await app.inject({ method: 'DELETE', url });
     assert.equal(response.statusCode, 200);
     assert.deepEqual(new Set(response.json().taskIds), new Set(removed.map((item) => item.id)));
@@ -81,10 +90,16 @@ test('la purge supprime les epics terminés et leurs tâches, conserve les autre
     assert.deepEqual(new Set(db.listTasks().map((item) => item.id)), new Set(kept.map((item) => item.id)));
     assert.deepEqual(new Set(db.listEpics().map((item) => item.id)), new Set([mixed.id, empty.id, foreign.id]));
     assert.equal(db.getTask(kept[0].id).epicId, mixed.id);
-    assert.deepEqual(messages.filter((item) => item.type === 'epic-deleted'), [{ type: 'epic-deleted', id: completed.id }]);
+    assert.deepEqual(
+      messages.filter((item) => item.type === 'epic-deleted'),
+      [{ type: 'epic-deleted', id: completed.id }],
+    );
     assert.equal(messages.filter((item) => item.type === 'task-deleted').length, removed.length);
     assert.deepEqual((await app.inject({ method: 'DELETE', url })).json(), { taskIds: [], epicIds: [] });
-    assert.equal((await app.inject({ method: 'DELETE', url: '/api/projects/missing/backlog/completed' })).statusCode, 404);
+    assert.equal(
+      (await app.inject({ method: 'DELETE', url: '/api/projects/missing/backlog/completed' })).statusCode,
+      404,
+    );
   } finally {
     socket?.terminate();
     db.close();
@@ -101,7 +116,9 @@ test('un échec de suppression de l’epic restaure ses tâches et leurs dépend
     db.updateTask(done.id, { status: 'done' });
     const dependent = db.createTask(project.id, 'À faire', null);
     db.updateTask(dependent.id, { dependsOn: [done.id] });
-    db.connection.exec("CREATE TRIGGER fail_epic_delete BEFORE DELETE ON epics BEGIN SELECT RAISE(ABORT, 'échec simulé'); END");
+    db.connection.exec(
+      "CREATE TRIGGER fail_epic_delete BEFORE DELETE ON epics BEGIN SELECT RAISE(ABORT, 'échec simulé'); END",
+    );
     assert.throws(() => db.deleteCompletedBacklog(project.id), /échec simulé/);
     assert.equal(db.getTask(done.id).epicId, epic.id);
     assert.ok(db.getEpic(epic.id));

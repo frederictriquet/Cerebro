@@ -94,12 +94,7 @@ export function PreviewButton({
 }) {
   return (
     <span className="preview-anchor" ref={anchorRef}>
-      <button
-        type="button"
-        className="btn preview-btn"
-        aria-expanded={pressed}
-        onClick={onToggle}
-      >
+      <button type="button" className="btn preview-btn" aria-expanded={pressed} onClick={onToggle}>
         Aperçu
       </button>
     </span>

@@ -14,7 +14,12 @@ export interface AgentStats {
 }
 
 /** Count retained Cerebro sessions by creation date, including completed sessions. */
-export function llmStats(sessions: readonly Session[], period: UsagePeriod, now: number, usage: readonly SessionTokenUsage[] = []): AgentStats[] {
+export function llmStats(
+  sessions: readonly Session[],
+  period: UsagePeriod,
+  now: number,
+  usage: readonly SessionTokenUsage[] = [],
+): AgentStats[] {
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
   start.setDate(start.getDate() - (period === '7d' ? 6 : 29));
@@ -26,12 +31,18 @@ export function llmStats(sessions: readonly Session[], period: UsagePeriod, now:
     const models = new Map<string | null, number>();
     for (const session of selected) models.set(session.model, (models.get(session.model) ?? 0) + 1);
     const measured = selected.flatMap((s) => tokensBySession.get(s.id) ?? []);
-    const tokens = measured.length === 0 ? null : measured.reduce((sum, t) => ({
-      inputTokens: sum.inputTokens + t.inputTokens,
-      outputTokens: sum.outputTokens + t.outputTokens,
-      cachedInputTokens: sum.cachedInputTokens + t.cachedInputTokens,
-      cacheWriteInputTokens: sum.cacheWriteInputTokens + t.cacheWriteInputTokens,
-    }), { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0 });
+    const tokens =
+      measured.length === 0
+        ? null
+        : measured.reduce(
+            (sum, t) => ({
+              inputTokens: sum.inputTokens + t.inputTokens,
+              outputTokens: sum.outputTokens + t.outputTokens,
+              cachedInputTokens: sum.cachedInputTokens + t.cachedInputTokens,
+              cacheWriteInputTokens: sum.cacheWriteInputTokens + t.cacheWriteInputTokens,
+            }),
+            { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0 },
+          );
     return {
       agent,
       count: selected.length,
@@ -39,7 +50,8 @@ export function llmStats(sessions: readonly Session[], period: UsagePeriod, now:
       tokens,
       measured: measured.length,
       partial: selected.some((s) => partialSessions.has(s.id)),
-      models: [...models].map(([model, count]) => ({ model, count }))
+      models: [...models]
+        .map(([model, count]) => ({ model, count }))
         .sort((a, b) => b.count - a.count || (a.model ?? '').localeCompare(b.model ?? '')),
     };
   });

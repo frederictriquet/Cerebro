@@ -1,7 +1,7 @@
 .activity-status {
   display: inline-flex;
   align-items: center;
-  gap: .45em;
+  gap: 0.45em;
   max-width: 100%;
   vertical-align: middle;
 }
@@ -15,13 +15,17 @@
   border: 2px solid currentColor;
   border-right-color: transparent;
   border-radius: 50%;
-  animation: activity-spin .75s linear infinite;
+  animation: activity-spin 0.75s linear infinite;
 }
 
 @keyframes activity-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .activity-spinner { animation: none; }
+  .activity-spinner {
+    animation: none;
+  }
 }

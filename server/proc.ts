@@ -23,14 +23,18 @@ function readStat(pid: number): ProcessInfo | null {
 
 function listPids(): number[] {
   try {
-    return readdirSync('/proc').filter((name) => /^\d+$/.test(name)).map(Number);
+    return readdirSync('/proc')
+      .filter((name) => /^\d+$/.test(name))
+      .map(Number);
   } catch {
     return [];
   }
 }
 
 function listProcesses(): ProcessInfo[] {
-  return listPids().map(readStat).filter((info): info is ProcessInfo => info !== null);
+  return listPids()
+    .map(readStat)
+    .filter((info): info is ProcessInfo => info !== null);
 }
 
 // The root, its descendants, and every member of a session led by one of them: a process

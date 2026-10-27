@@ -200,7 +200,13 @@ export class UpdateManager {
       installed = await installedVersion(agent);
     } catch (cause) {
       const missing = (cause as NodeJS.ErrnoException).code === 'ENOENT';
-      Object.assign(current, { installed: null, latest: null, available: false, checkedAt: missing ? null : new Date().toISOString(), error: errorText(cause) });
+      Object.assign(current, {
+        installed: null,
+        latest: null,
+        available: false,
+        checkedAt: missing ? null : new Date().toISOString(),
+        error: errorText(cause),
+      });
       return;
     }
     current.installed = installed;
@@ -215,9 +221,9 @@ export class UpdateManager {
   }
 
   private async autoUpdate(): Promise<void> {
-    await Promise.all([...this.state.values()]
-      .filter((s) => s.auto && s.available && !s.updating)
-      .map((s) => this.run(s.agent)));
+    await Promise.all(
+      [...this.state.values()].filter((s) => s.auto && s.available && !s.updating).map((s) => this.run(s.agent)),
+    );
   }
 
   private async run(agent: Agent): Promise<void> {

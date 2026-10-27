@@ -9,7 +9,10 @@ export type Route =
 const MACHINE_ID = /^[a-z0-9-]{1,32}$/;
 
 function hashParts(hash: string): string[] {
-  return hash.replace(/^#/, '').split('/').filter((part) => part.length > 0);
+  return hash
+    .replace(/^#/, '')
+    .split('/')
+    .filter((part) => part.length > 0);
 }
 
 function machineIdFromParts(parts: string[]): string | null {
@@ -30,7 +33,11 @@ export function parseHash(hash: string): Route {
     return { kind: 'project', projectId: decodeURIComponent(routeParts[1]) };
   }
   if (routeParts[0] === 's' && routeParts[1] !== undefined && routeParts[1].length > 0) {
-    return { kind: 'session', sessionId: decodeURIComponent(routeParts[1]), ...(routeParts[2] === 'findings' ? { panel: 'findings' as const } : {}) };
+    return {
+      kind: 'session',
+      sessionId: decodeURIComponent(routeParts[1]),
+      ...(routeParts[2] === 'findings' ? { panel: 'findings' as const } : {}),
+    };
   }
   if (routeParts[0] === 'c' && routeParts[1] !== undefined && routeParts[1].length > 0) {
     return { kind: 'council', councilId: decodeURIComponent(routeParts[1]) };

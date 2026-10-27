@@ -45,9 +45,12 @@ export function useImageAttachments(upload: (image: Blob) => Promise<string>, in
   const uploadRef = useRef(upload);
   uploadRef.current = upload;
 
-  useEffect(() => () => {
-    for (const item of itemsRef.current) URL.revokeObjectURL(item.previewUrl);
-  }, []);
+  useEffect(
+    () => () => {
+      for (const item of itemsRef.current) URL.revokeObjectURL(item.previewUrl);
+    },
+    [],
+  );
 
   /**
    * Démarre l'envoi et renvoie aussitôt le jeton à insérer.
@@ -114,7 +117,9 @@ export function AttachmentStrip({ items, onRemove }: { items: Attachment[]; onRe
           ) : (
             <img src={item.previewUrl} alt={item.token} />
           )}
-          <figcaption><ActivityStatus active={item.path === null}>{item.path === null ? 'Envoi…' : `#${item.n}`}</ActivityStatus></figcaption>
+          <figcaption>
+            <ActivityStatus active={item.path === null}>{item.path === null ? 'Envoi…' : `#${item.n}`}</ActivityStatus>
+          </figcaption>
           <button type="button" aria-label={`Retirer ${item.token}`} title="Retirer" onClick={() => onRemove(item)}>
             ×
           </button>

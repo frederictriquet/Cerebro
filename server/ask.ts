@@ -29,7 +29,8 @@ function snapshot(data: MachineData): unknown {
     projects: data.projects.map((project) => {
       const sessions = data.sessions.filter((session) => session.projectId === project.id);
       const active = sessions.filter((session) => session.status !== 'exited');
-      const exited = sessions.filter((session) => session.status === 'exited')
+      const exited = sessions
+        .filter((session) => session.status === 'exited')
         .sort((left, right) => right.updatedAt - left.updatedAt)
         .slice(0, RECENT_EXITED_SESSIONS);
       const epics = data.epics.filter((epic) => epic.projectId === project.id);
@@ -46,14 +47,18 @@ function snapshot(data: MachineData): unknown {
           updatedAt: date(session.updatedAt),
         })),
         epics: epics.map((epic) => ({ id: epic.id, title: epic.title, description: truncate(epic.description) })),
-        tasks: data.tasks.filter((task) => task.projectId === project.id).map((task) => ({
-          id: task.id,
-          status: task.status,
-          text: truncate(task.text),
-          ...(task.epicId === null ? {} : { epic: epics.find((epic) => epic.id === task.epicId)?.title ?? task.epicId }),
-          ...(task.dependsOn.length === 0 ? {} : { dependsOn: task.dependsOn }),
-          updatedAt: date(task.updatedAt),
-        })),
+        tasks: data.tasks
+          .filter((task) => task.projectId === project.id)
+          .map((task) => ({
+            id: task.id,
+            status: task.status,
+            text: truncate(task.text),
+            ...(task.epicId === null
+              ? {}
+              : { epic: epics.find((epic) => epic.id === task.epicId)?.title ?? task.epicId }),
+            ...(task.dependsOn.length === 0 ? {} : { dependsOn: task.dependsOn }),
+            updatedAt: date(task.updatedAt),
+          })),
       };
     }),
   };
@@ -63,7 +68,9 @@ async function collectState(db: CerebroDatabase): Promise<unknown> {
   const machines = await collectMachines(db);
   return {
     now: date(Date.now()),
-    machines: machines.map((machine) => machine.ok ? snapshot(machine.data) : { machine: machine.machine, unreachable: machine.error }),
+    machines: machines.map((machine) =>
+      machine.ok ? snapshot(machine.data) : { machine: machine.machine, unreachable: machine.error },
+    ),
   };
 }
 

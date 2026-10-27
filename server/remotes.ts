@@ -80,7 +80,10 @@ export function registerRemoteGateway(app: FastifyInstance, peers: PeerSync): vo
       return reply.code(403).send({ error: 'Route non relayée' });
     }
 
-    const headers = { ...filteredHeaders(request.headers, ['host', 'cookie', 'authorization']), ...authorization(remote) };
+    const headers = {
+      ...filteredHeaders(request.headers, ['host', 'cookie', 'authorization']),
+      ...authorization(remote),
+    };
     relayHttp(request, reply, upstreamUrl(remote, `/api/${rest}`, incomingSearch(request)), headers, {
       unreachable: `Machine ${remote.name} injoignable`,
       unauthorized: `Jeton refusé par ${remote.name}`,
@@ -104,7 +107,11 @@ export function registerRemoteGateway(app: FastifyInstance, peers: PeerSync): vo
       socket.close(1008, 'Machine inconnue');
       return;
     }
-    relayWebSocket(socket, upstreamUrl(remote, `/ws/${request.params['*']}`, incomingSearch(request), true), authorization(remote));
+    relayWebSocket(
+      socket,
+      upstreamUrl(remote, `/ws/${request.params['*']}`, incomingSearch(request), true),
+      authorization(remote),
+    );
   });
 
   app.get<{ Params: { id: string; '*': string } }>('/m/:id/vscode/*', { websocket: true }, (socket, request) => {

@@ -24,7 +24,7 @@ export interface GitSummary {
 export async function gitSummary(path: string, includeCommits = false): Promise<GitSummary> {
   const empty: GitSummary = { branch: null, dirty: 0, ahead: 0, hasCommits: false, hasUpstream: false };
   try {
-    if (await git(path, ['rev-parse', '--is-inside-work-tree']) !== 'true') return empty;
+    if ((await git(path, ['rev-parse', '--is-inside-work-tree'])) !== 'true') return empty;
     const [branch, status, head, upstream] = await Promise.all([
       git(path, ['branch', '--show-current']),
       git(path, ['status', '--porcelain']),
@@ -32,8 +32,11 @@ export async function gitSummary(path: string, includeCommits = false): Promise<
       git(path, ['rev-parse', '--verify', '@{upstream}']).catch(() => null),
     ]);
     const result: GitSummary = {
-      branch: branch || null, dirty: status === '' ? 0 : status.split(/\r?\n/).length,
-      ahead: head ? null : 0, hasCommits: head !== null, hasUpstream: upstream !== null,
+      branch: branch || null,
+      dirty: status === '' ? 0 : status.split(/\r?\n/).length,
+      ahead: head ? null : 0,
+      hasCommits: head !== null,
+      hasUpstream: upstream !== null,
     };
     if (head && upstream) {
       try {
@@ -43,7 +46,16 @@ export async function gitSummary(path: string, includeCommits = false): Promise<
         if (includeCommits) {
           const [name, log] = await Promise.all([
             git(path, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']),
-            git(path, ['log', '-z', `--max-count=${PREVIEW_LIMIT}`, '--format=%H%x00%s%x00%an', '--no-decorate', '--no-show-signature', range, '--']),
+            git(path, [
+              'log',
+              '-z',
+              `--max-count=${PREVIEW_LIMIT}`,
+              '--format=%H%x00%s%x00%an',
+              '--no-decorate',
+              '--no-show-signature',
+              range,
+              '--',
+            ]),
           ]);
           const fields = log.split('\0');
           const commits = [];
@@ -53,7 +65,8 @@ export async function gitSummary(path: string, includeCommits = false): Promise<
           result.pendingCommits = { upstream: name, commits, truncated: count > commits.length };
         }
       } catch {
-        if (includeCommits) result.pendingCommitsError = 'Impossible de lire les commits à pousser. Réessayez dans quelques instants.';
+        if (includeCommits)
+          result.pendingCommitsError = 'Impossible de lire les commits à pousser. Réessayez dans quelques instants.';
       }
     }
     return result;

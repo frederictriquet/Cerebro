@@ -13,7 +13,9 @@ export function registerPersonaRoutes(app: FastifyInstance, db: CerebroDatabase)
   app.patch<{ Params: { id: string } }>('/api/personas/:id', async (request, reply) => {
     const result = validatePersonaInput(request.body, true);
     if ('error' in result) return reply.code(400).send({ error: result.error });
-    return db.updatePersona(request.params.id, result.persona) ?? reply.code(404).send({ error: 'Persona introuvable' });
+    return (
+      db.updatePersona(request.params.id, result.persona) ?? reply.code(404).send({ error: 'Persona introuvable' })
+    );
   });
   app.delete<{ Params: { id: string } }>('/api/personas/:id', async (request, reply) => {
     if (db.getPersona(request.params.id) === null) return reply.code(404).send({ error: 'Persona introuvable' });

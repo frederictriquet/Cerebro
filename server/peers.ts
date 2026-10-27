@@ -5,7 +5,14 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { DATA_DIR, loadRemotes, MACHINE_NAME } from './config.ts';
 import type { CerebroDatabase, Project } from './db.ts';
-import { compatibility, VERSION_INFO, versionInfoFrom, versionLabel, type Compatibility, type VersionInfo } from './version.ts';
+import {
+  compatibility,
+  VERSION_INFO,
+  versionInfoFrom,
+  versionLabel,
+  type Compatibility,
+  type VersionInfo,
+} from './version.ts';
 
 /*
  * Coordination entre instances Cerebro qui partagent le même bot Slack. Un projet présent sur
@@ -99,7 +106,11 @@ export interface ProjectSlackStatus {
 }
 
 export function normalizeProjectName(value: string): string {
-  return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').trim().toLocaleLowerCase('fr-FR');
+  return value
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .trim()
+    .toLocaleLowerCase('fr-FR');
 }
 
 // git@github.com:a/b.git, https://user@github.com/a/b et ssh://git@github.com/a/b désignent le même dépôt.
@@ -109,7 +120,10 @@ export function normalizeOrigin(value: string): string | null {
   const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\/\/)(.+)$/.exec(url);
   if (scp !== null) url = `${scp[1] ?? ''}/${scp[2] ?? ''}`;
   else url = url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/^[^@/]+@/, '');
-  url = url.replace(/\/+$/, '').replace(/\.git$/, '').replace(/\/+$/, '');
+  url = url
+    .replace(/\/+$/, '')
+    .replace(/\.git$/, '')
+    .replace(/\/+$/, '');
   const slash = url.indexOf('/');
   const host = (slash < 0 ? url : url.slice(0, slash)).toLowerCase().replace(/:\d+$/, '');
   return slash < 0 ? host : `${host}${url.slice(slash)}`;
@@ -124,8 +138,15 @@ function finiteNumber(value: unknown): value is number {
 }
 
 function claimFrom(value: unknown): Claim | null {
-  if (!isRecord(value) || typeof value.owner !== 'string' || value.owner === ''
-    || typeof value.ownerName !== 'string' || !finiteNumber(value.at) || typeof value.auto !== 'boolean') return null;
+  if (
+    !isRecord(value) ||
+    typeof value.owner !== 'string' ||
+    value.owner === '' ||
+    typeof value.ownerName !== 'string' ||
+    !finiteNumber(value.at) ||
+    typeof value.auto !== 'boolean'
+  )
+    return null;
   return { owner: value.owner, ownerName: value.ownerName, at: value.at, auto: value.auto };
 }
 
@@ -142,15 +163,26 @@ function claimsFrom(value: unknown): Record<string, Claim> {
 function peerProjectsFrom(value: unknown): PeerProject[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((raw) => {
-    if (!isRecord(raw) || typeof raw.name !== 'string' || !finiteNumber(raw.appearedAt)
-      || (raw.origin !== null && typeof raw.origin !== 'string')) return [];
+    if (
+      !isRecord(raw) ||
+      typeof raw.name !== 'string' ||
+      !finiteNumber(raw.appearedAt) ||
+      (raw.origin !== null && typeof raw.origin !== 'string')
+    )
+      return [];
     return [{ name: raw.name, origin: raw.origin, appearedAt: raw.appearedAt }];
   });
 }
 
 export function syncPayloadFrom(value: unknown): SyncPayload | null {
-  if (!isRecord(value) || typeof value.instanceId !== 'string' || value.instanceId === ''
-    || typeof value.machine !== 'string' || !Array.isArray(value.projects)) return null;
+  if (
+    !isRecord(value) ||
+    typeof value.instanceId !== 'string' ||
+    value.instanceId === '' ||
+    typeof value.machine !== 'string' ||
+    !Array.isArray(value.projects)
+  )
+    return null;
   return {
     instanceId: value.instanceId,
     machine: value.machine,
@@ -178,9 +210,14 @@ function stateFrom(value: unknown): PeerState {
     }
   }
   if (Array.isArray(value.notices)) {
-    state.notices = value.notices.filter((raw): raw is PeerNotice => isRecord(raw)
-      && typeof raw.id === 'string' && finiteNumber(raw.at)
-      && typeof raw.projectName === 'string' && typeof raw.text === 'string');
+    state.notices = value.notices.filter(
+      (raw): raw is PeerNotice =>
+        isRecord(raw) &&
+        typeof raw.id === 'string' &&
+        finiteNumber(raw.at) &&
+        typeof raw.projectName === 'string' &&
+        typeof raw.text === 'string',
+    );
   }
   if (Array.isArray(value.announced)) {
     state.announced = value.announced.filter((key): key is string => typeof key === 'string');
@@ -319,7 +356,8 @@ export class PeerSync {
       conflict: conflicting !== undefined,
       peerMachine: (conflicting ?? shared)?.machine ?? null,
       owner: owner === null ? null : owner === this.instanceId ? 'local' : 'remote',
-      ownerMachine: owner === null ? null : owner === this.instanceId ? MACHINE_NAME : this.state.peers[owner]?.machine ?? null,
+      ownerMachine:
+        owner === null ? null : owner === this.instanceId ? MACHINE_NAME : (this.state.peers[owner]?.machine ?? null),
     };
   }
 
@@ -346,11 +384,14 @@ export class PeerSync {
   /** Un pair connaît-il un projet désigné par ce nom (exact, ou aussi par préfixe comme les commandes Slack) ? */
   knownRemotely(projectName: string, exact: boolean): boolean {
     const name = normalizeProjectName(projectName);
-    return Object.entries(this.state.peers).some(([id, peer]) => id !== this.instanceId
-      && peer.projects.some((project) => {
-        const candidate = normalizeProjectName(project.name);
-        return exact ? candidate === name : candidate.startsWith(name);
-      }));
+    return Object.entries(this.state.peers).some(
+      ([id, peer]) =>
+        id !== this.instanceId &&
+        peer.projects.some((project) => {
+          const candidate = normalizeProjectName(project.name);
+          return exact ? candidate === name : candidate.startsWith(name);
+        }),
+    );
   }
 
   /** Cette machine traite-t-elle les commandes Slack générales (aide, liste, questions « ? », messages non reconnus) ? */
@@ -364,7 +405,7 @@ export class PeerSync {
     return {
       shared: this.activePeers().length > 0,
       owner: local ? 'local' : 'remote',
-      ownerMachine: local ? MACHINE_NAME : this.state.peers[owner.id]?.machine ?? owner.id,
+      ownerMachine: local ? MACHINE_NAME : (this.state.peers[owner.id]?.machine ?? owner.id),
       manual: owner.manual,
     };
   }
@@ -448,20 +489,38 @@ export class PeerSync {
     this.mutate(() => {});
   }
 
-  private recordVersion(remote: { id: string; name: string }, version: VersionInfo | null, reachable: boolean, error: string | null): void {
+  private recordVersion(
+    remote: { id: string; name: string },
+    version: VersionInfo | null,
+    reachable: boolean,
+    error: string | null,
+  ): void {
     const previous = this.remoteVersions.get(remote.id);
-    const status: RemoteVersionStatus = { version, compatibility: compatibility(version), reachable, error, checkedAt: Date.now() };
+    const status: RemoteVersionStatus = {
+      version,
+      compatibility: compatibility(version),
+      reachable,
+      error,
+      checkedAt: Date.now(),
+    };
     this.remoteVersions.set(remote.id, status);
     if (status.compatibility === 'incompatible' && version !== null && previous?.compatibility !== 'incompatible') {
       console.warn(`[peers] ${incompatibleMessage(remote.name, version)} Échange suspendu.`);
     }
-    if (previous === undefined || previous.compatibility !== status.compatibility || previous.reachable !== reachable
-      || JSON.stringify(previous.version) !== JSON.stringify(version)) this.onChange();
+    if (
+      previous === undefined ||
+      previous.compatibility !== status.compatibility ||
+      previous.reachable !== reachable ||
+      JSON.stringify(previous.version) !== JSON.stringify(version)
+    )
+      this.onChange();
   }
 
   private async refreshOrigins(): Promise<void> {
     const projects = this.db.listProjects();
-    const entries = await Promise.all(projects.map(async (project) => [project.id, await gitOrigin(project.path)] as const));
+    const entries = await Promise.all(
+      projects.map(async (project) => [project.id, await gitOrigin(project.path)] as const),
+    );
     this.origins.clear();
     for (const [id, origin] of entries) this.origins.set(id, origin);
     this.markReady();
@@ -486,7 +545,11 @@ export class PeerSync {
   }
 
   private absorb(payload: SyncPayload): void {
-    this.state.peers[payload.instanceId] = { machine: payload.machine, projects: payload.projects, lastSeen: Date.now() };
+    this.state.peers[payload.instanceId] = {
+      machine: payload.machine,
+      projects: payload.projects,
+      lastSeen: Date.now(),
+    };
     for (const [name, claim] of Object.entries(payload.claims)) {
       if (newer(claim, this.state.claims[name])) this.state.claims[name] = claim;
     }
@@ -591,9 +654,12 @@ export class PeerSync {
       return;
     }
     const ownerMachine = this.state.peers[owner]?.machine ?? claim.ownerName;
-    this.addNotice(project.name, claim.auto
-      ? `« ${project.name} » existe aussi sur ${ownerMachine} (même dépôt) : Cerebro lui a confié les commandes Slack, cette machine les ignore.`
-      : `${ownerMachine} a pris la main sur « ${project.name} » : cette machine ignore désormais ses commandes Slack.`);
+    this.addNotice(
+      project.name,
+      claim.auto
+        ? `« ${project.name} » existe aussi sur ${ownerMachine} (même dépôt) : Cerebro lui a confié les commandes Slack, cette machine les ignore.`
+        : `${ownerMachine} a pris la main sur « ${project.name} » : cette machine ignore désormais ses commandes Slack.`,
+    );
   }
 
   private announceConflicts(): void {
@@ -615,7 +681,10 @@ export class PeerSync {
   }
 
   private addNotice(projectName: string, text: string): void {
-    this.state.notices = [{ id: randomUUID(), at: Date.now(), projectName, text }, ...this.state.notices].slice(0, MAX_NOTICES);
+    this.state.notices = [{ id: randomUUID(), at: Date.now(), projectName, text }, ...this.state.notices].slice(
+      0,
+      MAX_NOTICES,
+    );
   }
 
   private loadState(): PeerState {

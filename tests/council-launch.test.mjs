@@ -17,17 +17,25 @@ async function compile(name) {
   const transformed = await moduleRunnerTransform(code, null, url.pathname, source);
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   const execute = new AsyncFunction('__vite_ssr_import__', '__vite_ssr_exportName__', transformed.code);
-  return async modules => {
+  return async (modules) => {
     const exports = {};
-    await execute(id => {
-      assert.ok(Object.hasOwn(modules, id), `Import inattendu : ${id}`);
-      return modules[id];
-    }, (name, get) => Object.defineProperty(exports, name, { get }));
+    await execute(
+      (id) => {
+        assert.ok(Object.hasOwn(modules, id), `Import inattendu : ${id}`);
+        return modules[id];
+      },
+      (name, get) => Object.defineProperty(exports, name, { get }),
+    );
     return exports;
   };
 }
 
-const [loadLaunch, loadSettings, loadAdvisorList, loadAttachments] = await Promise.all([compile('CouncilLaunch'), compile('CouncilSettingsDialog'), compile('CouncilAdvisorList'), compile('attachments')]);
+const [loadLaunch, loadSettings, loadAdvisorList, loadAttachments] = await Promise.all([
+  compile('CouncilLaunch'),
+  compile('CouncilSettingsDialog'),
+  compile('CouncilAdvisorList'),
+  compile('attachments'),
+]);
 // Composants dont le rendu est déplié dans l'arbre, pour inspecter leurs éléments.
 const inlined = new Map();
 const CLAUDE = { agent: 'claude', model: null, effort: null };
@@ -36,8 +44,10 @@ const SONNET = { agent: 'claude', model: 'sonnet', effort: 'low' };
 const GROK = { agent: 'grok', model: null, effort: null };
 const ids = ['one', 'two', 'three'];
 const defaults = () => ({
-  assignments: Object.fromEntries(ids.map(id => [id, { ...CLAUDE }])),
-  defaultPersonaIds: [...ids], chairman: { ...CLAUDE }, readProject: true,
+  assignments: Object.fromEntries(ids.map((id) => [id, { ...CLAUDE }])),
+  defaultPersonaIds: [...ids],
+  chairman: { ...CLAUDE },
+  readProject: true,
 });
 
 function nodes(tree) {
@@ -53,28 +63,47 @@ function find(view, predicate) {
   return node;
 }
 
-const button = (view, label) => find(view, node => node.type === 'button' && node.props.children === label);
-const submit = view => find(view, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+const button = (view, label) => find(view, (node) => node.type === 'button' && node.props.children === label);
+const submit = (view) => find(view, (node) => node.type === 'form').props.onSubmit({ preventDefault() {} });
 
 class ApiError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
 }
-const lostResponse = () => { throw new TypeError('Failed to fetch'); };
+const lostResponse = () => {
+  throw new TypeError('Failed to fetch');
+};
 
 // `setup` prépare catalogue et réglages avant le premier rendu du formulaire.
 async function fixture(t, projectId, setup = () => {}) {
   const f = {
-    personas: ids.map(id => ({ id, name: id, description: '', prompt: id, builtin: false, createdAt: 0, updatedAt: 0 })),
-    globalSettings: defaults(), projectSettings: defaults(), settingsReads: 0, writes: [], launches: [],
+    personas: ids.map((id) => ({
+      id,
+      name: id,
+      description: '',
+      prompt: id,
+      builtin: false,
+      createdAt: 0,
+      updatedAt: 0,
+    })),
+    globalSettings: defaults(),
+    projectSettings: defaults(),
+    settingsReads: 0,
+    writes: [],
+    launches: [],
     // Councils créés côté serveur, idempotents sur requestId comme CouncilRuns.start.
-    created: new Map(), navigations: [],
+    created: new Map(),
+    navigations: [],
     // Appelé après la création côté serveur : peut perdre la réponse ou rendre le serveur injoignable.
-    afterStart: () => {}, onGet: () => {},
+    afterStart: () => {},
+    onGet: () => {},
   };
   setup(f);
-  const effective = () => projectId ? f.projectSettings ?? f.globalSettings : f.globalSettings;
+  const effective = () => (projectId ? (f.projectSettings ?? f.globalSettings) : f.globalSettings);
   const store = {
-    agents: types.AGENTS.map(agent => ({ agent, available: true })),
+    agents: types.AGENTS.map((agent) => ({ agent, available: true })),
     projects: projectId ? [{ id: projectId, name: 'Projet', councilSettings: f.projectSettings }] : [],
     async updateProject(id, patch) {
       assert.equal(id, projectId);
@@ -87,11 +116,14 @@ async function fixture(t, projectId, setup = () => {}) {
   const storageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
   const storage = new Map();
   f.storage = storage;
-  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
-    getItem: key => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: key => storage.delete(key),
-  } });
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: (key) => storage.delete(key),
+    },
+  });
   t.after(() => {
     if (storageDescriptor) Object.defineProperty(globalThis, 'localStorage', storageDescriptor);
     else delete globalThis.localStorage;
@@ -104,7 +136,12 @@ async function fixture(t, projectId, setup = () => {}) {
       const { slots } = current;
       const index = current.index++;
       if (index === slots.length) slots.push(typeof initial === 'function' ? initial() : initial);
-      return [slots[index], next => { slots[index] = typeof next === 'function' ? next(slots[index]) : next; }];
+      return [
+        slots[index],
+        (next) => {
+          slots[index] = typeof next === 'function' ? next(slots[index]) : next;
+        },
+      ];
     },
     useId: () => 'id',
     useRef(initial) {
@@ -127,11 +164,18 @@ async function fixture(t, projectId, setup = () => {}) {
       render() {
         state.index = 0;
         current = state;
-        try { this.tree = Component(props); } finally { current = null; }
+        try {
+          this.tree = Component(props);
+        } finally {
+          current = null;
+        }
         for (const effect of state.effects.splice(0)) effect();
         return this;
       },
-      async settle() { await setImmediate(); return this.render(); },
+      async settle() {
+        await setImmediate();
+        return this.render();
+      },
     }.render();
   }
   function LlmSelector() {}
@@ -139,27 +183,49 @@ async function fixture(t, projectId, setup = () => {}) {
   f.PersonasDialog = PersonasDialog;
   function Modal() {}
   const modules = {
-    react: hooks, 'react/jsx-runtime': jsx, './types.ts': types, './council.css': {},
+    react: hooks,
+    'react/jsx-runtime': jsx,
+    './types.ts': types,
+    './council.css': {},
     './ActivityStatus.tsx': { ActivityStatus() {} },
-    './AgentLabel.tsx': { AgentLogo() {} }, './format.ts': { relativeTime: () => '', AGENT_LABEL: format.AGENT_LABEL },
+    './AgentLabel.tsx': { AgentLogo() {} },
+    './format.ts': { relativeTime: () => '', AGENT_LABEL: format.AGENT_LABEL },
     './DelayedActionButton.tsx': { DelayedActionButton() {} },
-    './LlmSelector.tsx': { LlmSelector }, './PersonasDialog.tsx': { PersonasDialog }, './Dialog.tsx': { Modal },
-    './route.ts': { useNow: () => 0, go: target => f.navigations.push(target), href: value => value },
+    './LlmSelector.tsx': { LlmSelector },
+    './PersonasDialog.tsx': { PersonasDialog },
+    './Dialog.tsx': { Modal },
+    './route.ts': { useNow: () => 0, go: (target) => f.navigations.push(target), href: (value) => value },
     './store.tsx': { useStore: () => store },
     './drafts.ts': {},
     './api.ts': {
       clipboardImage: () => null,
-      async uploadCouncilImage() { throw new Error('aucun envoi d’image attendu'); },
-      async listPersonas() { return structuredClone(f.personas); },
-      async getCouncilSettings() { f.settingsReads++; return structuredClone(f.globalSettings); },
-      async getEffectiveCouncilSettings() { f.settingsReads++; return structuredClone(effective()); },
-      async putCouncilSettings(settings) { f.globalSettings = structuredClone(settings); f.writes.push('global'); },
-      async listCouncils() { return []; },
+      async uploadCouncilImage() {
+        throw new Error('aucun envoi d’image attendu');
+      },
+      async listPersonas() {
+        return structuredClone(f.personas);
+      },
+      async getCouncilSettings() {
+        f.settingsReads++;
+        return structuredClone(f.globalSettings);
+      },
+      async getEffectiveCouncilSettings() {
+        f.settingsReads++;
+        return structuredClone(effective());
+      },
+      async putCouncilSettings(settings) {
+        f.globalSettings = structuredClone(settings);
+        f.writes.push('global');
+      },
+      async listCouncils() {
+        return [];
+      },
       async deleteCouncil() {},
       ApiError,
       async startCouncil(input) {
         f.launches.push(structuredClone(input));
-        if (!f.created.has(input.requestId)) f.created.set(input.requestId, { id: input.requestId, question: input.question });
+        if (!f.created.has(input.requestId))
+          f.created.set(input.requestId, { id: input.requestId, question: input.question });
         f.afterStart(input);
         return f.created.get(input.requestId);
       },
@@ -174,46 +240,60 @@ async function fixture(t, projectId, setup = () => {}) {
   modules['./CouncilAdvisorList.tsx'] = await loadAdvisorList(modules);
   const { CouncilAdvisorList } = modules['./CouncilAdvisorList.tsx'];
   // Rendu hors montage : l'onglet actif est sans incidence, tous les panneaux sont dans l'arbre.
-  inlined.set(CouncilAdvisorList, props => {
+  inlined.set(CouncilAdvisorList, (props) => {
     const outer = current;
     current = { slots: [], effects: [], index: 0 };
-    try { return CouncilAdvisorList(props); } finally { current = outer; }
+    try {
+      return CouncilAdvisorList(props);
+    } finally {
+      current = outer;
+    }
   });
   modules['./CouncilSettingsDialog.tsx'] = await loadSettings(modules);
   const { CouncilLaunch } = await loadLaunch(modules);
   const form = CouncilLaunch({ projectId });
   f.launch = mount(form.type, form.props);
   await f.launch.settle();
-  find(f.launch, node => node.type === 'textarea' && node.props.required).props.onChange({ target: { value: 'Quelle priorité ?' } });
+  find(f.launch, (node) => node.type === 'textarea' && node.props.required).props.onChange({
+    target: { value: 'Quelle priorité ?' },
+  });
   f.launch.render();
   f.selector = (view, id) => {
-    const advisor = find(view, node => node.props.role === 'tabpanel' && node.key === id);
-    return find({ tree: advisor }, node => node.type === LlmSelector);
+    const advisor = find(view, (node) => node.props.role === 'tabpanel' && node.key === id);
+    return find({ tree: advisor }, (node) => node.type === LlmSelector);
   };
-  f.choose = (id, value) => { f.selector(f.launch, id).props.onChange(value); f.launch.render(); };
+  f.choose = (id, value) => {
+    f.selector(f.launch, id).props.onChange(value);
+    f.launch.render();
+  };
   f.openSettings = async () => {
     button(f.launch, 'Réglages').props.onClick();
     f.launch.render();
-    const dialog = find(f.launch, node => node.type === modules['./CouncilSettingsDialog.tsx'].CouncilSettingsDialog);
+    const dialog = find(f.launch, (node) => node.type === modules['./CouncilSettingsDialog.tsx'].CouncilSettingsDialog);
     return mount(dialog.type, dialog.props).settle();
   };
-  f.dismiss = dialog => find(dialog, node => node.type === Modal).props.onClose();
+  f.dismiss = (dialog) => find(dialog, (node) => node.type === Modal).props.onClose();
   f.refreshPersonas = async () => {
     button(f.launch, 'Nouvelle persona').props.onClick();
     f.launch.render();
-    find(f.launch, node => node.type === PersonasDialog).props.onChange();
+    find(f.launch, (node) => node.type === PersonasDialog).props.onChange();
     await f.launch.settle();
   };
   // Même réparation des réglages que CerebroDatabase.deletePersona.
-  f.deletePersona = id => {
-    f.personas = f.personas.filter(persona => persona.id !== id);
+  f.deletePersona = (id) => {
+    f.personas = f.personas.filter((persona) => persona.id !== id);
     f.globalSettings = withoutPersona(f.globalSettings, id, f.personas);
     if (f.projectSettings) f.projectSettings = withoutPersona(f.projectSettings, id, f.personas);
   };
-  f.toggle = id => find({ tree: find(f.launch, node => node.props.role === 'tabpanel' && node.key === id) }, node => node.type === 'button' && node.props.className?.startsWith('council-advisor-toggle'));
-  f.checked = () => nodes(f.launch.tree)
-    .filter(node => node.props.role === 'tabpanel' && f.toggle(node.key).props.className.endsWith(' on'))
-    .map(node => node.key);
+  f.toggle = (id) =>
+    find(
+      { tree: find(f.launch, (node) => node.props.role === 'tabpanel' && node.key === id) },
+      (node) => node.type === 'button' && node.props.className?.startsWith('council-advisor-toggle'),
+    );
+  f.checked = () =>
+    nodes(f.launch.tree)
+      .filter((node) => node.props.role === 'tabpanel' && f.toggle(node.key).props.className.endsWith(' on'))
+      .map((node) => node.key);
   f.convoke = async () => {
     submit(f.launch);
     await f.launch.settle();
@@ -225,7 +305,7 @@ async function fixture(t, projectId, setup = () => {}) {
 
 for (const projectId of [undefined, 'project']) {
   for (const close of ['Annuler', 'fermeture de la modale']) {
-    test(`les choix du lancement survivent à ${close} (${projectId ?? 'accueil'})`, async t => {
+    test(`les choix du lancement survivent à ${close} (${projectId ?? 'accueil'})`, async (t) => {
       const f = await fixture(t, projectId);
       f.choose('one', CODEX);
       const dialog = await f.openSettings();
@@ -239,11 +319,14 @@ for (const projectId of [undefined, 'project']) {
       assert.deepEqual(f.selector(f.launch, 'one').props.value, CODEX);
       assert.equal(f.settingsReads, reads, 'une annulation ne recharge pas les valeurs par défaut');
       assert.deepEqual(f.writes, []);
-      assert.deepEqual(await f.convoke(), ids.map(personaId => ({ personaId, ...(personaId === 'one' ? CODEX : CLAUDE) })));
+      assert.deepEqual(
+        await f.convoke(),
+        ids.map((personaId) => ({ personaId, ...(personaId === 'one' ? CODEX : CLAUDE) })),
+      );
     });
   }
 
-  test(`enregistrer rafraîchit les défauts et conserve les choix explicites (${projectId ?? 'accueil'})`, async t => {
+  test(`enregistrer rafraîchit les défauts et conserve les choix explicites (${projectId ?? 'accueil'})`, async (t) => {
     const f = await fixture(t, projectId);
     f.choose('one', CODEX);
     f.choose('three', CLAUDE); // Les null explicites restent prioritaires sur un futur modèle par défaut.
@@ -260,17 +343,22 @@ for (const projectId of [undefined, 'project']) {
     assert.deepEqual(f.selector(f.launch, 'two').props.value, SONNET);
     assert.deepEqual(f.selector(f.launch, 'three').props.value, CLAUDE);
     assert.deepEqual(await f.convoke(), [
-      { personaId: 'one', ...CODEX }, { personaId: 'two', ...SONNET }, { personaId: 'three', ...CLAUDE },
+      { personaId: 'one', ...CODEX },
+      { personaId: 'two', ...SONNET },
+      { personaId: 'three', ...CLAUDE },
     ]);
   });
 }
 
-test('revenir aux réglages globaux puis annuler conserve les choix et rafraîchit les défauts', async t => {
+test('revenir aux réglages globaux puis annuler conserve les choix et rafraîchit les défauts', async (t) => {
   const f = await fixture(t, 'project');
   f.globalSettings.assignments.two = GROK;
   f.choose('one', CODEX);
   const dialog = await f.openSettings();
-  find(dialog, node => node.type === 'button' && node.props.title === 'Supprime les réglages propres à ce projet').props.onClick();
+  find(
+    dialog,
+    (node) => node.type === 'button' && node.props.title === 'Supprime les réglages propres à ce projet',
+  ).props.onClick();
   await dialog.settle();
   button(dialog, 'Annuler').props.onClick();
   await f.launch.settle();
@@ -278,11 +366,13 @@ test('revenir aux réglages globaux puis annuler conserve les choix et rafraîch
   assert.deepEqual(f.selector(f.launch, 'one').props.value, CODEX);
   assert.deepEqual(f.selector(f.launch, 'two').props.value, GROK);
   assert.deepEqual(await f.convoke(), [
-    { personaId: 'one', ...CODEX }, { personaId: 'two', ...GROK }, { personaId: 'three', ...CLAUDE },
+    { personaId: 'one', ...CODEX },
+    { personaId: 'two', ...GROK },
+    { personaId: 'three', ...CLAUDE },
   ]);
 });
 
-test('un rafraîchissement du catalogue retire seulement les choix des personas supprimées', async t => {
+test('un rafraîchissement du catalogue retire seulement les choix des personas supprimées', async (t) => {
   const f = await fixture(t);
   f.choose('one', CODEX);
   f.choose('two', SONNET);
@@ -290,7 +380,10 @@ test('un rafraîchissement du catalogue retire seulement les choix des personas 
   const removed = f.personas.shift();
   button(dialog, 'Annuler').props.onClick();
   await f.launch.settle();
-  assert.equal(nodes(f.launch.tree).some(node => node.type === 'li' && node.key === 'one'), false);
+  assert.equal(
+    nodes(f.launch.tree).some((node) => node.type === 'li' && node.key === 'one'),
+    false,
+  );
   assert.deepEqual(f.selector(f.launch, 'two').props.value, SONNET);
   // Le choix supprimé ne doit pas réapparaître si le même id revient dans le catalogue.
   f.personas.unshift(removed);
@@ -298,12 +391,14 @@ test('un rafraîchissement du catalogue retire seulement les choix des personas 
   assert.deepEqual(f.selector(f.launch, 'one').props.value, CLAUDE);
   assert.deepEqual(f.selector(f.launch, 'two').props.value, SONNET);
   assert.deepEqual(await f.convoke(), [
-    { personaId: 'one', ...CLAUDE }, { personaId: 'two', ...SONNET }, { personaId: 'three', ...CLAUDE },
+    { personaId: 'one', ...CLAUDE },
+    { personaId: 'two', ...SONNET },
+    { personaId: 'three', ...CLAUDE },
   ]);
 });
 
 for (const projectId of [undefined, 'project']) {
-  test(`un lancement réussi efface le brouillon enregistré avant la navigation (${projectId ?? 'accueil'})`, async t => {
+  test(`un lancement réussi efface le brouillon enregistré avant la navigation (${projectId ?? 'accueil'})`, async (t) => {
     const f = await fixture(t, projectId);
     const key = `cerebro.council-draft.${projectId ?? 'home'}`;
     assert.ok(f.storage.has(key));
@@ -315,7 +410,7 @@ for (const projectId of [undefined, 'project']) {
   });
 }
 
-test('une réponse perdue retrouve le council déjà créé sans le relancer', async t => {
+test('une réponse perdue retrouve le council déjà créé sans le relancer', async (t) => {
   const f = await fixture(t, 'project');
   f.afterStart = lostResponse;
   submit(f.launch);
@@ -324,18 +419,22 @@ test('une réponse perdue retrouve le council déjà créé sans le relancer', a
   assert.equal(f.created.size, 1);
   const [requestId] = f.created.keys();
   assert.deepEqual(f.navigations, [`#/c/${requestId}`]);
-  assert.equal(find(f.launch, node => node.type === 'textarea' && node.props.required).props.value, '');
+  assert.equal(find(f.launch, (node) => node.type === 'textarea' && node.props.required).props.value, '');
 });
 
-test('une relance après une erreur de transport réutilise l’identifiant de la soumission', async t => {
+test('une relance après une erreur de transport réutilise l’identifiant de la soumission', async (t) => {
   const f = await fixture(t, 'project');
   // Le serveur accepte le POST, puis devient injoignable : la réponse et la vérification échouent.
   f.afterStart = lostResponse;
-  f.onGet = () => { throw new TypeError('Failed to fetch'); };
+  f.onGet = () => {
+    throw new TypeError('Failed to fetch');
+  };
   submit(f.launch);
   await f.launch.settle();
   assert.deepEqual(f.navigations, []);
-  assert.ok(nodes(f.launch.tree).some(node => node.props.role === 'alert' && node.props.children === 'Failed to fetch'));
+  assert.ok(
+    nodes(f.launch.tree).some((node) => node.props.role === 'alert' && node.props.children === 'Failed to fetch'),
+  );
   // Le réseau revient : Convoquer avec le même brouillon rend le premier council.
   f.afterStart = () => {};
   submit(f.launch);
@@ -346,14 +445,18 @@ test('une relance après une erreur de transport réutilise l’identifiant de l
   assert.deepEqual(f.navigations, [`#/c/${f.launches[0].requestId}`]);
 });
 
-test('une soumission aux paramètres modifiés reçoit un nouvel identifiant', async t => {
+test('une soumission aux paramètres modifiés reçoit un nouvel identifiant', async (t) => {
   const f = await fixture(t);
   f.afterStart = lostResponse;
-  f.onGet = () => { throw new TypeError('Failed to fetch'); };
+  f.onGet = () => {
+    throw new TypeError('Failed to fetch');
+  };
   submit(f.launch);
   await f.launch.settle();
   // Un refus explicite du serveur ne déclenche pas de vérification et conserve l'identifiant.
-  f.afterStart = () => { throw new ApiError(500, 'Erreur interne'); };
+  f.afterStart = () => {
+    throw new ApiError(500, 'Erreur interne');
+  };
   f.onGet = () => assert.fail('aucune vérification après une réponse du serveur');
   submit(f.launch);
   await f.launch.settle();
@@ -367,11 +470,13 @@ test('une soumission aux paramètres modifiés reçoit un nouvel identifiant', a
   assert.deepEqual(f.navigations, [`#/c/${f.launches[2].requestId}`]);
 });
 
-test('un nouveau lancement après un succès reçoit un nouvel identifiant', async t => {
+test('un nouveau lancement après un succès reçoit un nouvel identifiant', async (t) => {
   const f = await fixture(t);
   submit(f.launch);
   await f.launch.settle();
-  find(f.launch, node => node.type === 'textarea' && node.props.required).props.onChange({ target: { value: 'Quelle priorité ?' } });
+  find(f.launch, (node) => node.type === 'textarea' && node.props.required).props.onChange({
+    target: { value: 'Quelle priorité ?' },
+  });
   f.launch.render();
   submit(f.launch);
   await f.launch.settle();
@@ -381,7 +486,7 @@ test('un nouveau lancement après un succès reçoit un nouvel identifiant', asy
 });
 
 // Quatre personas dont deux participent par défaut : supprimer l'une fait choisir un remplaçant au serveur.
-const fourPersonas = f => {
+const fourPersonas = (f) => {
   f.personas.push({ ...f.personas[0], id: 'four', name: 'four', prompt: 'four' });
   for (const settings of [f.globalSettings, f.projectSettings]) {
     settings.assignments.four = { ...CLAUDE };
@@ -390,27 +495,36 @@ const fourPersonas = f => {
 };
 
 for (const projectId of [undefined, 'project']) {
-  test(`supprimer un participant par défaut adopte le remplaçant des réglages (${projectId ?? 'accueil'})`, async t => {
+  test(`supprimer un participant par défaut adopte le remplaçant des réglages (${projectId ?? 'accueil'})`, async (t) => {
     const f = await fixture(t, projectId, fourPersonas);
     assert.deepEqual(f.checked(), ['one', 'two']);
     f.choose('two', CODEX);
     if (projectId) {
-      find(f.launch, node => node.type === 'input' && node.props.type === 'checkbox' && !node.props['aria-label']).props.onChange({ target: { checked: false } });
+      find(
+        f.launch,
+        (node) => node.type === 'input' && node.props.type === 'checkbox' && !node.props['aria-label'],
+      ).props.onChange({ target: { checked: false } });
       f.launch.render();
     }
     button(f.launch, 'Nouvelle persona').props.onClick();
     f.launch.render();
     f.deletePersona('one');
-    find(f.launch, node => node.type === f.PersonasDialog).props.onChange();
+    find(f.launch, (node) => node.type === f.PersonasDialog).props.onChange();
     await f.launch.settle();
     assert.deepEqual(f.checked(), ['two', 'three']);
-    assert.equal(find(f.launch, node => node.type === 'button' && node.props.type === 'submit').props.disabled, false);
-    assert.deepEqual(await f.convoke(), [{ personaId: 'two', ...CODEX }, { personaId: 'three', ...CLAUDE }]);
+    assert.equal(
+      find(f.launch, (node) => node.type === 'button' && node.props.type === 'submit').props.disabled,
+      false,
+    );
+    assert.deepEqual(await f.convoke(), [
+      { personaId: 'two', ...CODEX },
+      { personaId: 'three', ...CLAUDE },
+    ]);
     assert.equal(f.launches[0].readProject, false);
   });
 }
 
-test('une sélection explicite ne suit pas le remplaçant choisi par le serveur', async t => {
+test('une sélection explicite ne suit pas le remplaçant choisi par le serveur', async (t) => {
   const f = await fixture(t, undefined, fourPersonas);
   f.toggle('four').props.onClick();
   f.launch.render();
@@ -419,20 +533,20 @@ test('une sélection explicite ne suit pas le remplaçant choisi par le serveur'
   assert.deepEqual(f.checked(), ['two', 'four']);
 });
 
-test('supprimer une persona depuis les réglages rafraîchit aussi le formulaire', async t => {
+test('supprimer une persona depuis les réglages rafraîchit aussi le formulaire', async (t) => {
   const f = await fixture(t, 'project', fourPersonas);
   const dialog = await f.openSettings();
   button(dialog, 'Gérer les personas').props.onClick();
   dialog.render();
   f.deletePersona('one');
-  find(dialog, node => node.type === f.PersonasDialog).props.onChange();
+  find(dialog, (node) => node.type === f.PersonasDialog).props.onChange();
   await f.launch.settle();
   assert.deepEqual(f.checked(), ['two', 'three']);
 });
 
-test('les onglets distinguent les conseillers qui ne participent pas', async t => {
+test('les onglets distinguent les conseillers qui ne participent pas', async (t) => {
   const f = await fixture(t, undefined);
-  const tab = id => find(f.launch, node => node.props.role === 'tab' && node.key === id);
+  const tab = (id) => find(f.launch, (node) => node.props.role === 'tab' && node.key === id);
   assert.match(tab('two').props.className, /\bchecked\b/);
   assert.equal(f.toggle('two').props.children, 'Participe');
   f.toggle('two').props.onClick();
@@ -448,6 +562,9 @@ test('les onglets distinguent les conseillers qui ne participent pas', async t =
   assert.equal(tab('one').props.title, 'Cherche la faille.\nJoué par claude');
   assert.deepEqual(f.checked(), ['one', 'three']);
   // Un seul panneau visible : celui du premier onglet tant qu'aucun autre n'est choisi.
-  const panels = nodes(f.launch.tree).filter(node => node.props.role === 'tabpanel');
-  assert.deepEqual(panels.filter(panel => !panel.props.hidden).map(panel => panel.key), ['one']);
+  const panels = nodes(f.launch.tree).filter((node) => node.props.role === 'tabpanel');
+  assert.deepEqual(
+    panels.filter((panel) => !panel.props.hidden).map((panel) => panel.key),
+    ['one'],
+  );
 });

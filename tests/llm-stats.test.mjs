@@ -16,9 +16,18 @@ test('périodes calendaires : bornes incluses, sessions terminées et exclusion 
     session('grok', new Date(2026, 8, 20).getTime()),
     session('grok', new Date(2026, 8, 19, 23).getTime()),
   ];
-  assert.deepEqual(llmStats(sessions, '7d', now).map((r) => r.count), [1, 1, 0]);
-  assert.deepEqual(llmStats(sessions, '30d', now).map((r) => r.count), [2, 1, 1]);
-  assert.deepEqual(llmStats(sessions, 'all', now).map((r) => r.count), [2, 1, 2]);
+  assert.deepEqual(
+    llmStats(sessions, '7d', now).map((r) => r.count),
+    [1, 1, 0],
+  );
+  assert.deepEqual(
+    llmStats(sessions, '30d', now).map((r) => r.count),
+    [2, 1, 1],
+  );
+  assert.deepEqual(
+    llmStats(sessions, 'all', now).map((r) => r.count),
+    [2, 1, 2],
+  );
 });
 
 test('répartition par agent et modèle, sans déduire le modèle choisi par défaut', () => {
@@ -34,9 +43,15 @@ test('répartition par agent et modèle, sans déduire le modèle choisi par dé
   assert.equal(claude.active, 0);
   assert.equal(codex.count, 4);
   assert.equal(codex.active, 2);
-  assert.deepEqual(codex.models, [{ model: null, count: 2 }, { model: 'custom', count: 2 }]);
+  assert.deepEqual(codex.models, [
+    { model: null, count: 2 },
+    { model: 'custom', count: 2 },
+  ]);
   assert.deepEqual(grok, { agent: 'grok', count: 0, active: 0, models: [], tokens: null, measured: 0, partial: false });
-  assert.equal(llmStats([], '7d', now).every((r) => r.count === 0 && r.models.length === 0), true);
+  assert.equal(
+    llmStats([], '7d', now).every((r) => r.count === 0 && r.models.length === 0),
+    true,
+  );
 });
 
 test('tokens des sessions sélectionnées : totaux, cache inclus une seule fois et couverture partielle', () => {

@@ -1,5 +1,14 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react';
 import { clipboardImage, uploadProjectImage } from './api.ts';
 import { AttachmentStrip, insertToken, removeToken, restoredAttachment, useImageAttachments } from './attachments.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
@@ -7,7 +16,15 @@ import { LlmSelector, llmChoices } from './LlmSelector.tsx';
 import { readDraft, writeDraft } from './drafts.ts';
 import { MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from './format.ts';
 import { useStore } from './store.tsx';
-import { DEFAULT_SESSION_DEFAULTS, MODE_CHOICES, normalizeMode, type Agent, type Effort, type LaunchSpec, type Mode } from './types.ts';
+import {
+  DEFAULT_SESSION_DEFAULTS,
+  MODE_CHOICES,
+  normalizeMode,
+  type Agent,
+  type Effort,
+  type LaunchSpec,
+  type Mode,
+} from './types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
 
 // Agent, mode, modèle, effort et prompt d'une nouvelle session : page projet, et modales lancées depuis une
@@ -40,7 +57,7 @@ export function NewSessionForm({
   onCancel?: () => void;
 }) {
   const { agents, projects, updateProject } = useStore();
-  const project=projects.find((p) => p.id === projectId);
+  const project = projects.find((p) => p.id === projectId);
   const launchLabel = submitLabel ?? `Lancer ${WORKSPACE_TARGET[project?.workspaceMode ?? 'isolated']}`;
   const defaults = project?.sessionDefaults ?? DEFAULT_SESSION_DEFAULTS;
   const available = agents.filter((a) => a.available);
@@ -67,20 +84,23 @@ export function NewSessionForm({
   );
 
   // Sérialiser les modifications rapides évite qu'une réponse ancienne remplace le dernier choix.
-  const saveDefaults = useCallback((patch: Partial<LaunchSpec>): void => {
-    if (patch.prompt !== undefined) queuedPrompt.current = patch.prompt;
-    setSavingDefaults((count) => count + 1);
-    saveQueue.current = saveQueue.current.then(async () => {
-      try {
-        await updateProject(projectId, { sessionDefaults: patch });
-        setDefaultsError(null);
-      } catch (err) {
-        setDefaultsError(err instanceof Error ? err.message : 'Enregistrement impossible');
-      } finally {
-        setSavingDefaults((count) => count - 1);
-      }
-    });
-  }, [projectId, updateProject]);
+  const saveDefaults = useCallback(
+    (patch: Partial<LaunchSpec>): void => {
+      if (patch.prompt !== undefined) queuedPrompt.current = patch.prompt;
+      setSavingDefaults((count) => count + 1);
+      saveQueue.current = saveQueue.current.then(async () => {
+        try {
+          await updateProject(projectId, { sessionDefaults: patch });
+          setDefaultsError(null);
+        } catch (err) {
+          setDefaultsError(err instanceof Error ? err.message : 'Enregistrement impossible');
+        } finally {
+          setSavingDefaults((count) => count - 1);
+        }
+      });
+    },
+    [projectId, updateProject],
+  );
 
   const expandedPrompt = images.expand(prompt);
   useEffect(() => {
@@ -104,12 +124,18 @@ export function NewSessionForm({
     const list = agents.filter((a) => a.available);
     const next = list.find((a) => a.agent === defaults.agent) ?? list[0];
     if (next === undefined) return;
-    const nextModel = next.agent === defaults.agent && next.models.some((m) => m.value === defaults.model) ? defaults.model : null;
-    const supported = nextModel === null ? next.efforts : next.models.find((m) => m.value === nextModel)?.efforts ?? [];
+    const nextModel =
+      next.agent === defaults.agent && next.models.some((m) => m.value === defaults.model) ? defaults.model : null;
+    const supported =
+      nextModel === null ? next.efforts : (next.models.find((m) => m.value === nextModel)?.efforts ?? []);
     setAgent(next.agent);
     setMode(normalizeMode(defaults.mode));
     setModel(nextModel);
-    setEffort(next.agent === defaults.agent && defaults.effort !== null && supported.includes(defaults.effort) ? defaults.effort : null);
+    setEffort(
+      next.agent === defaults.agent && defaults.effort !== null && supported.includes(defaults.effort)
+        ? defaults.effort
+        : null,
+    );
   }, [agents, defaults.agent, defaults.mode, defaults.model, defaults.effort, savingDefaults, busy]);
 
   useEffect(() => {
@@ -203,7 +229,9 @@ export function NewSessionForm({
       {heading || project?.workspaceMode === 'shared' ? (
         <div className="new-session-heading">
           {heading ? <h2>{heading}</h2> : null}
-          {project?.workspaceMode === 'shared' ? <p className="hint">Travail dans le dossier du projet, sur sa branche courante.</p> : null}
+          {project?.workspaceMode === 'shared' ? (
+            <p className="hint">Travail dans le dossier du projet, sur sa branche courante.</p>
+          ) : null}
         </div>
       ) : null}
       <LlmSelector
@@ -211,7 +239,7 @@ export function NewSessionForm({
         value={{ agent, model, effort }}
         defaults={defaults}
         disabled={busy}
-        onChange={selection => {
+        onChange={(selection) => {
           setAgent(selection.agent);
           setModel(selection.model);
           setEffort(selection.effort);
@@ -224,7 +252,12 @@ export function NewSessionForm({
             compact
             label="Mode"
             value={mode}
-            options={MODE_CHOICES.map((m) => ({ value: m, label: MODE_CHIP[m], title: MODE_DESCRIPTION[m], danger: m === 'bypass' }))}
+            options={MODE_CHOICES.map((m) => ({
+              value: m,
+              label: MODE_CHIP[m],
+              title: MODE_DESCRIPTION[m],
+              danger: m === 'bypass',
+            }))}
             onChange={(next) => {
               setMode(next);
               saveDefaults({ mode: next });
@@ -243,7 +276,8 @@ export function NewSessionForm({
             images.prune(e.target.value);
           }}
           onBlur={() => {
-            if (promptEdited && !images.pending && expandedPrompt !== queuedPrompt.current) saveDefaults({ prompt: expandedPrompt });
+            if (promptEdited && !images.pending && expandedPrompt !== queuedPrompt.current)
+              saveDefaults({ prompt: expandedPrompt });
           }}
           onKeyDown={onKeyDown}
           onPaste={onPromptPaste}
@@ -264,8 +298,14 @@ export function NewSessionForm({
       {draftError ? <p className="form-error">Brouillon non sauvegardé : {draftError}</p> : null}
       {defaultsError ? <p className="form-error">Réglages non sauvegardés : {defaultsError}</p> : null}
       <div className="row-actions">
-        <button type="submit" className="btn primary" disabled={launchDisabled || busy || images.pending || available.length === 0}>
-          <ActivityStatus active={busy || images.pending}>{busy ? 'Lancement…' : images.pending ? 'Envoi des images…' : launchLabel}</ActivityStatus>
+        <button
+          type="submit"
+          className="btn primary"
+          disabled={launchDisabled || busy || images.pending || available.length === 0}
+        >
+          <ActivityStatus active={busy || images.pending}>
+            {busy ? 'Lancement…' : images.pending ? 'Envoi des images…' : launchLabel}
+          </ActivityStatus>
         </button>
         {onCancel ? (
           <button type="button" className="btn" onClick={onCancel}>

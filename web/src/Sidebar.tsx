@@ -48,9 +48,7 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
     <aside className="sidebar" id="sidebar">
       <MachineSwitcher />
       <header className="sidebar-head">
-        <div className={`ws-pill ${connected ? 'on' : 'off'}`}>
-          {connected ? 'connecté' : 'reconnexion…'}
-        </div>
+        <div className={`ws-pill ${connected ? 'on' : 'off'}`}>{connected ? 'connecté' : 'reconnexion…'}</div>
         <button
           type="button"
           className={`slack-pill ${slack?.enabled ? 'on' : 'off'}`}
@@ -117,7 +115,11 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
 const SLACK_TOGGLES: { key: 'waiting' | 'idle' | 'agentMessages'; label: string; hint: string }[] = [
   { key: 'waiting', label: 'Confirmations', hint: 'Une session attend une validation ou une réponse' },
   { key: 'idle', label: 'Fins de tour', hint: "L'agent a terminé et rend la main" },
-  { key: 'agentMessages', label: 'Messages des agents', hint: 'Envoyés par cerebro-notify (notifications et questions)' },
+  {
+    key: 'agentMessages',
+    label: 'Messages des agents',
+    hint: 'Envoyés par cerebro-notify (notifications et questions)',
+  },
 ];
 
 function SlackPanel({ status, onChange }: { status: SlackStatus; onChange: (status: SlackStatus) => void }) {
@@ -224,7 +226,11 @@ function GeneralSlackLead() {
       {status ? (
         <label
           className="slack-toggle"
-          title={local ? "On ne rend pas la main : prends-la depuis l'autre machine." : 'Traiter ici help, list et les questions « ? »'}
+          title={
+            local
+              ? "On ne rend pas la main : prends-la depuis l'autre machine."
+              : 'Traiter ici help, list et les questions « ? »'
+          }
         >
           <input type="checkbox" checked={local} disabled={local || busy} onChange={() => void acquire()} />
           Commandes générales

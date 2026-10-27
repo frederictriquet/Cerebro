@@ -122,7 +122,11 @@ export function PathInput({
             </label>
           </div>
           {error ? <p className="form-error">{error}</p> : null}
-          {loading ? <p className="meta"><ActivityStatus>Chargement des dossiers…</ActivityStatus></p> : null}
+          {loading ? (
+            <p className="meta">
+              <ActivityStatus>Chargement des dossiers…</ActivityStatus>
+            </p>
+          ) : null}
           <ul className="dir-picker-list" aria-busy={loading}>
             {listing && dirs.length === 0 ? <li className="empty-hint">Aucun sous-dossier</li> : null}
             {listing

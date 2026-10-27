@@ -96,8 +96,15 @@ export function Term({
       if (event.ctrlKey && !event.altKey && !event.metaKey && event.code === 'KeyV') return false;
       // Échap seul est réservé à Cerebro (retour au projet) ; Maj+Échap et le bouton rapide l'envoient à la session.
       const escape = onEscapeRef.current;
-      if (escape && event.key === 'Escape' && !event.shiftKey && !event.ctrlKey && !event.altKey
-        && !event.metaKey && !event.isComposing) {
+      if (
+        escape &&
+        event.key === 'Escape' &&
+        !event.shiftKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.metaKey &&
+        !event.isComposing
+      ) {
         if (event.type === 'keydown') {
           event.preventDefault();
           escape();
@@ -122,9 +129,7 @@ export function Term({
       },
       sendArrow(direction: 'up' | 'down'): boolean {
         const application = term.modes.applicationCursorKeysMode;
-        const data = direction === 'up'
-          ? (application ? '\x1bOA' : '\x1b[A')
-          : (application ? '\x1bOB' : '\x1b[B');
+        const data = direction === 'up' ? (application ? '\x1bOA' : '\x1b[A') : application ? '\x1bOB' : '\x1b[B';
         return send(socketRef.current, { type: 'input', data });
       },
       focus(): void {

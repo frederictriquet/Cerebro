@@ -19,7 +19,8 @@ export interface VersionInfo {
 export type Compatibility = 'same' | 'compatible' | 'incompatible' | 'unknown';
 
 // Grammaire officielle (semver.org), sans métadonnée de build : le commit en tient lieu.
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$/;
+const SEMVER =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$/;
 
 export function isSemver(version: string): boolean {
   return SEMVER.test(version);

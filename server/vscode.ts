@@ -8,7 +8,14 @@ import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { DATA_DIR } from './config.ts';
 import { findProcessesByArgument, processTree, signalProcesses } from './proc.ts';
-import { filteredHeaders, isWebSocketUpgrade, relayHttp, relayWebSocket, websocketHeaders, withoutCookie } from './proxy.ts';
+import {
+  filteredHeaders,
+  isWebSocketUpgrade,
+  relayHttp,
+  relayWebSocket,
+  websocketHeaders,
+  withoutCookie,
+} from './proxy.ts';
 
 // VS Code complet, affiché dans une iframe par l'UI et relayé sous /vscode/ (sous /m/<id>/vscode/ par la
 // passerelle multi-machines). Une seule instance pour tous les projets : le dossier est choisi par `?folder=`.
@@ -51,7 +58,10 @@ function freePort(): Promise<number> {
 
 function killLeftovers(): void {
   const roots = findProcessesByArgument(SERVER_DATA_DIR);
-  signalProcesses(roots.flatMap((root) => processTree(root.pid)), 'SIGTERM');
+  signalProcesses(
+    roots.flatMap((root) => processTree(root.pid)),
+    'SIGTERM',
+  );
 }
 
 function loadToken(): string {
@@ -163,7 +173,11 @@ export class VscodeServer {
     if (installedServer() === null) {
       // Premier lancement : `code serve-web` télécharge le serveur, puis on l'arrête.
       const port = await freePort();
-      await run(CLI, ['serve-web', '--host', LOOPBACK, '--port', String(port), '--without-connection-token', ...common], port);
+      await run(
+        CLI,
+        ['serve-web', '--host', LOOPBACK, '--port', String(port), '--without-connection-token', ...common],
+        port,
+      );
       killLeftovers();
     }
     const server = installedServer();
@@ -174,9 +188,12 @@ export class VscodeServer {
     const child = await run(
       server,
       [
-        '--host', LOOPBACK,
-        '--port', String(port),
-        '--connection-token', token,
+        '--host',
+        LOOPBACK,
+        '--port',
+        String(port),
+        '--connection-token',
+        token,
         '--disable-telemetry',
         '--disable-workspace-trust',
         ...common,

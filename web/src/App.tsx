@@ -47,14 +47,7 @@ function TokenScreen() {
         <p>Cette instance exige un jeton pour accéder à l'API. Il est mémorisé par ce navigateur.</p>
         <label>
           Jeton
-          <input
-            name="token"
-            type="password"
-            required
-            autoFocus
-            autoComplete="current-password"
-            spellCheck={false}
-          />
+          <input name="token" type="password" required autoFocus autoComplete="current-password" spellCheck={false} />
         </label>
         {error ? <p className="form-error">{error}</p> : null}
         <button type="submit" className="btn primary" disabled={busy}>

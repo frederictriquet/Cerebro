@@ -30,9 +30,9 @@ export async function assertLoopbackPortFree(host: string, port: number, label: 
     if (await isListening(other, port)) {
       const address = other.includes(':') ? `[${other}]:${port}` : `${other}:${port}`;
       throw new Error(
-        `${label} : le port ${port} est déjà utilisé par un autre processus sur ${address}. `
-          + `Un navigateur ouvrant « localhost:${port} » pourrait joindre ce processus au lieu de Cerebro. `
-          + `Arrêtez-le (lsof -nP -iTCP:${port} -sTCP:LISTEN) ou changez de port.`,
+        `${label} : le port ${port} est déjà utilisé par un autre processus sur ${address}. ` +
+          `Un navigateur ouvrant « localhost:${port} » pourrait joindre ce processus au lieu de Cerebro. ` +
+          `Arrêtez-le (lsof -nP -iTCP:${port} -sTCP:LISTEN) ou changez de port.`,
       );
     }
   }

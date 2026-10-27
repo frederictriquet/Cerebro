@@ -3,7 +3,8 @@ import type { ReactNode } from 'react';
 // Rendu Markdown minimal des rapports de council, sans dépendance ni HTML brut : titres, listes
 // (imbriquées par indentation), citations, tableaux, blocs de code, gras, italique, code et liens http(s).
 
-const INLINE = /`([^`]+)`|\*\*(.+?)\*\*|__(.+?)__|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(?<![\w*])\*(?!\s)([^*]+?)\*(?![\w*])|(?<!\w)_(?!\s)([^_]+?)_(?!\w)/g;
+const INLINE =
+  /`([^`]+)`|\*\*(.+?)\*\*|__(.+?)__|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(?<![\w*])\*(?!\s)([^*]+?)\*(?![\w*])|(?<!\w)_(?!\s)([^_]+?)_(?!\w)/g;
 
 function inline(text: string): ReactNode[] {
   const nodes: ReactNode[] = [];
@@ -14,8 +15,14 @@ function inline(text: string): ReactNode[] {
     const [, code, bold, boldAlt, label, url, italic, italicAlt] = match;
     const key = nodes.length;
     if (code !== undefined) nodes.push(<code key={key}>{code}</code>);
-    else if (bold !== undefined || boldAlt !== undefined) nodes.push(<strong key={key}>{inline(bold ?? boldAlt!)}</strong>);
-    else if (label !== undefined) nodes.push(<a key={key} href={url} target="_blank" rel="noreferrer">{inline(label)}</a>);
+    else if (bold !== undefined || boldAlt !== undefined)
+      nodes.push(<strong key={key}>{inline(bold ?? boldAlt!)}</strong>);
+    else if (label !== undefined)
+      nodes.push(
+        <a key={key} href={url} target="_blank" rel="noreferrer">
+          {inline(label)}
+        </a>,
+      );
     else nodes.push(<em key={key}>{inline(italic ?? italicAlt!)}</em>);
     last = index + match[0].length;
   }
@@ -32,7 +39,14 @@ const TABLE_RULE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
 const RULE = /^\s*([-*_])(\s*\1){2,}\s*$/;
 
 function startsBlock(line: string): boolean {
-  return FENCE.test(line) || HEADING.test(line) || LIST_ITEM.test(line) || QUOTE.test(line) || TABLE_ROW.test(line) || RULE.test(line);
+  return (
+    FENCE.test(line) ||
+    HEADING.test(line) ||
+    LIST_ITEM.test(line) ||
+    QUOTE.test(line) ||
+    TABLE_ROW.test(line) ||
+    RULE.test(line)
+  );
 }
 
 function indentOf(line: string): number {
@@ -59,7 +73,7 @@ function list(lines: string[], start: number, key: number): [ReactNode, number] 
     } else if (line.trim() === '') {
       // Une ligne vide ne termine la liste que si la suivante n'en fait plus partie.
       const next = lines[index + 1];
-      if (next === undefined || indentOf(next) <= indent && !LIST_ITEM.test(next)) break;
+      if (next === undefined || (indentOf(next) <= indent && !LIST_ITEM.test(next))) break;
       items.at(-1)!.children.push('');
     } else if (indentOf(line) > indent) {
       items.at(-1)!.children.push(line);
@@ -79,7 +93,12 @@ function list(lines: string[], start: number, key: number): [ReactNode, number] 
         const split = firstNested === -1 ? children.length : firstNested;
         const text = [item.text, ...children.slice(0, split).map((line) => line.trim())].join(' ');
         const nested = children.slice(split);
-        return <li key={itemIndex}>{inline(text)}{nested.length > 0 ? blocks(dedent(nested)) : null}</li>;
+        return (
+          <li key={itemIndex}>
+            {inline(text)}
+            {nested.length > 0 ? blocks(dedent(nested)) : null}
+          </li>
+        );
       })}
     </Tag>,
     index,
@@ -92,7 +111,12 @@ function dedent(lines: string[]): string[] {
 }
 
 function cells(line: string): string[] {
-  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim());
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
 }
 
 function blocks(lines: string[]): ReactNode[] {
@@ -111,7 +135,11 @@ function blocks(lines: string[]): ReactNode[] {
       index++;
       while (index < lines.length && !lines[index]!.trimStart().startsWith(fence[1]!)) body.push(lines[index++]!);
       index++;
-      nodes.push(<pre key={key}><code>{body.join('\n')}</code></pre>);
+      nodes.push(
+        <pre key={key}>
+          <code>{body.join('\n')}</code>
+        </pre>,
+      );
       continue;
     }
     const heading = HEADING.exec(line);
@@ -123,7 +151,7 @@ function blocks(lines: string[]): ReactNode[] {
       continue;
     }
     if (RULE.test(line)) {
-      nodes.push(<hr key={key}/>);
+      nodes.push(<hr key={key} />);
       index++;
       continue;
     }
@@ -144,15 +172,34 @@ function blocks(lines: string[]): ReactNode[] {
       const rows: string[][] = [];
       index += 2;
       while (index < lines.length && TABLE_ROW.test(lines[index]!)) rows.push(cells(lines[index++]!));
-      nodes.push(<div key={key} className="md-table"><table>
-        <thead><tr>{head.map((cell, cellIndex) => <th key={cellIndex}>{inline(cell)}</th>)}</tr></thead>
-        <tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{inline(cell)}</td>)}</tr>)}</tbody>
-      </table></div>);
+      nodes.push(
+        <div key={key} className="md-table">
+          <table>
+            <thead>
+              <tr>
+                {head.map((cell, cellIndex) => (
+                  <th key={cellIndex}>{inline(cell)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={rowIndex}>
+                  {row.map((cell, cellIndex) => (
+                    <td key={cellIndex}>{inline(cell)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
       continue;
     }
     const paragraph: string[] = [line.trim()];
     index++;
-    while (index < lines.length && lines[index]!.trim() !== '' && !startsBlock(lines[index]!)) paragraph.push(lines[index++]!.trim());
+    while (index < lines.length && lines[index]!.trim() !== '' && !startsBlock(lines[index]!))
+      paragraph.push(lines[index++]!.trim());
     nodes.push(<p key={key}>{inline(paragraph.join(' '))}</p>);
   }
   return nodes;

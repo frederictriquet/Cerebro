@@ -26,14 +26,18 @@ export function SessionRow({
   onError: (message: string) => void;
 }) {
   const { killSession, resumeSession, deleteSession, sendSessionInput } = useStore();
-  const reportError = (fallback: string) => (err: unknown): void => {
-    onError(err instanceof Error ? err.message : fallback);
-  };
+  const reportError =
+    (fallback: string) =>
+    (err: unknown): void => {
+      onError(err instanceof Error ? err.message : fallback);
+    };
   const onKill = (): void => {
     void killSession(session.id).catch(reportError('Arrêt impossible'));
   };
   const onResume = (): void => {
-    void resumeSession(session.id).then((live) => go(`#/s/${live.id}`)).catch(reportError('Reprise impossible'));
+    void resumeSession(session.id)
+      .then((live) => go(`#/s/${live.id}`))
+      .catch(reportError('Reprise impossible'));
   };
   const onDelete = (): void => {
     void deleteSession(session.id).catch(reportError('Suppression impossible'));
@@ -54,10 +58,14 @@ export function SessionRow({
         <a href={href(`#/s/${session.id}`)} className="session-main">
           <span className="session-row-titleline">
             <StatusDot status={shown} title={STATUS_LABEL[shown]} />
-            <span className="session-row-title">{grouped ? groupedSessionTitle(session) : sessionTitle(session.title)}</span>
+            <span className="session-row-title">
+              {grouped ? groupedSessionTitle(session) : sessionTitle(session.title)}
+            </span>
           </span>
           <span className="session-row-meta">
-            <span className="pill"><AgentLabel agent={session.agent} /></span>
+            <span className="pill">
+              <AgentLabel agent={session.agent} />
+            </span>
             <span className={`pill status ${shown}`}>{STATUS_LABEL[shown]}</span>
             <WorktreeLabel worktree={session.worktree} />
             <span className="meta">{relativeTime(session.updatedAt, now)}</span>
@@ -94,16 +102,37 @@ export function SessionRow({
           </>
         ) : null}
         {session.status !== 'exited' ? (
-          <button type="button" className="btn" title={session.worktree !== null && !session.worktree.removed ? `Arrête la conversation. ${RELEASE_HINT}` : undefined} onClick={onKill}>
+          <button
+            type="button"
+            className="btn"
+            title={
+              session.worktree !== null && !session.worktree.removed
+                ? `Arrête la conversation. ${RELEASE_HINT}`
+                : undefined
+            }
+            onClick={onKill}
+          >
             Arrêter
           </button>
         ) : null}
         {session.status === 'exited' && session.agentSessionId ? (
-          <button type="button" className="btn" disabled={resumeBlocked !== null} title={resumeBlocked ?? undefined} onClick={onResume}>
+          <button
+            type="button"
+            className="btn"
+            disabled={resumeBlocked !== null}
+            title={resumeBlocked ?? undefined}
+            onClick={onResume}
+          >
             Reprendre
           </button>
         ) : null}
-        <DelayedActionButton disabled={session.protected} title={session.protected ? SESSION_PROTECTED_HINT : undefined} onAction={onDelete}>Supprimer</DelayedActionButton>
+        <DelayedActionButton
+          disabled={session.protected}
+          title={session.protected ? SESSION_PROTECTED_HINT : undefined}
+          onAction={onDelete}
+        >
+          Supprimer
+        </DelayedActionButton>
       </div>
       {awaiting && preview.open ? <ScreenPopover sessionId={session.id} anchorRef={anchorRef} /> : null}
     </li>

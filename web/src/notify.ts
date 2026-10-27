@@ -108,7 +108,9 @@ export function showFindingsNotification(session: Session, machineId?: string | 
       window.location.hash = sessionHash(session.id, target, 'findings');
       notification.close();
     };
-  } catch { /* Notifications indisponibles. */ }
+  } catch {
+    /* Notifications indisponibles. */
+  }
 }
 
 let audioCtx: AudioContext | null = null;

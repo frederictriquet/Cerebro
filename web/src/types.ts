@@ -1,7 +1,8 @@
 export type Agent = 'claude' | 'codex' | 'grok';
 export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
-export type TaskExecution = {type:'llm'} | {type:'command';commandId:string;completion:'manual'|'exit-zero'};
+export type TaskExecution =
+  { type: 'llm' } | { type: 'command'; commandId: string; completion: 'manual' | 'exit-zero' };
 export type TaskStatus = 'todo' | 'started' | 'done';
 export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export type WorkspaceMode = 'isolated' | 'shared';
@@ -27,7 +28,11 @@ export interface LaunchSpec {
 }
 
 export const DEFAULT_SESSION_DEFAULTS: Readonly<LaunchSpec> = {
-  agent: 'claude', mode: 'auto', model: null, effort: null, prompt: '',
+  agent: 'claude',
+  mode: 'auto',
+  model: null,
+  effort: null,
+  prompt: '',
 };
 export interface CommitSettings {
   agent: Agent;
@@ -264,14 +269,10 @@ export type EventsMessage =
   | { type: 'findings-available'; session: Session }
   | { type: 'peers' };
 
-export type TermClientMessage =
-  | { type: 'input'; data: string }
-  | { type: 'resize'; cols: number; rows: number };
+export type TermClientMessage = { type: 'input'; data: string } | { type: 'resize'; cols: number; rows: number };
 
 export type TermServerMessage =
-  | { type: 'snapshot'; data: string }
-  | { type: 'output'; data: string }
-  | { type: 'exit'; exitCode: number | null };
+  { type: 'snapshot'; data: string } | { type: 'output'; data: string } | { type: 'exit'; exitCode: number | null };
 
 export function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
@@ -290,9 +291,7 @@ function isEffort(v: unknown): v is Effort {
 }
 
 export function isStatus(v: unknown): v is Status {
-  return (
-    v === 'starting' || v === 'running' || v === 'waiting' || v === 'idle' || v === 'exited'
-  );
+  return v === 'starting' || v === 'running' || v === 'waiting' || v === 'idle' || v === 'exited';
 }
 
 function asString(v: unknown): string | null {
@@ -317,7 +316,11 @@ function asNullableNumber(v: unknown): number | null | undefined {
 
 function parseLlm(v: unknown): Llm | null {
   if (!isRecord(v) || !isAgent(v.agent)) return null;
-  return { agent: v.agent, model: typeof v.model === 'string' ? v.model : null, effort: isEffort(v.effort) ? v.effort : null };
+  return {
+    agent: v.agent,
+    model: typeof v.model === 'string' ? v.model : null,
+    effort: isEffort(v.effort) ? v.effort : null,
+  };
 }
 
 export function parseCouncilSettings(v: unknown): CouncilSettings | null {
@@ -341,8 +344,13 @@ export function parsePersona(v: unknown): Persona | null {
   if (id === null || name === null || prompt === null) return null;
   const createdAt = asNumber(v.createdAt) ?? 0;
   return {
-    id, name, prompt, description: asString(v.description) ?? '', builtin: v.builtin === true,
-    createdAt, updatedAt: asNumber(v.updatedAt) ?? createdAt,
+    id,
+    name,
+    prompt,
+    description: asString(v.description) ?? '',
+    builtin: v.builtin === true,
+    createdAt,
+    updatedAt: asNumber(v.updatedAt) ?? createdAt,
   };
 }
 
@@ -372,8 +380,11 @@ function parseCouncilAnswer(v: unknown): CouncilAnswer | null {
   const advisorId = asString(v.advisorId);
   if (advisorId === null) return null;
   return {
-    advisorId, text: asText(v.text), error: asText(v.error),
-    startedAt: asNumber(v.startedAt) ?? 0, finishedAt: asNumber(v.finishedAt),
+    advisorId,
+    text: asText(v.text),
+    error: asText(v.error),
+    startedAt: asNumber(v.startedAt) ?? 0,
+    finishedAt: asNumber(v.finishedAt),
   };
 }
 
@@ -382,11 +393,18 @@ function parseCouncilReview(v: unknown): CouncilReview | null {
   const advisorId = asString(v.advisorId);
   if (advisorId === null) return null;
   const ranking = Array.isArray(v.ranking)
-    ? v.ranking.flatMap((r) => (isRecord(r) && typeof r.letter === 'string' ? [{ letter: r.letter, reason: asText(r.reason) ?? '' }] : []))
+    ? v.ranking.flatMap((r) =>
+        isRecord(r) && typeof r.letter === 'string' ? [{ letter: r.letter, reason: asText(r.reason) ?? '' }] : [],
+      )
     : [];
   return {
-    advisorId, ranking, blindSpot: asText(v.blindSpot), missed: asText(v.missed), error: asText(v.error),
-    startedAt: asNumber(v.startedAt) ?? 0, finishedAt: asNumber(v.finishedAt),
+    advisorId,
+    ranking,
+    blindSpot: asText(v.blindSpot),
+    missed: asText(v.missed),
+    error: asText(v.error),
+    startedAt: asNumber(v.startedAt) ?? 0,
+    finishedAt: asNumber(v.finishedAt),
   };
 }
 
@@ -400,8 +418,10 @@ function parseCouncilImage(v: unknown): CouncilImage | null {
 function parseCouncilSynthesis(v: unknown): CouncilSynthesis | null {
   if (!isRecord(v)) return null;
   return {
-    agreements: asText(v.agreements) ?? '', disagreements: asText(v.disagreements) ?? '',
-    blindSpots: asText(v.blindSpots) ?? '', recommendation: asText(v.recommendation) ?? '',
+    agreements: asText(v.agreements) ?? '',
+    disagreements: asText(v.disagreements) ?? '',
+    blindSpots: asText(v.blindSpots) ?? '',
+    recommendation: asText(v.recommendation) ?? '',
     firstAction: asText(v.firstAction) ?? '',
   };
 }
@@ -418,17 +438,39 @@ export function parseCouncilRun(v: unknown): CouncilRun | null {
   const status = COUNCIL_STATUSES.find((s) => s === v.status);
   const phase = COUNCIL_PHASES.find((p) => p === v.phase);
   const startedAt = asNumber(v.startedAt);
-  if (id === null || question === null || settings === null || status === undefined || phase === undefined || startedAt === null) return null;
+  if (
+    id === null ||
+    question === null ||
+    settings === null ||
+    status === undefined ||
+    phase === undefined ||
+    startedAt === null
+  )
+    return null;
   const letters: Record<string, string> = {};
   if (isRecord(v.letters)) {
-    for (const [advisorId, letter] of Object.entries(v.letters)) if (typeof letter === 'string') letters[advisorId] = letter;
+    for (const [advisorId, letter] of Object.entries(v.letters))
+      if (typeof letter === 'string') letters[advisorId] = letter;
   }
   return {
-    id, projectId: asString(v.projectId), origin: v.origin === 'slack' ? 'slack' : 'web', question,
-    context: asText(v.context) ?? '', images: parseItems(v.images, parseCouncilImage), readProject: v.readProject === true, settings,
-    advisors: parseItems(v.advisors, parseAdvisor), status, phase, letters,
-    answers: parseItems(v.answers, parseCouncilAnswer), reviews: parseItems(v.reviews, parseCouncilReview),
-    synthesis: parseCouncilSynthesis(v.synthesis), error: asText(v.error), startedAt, finishedAt: asNumber(v.finishedAt),
+    id,
+    projectId: asString(v.projectId),
+    origin: v.origin === 'slack' ? 'slack' : 'web',
+    question,
+    context: asText(v.context) ?? '',
+    images: parseItems(v.images, parseCouncilImage),
+    readProject: v.readProject === true,
+    settings,
+    advisors: parseItems(v.advisors, parseAdvisor),
+    status,
+    phase,
+    letters,
+    answers: parseItems(v.answers, parseCouncilAnswer),
+    reviews: parseItems(v.reviews, parseCouncilReview),
+    synthesis: parseCouncilSynthesis(v.synthesis),
+    error: asText(v.error),
+    startedAt,
+    finishedAt: asNumber(v.finishedAt),
   };
 }
 
@@ -468,9 +510,20 @@ export function parseProject(v: unknown): Project | null {
     model: typeof resolution.model === 'string' ? resolution.model : null,
     effort: isEffort(resolution.effort) ? resolution.effort : null,
   };
-  const workspaceMode:WorkspaceMode=v.workspaceMode==='shared'?'shared':'isolated';
+  const workspaceMode: WorkspaceMode = v.workspaceMode === 'shared' ? 'shared' : 'isolated';
   const councilSettings = parseCouncilSettings(v.councilSettings);
-  return { id, name, path, color, sessionDefaults, commitSettings, resolutionSettings, councilSettings, workspaceMode, createdAt };
+  return {
+    id,
+    name,
+    path,
+    color,
+    sessionDefaults,
+    commitSettings,
+    resolutionSettings,
+    councilSettings,
+    workspaceMode,
+    createdAt,
+  };
 }
 
 export function parseSession(v: unknown): Session | null {
@@ -524,9 +577,14 @@ export function parseSession(v: unknown): Session | null {
     updatedAt,
     worktree,
     // Serveurs antérieurs : le lien peut encore être retrouvé par les tâches.
-    epic: isRecord(v.epic) && typeof v.epic.id === 'string' && typeof v.epic.title === 'string'
-      ? { id: v.epic.id, title: v.epic.title } : null,
-    pendingFindings: typeof v.pendingFindings === 'number' && Number.isSafeInteger(v.pendingFindings) && v.pendingFindings >= 0 ? v.pendingFindings : 0,
+    epic:
+      isRecord(v.epic) && typeof v.epic.id === 'string' && typeof v.epic.title === 'string'
+        ? { id: v.epic.id, title: v.epic.title }
+        : null,
+    pendingFindings:
+      typeof v.pendingFindings === 'number' && Number.isSafeInteger(v.pendingFindings) && v.pendingFindings >= 0
+        ? v.pendingFindings
+        : 0,
   };
 }
 
@@ -537,8 +595,12 @@ function parseSessionWorktree(v: unknown): SessionWorktree | null {
   const path = asString(v.path);
   if (name === null || path === null) return null;
   return {
-    name, path, branch: typeof v.branch === 'string' ? v.branch : null, removed: v.removed === true,
-    removedAt: typeof v.removedAt === 'number' ? v.removedAt : null, removedAutomatically: v.removedAutomatically === true,
+    name,
+    path,
+    branch: typeof v.branch === 'string' ? v.branch : null,
+    removed: v.removed === true,
+    removedAt: typeof v.removedAt === 'number' ? v.removedAt : null,
+    removedAutomatically: v.removedAutomatically === true,
   };
 }
 
@@ -566,8 +628,27 @@ export function parseTask(v: unknown): Task | null {
   ) {
     return null;
   }
-  const execution:TaskExecution = isRecord(v.execution) && v.execution.type==='command' && typeof v.execution.commandId==='string' ? {type:'command',commandId:v.execution.commandId,completion:v.execution.completion==='exit-zero'?'exit-zero':'manual'} : {type:'llm'};
-  return { id, projectId, text, execution, status: v.status, sessionId, sourceSessionId, dependsOn, epicId, createdAt, updatedAt };
+  const execution: TaskExecution =
+    isRecord(v.execution) && v.execution.type === 'command' && typeof v.execution.commandId === 'string'
+      ? {
+          type: 'command',
+          commandId: v.execution.commandId,
+          completion: v.execution.completion === 'exit-zero' ? 'exit-zero' : 'manual',
+        }
+      : { type: 'llm' };
+  return {
+    id,
+    projectId,
+    text,
+    execution,
+    status: v.status,
+    sessionId,
+    sourceSessionId,
+    dependsOn,
+    epicId,
+    createdAt,
+    updatedAt,
+  };
 }
 
 export function parseEpic(v: unknown): Epic | null {
@@ -579,7 +660,14 @@ export function parseEpic(v: unknown): Epic | null {
   const sourceSessionId = asNullableString(v.sourceSessionId);
   const createdAt = asNumber(v.createdAt);
   const updatedAt = asNumber(v.updatedAt);
-  if (id === null || projectId === null || title === null || sourceSessionId === undefined || createdAt === null || updatedAt === null) {
+  if (
+    id === null ||
+    projectId === null ||
+    title === null ||
+    sourceSessionId === undefined ||
+    createdAt === null ||
+    updatedAt === null
+  ) {
     return null;
   }
   return { id, projectId, title, description, sourceSessionId, createdAt, updatedAt };
@@ -638,16 +726,35 @@ export function parseGitInfo(v: unknown): GitInfo | null {
   const hasUpstream = v.hasUpstream ?? ahead !== null;
   let pendingCommits: GitInfo['pendingCommits'];
   const preview = v.pendingCommits;
-  if (isRecord(preview) && typeof preview.upstream === 'string' && typeof preview.truncated === 'boolean' && Array.isArray(preview.commits)) {
+  if (
+    isRecord(preview) &&
+    typeof preview.upstream === 'string' &&
+    typeof preview.truncated === 'boolean' &&
+    Array.isArray(preview.commits)
+  ) {
     const commits: NonNullable<GitInfo['pendingCommits']>['commits'] = [];
     for (const commit of preview.commits) {
-      if (!isRecord(commit) || typeof commit.hash !== 'string' || typeof commit.subject !== 'string' || typeof commit.author !== 'string') return null;
+      if (
+        !isRecord(commit) ||
+        typeof commit.hash !== 'string' ||
+        typeof commit.subject !== 'string' ||
+        typeof commit.author !== 'string'
+      )
+        return null;
       commits.push({ hash: commit.hash, subject: commit.subject, author: commit.author });
     }
     pendingCommits = { upstream: preview.upstream, truncated: preview.truncated, commits };
   }
   const pendingCommitsError = typeof v.pendingCommitsError === 'string' ? v.pendingCommitsError : undefined;
-  return { branch, dirty: v.dirty, ahead, hasCommits, hasUpstream, ...(pendingCommits ? { pendingCommits } : {}), ...(pendingCommitsError ? { pendingCommitsError } : {}) };
+  return {
+    branch,
+    dirty: v.dirty,
+    ahead,
+    hasCommits,
+    hasUpstream,
+    ...(pendingCommits ? { pendingCommits } : {}),
+    ...(pendingCommitsError ? { pendingCommitsError } : {}),
+  };
 }
 
 export function parseScreenLines(v: unknown): string[] | null {

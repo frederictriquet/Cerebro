@@ -1,14 +1,5 @@
 import type { EpicRun } from '../../server/epic-runner.ts';
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, wsUrl } from './api.ts';
 import {
   armNotificationPermission,
@@ -162,7 +153,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const awaiting = sessions.filter(needsAttention);
     const waiting = awaiting.filter((s) => s.status === 'waiting').length;
-    updateAttentionIndicators(waiting, awaiting.length - waiting, sessions.reduce((total, session) => total + session.pendingFindings, 0));
+    updateAttentionIndicators(
+      waiting,
+      awaiting.length - waiting,
+      sessions.reduce((total, session) => total + session.pendingFindings, 0),
+    );
   }, [sessions]);
 
   useEffect(() => {
@@ -239,8 +234,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             break;
           case 'epic':
             setEpics((list) => upsertEpic(list, msg.epic));
-            setSessions((list) => list.map((session) => session.epic?.id === msg.epic.id
-              ? { ...session, epic: { id: msg.epic.id, title: msg.epic.title } } : session));
+            setSessions((list) =>
+              list.map((session) =>
+                session.epic?.id === msg.epic.id
+                  ? { ...session, epic: { id: msg.epic.id, title: msg.epic.title } }
+                  : session,
+              ),
+            );
             break;
           case 'epic-deleted':
             setEpics((list) => list.filter((e) => e.id !== msg.id));
@@ -314,19 +314,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setAgents(parseAgentInfoList(await api<unknown>('/api/agents?refresh=1')));
   }, []);
 
-  const createSession = useCallback(
-    async (projectId: string, spec: LaunchSpec): Promise<Session> => {
-      const raw = await api<unknown>(`/api/projects/${projectId}/sessions`, {
-        method: 'POST',
-        body: JSON.stringify(spec),
-      });
-      const session = parseSession(raw);
-      if (!session) throw new Error('Réponse session invalide');
-      setSessions((list) => upsertSession(list, session));
-      return session;
-    },
-    [],
-  );
+  const createSession = useCallback(async (projectId: string, spec: LaunchSpec): Promise<Session> => {
+    const raw = await api<unknown>(`/api/projects/${projectId}/sessions`, {
+      method: 'POST',
+      body: JSON.stringify(spec),
+    });
+    const session = parseSession(raw);
+    if (!session) throw new Error('Réponse session invalide');
+    setSessions((list) => upsertSession(list, session));
+    return session;
+  }, []);
 
   const killSession = useCallback(async (id: string): Promise<void> => {
     await api<unknown>(`/api/sessions/${id}/kill`, { method: 'POST' });
@@ -372,19 +369,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return session;
   }, []);
 
-  const updateProject = useCallback(
-    async (id: string, patch: ProjectPatch): Promise<Project> => {
-      const raw = await api<unknown>(`/api/projects/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify(patch),
-      });
-      const project = parseProject(raw);
-      if (!project) throw new Error('Réponse projet invalide');
-      setProjects((list) => list.map((item) => (item.id === project.id ? project : item)));
-      return project;
-    },
-    [],
-  );
+  const updateProject = useCallback(async (id: string, patch: ProjectPatch): Promise<Project> => {
+    const raw = await api<unknown>(`/api/projects/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+    const project = parseProject(raw);
+    if (!project) throw new Error('Réponse projet invalide');
+    setProjects((list) => list.map((item) => (item.id === project.id ? project : item)));
+    return project;
+  }, []);
 
   const sendSessionInput = useCallback(async (id: string, data: string): Promise<void> => {
     await api<unknown>(`/api/sessions/${id}/input`, {
@@ -407,49 +401,53 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const updateTask = useCallback(
-    async (id: string, patch: TaskPatch): Promise<Task> => {
-      const raw = await api<unknown>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
-      const task = parseTask(raw);
-      if (!task) throw new Error('Réponse tâche invalide');
-      setTasks((list) => upsertTask(list, task));
-      return task;
-    },
-    [],
-  );
+  const updateTask = useCallback(async (id: string, patch: TaskPatch): Promise<Task> => {
+    const raw = await api<unknown>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+    const task = parseTask(raw);
+    if (!task) throw new Error('Réponse tâche invalide');
+    setTasks((list) => upsertTask(list, task));
+    return task;
+  }, []);
 
   const deleteTask = useCallback(async (id: string): Promise<void> => {
     await api<unknown>(`/api/tasks/${id}`, { method: 'DELETE' });
-    setTasks((list) => list.filter((t) => t.id !== id).map((t) => (t.dependsOn.includes(id) ? { ...t, dependsOn: t.dependsOn.filter((d) => d !== id) } : t)));
+    setTasks((list) =>
+      list
+        .filter((t) => t.id !== id)
+        .map((t) => (t.dependsOn.includes(id) ? { ...t, dependsOn: t.dependsOn.filter((d) => d !== id) } : t)),
+    );
   }, []);
 
   const deleteCompletedBacklog = useCallback(async (projectId: string): Promise<void> => {
     const { taskIds, epicIds } = await api<{ taskIds: string[]; epicIds: string[] }>(
-      `/api/projects/${projectId}/backlog/completed`, { method: 'DELETE' },
+      `/api/projects/${projectId}/backlog/completed`,
+      { method: 'DELETE' },
     );
     const deletedTasks = new Set(taskIds);
     const deletedEpics = new Set(epicIds);
-    setTasks((list) => list.filter((task) => !deletedTasks.has(task.id)).map((task) => ({
-      ...task, dependsOn: task.dependsOn.filter((id) => !deletedTasks.has(id)),
-    })));
+    setTasks((list) =>
+      list
+        .filter((task) => !deletedTasks.has(task.id))
+        .map((task) => ({
+          ...task,
+          dependsOn: task.dependsOn.filter((id) => !deletedTasks.has(id)),
+        })),
+    );
     setEpics((list) => list.filter((epic) => !deletedEpics.has(epic.id)));
   }, []);
 
-  const startTask = useCallback(
-    async (id: string, spec: LaunchSpec): Promise<Session> => {
-      const raw = await api<{ task: unknown; session: unknown }>(`/api/tasks/${id}/start`, {
-        method: 'POST',
-        body: JSON.stringify(spec),
-      });
-      const session = parseSession(raw.session);
-      if (!session) throw new Error('Réponse session invalide');
-      const task = parseTask(raw.task);
-      setSessions((list) => upsertSession(list, session));
-      if (task) setTasks((list) => upsertTask(list, task));
-      return session;
-    },
-    [],
-  );
+  const startTask = useCallback(async (id: string, spec: LaunchSpec): Promise<Session> => {
+    const raw = await api<{ task: unknown; session: unknown }>(`/api/tasks/${id}/start`, {
+      method: 'POST',
+      body: JSON.stringify(spec),
+    });
+    const session = parseSession(raw.session);
+    if (!session) throw new Error('Réponse session invalide');
+    const task = parseTask(raw.task);
+    setSessions((list) => upsertSession(list, session));
+    if (task) setTasks((list) => upsertTask(list, task));
+    return session;
+  }, []);
 
   const createEpic = useCallback(async (projectId: string, title: string, description?: string): Promise<Epic> => {
     const raw = await api<unknown>(`/api/projects/${projectId}/epics`, {
@@ -467,8 +465,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const epic = parseEpic(raw);
     if (!epic) throw new Error('Réponse epic invalide');
     setEpics((list) => upsertEpic(list, epic));
-    setSessions((list) => list.map((session) => session.epic?.id === epic.id
-      ? { ...session, epic: { id: epic.id, title: epic.title } } : session));
+    setSessions((list) =>
+      list.map((session) =>
+        session.epic?.id === epic.id ? { ...session, epic: { id: epic.id, title: epic.title } } : session,
+      ),
+    );
     return epic;
   }, []);
 
@@ -483,9 +484,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const markSeen = useCallback(async (id: string): Promise<void> => {
-    setSessions((list) =>
-      list.map((s) => (s.id === id ? { ...s, attention: false } : s)),
-    );
+    setSessions((list) => list.map((s) => (s.id === id ? { ...s, attention: false } : s)));
     try {
       await api<unknown>(`/api/sessions/${id}/seen`, { method: 'POST' });
     } catch {

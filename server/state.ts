@@ -26,19 +26,30 @@ async function fetchRemote<T>(remote: RemoteMachine, path: string, parse: (data:
 
 /** Shared, complete state collection; no inference, no recent-session truncation. */
 export async function collectMachines(db: CerebroDatabase): Promise<MachineState[]> {
-  const local: MachineState = { ok: true, data: {
-    machine: MACHINE_NAME, projects: db.listProjects(), sessions: db.listSessions(), tasks: db.listTasks(), epics: db.listEpics(),
-  } };
-  const remotes = await Promise.all(loadRemotes().map(async (remote): Promise<MachineState> => {
-    try {
-      const [projects, sessions, tasks, epics] = await Promise.all([
-        fetchRemote(remote, '/api/projects', parseProjectList), fetchRemote(remote, '/api/sessions', parseSessionList),
-        fetchRemote(remote, '/api/tasks', parseTaskList), fetchRemote(remote, '/api/epics', parseEpicList),
-      ]);
-      return { ok: true, data: { machine: remote.name, projects, sessions, tasks, epics } };
-    } catch (cause) {
-      return { ok: false, machine: remote.name, error: cause instanceof Error ? cause.message : String(cause) };
-    }
-  }));
+  const local: MachineState = {
+    ok: true,
+    data: {
+      machine: MACHINE_NAME,
+      projects: db.listProjects(),
+      sessions: db.listSessions(),
+      tasks: db.listTasks(),
+      epics: db.listEpics(),
+    },
+  };
+  const remotes = await Promise.all(
+    loadRemotes().map(async (remote): Promise<MachineState> => {
+      try {
+        const [projects, sessions, tasks, epics] = await Promise.all([
+          fetchRemote(remote, '/api/projects', parseProjectList),
+          fetchRemote(remote, '/api/sessions', parseSessionList),
+          fetchRemote(remote, '/api/tasks', parseTaskList),
+          fetchRemote(remote, '/api/epics', parseEpicList),
+        ]);
+        return { ok: true, data: { machine: remote.name, projects, sessions, tasks, epics } };
+      } catch (cause) {
+        return { ok: false, machine: remote.name, error: cause instanceof Error ? cause.message : String(cause) };
+      }
+    }),
+  );
   return [local, ...remotes];
 }

@@ -19,10 +19,21 @@ const message = (cause: unknown): string => (cause instanceof Error ? cause.mess
 
 function Counter({ value, max }: { value: string; max: number }) {
   // Le serveur compte les caractères sans les espaces de début et de fin.
-  return <span className="persona-counter">{value.trim().length} / {max}</span>;
+  return (
+    <span className="persona-counter">
+      {value.trim().length} / {max}
+    </span>
+  );
 }
 
-function PersonaForm({ draft, busy, error, onChange, onSubmit, onCancel }: {
+function PersonaForm({
+  draft,
+  busy,
+  error,
+  onChange,
+  onSubmit,
+  onCancel,
+}: {
   draft: Draft;
   busy: boolean;
   error: string | null;
@@ -31,25 +42,69 @@ function PersonaForm({ draft, busy, error, onChange, onSubmit, onCancel }: {
   onCancel: () => void;
 }) {
   const invalid = draft.name.trim() === '' || draft.prompt.trim() === '';
-  return <form className="persona-form" onSubmit={(event: FormEvent) => { event.preventDefault(); if (!invalid) onSubmit(); }}>
-    <label>
-      <span className="persona-field-head">Nom <Counter value={draft.name} max={MAX_PERSONA_NAME_LENGTH}/></span>
-      <input autoFocus required maxLength={MAX_PERSONA_NAME_LENGTH} value={draft.name} disabled={busy} onChange={event => onChange({ ...draft, name: event.target.value })}/>
-    </label>
-    <label>
-      <span className="persona-field-head">Description brève <Counter value={draft.description} max={MAX_PERSONA_DESCRIPTION_LENGTH}/></span>
-      <input maxLength={MAX_PERSONA_DESCRIPTION_LENGTH} value={draft.description} disabled={busy} onChange={event => onChange({ ...draft, description: event.target.value })}/>
-    </label>
-    <label>
-      <span className="persona-field-head">Prompt <Counter value={draft.prompt} max={MAX_PERSONA_PROMPT_LENGTH}/></span>
-      <textarea required rows={10} maxLength={MAX_PERSONA_PROMPT_LENGTH} value={draft.prompt} disabled={busy} placeholder="Angle de réflexion que le conseiller doit adopter" onChange={event => onChange({ ...draft, prompt: event.target.value })}/>
-    </label>
-    {error ? <p className="form-error" role="alert">{error}</p> : null}
-    <div className="row-actions">
-      <button type="submit" className="btn primary" disabled={busy || invalid}><ActivityStatus active={busy}>{busy ? 'Enregistrement…' : draft.id === null ? 'Créer' : 'Enregistrer'}</ActivityStatus></button>
-      <button type="button" className="btn" disabled={busy} onClick={onCancel}>Annuler</button>
-    </div>
-  </form>;
+  return (
+    <form
+      className="persona-form"
+      onSubmit={(event: FormEvent) => {
+        event.preventDefault();
+        if (!invalid) onSubmit();
+      }}
+    >
+      <label>
+        <span className="persona-field-head">
+          Nom <Counter value={draft.name} max={MAX_PERSONA_NAME_LENGTH} />
+        </span>
+        <input
+          autoFocus
+          required
+          maxLength={MAX_PERSONA_NAME_LENGTH}
+          value={draft.name}
+          disabled={busy}
+          onChange={(event) => onChange({ ...draft, name: event.target.value })}
+        />
+      </label>
+      <label>
+        <span className="persona-field-head">
+          Description brève <Counter value={draft.description} max={MAX_PERSONA_DESCRIPTION_LENGTH} />
+        </span>
+        <input
+          maxLength={MAX_PERSONA_DESCRIPTION_LENGTH}
+          value={draft.description}
+          disabled={busy}
+          onChange={(event) => onChange({ ...draft, description: event.target.value })}
+        />
+      </label>
+      <label>
+        <span className="persona-field-head">
+          Prompt <Counter value={draft.prompt} max={MAX_PERSONA_PROMPT_LENGTH} />
+        </span>
+        <textarea
+          required
+          rows={10}
+          maxLength={MAX_PERSONA_PROMPT_LENGTH}
+          value={draft.prompt}
+          disabled={busy}
+          placeholder="Angle de réflexion que le conseiller doit adopter"
+          onChange={(event) => onChange({ ...draft, prompt: event.target.value })}
+        />
+      </label>
+      {error ? (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="row-actions">
+        <button type="submit" className="btn primary" disabled={busy || invalid}>
+          <ActivityStatus active={busy}>
+            {busy ? 'Enregistrement…' : draft.id === null ? 'Créer' : 'Enregistrer'}
+          </ActivityStatus>
+        </button>
+        <button type="button" className="btn" disabled={busy} onClick={onCancel}>
+          Annuler
+        </button>
+      </div>
+    </form>
+  );
 }
 
 // Catalogue des personas du council : création, modification en place et suppression.
@@ -70,7 +125,9 @@ export function PersonasDialog({ onClose, onChange }: { onClose: () => void; onC
       setLoadError(message(cause));
     }
   };
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+  }, []);
 
   const edit = (next: Draft | null): void => {
     setDraft(next);
@@ -82,12 +139,18 @@ export function PersonasDialog({ onClose, onChange }: { onClose: () => void; onC
     if (draft === null) return;
     setBusy(true);
     setFormError(null);
-    const input: PersonaInput = { name: draft.name.trim(), description: draft.description.trim(), prompt: draft.prompt.trim() };
+    const input: PersonaInput = {
+      name: draft.name.trim(),
+      description: draft.description.trim(),
+      prompt: draft.prompt.trim(),
+    };
     try {
       const saved = draft.id === null ? await createPersona(input) : await updatePersona(draft.id, input);
-      setPersonas(current => {
+      setPersonas((current) => {
         const list = current ?? [];
-        return list.some(p => p.id === saved.id) ? list.map(p => (p.id === saved.id ? saved : p)) : [...list, saved];
+        return list.some((p) => p.id === saved.id)
+          ? list.map((p) => (p.id === saved.id ? saved : p))
+          : [...list, saved];
       });
       setDraft(null);
       onChange?.();
@@ -103,7 +166,7 @@ export function PersonasDialog({ onClose, onChange }: { onClose: () => void; onC
     setDeleteError(null);
     try {
       await deletePersona(persona.id);
-      setPersonas(current => (current ?? []).filter(p => p.id !== persona.id));
+      setPersonas((current) => (current ?? []).filter((p) => p.id !== persona.id));
       if (draft?.id === persona.id) setDraft(null);
       onChange?.();
     } catch (cause) {
@@ -115,43 +178,106 @@ export function PersonasDialog({ onClose, onChange }: { onClose: () => void; onC
     }
   };
 
-  const form = (current: Draft) => <PersonaForm draft={current} busy={busy} error={formError} onChange={setDraft} onSubmit={() => void save()} onCancel={() => edit(null)}/>;
+  const form = (current: Draft) => (
+    <PersonaForm
+      draft={current}
+      busy={busy}
+      error={formError}
+      onChange={setDraft}
+      onSubmit={() => void save()}
+      onCancel={() => edit(null)}
+    />
+  );
   const lastOnes = personas !== null && personas.length <= MIN_PERSONAS;
 
-  return <Modal title="Personas du council" onClose={onClose}>
-    <div className="personas">
-      <p className="hint">Chaque conseiller d’un council joue une persona : un angle de réflexion, indépendant de l’agent choisi pour l’incarner. Les personas fournies se modifient et se suppriment comme les autres.</p>
-      {loadError ? <p className="form-error" role="alert">Chargement impossible : {loadError}</p> : null}
-      {deleteError ? <p className="form-error" role="alert">{deleteError}</p> : null}
-      {personas === null && loadError === null ? <ActivityStatus>Chargement…</ActivityStatus> : null}
-      {personas !== null ? <ul className="persona-list">
-        {personas.map(persona => <li key={persona.id} className="persona-item">
-          {draft?.id === persona.id ? form(draft) : <>
-            <div className="persona-summary">
-              <div className="persona-name">
-                <strong>{persona.name}</strong>
-                {persona.builtin ? <span className="persona-badge" title="Fournie avec Cerebro">fournie</span> : null}
-              </div>
-              {persona.description ? <p className="persona-description">{persona.description}</p> : null}
-            </div>
-            <div className="row-actions">
-              <button type="button" className="btn" disabled={busy || deleting !== null} onClick={() => edit({ id: persona.id, name: persona.name, description: persona.description, prompt: persona.prompt })}>Modifier</button>
-              <DelayedActionButton
-                disabled={busy || deleting !== null || lastOnes}
-                title={lastOnes ? `Le catalogue doit garder au moins ${MIN_PERSONAS} personas` : `Supprime « ${persona.name} » du catalogue ; les rapports existants la conservent`}
-                onAction={() => void remove(persona)}
-              >
-                {deleting === persona.id ? <ActivityStatus>Suppression…</ActivityStatus> : 'Supprimer'}
-              </DelayedActionButton>
-            </div>
-          </>}
-        </li>)}
-      </ul> : null}
-      {draft !== null && draft.id === null ? <div className="persona-item">{form(draft)}</div> : null}
-      <div className="row-actions">
-        {draft === null || draft.id !== null ? <button type="button" className="btn primary" disabled={busy || personas === null} onClick={() => edit({ id: null, name: '', description: '', prompt: '' })}>Nouvelle persona</button> : null}
-        <button type="button" className="btn" disabled={busy} onClick={onClose}>Fermer</button>
+  return (
+    <Modal title="Personas du council" onClose={onClose}>
+      <div className="personas">
+        <p className="hint">
+          Chaque conseiller d’un council joue une persona : un angle de réflexion, indépendant de l’agent choisi pour
+          l’incarner. Les personas fournies se modifient et se suppriment comme les autres.
+        </p>
+        {loadError ? (
+          <p className="form-error" role="alert">
+            Chargement impossible : {loadError}
+          </p>
+        ) : null}
+        {deleteError ? (
+          <p className="form-error" role="alert">
+            {deleteError}
+          </p>
+        ) : null}
+        {personas === null && loadError === null ? <ActivityStatus>Chargement…</ActivityStatus> : null}
+        {personas !== null ? (
+          <ul className="persona-list">
+            {personas.map((persona) => (
+              <li key={persona.id} className="persona-item">
+                {draft?.id === persona.id ? (
+                  form(draft)
+                ) : (
+                  <>
+                    <div className="persona-summary">
+                      <div className="persona-name">
+                        <strong>{persona.name}</strong>
+                        {persona.builtin ? (
+                          <span className="persona-badge" title="Fournie avec Cerebro">
+                            fournie
+                          </span>
+                        ) : null}
+                      </div>
+                      {persona.description ? <p className="persona-description">{persona.description}</p> : null}
+                    </div>
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={busy || deleting !== null}
+                        onClick={() =>
+                          edit({
+                            id: persona.id,
+                            name: persona.name,
+                            description: persona.description,
+                            prompt: persona.prompt,
+                          })
+                        }
+                      >
+                        Modifier
+                      </button>
+                      <DelayedActionButton
+                        disabled={busy || deleting !== null || lastOnes}
+                        title={
+                          lastOnes
+                            ? `Le catalogue doit garder au moins ${MIN_PERSONAS} personas`
+                            : `Supprime « ${persona.name} » du catalogue ; les rapports existants la conservent`
+                        }
+                        onAction={() => void remove(persona)}
+                      >
+                        {deleting === persona.id ? <ActivityStatus>Suppression…</ActivityStatus> : 'Supprimer'}
+                      </DelayedActionButton>
+                    </div>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {draft !== null && draft.id === null ? <div className="persona-item">{form(draft)}</div> : null}
+        <div className="row-actions">
+          {draft === null || draft.id !== null ? (
+            <button
+              type="button"
+              className="btn primary"
+              disabled={busy || personas === null}
+              onClick={() => edit({ id: null, name: '', description: '', prompt: '' })}
+            >
+              Nouvelle persona
+            </button>
+          ) : null}
+          <button type="button" className="btn" disabled={busy} onClick={onClose}>
+            Fermer
+          </button>
+        </div>
       </div>
-    </div>
-  </Modal>;
+    </Modal>
+  );
 }

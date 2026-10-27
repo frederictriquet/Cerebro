@@ -11,7 +11,13 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type WebSocket from 'ws';
 import { EpicRunner } from './epic-runner.ts';
-import { assertEpicWorkspace, epicWorkspace, epicWorkspaceOptions, rememberEpicWorkspace, withEpicWorkspace } from './epic-workspace.ts';
+import {
+  assertEpicWorkspace,
+  epicWorkspace,
+  epicWorkspaceOptions,
+  rememberEpicWorkspace,
+  withEpicWorkspace,
+} from './epic-workspace.ts';
 import { epicReviewInstructions, epicReviewScope, isReviewTask, reviewTaskText } from './epic-review.ts';
 import { CommandExecutor } from './commands.ts';
 import { registerWorktreeRoutes } from './worktree-routes.ts';
@@ -26,7 +32,19 @@ import { getCatalog, parseTuning, refreshCatalog, startCatalogRefresh } from './
 import { validateCouncilSettings } from './council.ts';
 import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
 import { CerebroDatabase, normalizeMode, resolveSessionDefaults, SessionProtectionError } from './db.ts';
-import type { Agent, CommitSettings, Epic, Mode, Project, ResolutionSettings, Session, SessionDefaults, Task, TaskExecution, TaskStatus } from './db.ts';
+import type {
+  Agent,
+  CommitSettings,
+  Epic,
+  Mode,
+  Project,
+  ResolutionSettings,
+  Session,
+  SessionDefaults,
+  Task,
+  TaskExecution,
+  TaskStatus,
+} from './db.ts';
 import { prepareCommit, executeCommitPlan } from './git-plan.ts';
 import { currentPush, startPush, onPushComplete } from './git-push.ts';
 import { gitSummary } from './git-summary.ts';
@@ -67,11 +85,15 @@ function error(reply: FastifyReply, statusCode: number, message: string): Fastif
   return reply.code(statusCode).send({ error: message });
 }
 
-async function orError<T>(reply: FastifyReply, run: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; reply: FastifyReply }> {
+async function orError<T>(
+  reply: FastifyReply,
+  run: () => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false; reply: FastifyReply }> {
   try {
     return { ok: true, value: await run() };
   } catch (cause) {
-    const status = cause instanceof SessionProtectionError ? 409 : cause instanceof CouncilError ? cause.statusCode : 500;
+    const status =
+      cause instanceof SessionProtectionError ? 409 : cause instanceof CouncilError ? cause.statusCode : 500;
     return { ok: false, reply: error(reply, status, cause instanceof Error ? cause.message : String(cause)) };
   }
 }
@@ -111,7 +133,11 @@ const EPIC_TITLE_ERROR = `Le titre de l'epic doit contenir entre 1 et ${MAX_EPIC
 const EPIC_DESCRIPTION_ERROR = `La description de l'epic doit contenir au plus ${MAX_TASK_LENGTH} caractères`;
 
 // Valide l'epic proposé pour une tâche du projet : null (aucun) ou un epic du même projet.
-function checkEpic(value: unknown, projectId: string, epics: Epic[]): { ok: true; id: string | null } | { ok: false; message: string } {
+function checkEpic(
+  value: unknown,
+  projectId: string,
+  epics: Epic[],
+): { ok: true; id: string | null } | { ok: false; message: string } {
   if (value === null) return { ok: true, id: null };
   if (typeof value !== 'string' || !epics.some((e) => e.id === value && e.projectId === projectId)) {
     return { ok: false, message: 'Epic introuvable dans ce projet' };
@@ -120,14 +146,18 @@ function checkEpic(value: unknown, projectId: string, epics: Epic[]): { ok: true
 }
 
 // Valide la liste de dépendances proposée pour `task` : tâches existantes du même projet, sans cycle.
-function checkDependencies(task: Task, value: unknown, projectTasks: Task[]): { ok: true; ids: string[] } | { ok: false; message: string } {
+function checkDependencies(
+  task: Task,
+  value: unknown,
+  projectTasks: Task[],
+): { ok: true; ids: string[] } | { ok: false; message: string } {
   if (!Array.isArray(value) || !value.every((id) => typeof id === 'string')) {
-    return { ok: false, message: 'dependsOn doit être une liste d\'identifiants' };
+    return { ok: false, message: "dependsOn doit être une liste d'identifiants" };
   }
   const ids = [...new Set(value as string[])];
   const byId = new Map(projectTasks.map((t) => [t.id, t]));
   if (ids.some((id) => !byId.has(id))) return { ok: false, message: 'Dépendance introuvable dans ce projet' };
-  if (ids.includes(task.id)) return { ok: false, message: 'Une tâche ne peut pas dépendre d\'elle-même' };
+  if (ids.includes(task.id)) return { ok: false, message: "Une tâche ne peut pas dépendre d'elle-même" };
   // Cycle si `task` est atteignable depuis l'une des nouvelles dépendances.
   const seen = new Set<string>();
   const stack = [...ids];
@@ -143,16 +173,19 @@ function checkDependencies(task: Task, value: unknown, projectTasks: Task[]): { 
 
 function bodyRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : null;
 }
 
 function parseSessionDefaults(defaults: SessionDefaults, value: unknown): SessionDefaults | null {
   const body = bodyRecord(value);
-  if (body === null
-    || ('agent' in body && !isAgent(body.agent))
-    || ('mode' in body && !isMode(body.mode))
-    || ('prompt' in body && typeof body.prompt !== 'string')) return null;
+  if (
+    body === null ||
+    ('agent' in body && !isAgent(body.agent)) ||
+    ('mode' in body && !isMode(body.mode)) ||
+    ('prompt' in body && typeof body.prompt !== 'string')
+  )
+    return null;
   const resolved = resolveSessionDefaults(defaults, body as Partial<SessionDefaults>);
   const tuning = parseTuning(resolved.agent, { ...resolved });
   return tuning === null ? null : { ...resolved, ...tuning };
@@ -209,7 +242,6 @@ function requestQueryToken(query: unknown): string | undefined {
   return typeof record?.token === 'string' ? record.token : undefined;
 }
 
-
 function sendSocket(socket: WebSocket, message: unknown): void {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
 }
@@ -238,17 +270,22 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
 
     const path = request.url.split('?', 1)[0] ?? request.url;
-    const protectedRoute = (path.startsWith('/api/')
-      && path !== '/api/auth'
-      && !path.startsWith('/api/hook/')
-      && !path.startsWith('/api/notify/')
-      && !path.startsWith('/api/session-tasks/')
-      && !path.startsWith('/api/backlog/')) || path.startsWith('/ws/') || path.startsWith('/m/')
-      || path === '/vscode' || path.startsWith('/vscode/');
+    const protectedRoute =
+      (path.startsWith('/api/') &&
+        path !== '/api/auth' &&
+        !path.startsWith('/api/hook/') &&
+        !path.startsWith('/api/notify/') &&
+        !path.startsWith('/api/session-tasks/') &&
+        !path.startsWith('/api/backlog/')) ||
+      path.startsWith('/ws/') ||
+      path.startsWith('/m/') ||
+      path === '/vscode' ||
+      path.startsWith('/vscode/');
     if (BIND_TOKEN === undefined || !protectedRoute) return;
-    const authorized = tokenMatches(queryToken)
-      || tokenMatches(bearerToken(request.headers.authorization))
-      || tokenMatches(cookieValue(request.headers.cookie, 'cerebro_token'));
+    const authorized =
+      tokenMatches(queryToken) ||
+      tokenMatches(bearerToken(request.headers.authorization)) ||
+      tokenMatches(cookieValue(request.headers.cookie, 'cerebro_token'));
     if (!authorized) return error(reply, 401, 'Token requis');
   });
 
@@ -282,46 +319,113 @@ export async function buildServer(): Promise<FastifyInstance> {
     for (const socket of eventSockets) sendSocket(socket, event);
   };
 
-  const worktrees=registerWorktreeRoutes(app,db);
+  const worktrees = registerWorktreeRoutes(app, db);
   registerSessionTaskRoutes(app, db, (id, token) => sessions.tokenMatches(id, token));
-  const automaticCommits=registerAutomaticCommitRoutes(app,db,worktrees);
+  const automaticCommits = registerAutomaticCommitRoutes(app, db, worktrees);
   registerPersonaRoutes(app, db);
-  const councils=registerCouncilRoutes(app,db);
-  sessions.withProjectDeletion=(id,remove)=>councils.withProjectDeletion(id,remove);
-  notifier.councils=councils;
-  councils.onComplete=run=>{
-    const id=`council:${run.id}`;
-    notifier.operations.record({id,projectId:run.projectId,sessionId:null,kind:'council',ok:run.status==='succeeded',summary:run.synthesis?.recommendation??`${run.status} : ${run.error??'aucune synthèse'}`,startedAt:run.startedAt,finishedAt:run.finishedAt??Date.now()});
+  const councils = registerCouncilRoutes(app, db);
+  sessions.withProjectDeletion = (id, remove) => councils.withProjectDeletion(id, remove);
+  notifier.councils = councils;
+  councils.onComplete = (run) => {
+    const id = `council:${run.id}`;
+    notifier.operations.record({
+      id,
+      projectId: run.projectId,
+      sessionId: null,
+      kind: 'council',
+      ok: run.status === 'succeeded',
+      summary: run.synthesis?.recommendation ?? `${run.status} : ${run.error ?? 'aucune synthèse'}`,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt ?? Date.now(),
+    });
     // Slack receives the synthesis in the request thread: no separate notification.
-    if(run.origin==='slack')notifier.operations.seen(id);
+    if (run.origin === 'slack') notifier.operations.seen(id);
   };
-  automaticCommits.onComplete=operation=>{
-    if(operation.projectId)notifier.operations.record({id:`auto-commit:${operation.id}`,projectId:operation.projectId,sessionId:operation.sessionId,kind:'commit',ok:operation.status==='succeeded',summary:[...operation.commits.map(commit=>`${commit.hash} ${commit.title}`),operation.error??'',operation.pushOperation?`Push : ${operation.pushOperation.status}`:''].filter(Boolean).join(' ; ')||'Aucun changement à commiter.',startedAt:operation.startedAt,finishedAt:operation.finishedAt??Date.now()});
+  automaticCommits.onComplete = (operation) => {
+    if (operation.projectId)
+      notifier.operations.record({
+        id: `auto-commit:${operation.id}`,
+        projectId: operation.projectId,
+        sessionId: operation.sessionId,
+        kind: 'commit',
+        ok: operation.status === 'succeeded',
+        summary:
+          [
+            ...operation.commits.map((commit) => `${commit.hash} ${commit.title}`),
+            operation.error ?? '',
+            operation.pushOperation ? `Push : ${operation.pushOperation.status}` : '',
+          ]
+            .filter(Boolean)
+            .join(' ; ') || 'Aucun changement à commiter.',
+        startedAt: operation.startedAt,
+        finishedAt: operation.finishedAt ?? Date.now(),
+      });
   };
   const epicRunner = new EpicRunner(db, sessions, commands, broadcast);
-  epicRunner.onResult=run=>{
-    notifier.operations.record({id:`epic:${run.id}:${run.status}`,projectId:run.projectId,sessionId:run.sessionId,kind:'epic',ok:run.status==='succeeded',summary:run.status==='succeeded'?'Toutes les étapes ont satisfait leur critère de clôture.':`${run.status} : ${run.error??'progression arrêtée'}`,startedAt:run.startedAt,finishedAt:run.updatedAt});
+  epicRunner.onResult = (run) => {
+    notifier.operations.record({
+      id: `epic:${run.id}:${run.status}`,
+      projectId: run.projectId,
+      sessionId: run.sessionId,
+      kind: 'epic',
+      ok: run.status === 'succeeded',
+      summary:
+        run.status === 'succeeded'
+          ? 'Toutes les étapes ont satisfait leur critère de clôture.'
+          : `${run.status} : ${run.error ?? 'progression arrêtée'}`,
+      startedAt: run.startedAt,
+      finishedAt: run.updatedAt,
+    });
     // Copies held back while the epic ran become eligible once it ends.
-    if(run.status!=='blocked')void worktrees.resumeAutomaticCleanup(run.projectId);
+    if (run.status !== 'blocked') void worktrees.resumeAutomaticCleanup(run.projectId);
   };
-  const unsubscribePush=onPushComplete((path,operation)=>{
-    if(automaticCommits.list().some(commit=>commit.pushOperation?.id===operation.id))return;
-    let project=db.listProjects().find(p=>resolve(p.path)===resolve(path));
-    let source:Session|undefined;
-    if(!project){source=db.listSessions().find(s=>workspaceFor(db,s.id)?.root===path);if(source)project=db.getProject(source.projectId)??undefined;}
-    if(!project)return;
-    notifier.operations.record({id:operation.id,projectId:project.id,sessionId:source?.id??null,kind:'push',ok:operation.status==='succeeded',summary:operation.error??operation.remotes.map(r=>`${r.remote} : ${r.status}`).join(' ; '),startedAt:operation.startedAt,finishedAt:operation.finishedAt??Date.now()});
+  const unsubscribePush = onPushComplete((path, operation) => {
+    if (automaticCommits.list().some((commit) => commit.pushOperation?.id === operation.id)) return;
+    let project = db.listProjects().find((p) => resolve(p.path) === resolve(path));
+    let source: Session | undefined;
+    if (!project) {
+      source = db.listSessions().find((s) => workspaceFor(db, s.id)?.root === path);
+      if (source) project = db.getProject(source.projectId) ?? undefined;
+    }
+    if (!project) return;
+    notifier.operations.record({
+      id: operation.id,
+      projectId: project.id,
+      sessionId: source?.id ?? null,
+      kind: 'push',
+      ok: operation.status === 'succeeded',
+      summary: operation.error ?? operation.remotes.map((r) => `${r.remote} : ${r.status}`).join(' ; '),
+      startedAt: operation.startedAt,
+      finishedAt: operation.finishedAt ?? Date.now(),
+    });
   });
   epicRunner.initialize();
-  sessions.onSessionReleased=(id,root)=>{void worktrees.releaseSession(id,root);};
-  worktrees.onSessionsChanged=ids=>{for(const id of ids){const session=db.getSession(id);if(session)broadcast({type:'session',session});}};
+  sessions.onSessionReleased = (id, root) => {
+    void worktrees.releaseSession(id, root);
+  };
+  worktrees.onSessionsChanged = (ids) => {
+    for (const id of ids) {
+      const session = db.getSession(id);
+      if (session) broadcast({ type: 'session', session });
+    }
+  };
   // Copies whose conversation ended while the server was down, or before automatic cleanup existed.
   void worktrees.resumeAutomaticCleanup();
-  commands.onChange = run => {
+  commands.onChange = (run) => {
     epicRunner.poke();
     const task = db.getTask(run.taskId);
-    if(task&&run.finishedAt!==null)notifier.operations.record({id:run.id,projectId:task.projectId,sessionId:null,kind:'command',ok:run.status==='succeeded',summary:`${run.command.name} : ${run.status}, code ${run.exitCode??'inconnu'}${run.error?` ; ${run.error}`:''} ; clôture du travail distincte.`,startedAt:run.startedAt,finishedAt:run.finishedAt});
-    if (task) broadcast({type:'task',task});
+    if (task && run.finishedAt !== null)
+      notifier.operations.record({
+        id: run.id,
+        projectId: task.projectId,
+        sessionId: null,
+        kind: 'command',
+        ok: run.status === 'succeeded',
+        summary: `${run.command.name} : ${run.status}, code ${run.exitCode ?? 'inconnu'}${run.error ? ` ; ${run.error}` : ''} ; clôture du travail distincte.`,
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+      });
+    if (task) broadcast({ type: 'task', task });
   };
   sessions.onEvent((event) => {
     epicRunner.poke();
@@ -329,14 +433,23 @@ export async function buildServer(): Promise<FastifyInstance> {
     broadcast(event);
   });
 
-  app.get<{Querystring:{projectId?:string}}>('/api/operations',async request=>notifier.operations.list(request.query.projectId));
-  app.post<{Params:{id:string}}>('/api/operations/:id/seen',async(request,reply)=>{notifier.operations.seen(request.params.id);return reply.code(204).send();});
+  app.get<{ Querystring: { projectId?: string } }>('/api/operations', async (request) =>
+    notifier.operations.list(request.query.projectId),
+  );
+  app.post<{ Params: { id: string } }>('/api/operations/:id/seen', async (request, reply) => {
+    notifier.operations.seen(request.params.id);
+    return reply.code(204).send();
+  });
 
   app.get('/api/projects', async () => db.listProjects());
 
   app.put('/api/projects/order', async (request, reply) => {
     const ids = bodyRecord(request.body)?.ids;
-    if (!Array.isArray(ids) || !ids.every((id): id is string => typeof id === 'string') || new Set(ids).size !== ids.length) {
+    if (
+      !Array.isArray(ids) ||
+      !ids.every((id): id is string => typeof id === 'string') ||
+      new Set(ids).size !== ids.length
+    ) {
       return error(reply, 400, 'Une liste d’identifiants de projets sans doublons est requise');
     }
     const projects = db.reorderProjects(ids);
@@ -364,13 +477,24 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.post('/api/projects', async (request, reply) => {
     const body = bodyRecord(request.body);
-    if (body === null || typeof body.name !== 'string' || body.name.trim() === '' || typeof body.path !== 'string' || body.path.trim() === '') {
+    if (
+      body === null ||
+      typeof body.name !== 'string' ||
+      body.name.trim() === '' ||
+      typeof body.path !== 'string' ||
+      body.path.trim() === ''
+    ) {
       return error(reply, 400, 'Les champs name et path sont requis');
     }
     const projectPath = expandProjectPath(body.path.trim());
     if (!validDirectory(projectPath)) return error(reply, 400, "Le répertoire n'existe pas ou n'est pas un répertoire");
-    if ('workspaceMode' in body && body.workspaceMode !== 'isolated' && body.workspaceMode !== 'shared') return error(reply,400,'Mode de travail invalide');
-    const project = db.createProject(body.name.trim(), projectPath, body.workspaceMode==='shared'?'shared':'isolated');
+    if ('workspaceMode' in body && body.workspaceMode !== 'isolated' && body.workspaceMode !== 'shared')
+      return error(reply, 400, 'Mode de travail invalide');
+    const project = db.createProject(
+      body.name.trim(),
+      projectPath,
+      body.workspaceMode === 'shared' ? 'shared' : 'isolated',
+    );
     const projects = db.listProjects();
     for (const socket of eventSockets) sendSocket(socket, { type: 'projects', projects });
     void peers.sync();
@@ -383,19 +507,35 @@ export async function buildServer(): Promise<FastifyInstance> {
     const body = bodyRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps de requête invalide');
 
-    const changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'resolutionSettings' | 'councilSettings' | 'workspaceMode'>> = {};
+    const changes: Partial<
+      Pick<
+        Project,
+        | 'name'
+        | 'path'
+        | 'color'
+        | 'sessionDefaults'
+        | 'commitSettings'
+        | 'resolutionSettings'
+        | 'councilSettings'
+        | 'workspaceMode'
+      >
+    > = {};
     if ('workspaceMode' in body) {
-      if (body.workspaceMode !== 'isolated' && body.workspaceMode !== 'shared') return error(reply,400,'Mode de travail invalide');
-      changes.workspaceMode=body.workspaceMode;
+      if (body.workspaceMode !== 'isolated' && body.workspaceMode !== 'shared')
+        return error(reply, 400, 'Mode de travail invalide');
+      changes.workspaceMode = body.workspaceMode;
     }
     if ('name' in body) {
-      if (typeof body.name !== 'string' || body.name.trim() === '') return error(reply, 400, 'Le nom ne peut pas être vide');
+      if (typeof body.name !== 'string' || body.name.trim() === '')
+        return error(reply, 400, 'Le nom ne peut pas être vide');
       changes.name = body.name.trim();
     }
     if ('path' in body) {
-      if (typeof body.path !== 'string' || body.path.trim() === '') return error(reply, 400, 'Le chemin ne peut pas être vide');
+      if (typeof body.path !== 'string' || body.path.trim() === '')
+        return error(reply, 400, 'Le chemin ne peut pas être vide');
       const projectPath = expandProjectPath(body.path.trim());
-      if (!validDirectory(projectPath)) return error(reply, 400, "Le répertoire n'existe pas ou n'est pas un répertoire");
+      if (!validDirectory(projectPath))
+        return error(reply, 400, "Le répertoire n'existe pas ou n'est pas un répertoire");
       changes.path = projectPath;
     }
     if ('color' in body) {
@@ -411,15 +551,24 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
     if ('commitSettings' in body) {
       const patch = bodyRecord(body.commitSettings);
-      if (!patch || Object.keys(patch).some(key => !['agent','model','effort','strategy'].includes(key))
-        || ('agent' in patch && !isAgent(patch.agent))
-        || ('strategy' in patch && patch.strategy !== 'single' && patch.strategy !== 'atomic')) return error(reply, 400, 'Paramètres de commits invalides');
+      if (
+        !patch ||
+        Object.keys(patch).some((key) => !['agent', 'model', 'effort', 'strategy'].includes(key)) ||
+        ('agent' in patch && !isAgent(patch.agent)) ||
+        ('strategy' in patch && patch.strategy !== 'single' && patch.strategy !== 'atomic')
+      )
+        return error(reply, 400, 'Paramètres de commits invalides');
       const previous = project.commitSettings;
       const agent = (patch.agent ?? previous.agent) as Agent;
-      const resolved = { ...previous, ...(agent !== previous.agent ? {model:null,effort:null} : {}), ...patch, agent } as CommitSettings;
-      const tuning = parseTuning(agent, {...resolved});
+      const resolved = {
+        ...previous,
+        ...(agent !== previous.agent ? { model: null, effort: null } : {}),
+        ...patch,
+        agent,
+      } as CommitSettings;
+      const tuning = parseTuning(agent, { ...resolved });
       if (!tuning) return error(reply, 400, 'Modèle ou effort invalide pour cet agent');
-      changes.commitSettings = {...resolved,...tuning};
+      changes.commitSettings = { ...resolved, ...tuning };
     }
     if ('councilSettings' in body) {
       // null : le projet revient aux réglages globaux.
@@ -432,15 +581,24 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
     if ('resolutionSettings' in body) {
       const patch = bodyRecord(body.resolutionSettings);
-      if (!patch || Object.keys(patch).some(key => !['agent','mode','model','effort'].includes(key))
-        || ('agent' in patch && !isAgent(patch.agent))
-        || ('mode' in patch && !isMode(patch.mode))) return error(reply, 400, 'Paramètres de résolution invalides');
+      if (
+        !patch ||
+        Object.keys(patch).some((key) => !['agent', 'mode', 'model', 'effort'].includes(key)) ||
+        ('agent' in patch && !isAgent(patch.agent)) ||
+        ('mode' in patch && !isMode(patch.mode))
+      )
+        return error(reply, 400, 'Paramètres de résolution invalides');
       const previous = project.resolutionSettings;
       const agent = (patch.agent ?? previous.agent) as Agent;
-      const resolved = { ...previous, ...(agent !== previous.agent ? {model:null,effort:null} : {}), ...patch, agent } as ResolutionSettings;
-      const tuning = parseTuning(agent, {...resolved});
+      const resolved = {
+        ...previous,
+        ...(agent !== previous.agent ? { model: null, effort: null } : {}),
+        ...patch,
+        agent,
+      } as ResolutionSettings;
+      const tuning = parseTuning(agent, { ...resolved });
       if (!tuning) return error(reply, 400, 'Modèle ou effort invalide pour cet agent');
-      changes.resolutionSettings = {...resolved, mode: normalizeMode(resolved.mode), ...tuning};
+      changes.resolutionSettings = { ...resolved, mode: normalizeMode(resolved.mode), ...tuning };
     }
     const updated = db.updateProject(project.id, changes);
     if (updated === null) return error(reply, 404, 'Projet introuvable');
@@ -468,8 +626,18 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (!result.ok) return result.reply;
     const launch = bodyRecord(body.launch) ?? {};
     const prepared = result.value;
-    return launchSession(reply, project, {...launch, prompt: `${typeof launch.prompt === 'string' ? launch.prompt : ''}\n\n${reviewInstructions(prepared.root, {...prepared, context: undefined}, prepared.context)}`}, s => s,
-      async () => { await verifyReview(project.path, id); });
+    return launchSession(
+      reply,
+      project,
+      {
+        ...launch,
+        prompt: `${typeof launch.prompt === 'string' ? launch.prompt : ''}\n\n${reviewInstructions(prepared.root, { ...prepared, context: undefined }, prepared.context)}`,
+      },
+      (s) => s,
+      async () => {
+        await verifyReview(project.path, id);
+      },
+    );
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/prepare-commit', async (request, reply) => {
@@ -481,9 +649,22 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/commit', async (request, reply) => {
     const project = db.getProject(request.params.id);
     if (project === null) return error(reply, 404, 'Projet introuvable');
-    const startedAt=Date.now();
+    const startedAt = Date.now();
     const result = await orError(reply, () => executeCommitPlan(project.path, request.body));
-    if(result.ok){const id=`commit:${String(bodyRecord(request.body)?.snapshotId)}`;result.value.operationId=id;notifier.operations.record({id,projectId:project.id,sessionId:null,kind:'commit',ok:!result.value.error,summary:result.value.error??result.value.commits.map(c=>`${c.hash} ${c.title}`).join(' ; '),startedAt,finishedAt:Date.now()});}
+    if (result.ok) {
+      const id = `commit:${String(bodyRecord(request.body)?.snapshotId)}`;
+      result.value.operationId = id;
+      notifier.operations.record({
+        id,
+        projectId: project.id,
+        sessionId: null,
+        kind: 'commit',
+        ok: !result.value.error,
+        summary: result.value.error ?? result.value.commits.map((c) => `${c.hash} ${c.title}`).join(' ; '),
+        startedAt,
+        finishedAt: Date.now(),
+      });
+    }
     return result.ok ? reply.send(result.value) : result.reply;
   });
 
@@ -497,7 +678,9 @@ export async function buildServer(): Promise<FastifyInstance> {
     const project = db.getProject(request.params.id);
     if (project === null) return error(reply, 404, 'Projet introuvable');
     // Pushing only sends existing commits: uncommitted files may stay when the caller says so.
-    const result = await orError(reply, () => startPush(project.path, { allowDirty: bodyRecord(request.body)?.allowDirty === true }));
+    const result = await orError(reply, () =>
+      startPush(project.path, { allowDirty: bodyRecord(request.body)?.allowDirty === true }),
+    );
     return result.ok ? reply.code(202).send(result.value) : result.reply;
   });
 
@@ -524,7 +707,9 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (payload === null) return error(reply, 400, 'Échange invalide');
     // Une instance sans version (antérieure) est acceptée ; une autre version majeure est refusée, avec notre version.
     if (payload.version !== null && compatibility(payload.version) === 'incompatible') {
-      return reply.code(409).send({ error: incompatibleMessage(payload.machine, payload.version), version: VERSION_INFO });
+      return reply
+        .code(409)
+        .send({ error: incompatibleMessage(payload.machine, payload.version), version: VERSION_INFO });
     }
     await peers.ready;
     return reply.send(peers.receive(payload));
@@ -587,15 +772,28 @@ export async function buildServer(): Promise<FastifyInstance> {
     const result = await orError(reply, () => prepareSessionGit(db, request.params.id));
     return result.ok ? reply.send(result.value) : result.reply;
   });
-  app.get<{Params:{id:string}}>('/api/sessions/:id/git/context',async(request,reply)=>{
-    if(!db.getSession(request.params.id))return error(reply,404,'Session introuvable');
-    return reply.send(sessionGitContext(db,request.params.id));
+  app.get<{ Params: { id: string } }>('/api/sessions/:id/git/context', async (request, reply) => {
+    if (!db.getSession(request.params.id)) return error(reply, 404, 'Session introuvable');
+    return reply.send(sessionGitContext(db, request.params.id));
   });
   app.post<{ Params: { id: string } }>('/api/sessions/:id/git/commit', async (request, reply) => {
     if (db.getSession(request.params.id) === null) return error(reply, 404, 'Session introuvable');
-    const startedAt=Date.now();
+    const startedAt = Date.now();
     const result = await orError(reply, () => executeSessionCommit(request.params.id, request.body));
-    if(result.ok){const id=`commit:${String(bodyRecord(request.body)?.snapshotId)}`;result.value.operationId=id;notifier.operations.record({id,projectId:db.getSession(request.params.id)!.projectId,sessionId:request.params.id,kind:'commit',ok:!result.value.error,summary:result.value.error??result.value.commits.map(c=>`${c.hash} ${c.title}`).join(' ; '),startedAt,finishedAt:Date.now()});}
+    if (result.ok) {
+      const id = `commit:${String(bodyRecord(request.body)?.snapshotId)}`;
+      result.value.operationId = id;
+      notifier.operations.record({
+        id,
+        projectId: db.getSession(request.params.id)!.projectId,
+        sessionId: request.params.id,
+        kind: 'commit',
+        ok: !result.value.error,
+        summary: result.value.error ?? result.value.commits.map((c) => `${c.hash} ${c.title}`).join(' ; '),
+        startedAt,
+        finishedAt: Date.now(),
+      });
+    }
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.get<{ Params: { id: string } }>('/api/sessions/:id/git/push', async (request, reply) => {
@@ -611,7 +809,15 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (!result.ok) return result.reply;
     const project = db.getProject(session.projectId)!;
     const launch = bodyRecord(body?.launch) ?? {};
-    return launchSession(reply, project, {...launch, prompt: `${typeof launch.prompt === 'string' ? launch.prompt : ''}\n\n${result.value.prompt}`}, session => session, async () => { await sessionReviewContext(session.id, body?.selection); });
+    return launchSession(
+      reply,
+      project,
+      { ...launch, prompt: `${typeof launch.prompt === 'string' ? launch.prompt : ''}\n\n${result.value.prompt}` },
+      (session) => session,
+      async () => {
+        await sessionReviewContext(session.id, body?.selection);
+      },
+    );
   });
 
   app.get<{ Params: { id: string } }>('/api/sessions/:id/provenance', async (request, reply) => {
@@ -627,28 +833,39 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (session) broadcast({ type: session.pendingFindings > before ? 'findings-available' : 'session', session });
     return report;
   };
-  app.get<{ Params: { id: string } }>('/api/sessions/:id/findings', async request => listReports(db, request.params.id));
+  app.get<{ Params: { id: string } }>('/api/sessions/:id/findings', async (request) =>
+    listReports(db, request.params.id),
+  );
   app.post<{ Params: { id: string } }>('/api/sessions/:id/findings', async (request, reply) => {
-    try { return reply.send(publishFindings(request.params.id, request.body)); }
-    catch (cause) { return error(reply, 400, String(cause)); }
-  });
-  app.post<{ Params: { id: string; report: string } }>('/api/sessions/:id/findings/:report/import', async (request, reply) => {
     try {
-      const body = bodyRecord(request.body);
-      const result = importFindings(db, request.params.id, request.params.report, body?.selected, body?.epicId);
-      broadcast({ type: 'epic', epic: result.epic });
-      for (const task of result.tasks) broadcast({ type: 'task', task });
-      const session = db.getSession(request.params.id);
-      if (session) broadcast({ type: 'session', session });
-      return reply.send(result);
-    } catch (cause) { return error(reply, 400, String(cause)); }
+      return reply.send(publishFindings(request.params.id, request.body));
+    } catch (cause) {
+      return error(reply, 400, String(cause));
+    }
   });
+  app.post<{ Params: { id: string; report: string } }>(
+    '/api/sessions/:id/findings/:report/import',
+    async (request, reply) => {
+      try {
+        const body = bodyRecord(request.body);
+        const result = importFindings(db, request.params.id, request.params.report, body?.selected, body?.epicId);
+        broadcast({ type: 'epic', epic: result.epic });
+        for (const task of result.tasks) broadcast({ type: 'task', task });
+        const session = db.getSession(request.params.id);
+        if (session) broadcast({ type: 'session', session });
+        return reply.send(result);
+      } catch (cause) {
+        return error(reply, 400, String(cause));
+      }
+    },
+  );
 
   app.get('/api/sessions', async () => db.listSessions());
 
   app.patch<{ Params: { id: string } }>('/api/sessions/:id/protection', async (request, reply) => {
     const body = bodyRecord(request.body);
-    if (body === null || typeof body.protected !== 'boolean') return error(reply, 400, 'Le champ protected doit être un booléen');
+    if (body === null || typeof body.protected !== 'boolean')
+      return error(reply, 400, 'Le champ protected doit être un booléen');
     const value = body.protected;
     const result = await orError(reply, async () => sessions.setProtected(request.params.id, value));
     if (!result.ok) return result.reply;
@@ -660,7 +877,8 @@ export async function buildServer(): Promise<FastifyInstance> {
     const body = bodyRecord(request.body);
     if (body === null || typeof body.title !== 'string') return error(reply, 400, 'Le titre est requis');
     const title = body.title.trim();
-    if (title === '' || title.length > 120) return error(reply, 400, 'Le titre doit contenir entre 1 et 120 caractères');
+    if (title === '' || title.length > 120)
+      return error(reply, 400, 'Le titre doit contenir entre 1 et 120 caractères');
     const session = sessions.rename(request.params.id, title);
     return session === null ? error(reply, 404, 'Session introuvable') : reply.send(session);
   });
@@ -701,8 +919,11 @@ export async function buildServer(): Promise<FastifyInstance> {
   };
 
   // Valide { title, description?, taskIds? } puis crée l'epic et y range les tâches désignées.
-  const createEpic = (projectId: string, body: Record<string, unknown> | null, sourceSessionId: string | null):
-    { ok: true; epic: Epic; taskIds: string[] } | { ok: false; message: string } => {
+  const createEpic = (
+    projectId: string,
+    body: Record<string, unknown> | null,
+    sourceSessionId: string | null,
+  ): { ok: true; epic: Epic; taskIds: string[] } | { ok: false; message: string } => {
     const title = epicTitle(body?.title);
     if (title === null) return { ok: false, message: EPIC_TITLE_ERROR };
     const description = epicDescription(body?.description);
@@ -720,8 +941,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     return { ok: true, epic, taskIds };
   };
 
-  const updateEpic = (id: string, body: Record<string, unknown>):
-    { ok: true; epic: Epic } | { ok: false; status: number; message: string } => {
+  const updateEpic = (
+    id: string,
+    body: Record<string, unknown>,
+  ): { ok: true; epic: Epic } | { ok: false; status: number; message: string } => {
     if (db.getEpic(id) === null) return { ok: false, status: 404, message: 'Epic introuvable' };
     const changes: { title?: string; description?: string } = {};
     if (body.title !== undefined) {
@@ -741,27 +964,39 @@ export async function buildServer(): Promise<FastifyInstance> {
   };
 
   const deleteEpic = (id: string): boolean => {
-    const members = db.listTasks().filter((t) => t.epicId === id).map((t) => t.id);
+    const members = db
+      .listTasks()
+      .filter((t) => t.epicId === id)
+      .map((t) => t.id);
     if (!db.deleteEpic(id)) return false;
     broadcast({ type: 'epic-deleted', id });
     broadcastTasks(members);
     return true;
   };
 
-  app.get<{ Params: { id: string } }>('/api/projects/:id/commands', async request => commands.commands(request.params.id));
+  app.get<{ Params: { id: string } }>('/api/projects/:id/commands', async (request) =>
+    commands.commands(request.params.id),
+  );
   app.post<{ Params: { id: string } }>('/api/projects/:id/commands', async (request, reply) => {
-    try { return reply.code(201).send(commands.configure(request.params.id, request.body)); }
-    catch (cause) { return error(reply, 400, String(cause)); }
+    try {
+      return reply.code(201).send(commands.configure(request.params.id, request.body));
+    } catch (cause) {
+      return error(reply, 400, String(cause));
+    }
   });
-  app.get<{ Params: { id: string } }>('/api/tasks/:id/runs', async request => commands.listRuns(request.params.id));
-  app.post<{ Params: { id: string } }>('/api/command-runs/:id/stop', async (request, reply) => commands.stop(request.params.id) ? reply.send({ok:true}) : error(reply, 409, 'Commande non active'));
+  app.get<{ Params: { id: string } }>('/api/tasks/:id/runs', async (request) => commands.listRuns(request.params.id));
+  app.post<{ Params: { id: string } }>('/api/command-runs/:id/stop', async (request, reply) =>
+    commands.stop(request.params.id) ? reply.send({ ok: true }) : error(reply, 409, 'Commande non active'),
+  );
 
   app.get('/api/tasks', async () => db.listTasks());
 
   app.delete<{ Params: { id: string } }>('/api/projects/:id/backlog/completed', async (request, reply) => {
     const projectId = request.params.id;
     if (db.getProject(projectId) === null) return error(reply, 404, 'Projet introuvable');
-    if (db.listTasks().some((task) => task.projectId === projectId && task.status === 'done' && commands.active(task.id))) {
+    if (
+      db.listTasks().some((task) => task.projectId === projectId && task.status === 'done' && commands.active(task.id))
+    ) {
       return error(reply, 409, 'Arrêtez les commandes avant de supprimer leurs tâches.');
     }
     const { taskIds, epicIds, dependentIds } = db.deleteCompletedBacklog(projectId);
@@ -776,14 +1011,18 @@ export async function buildServer(): Promise<FastifyInstance> {
     const body = bodyRecord(request.body);
     const text = taskText(body?.text);
     if (text === null) return error(reply, 400, `Le texte doit contenir entre 1 et ${MAX_TASK_LENGTH} caractères`);
-    const source = typeof body?.sourceSessionId === 'string' && db.getSession(body.sourceSessionId) !== null
-      ? body.sourceSessionId
-      : null;
+    const source =
+      typeof body?.sourceSessionId === 'string' && db.getSession(body.sourceSessionId) !== null
+        ? body.sourceSessionId
+        : null;
     const epic = checkEpic(body?.epicId ?? null, request.params.id, db.listEpics());
     if (!epic.ok) return error(reply, 400, epic.message);
     let execution;
-    try { execution = commands.execution(request.params.id, body?.execution); }
-    catch (cause) { return error(reply, 400, String(cause)); }
+    try {
+      execution = commands.execution(request.params.id, body?.execution);
+    } catch (cause) {
+      return error(reply, 400, String(cause));
+    }
     const task = db.createTask(request.params.id, text, source, epic.id, execution);
     broadcast({ type: 'task', task });
     return reply.code(201).send(task);
@@ -791,13 +1030,23 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.patch<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => {
     if (db.getTask(request.params.id) === null) return error(reply, 404, 'Tâche introuvable');
-    if (commands.active(request.params.id)) return error(reply, 409, 'Arrêtez la commande avant de modifier cette tâche.');
+    if (commands.active(request.params.id))
+      return error(reply, 409, 'Arrêtez la commande avant de modifier cette tâche.');
     const body = bodyRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps invalide');
-    const changes: { text?: string; status?: TaskStatus; execution?:TaskExecution; dependsOn?: string[]; epicId?: string | null } = {};
+    const changes: {
+      text?: string;
+      status?: TaskStatus;
+      execution?: TaskExecution;
+      dependsOn?: string[];
+      epicId?: string | null;
+    } = {};
     if (body.execution !== undefined) {
-      try { changes.execution = commands.execution(db.getTask(request.params.id)!.projectId, body.execution); }
-      catch (cause) { return error(reply, 400, String(cause)); }
+      try {
+        changes.execution = commands.execution(db.getTask(request.params.id)!.projectId, body.execution);
+      } catch (cause) {
+        return error(reply, 400, String(cause));
+      }
     }
     if (body.text !== undefined) {
       const text = taskText(body.text);
@@ -810,7 +1059,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
     if (body.dependsOn !== undefined) {
       const current = db.getTask(request.params.id) as Task;
-      const checked = checkDependencies(current, body.dependsOn, db.listTasks().filter((t) => t.projectId === current.projectId));
+      const checked = checkDependencies(
+        current,
+        body.dependsOn,
+        db.listTasks().filter((t) => t.projectId === current.projectId),
+      );
       if (!checked.ok) return error(reply, 400, checked.message);
       changes.dependsOn = checked.ids;
     }
@@ -826,7 +1079,8 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   app.delete<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => {
-    if (commands.active(request.params.id)) return error(reply, 409, 'Arrêtez la commande avant de supprimer cette tâche.');
+    if (commands.active(request.params.id))
+      return error(reply, 409, 'Arrêtez la commande avant de supprimer cette tâche.');
     const dependents = db.listDependents(request.params.id);
     if (!db.deleteTask(request.params.id)) return error(reply, 404, 'Tâche introuvable');
     broadcast({ type: 'task-deleted', id: request.params.id });
@@ -842,7 +1096,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     const task = db.getTask(request.params.id);
     if (task === null) return error(reply, 404, 'Tâche introuvable');
     if (epicRunner.reserved(task.id)) return error(reply, 409, 'Tâche réservée par un ordonnanceur d’epic.');
-    if (task.epicId && epicRunner.list(task.epicId).some(run => ['running','waiting-validation','blocked'].includes(run.status))) return error(reply,409,'Cet epic est en cours : utilisez reprendre et recalculer pour ajouter ses tâches.');
+    if (
+      task.epicId &&
+      epicRunner.list(task.epicId).some((run) => ['running', 'waiting-validation', 'blocked'].includes(run.status))
+    )
+      return error(reply, 409, 'Cet epic est en cours : utilisez reprendre et recalculer pour ajouter ses tâches.');
     const project = db.getProject(task.projectId);
     if (project === null) return error(reply, 404, 'Projet introuvable');
     if (task.dependsOn.some((id) => db.getTask(id)?.status !== 'done')) {
@@ -851,24 +1109,38 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (task.execution.type === 'command') {
       try {
         const start = async () => {
-          const context = task.epicId ? epicWorkspace(db,task.epicId)??{path:project.path,mode:'shared' as const} : null;
-          if (context) assertEpicWorkspace(db,context);
-          const run = await commands.start(task.id,context?.path);
-          if (task.epicId && context) rememberEpicWorkspace(db,task.epicId,context);
+          const context = task.epicId
+            ? (epicWorkspace(db, task.epicId) ?? { path: project.path, mode: 'shared' as const })
+            : null;
+          if (context) assertEpicWorkspace(db, context);
+          const run = await commands.start(task.id, context?.path);
+          if (task.epicId && context) rememberEpicWorkspace(db, task.epicId, context);
           return run;
         };
-        const run = await (task.epicId ? withEpicWorkspace(db,task.epicId,start) : start());
-        return reply.code(202).send({task:db.getTask(task.id),run});
+        const run = await (task.epicId ? withEpicWorkspace(db, task.epicId, start) : start());
+        return reply.code(202).send({ task: db.getTask(task.id), run });
+      } catch (cause) {
+        return error(reply, 409, String(cause));
       }
-      catch (cause) { return error(reply, 409, String(cause)); }
     }
-    try { const context=task.epicId?epicWorkspace(db,task.epicId):null;if(context)assertEpicWorkspace(db,context); }
-    catch(cause){return error(reply,409,String(cause));}
-    return launchSession(reply, project, request.body, (session) => {
-      const updated = db.updateTask(task.id, { status: 'started', sessionId: session.id });
-      if (updated !== null) broadcast({ type: 'task', task: updated });
-      return { task: updated, session };
-    }, undefined, task.epicId);
+    try {
+      const context = task.epicId ? epicWorkspace(db, task.epicId) : null;
+      if (context) assertEpicWorkspace(db, context);
+    } catch (cause) {
+      return error(reply, 409, String(cause));
+    }
+    return launchSession(
+      reply,
+      project,
+      request.body,
+      (session) => {
+        const updated = db.updateTask(task.id, { status: 'started', sessionId: session.id });
+        if (updated !== null) broadcast({ type: 'task', task: updated });
+        return { task: updated, session };
+      },
+      undefined,
+      task.epicId,
+    );
   });
 
   app.get('/api/epics', async () => db.listEpics());
@@ -896,31 +1168,50 @@ export async function buildServer(): Promise<FastifyInstance> {
     return reply.code(204).send();
   });
 
-  app.get<{ Params: { id: string } }>('/api/epics/:id/runs', async request => epicRunner.list(request.params.id));
+  app.get<{ Params: { id: string } }>('/api/epics/:id/runs', async (request) => epicRunner.list(request.params.id));
   app.get<{ Params: { id: string } }>('/api/epics/:id/workspace', async (request, reply) => {
-    if (!db.getEpic(request.params.id)) return error(reply,404,'Epic introuvable');
-    try{return reply.send(epicWorkspace(db,request.params.id));}catch(cause){return error(reply,409,String(cause));}
+    if (!db.getEpic(request.params.id)) return error(reply, 404, 'Epic introuvable');
+    try {
+      return reply.send(epicWorkspace(db, request.params.id));
+    } catch (cause) {
+      return error(reply, 409, String(cause));
+    }
   });
   app.get<{ Params: { id: string } }>('/api/epics/:id/workspace-options', async (request, reply) => {
-    if (!db.getEpic(request.params.id)) return error(reply,404,'Epic introuvable');
-    try { return reply.send(await epicWorkspaceOptions(db,request.params.id)); }
-    catch (cause) { return error(reply,409,cause instanceof Error?cause.message:String(cause)); }
+    if (!db.getEpic(request.params.id)) return error(reply, 404, 'Epic introuvable');
+    try {
+      return reply.send(await epicWorkspaceOptions(db, request.params.id));
+    } catch (cause) {
+      return error(reply, 409, cause instanceof Error ? cause.message : String(cause));
+    }
   });
   app.post<{ Params: { id: string } }>('/api/epics/:id/workspace', async (request, reply) => {
-    if (!db.getEpic(request.params.id)) return error(reply,404,'Epic introuvable');
-    const path=bodyRecord(request.body)?.path;
-    if(typeof path!=='string'||!path.trim()||path.length>4096)return error(reply,400,'Le chemin du dossier est requis.');
-    try { return reply.send(await withEpicWorkspace(db,request.params.id,async()=>epicRunner.selectWorkspace(request.params.id,path))); }
-    catch (cause) { return error(reply,409,cause instanceof Error?cause.message:String(cause)); }
+    if (!db.getEpic(request.params.id)) return error(reply, 404, 'Epic introuvable');
+    const path = bodyRecord(request.body)?.path;
+    if (typeof path !== 'string' || !path.trim() || path.length > 4096)
+      return error(reply, 400, 'Le chemin du dossier est requis.');
+    try {
+      return reply.send(
+        await withEpicWorkspace(db, request.params.id, async () => epicRunner.selectWorkspace(request.params.id, path)),
+      );
+    } catch (cause) {
+      return error(reply, 409, cause instanceof Error ? cause.message : String(cause));
+    }
   });
   app.post<{ Params: { id: string } }>('/api/epics/:id/start', async (request, reply) => {
-    const epic=db.getEpic(request.params.id);
+    const epic = db.getEpic(request.params.id);
     if (!epic) return error(reply, 404, 'Epic introuvable');
-    const body=bodyRecord(request.body)??{};
-    const options=parseSessionDefaults(db.getProject(epic.projectId)!.sessionDefaults, {...body,prompt:typeof body.prompt==='string'?body.prompt:''});
-    if(!options)return error(reply,400,'Réglages de session invalides');
-    try{return reply.code(202).send(epicRunner.start(epic.id,options));}
-    catch(cause){return error(reply,409,String(cause));}
+    const body = bodyRecord(request.body) ?? {};
+    const options = parseSessionDefaults(db.getProject(epic.projectId)!.sessionDefaults, {
+      ...body,
+      prompt: typeof body.prompt === 'string' ? body.prompt : '',
+    });
+    if (!options) return error(reply, 400, 'Réglages de session invalides');
+    try {
+      return reply.code(202).send(epicRunner.start(epic.id, options));
+    } catch (cause) {
+      return error(reply, 409, String(cause));
+    }
   });
   // Code review du travail d'une epic terminée, arrêtée ou échouée : une session rejoint le worktree des étapes.
   app.post<{ Params: { id: string } }>('/api/epics/:id/review', async (request, reply) => {
@@ -928,20 +1219,33 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (!epic) return error(reply, 404, 'Epic introuvable');
     const run = epicRunner.list(epic.id)[0];
     if (!run) return error(reply, 409, 'Cet epic n’a pas encore été traité : aucun travail à relire.');
-    if (['running', 'waiting-validation', 'blocked'].includes(run.status)) return error(reply, 409, 'Epic en cours : attendez la fin de l’exécution ou arrêtez-la avant la review.');
+    if (['running', 'waiting-validation', 'blocked'].includes(run.status))
+      return error(reply, 409, 'Epic en cours : attendez la fin de l’exécution ou arrêtez-la avant la review.');
     const project = db.getProject(epic.projectId)!;
     const body = bodyRecord(request.body) ?? {};
-    const defaults = parseSessionDefaults(project.sessionDefaults, {...body, prompt: typeof body.prompt === 'string' ? body.prompt : ''});
+    const defaults = parseSessionDefaults(project.sessionDefaults, {
+      ...body,
+      prompt: typeof body.prompt === 'string' ? body.prompt : '',
+    });
     if (!defaults) return error(reply, 400, 'Réglages de session invalides');
     let scope;
     try {
-      const workspace=epicWorkspace(db,epic.id);if(workspace)assertEpicWorkspace(db,workspace);
-      scope = await epicReviewScope(db, {...run,workspace,contextRoot:workspace?.path??run.contextRoot});
+      const workspace = epicWorkspace(db, epic.id);
+      if (workspace) assertEpicWorkspace(db, workspace);
+      scope = await epicReviewScope(db, { ...run, workspace, contextRoot: workspace?.path ?? run.contextRoot });
+    } catch (cause) {
+      return error(reply, 409, cause instanceof Error ? cause.message : String(cause));
     }
-    catch (cause) { return error(reply, 409, cause instanceof Error ? cause.message : String(cause)); }
     const prompt = `${defaults.prompt}\n\n${epicReviewInstructions(epic.title, scope)}`.trim();
     try {
-      const session = await sessions.create(project, {...defaults, prompt}, undefined, scope.path, `Review de l’epic « ${epic.title} »`.slice(0, 120), { rememberDefaults: false, epicId: epic.id });
+      const session = await sessions.create(
+        project,
+        { ...defaults, prompt },
+        undefined,
+        scope.path,
+        `Review de l’epic « ${epic.title} »`.slice(0, 120),
+        { rememberDefaults: false, epicId: epic.id },
+      );
       return reply.code(201).send(session);
     } catch (caught) {
       return error(reply, 500, caught instanceof Error ? caught.message : 'Impossible de lancer la session');
@@ -950,20 +1254,43 @@ export async function buildServer(): Promise<FastifyInstance> {
   // Les fichiers que le retrait automatique du contenu de départ laisse à examiner sont confiés à une session, dans la copie.
   app.post<{ Params: { id: string } }>('/api/worktrees/:id/resolve-starting-content', async (request, reply) => {
     let resolution;
-    try { resolution = await worktrees.startingContentResolution(request.params.id); }
-    catch (cause) { return error(reply, cause instanceof WorktreeError ? cause.statusCode : 409, cause instanceof Error ? cause.message : String(cause)); }
-    const {view, workspace, plan} = resolution;
+    try {
+      resolution = await worktrees.startingContentResolution(request.params.id);
+    } catch (cause) {
+      return error(
+        reply,
+        cause instanceof WorktreeError ? cause.statusCode : 409,
+        cause instanceof Error ? cause.message : String(cause),
+      );
+    }
+    const { view, workspace, plan } = resolution;
     const project = view.projectId ? db.getProject(view.projectId) : null;
-    if (!project) return error(reply, 409, 'Le projet de cette copie a été retiré : aucune session ne peut y être lancée.');
-    const settings = {...project.resolutionSettings, mode: normalizeMode(project.resolutionSettings.mode)};
-    const tuning = parseTuning(settings.agent, {...settings});
-    if (!tuning) return error(reply, 400, 'Le modèle ou l’effort de résolution n’est plus proposé par cet agent : modifiez-les dans « Réglages LLM ».');
+    if (!project)
+      return error(reply, 409, 'Le projet de cette copie a été retiré : aucune session ne peut y être lancée.');
+    const settings = { ...project.resolutionSettings, mode: normalizeMode(project.resolutionSettings.mode) };
+    const tuning = parseTuning(settings.agent, { ...settings });
+    if (!tuning)
+      return error(
+        reply,
+        400,
+        'Le modèle ou l’effort de résolution n’est plus proposé par cet agent : modifiez-les dans « Réglages LLM ».',
+      );
     const origin = view.sessionId ? db.getSession(view.sessionId) : null;
-    const conversation = origin ? {title: origin.title, prompt: origin.prompt} : view.sessionTitle ? {title: view.sessionTitle, prompt: ''} : null;
+    const conversation = origin
+      ? { title: origin.title, prompt: origin.prompt }
+      : view.sessionTitle
+        ? { title: view.sessionTitle, prompt: '' }
+        : null;
     const prompt = startingResolutionPrompt(view, workspace, plan, conversation);
     try {
-      const session = await sessions.create(project, {...settings, ...tuning, prompt}, undefined, view.path,
-        `Contenu de départ · ${conversation?.title ?? basename(view.path)}`.slice(0, 120), { rememberDefaults: false, workspace: {mode: 'isolated', path: view.path} });
+      const session = await sessions.create(
+        project,
+        { ...settings, ...tuning, prompt },
+        undefined,
+        view.path,
+        `Contenu de départ · ${conversation?.title ?? basename(view.path)}`.slice(0, 120),
+        { rememberDefaults: false, workspace: { mode: 'isolated', path: view.path } },
+      );
       return reply.code(201).send(session);
     } catch (caught) {
       return error(reply, 500, caught instanceof Error ? caught.message : 'Impossible de lancer la session');
@@ -973,30 +1300,44 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post<{ Params: { id: string } }>('/api/epics/:id/review-task', async (request, reply) => {
     const epic = db.getEpic(request.params.id);
     if (!epic) return error(reply, 404, 'Epic introuvable');
-    const members = db.listTasks().filter(t => t.epicId === epic.id);
+    const members = db.listTasks().filter((t) => t.epicId === epic.id);
     if (members.length === 0) return error(reply, 409, 'Epic vide : ajoutez d’abord ses tâches.');
-    if (members.some(t => t.status !== 'done' && isReviewTask(t))) return error(reply, 409, 'Une étape de review est déjà prévue dans cet epic.');
+    if (members.some((t) => t.status !== 'done' && isReviewTask(t)))
+      return error(reply, 409, 'Une étape de review est déjà prévue dans cet epic.');
     const created = db.createTask(epic.projectId, reviewTaskText(epic.title), null, epic.id, { type: 'llm' });
-    const task = db.updateTask(created.id, { dependsOn: members.map(t => t.id) }) ?? created;
+    const task = db.updateTask(created.id, { dependsOn: members.map((t) => t.id) }) ?? created;
     broadcast({ type: 'task', task });
     return reply.code(201).send(task);
   });
-  app.post<{ Params: { id: string } }>('/api/epic-runs/:id/stop', async (request,reply)=>{
-    try{return reply.send(await epicRunner.stop(request.params.id));}catch(cause){return error(reply,409,String(cause));}
+  app.post<{ Params: { id: string } }>('/api/epic-runs/:id/stop', async (request, reply) => {
+    try {
+      return reply.send(await epicRunner.stop(request.params.id));
+    } catch (cause) {
+      return error(reply, 409, String(cause));
+    }
   });
-  app.post<{ Params: { id: string } }>('/api/epic-runs/:id/resume', async (request,reply)=>{
-    try{return reply.send(epicRunner.resume(request.params.id,bodyRecord(request.body)?.replan===true));}catch(cause){return error(reply,409,String(cause));}
+  app.post<{ Params: { id: string } }>('/api/epic-runs/:id/resume', async (request, reply) => {
+    try {
+      return reply.send(epicRunner.resume(request.params.id, bodyRecord(request.body)?.replan === true));
+    } catch (cause) {
+      return error(reply, 409, String(cause));
+    }
   });
-  app.patch<{ Params: { id: string } }>('/api/epic-runs/:id/auto-validation', async (request,reply)=>{
-    const enabled=bodyRecord(request.body)?.enabled;
-    if(typeof enabled!=='boolean')return error(reply,400,'enabled doit être un booléen.');
-    try{return reply.send(epicRunner.setAutoValidate(request.params.id,enabled));}catch(cause){return error(reply,409,String(cause));}
+  app.patch<{ Params: { id: string } }>('/api/epic-runs/:id/auto-validation', async (request, reply) => {
+    const enabled = bodyRecord(request.body)?.enabled;
+    if (typeof enabled !== 'boolean') return error(reply, 400, 'enabled doit être un booléen.');
+    try {
+      return reply.send(epicRunner.setAutoValidate(request.params.id, enabled));
+    } catch (cause) {
+      return error(reply, 409, String(cause));
+    }
   });
 
   app.post<{ Params: { id: string } }>('/api/sessions/:id/kill', async (request, reply) => {
     const session = db.getSession(request.params.id);
     if (session === null) return error(reply, 404, 'Session introuvable');
-    if (session.status === 'exited' || !sessions.kill(session.id)) return error(reply, 409, "La session n'est pas active");
+    if (session.status === 'exited' || !sessions.kill(session.id))
+      return error(reply, 409, "La session n'est pas active");
     return reply.send({ ok: true });
   });
 
@@ -1136,18 +1477,21 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (text === '' || text.length > 3_000) {
       return error(reply, 400, 'Le texte doit contenir entre 1 et 3 000 caractères');
     }
-    appendFileSync(HOOK_LOG, `${JSON.stringify({
-      at: new Date().toISOString(),
-      session: session.id,
-      agent: session.agent,
-      event: 'cerebro-notify',
-      payload: { kind: body.kind, text },
-    })}\n`);
+    appendFileSync(
+      HOOK_LOG,
+      `${JSON.stringify({
+        at: new Date().toISOString(),
+        session: session.id,
+        agent: session.agent,
+        event: 'cerebro-notify',
+        payload: { kind: body.kind, text },
+      })}\n`,
+    );
     // Even without Slack, the end of the turn must show as a question in the UI.
     if (body.kind === 'ask') sessions.markAsked(session.id, text);
     if (!SLACK_ENABLED) return error(reply, 503, "Slack n'est pas configuré");
     if (!notifier.agentMessagesAllowed()) {
-      return error(reply, 503, "Messages des agents désactivés dans les réglages Slack de Cerebro");
+      return error(reply, 503, 'Messages des agents désactivés dans les réglages Slack de Cerebro');
     }
     try {
       await notifier.agentMessage(session.id, body.kind, text);
@@ -1170,24 +1514,59 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (session === null) error(reply, 404, 'Session introuvable');
     return session;
   };
-  app.post<{ Params: { id: string } }>('/api/backlog/:id/findings', {bodyLimit: 1024 * 1024}, async (request, reply) => {
-    const session = backlogSession(request, reply);
-    if (!session) return reply;
-    try { return reply.send(publishFindings(session.id, request.body)); }
-    catch (cause) { return error(reply, 400, String(cause)); }
-  });
-  app.post<{ Params: { id: string; taskId:string } }>('/api/backlog/:id/tasks/:taskId/result', async (request,reply)=>{
-    const session=backlogSession(request,reply);if(!session)return reply;
-    const body=bodyRecord(request.body);
-    if(!['failed','blocked','waiting-validation'].includes(String(body?.status))||typeof body?.message!=='string'||body.message.length>2000)return error(reply,400,'Résultat invalide.');
-    try{return reply.send(epicRunner.report(session.id,request.params.taskId,body.status as 'failed'|'blocked'|'waiting-validation',body.message));}
-    catch(cause){return error(reply,409,String(cause));}
-  });
+  app.post<{ Params: { id: string } }>(
+    '/api/backlog/:id/findings',
+    { bodyLimit: 1024 * 1024 },
+    async (request, reply) => {
+      const session = backlogSession(request, reply);
+      if (!session) return reply;
+      try {
+        return reply.send(publishFindings(session.id, request.body));
+      } catch (cause) {
+        return error(reply, 400, String(cause));
+      }
+    },
+  );
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/backlog/:id/tasks/:taskId/result',
+    async (request, reply) => {
+      const session = backlogSession(request, reply);
+      if (!session) return reply;
+      const body = bodyRecord(request.body);
+      if (
+        !['failed', 'blocked', 'waiting-validation'].includes(String(body?.status)) ||
+        typeof body?.message !== 'string' ||
+        body.message.length > 2000
+      )
+        return error(reply, 400, 'Résultat invalide.');
+      try {
+        return reply.send(
+          epicRunner.report(
+            session.id,
+            request.params.taskId,
+            body.status as 'failed' | 'blocked' | 'waiting-validation',
+            body.message,
+          ),
+        );
+      } catch (cause) {
+        return error(reply, 409, String(cause));
+      }
+    },
+  );
   app.get<{ Params: { id: string } }>('/api/backlog/:id', async (request, reply) => {
     const session = backlogSession(request, reply);
     if (session === null) return reply;
-    return projectTasks(session.projectId).map(({ id, status, text, dependsOn, epicId, sourceSessionId, sessionId }) =>
-      ({ id, status, text, dependsOn, epicId, mine: sourceSessionId === session.id, assigned: sessionId === session.id }));
+    return projectTasks(session.projectId).map(
+      ({ id, status, text, dependsOn, epicId, sourceSessionId, sessionId }) => ({
+        id,
+        status,
+        text,
+        dependsOn,
+        epicId,
+        mine: sourceSessionId === session.id,
+        assigned: sessionId === session.id,
+      }),
+    );
   });
 
   const projectEpic = (session: Session, epicId: string, reply: FastifyReply): Epic | null => {
@@ -1203,8 +1582,16 @@ export async function buildServer(): Promise<FastifyInstance> {
     const session = backlogSession(request, reply);
     if (session === null) return reply;
     const tasks = projectTasks(session.projectId);
-    return db.listEpics().filter((e) => e.projectId === session.projectId).map(({ id, title, description, sourceSessionId }) =>
-      ({ id, title, description, mine: sourceSessionId === session.id, tasks: tasks.filter((t) => t.epicId === id).map((t) => t.id) }));
+    return db
+      .listEpics()
+      .filter((e) => e.projectId === session.projectId)
+      .map(({ id, title, description, sourceSessionId }) => ({
+        id,
+        title,
+        description,
+        mine: sourceSessionId === session.id,
+        tasks: tasks.filter((t) => t.epicId === id).map((t) => t.id),
+      }));
   });
 
   // Crée un epic, vide ou avec des tâches existantes ({ title, description?, taskIds? }).
@@ -1235,98 +1622,127 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (session === null) return reply;
     const epic = projectEpic(session, request.params.epicId, reply);
     if (epic === null) return reply;
-    if (epic.sourceSessionId !== session.id) return error(reply, 403, 'Seuls les epics créés par cette session peuvent être supprimés ici');
+    if (epic.sourceSessionId !== session.id)
+      return error(reply, 403, 'Seuls les epics créés par cette session peuvent être supprimés ici');
     deleteEpic(epic.id);
     return reply.code(204).send();
   });
 
   // Clôt une tâche confiée à cette session (traitement d'un epic, tâche par tâche).
-  app.post<{ Params: { id: string; taskId: string } }>('/api/backlog/:id/tasks/:taskId/done', async (request, reply) => {
-    const session = backlogSession(request, reply);
-    if (session === null) return reply;
-    const current = db.getTask(request.params.taskId);
-    if (current === null || current.projectId !== session.projectId) return error(reply, 404, 'Tâche introuvable dans ce projet');
-    if (current.sessionId !== session.id) return error(reply, 403, "Cette tâche n'est pas confiée à cette session");
-    const task = db.updateTask(current.id, { status: 'done' });
-    if (task === null) return error(reply, 404, 'Tâche introuvable');
-    broadcast({ type: 'task', task });
-    return reply.send({ id: task.id, status: task.status });
-  });
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/backlog/:id/tasks/:taskId/done',
+    async (request, reply) => {
+      const session = backlogSession(request, reply);
+      if (session === null) return reply;
+      const current = db.getTask(request.params.taskId);
+      if (current === null || current.projectId !== session.projectId)
+        return error(reply, 404, 'Tâche introuvable dans ce projet');
+      if (current.sessionId !== session.id) return error(reply, 403, "Cette tâche n'est pas confiée à cette session");
+      const task = db.updateTask(current.id, { status: 'done' });
+      if (task === null) return error(reply, 404, 'Tâche introuvable');
+      broadcast({ type: 'task', task });
+      return reply.send({ id: task.id, status: task.status });
+    },
+  );
 
   // Ajoute des tâches. Chacune est un texte ou { text, dependsOn } ; une dépendance est l'identifiant
   // d'une tâche du projet ou le numéro (à partir de 1) d'une tâche précédente du même envoi.
-  app.post<{ Params: { id: string } }>('/api/backlog/:id', { bodyLimit: BACKLOG_BODY_LIMIT }, async (request, reply) => {
-    const session = backlogSession(request, reply);
-    if (session === null) return reply;
-    const body = bodyRecord(request.body);
-    if (body === null || !Array.isArray(body.tasks) || body.tasks.length === 0 || body.tasks.length > MAX_BACKLOG_TASKS) {
-      return error(reply, 400, `tasks doit contenir entre 1 et ${MAX_BACKLOG_TASKS} tâches`);
-    }
-    const existing = new Set(projectTasks(session.projectId).map((t) => t.id));
-    const epics = db.listEpics();
-    // `epic` : epic de toutes les tâches de l'envoi, existant (identifiant) ou à créer ({ title, description? }).
-    let defaultEpic: string | null = null;
-    let newEpic: Record<string, unknown> | null = null;
-    if (typeof body.epic === 'string') {
-      const checked = checkEpic(body.epic, session.projectId, epics);
-      if (!checked.ok) return error(reply, 400, checked.message);
-      defaultEpic = checked.id;
-    } else if (body.epic !== undefined && body.epic !== null) {
-      newEpic = bodyRecord(body.epic);
-      if (epicTitle(newEpic?.title) === null) return error(reply, 400, EPIC_TITLE_ERROR);
-      if (epicDescription(newEpic?.description) === null) return error(reply, 400, EPIC_DESCRIPTION_ERROR);
-    }
-    const items: { text: string; deps: (string | number)[]; epicId: string | null | undefined }[] = [];
-    for (const [index, raw] of (body.tasks as unknown[]).entries()) {
-      const item = typeof raw === 'string' ? { text: raw } : bodyRecord(raw);
-      const text = taskText(item?.text);
-      if (text === null) return error(reply, 400, `Tâche ${index + 1} : le texte doit contenir entre 1 et ${MAX_TASK_LENGTH} caractères`);
-      const deps = item?.dependsOn ?? [];
-      if (!Array.isArray(deps)) return error(reply, 400, `Tâche ${index + 1} : dependsOn doit être une liste`);
-      for (const dep of deps) {
-        const valid = typeof dep === 'number'
-          ? Number.isInteger(dep) && dep >= 1 && dep <= index
-          : typeof dep === 'string' && existing.has(dep);
-        if (!valid) {
-          return error(reply, 400, `Tâche ${index + 1} : dépendance invalide ${JSON.stringify(dep)} (identifiant d'une tâche du projet ou numéro d'une tâche précédente de l'envoi)`);
+  app.post<{ Params: { id: string } }>(
+    '/api/backlog/:id',
+    { bodyLimit: BACKLOG_BODY_LIMIT },
+    async (request, reply) => {
+      const session = backlogSession(request, reply);
+      if (session === null) return reply;
+      const body = bodyRecord(request.body);
+      if (
+        body === null ||
+        !Array.isArray(body.tasks) ||
+        body.tasks.length === 0 ||
+        body.tasks.length > MAX_BACKLOG_TASKS
+      ) {
+        return error(reply, 400, `tasks doit contenir entre 1 et ${MAX_BACKLOG_TASKS} tâches`);
+      }
+      const existing = new Set(projectTasks(session.projectId).map((t) => t.id));
+      const epics = db.listEpics();
+      // `epic` : epic de toutes les tâches de l'envoi, existant (identifiant) ou à créer ({ title, description? }).
+      let defaultEpic: string | null = null;
+      let newEpic: Record<string, unknown> | null = null;
+      if (typeof body.epic === 'string') {
+        const checked = checkEpic(body.epic, session.projectId, epics);
+        if (!checked.ok) return error(reply, 400, checked.message);
+        defaultEpic = checked.id;
+      } else if (body.epic !== undefined && body.epic !== null) {
+        newEpic = bodyRecord(body.epic);
+        if (epicTitle(newEpic?.title) === null) return error(reply, 400, EPIC_TITLE_ERROR);
+        if (epicDescription(newEpic?.description) === null) return error(reply, 400, EPIC_DESCRIPTION_ERROR);
+      }
+      const items: { text: string; deps: (string | number)[]; epicId: string | null | undefined }[] = [];
+      for (const [index, raw] of (body.tasks as unknown[]).entries()) {
+        const item = typeof raw === 'string' ? { text: raw } : bodyRecord(raw);
+        const text = taskText(item?.text);
+        if (text === null)
+          return error(
+            reply,
+            400,
+            `Tâche ${index + 1} : le texte doit contenir entre 1 et ${MAX_TASK_LENGTH} caractères`,
+          );
+        const deps = item?.dependsOn ?? [];
+        if (!Array.isArray(deps)) return error(reply, 400, `Tâche ${index + 1} : dependsOn doit être une liste`);
+        for (const dep of deps) {
+          const valid =
+            typeof dep === 'number'
+              ? Number.isInteger(dep) && dep >= 1 && dep <= index
+              : typeof dep === 'string' && existing.has(dep);
+          if (!valid) {
+            return error(
+              reply,
+              400,
+              `Tâche ${index + 1} : dépendance invalide ${JSON.stringify(dep)} (identifiant d'une tâche du projet ou numéro d'une tâche précédente de l'envoi)`,
+            );
+          }
         }
+        let epicId: string | null | undefined;
+        if (item?.epicId !== undefined) {
+          const checked = checkEpic(item.epicId, session.projectId, epics);
+          if (!checked.ok) return error(reply, 400, `Tâche ${index + 1} : ${checked.message}`);
+          epicId = checked.id;
+        }
+        items.push({ text, deps: deps as (string | number)[], epicId });
       }
-      let epicId: string | null | undefined;
-      if (item?.epicId !== undefined) {
-        const checked = checkEpic(item.epicId, session.projectId, epics);
-        if (!checked.ok) return error(reply, 400, `Tâche ${index + 1} : ${checked.message}`);
-        epicId = checked.id;
+      let createdEpic: Epic | null = null;
+      if (newEpic !== null) {
+        const result = createEpic(
+          session.projectId,
+          { title: newEpic.title, description: newEpic.description },
+          session.id,
+        );
+        if (!result.ok) return error(reply, 400, result.message);
+        createdEpic = result.epic;
+        defaultEpic = result.epic.id;
       }
-      items.push({ text, deps: deps as (string | number)[], epicId });
-    }
-    let createdEpic: Epic | null = null;
-    if (newEpic !== null) {
-      const result = createEpic(session.projectId, { title: newEpic.title, description: newEpic.description }, session.id);
-      if (!result.ok) return error(reply, 400, result.message);
-      createdEpic = result.epic;
-      defaultEpic = result.epic.id;
-    }
-    // Les nouvelles tâches ne dépendent que de tâches existantes ou antérieures : pas de cycle possible.
-    const created: Task[] = [];
-    for (const { text, deps, epicId } of items) {
-      const task = db.createTask(session.projectId, text, session.id, epicId === undefined ? defaultEpic : epicId);
-      const dependsOn = deps.map((dep) => typeof dep === 'number' ? (created[dep - 1] as Task).id : dep);
-      created.push(dependsOn.length === 0 ? task : db.updateTask(task.id, { dependsOn }) ?? task);
-    }
-    for (const task of created) broadcast({ type: 'task', task });
-    return reply.code(201).send({
-      count: created.length,
-      epic: createdEpic === null ? null : { id: createdEpic.id, title: createdEpic.title },
-      tasks: created.map(({ id, text, dependsOn, epicId }) => ({ id, text, dependsOn, epicId })),
-    });
-  });
+      // Les nouvelles tâches ne dépendent que de tâches existantes ou antérieures : pas de cycle possible.
+      const created: Task[] = [];
+      for (const { text, deps, epicId } of items) {
+        const task = db.createTask(session.projectId, text, session.id, epicId === undefined ? defaultEpic : epicId);
+        const dependsOn = deps.map((dep) => (typeof dep === 'number' ? (created[dep - 1] as Task).id : dep));
+        created.push(dependsOn.length === 0 ? task : (db.updateTask(task.id, { dependsOn }) ?? task));
+      }
+      for (const task of created) broadcast({ type: 'task', task });
+      return reply.code(201).send({
+        count: created.length,
+        epic: createdEpic === null ? null : { id: createdEpic.id, title: createdEpic.title },
+        tasks: created.map(({ id, text, dependsOn, epicId }) => ({ id, text, dependsOn, epicId })),
+      });
+    },
+  );
 
   // Remplace les dépendances d'une tâche du projet.
   app.patch<{ Params: { id: string; taskId: string } }>('/api/backlog/:id/tasks/:taskId', async (request, reply) => {
     const session = backlogSession(request, reply);
     if (session === null) return reply;
     const current = db.getTask(request.params.taskId);
-    if (current === null || current.projectId !== session.projectId) return error(reply, 404, 'Tâche introuvable dans ce projet');
+    if (current === null || current.projectId !== session.projectId)
+      return error(reply, 404, 'Tâche introuvable dans ce projet');
     const body = bodyRecord(request.body);
     if (body === null || (body.dependsOn === undefined && body.epicId === undefined)) {
       return error(reply, 400, 'dependsOn ou epicId attendu');
@@ -1353,9 +1769,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     const session = backlogSession(request, reply);
     if (session === null) return reply;
     const task = db.getTask(request.params.taskId);
-    if (task === null || task.projectId !== session.projectId) return error(reply, 404, 'Tâche introuvable dans ce projet');
-    if (task.sourceSessionId !== session.id) return error(reply, 403, "Seules les tâches créées par cette session peuvent être supprimées ici");
-    if (task.status !== 'todo') return error(reply, 409, 'Tâche déjà démarrée : à supprimer depuis l\'interface');
+    if (task === null || task.projectId !== session.projectId)
+      return error(reply, 404, 'Tâche introuvable dans ce projet');
+    if (task.sourceSessionId !== session.id)
+      return error(reply, 403, 'Seules les tâches créées par cette session peuvent être supprimées ici');
+    if (task.status !== 'todo') return error(reply, 409, "Tâche déjà démarrée : à supprimer depuis l'interface");
     const dependents = db.listDependents(task.id);
     db.deleteTask(task.id);
     broadcast({ type: 'task-deleted', id: task.id });
@@ -1379,7 +1797,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (session === null) return error(reply, 404, 'Session introuvable');
     if (body.agent !== session.agent) return error(reply, 400, "L'agent ne correspond pas à la session");
     // Keep a trace of every hook event: invaluable to debug state detection.
-    appendFileSync(HOOK_LOG, `${JSON.stringify({ at: new Date().toISOString(), session: session.id, agent: body.agent, event: body.event, payload: body.payload })}\n`);
+    appendFileSync(
+      HOOK_LOG,
+      `${JSON.stringify({ at: new Date().toISOString(), session: session.id, agent: body.agent, event: body.event, payload: body.payload })}\n`,
+    );
     handleHook(sessions, session.id, body.agent, body.event, body.payload);
     return reply.code(204).send();
   });
@@ -1450,25 +1871,27 @@ export async function startServer(): Promise<FastifyInstance> {
 
 const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  startServer().then((app) => {
-    let closing = false;
-    const shutdown = async (): Promise<void> => {
-      if (closing) return;
-      closing = true;
-      try {
-        await app.close();
-        process.exit(0);
-      } catch (caught) {
-        const message = caught instanceof Error ? caught.stack ?? caught.message : String(caught);
-        process.stderr.write(`${message}\n`);
-        process.exit(1);
-      }
-    };
-    process.once('SIGINT', () => void shutdown());
-    process.once('SIGTERM', () => void shutdown());
-  }).catch((caught: unknown) => {
-    const message = caught instanceof Error ? caught.stack ?? caught.message : String(caught);
-    process.stderr.write(`${message}\n`);
-    process.exitCode = 1;
-  });
+  startServer()
+    .then((app) => {
+      let closing = false;
+      const shutdown = async (): Promise<void> => {
+        if (closing) return;
+        closing = true;
+        try {
+          await app.close();
+          process.exit(0);
+        } catch (caught) {
+          const message = caught instanceof Error ? (caught.stack ?? caught.message) : String(caught);
+          process.stderr.write(`${message}\n`);
+          process.exit(1);
+        }
+      };
+      process.once('SIGINT', () => void shutdown());
+      process.once('SIGTERM', () => void shutdown());
+    })
+    .catch((caught: unknown) => {
+      const message = caught instanceof Error ? (caught.stack ?? caught.message) : String(caught);
+      process.stderr.write(`${message}\n`);
+      process.exitCode = 1;
+    });
 }

@@ -9,9 +9,12 @@ import type { Agent, Effort, Mode } from './db.ts';
 const execFileAsync = promisify(execFile);
 export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
 export const HOOK = ['node', HOOK_SCRIPT] as const;
-const NOTIFY_INSTRUCTIONS = "Tu tournes dans Cerebro. Les fins de tour et résultats connus sont notifiés automatiquement selon les préférences de l’utilisateur. Réserve `cerebro-notify \"message\"` aux messages apportant un contexte supplémentaire utile, sans répéter ces alertes factuelles. Pour une question dont la réponse conditionne la suite, utilise `cerebro-notify --ask \"question\"` puis termine ton tour : la réponse arrivera comme prochain message. Les questions sémantiques et blocages métier restent à expliquer par toi. Une fin de tour ne prouve jamais la réussite d’une tâche.";
-const BACKLOG_INSTRUCTIONS = "Cerebro tient un backlog de tâches par projet. Si l'utilisateur demande de mettre des éléments (par exemple les findings d'une review) dans le backlog, envoie-les sur l'entrée standard de `cerebro-backlog`, une tâche par élément, séparées par une ligne `---` ; chaque tâche doit se suffire à elle-même (fichier:ligne, problème, scénario, correctif attendu), car elle sera confiée telle quelle à une nouvelle session. Quand plusieurs tâches relèvent d'un même sujet (par exemple les findings d'une même review), regroupe-les dans un epic : `cerebro-backlog --new-epic \"Titre\" --description \"contexte commun\"` suivi des tâches, ou `--epic <id>` pour un epic existant. Chaque tâche doit rester autonome ; l'utilisateur peut traiter l'epic d'un bloc. `cerebro-backlog --help` décrit les dépendances entre tâches, les epics et les autres commandes.";
-const SESSION_TASK_INSTRUCTIONS = "Pour un travail comportant plusieurs sous-tâches ou sous-objectifs, tiens une liste synthétique et exhaustive dans le suivi persistant de cette session via `cerebro-tasks` (aide : `cerebro-tasks --help`). Consulte `cerebro-tasks list` au début du travail, après une reprise ou une compaction et avant ton bilan final. Ajoute les points importants à mesure qu’ils sont recensés, puis actualise leur statut (todo, in_progress, blocked, done, cancelled) pendant le travail. Renseigne une note de résultat, de vérification ou de blocage quand elle est utile. Marque done uniquement le travail effectivement réalisé et vérifié ; une fin de tour ou l’arrêt de la session ne clôture rien. Conserve les éléments terminés et utilise cancelled pour les objectifs abandonnés, avec la raison ; réserve delete aux erreurs de saisie ou doublons. Ce suivi appartient à la conversation, sans créer ni clôturer de tâches du backlog du projet.";
+const NOTIFY_INSTRUCTIONS =
+  'Tu tournes dans Cerebro. Les fins de tour et résultats connus sont notifiés automatiquement selon les préférences de l’utilisateur. Réserve `cerebro-notify "message"` aux messages apportant un contexte supplémentaire utile, sans répéter ces alertes factuelles. Pour une question dont la réponse conditionne la suite, utilise `cerebro-notify --ask "question"` puis termine ton tour : la réponse arrivera comme prochain message. Les questions sémantiques et blocages métier restent à expliquer par toi. Une fin de tour ne prouve jamais la réussite d’une tâche.';
+const BACKLOG_INSTRUCTIONS =
+  "Cerebro tient un backlog de tâches par projet. Si l'utilisateur demande de mettre des éléments (par exemple les findings d'une review) dans le backlog, envoie-les sur l'entrée standard de `cerebro-backlog`, une tâche par élément, séparées par une ligne `---` ; chaque tâche doit se suffire à elle-même (fichier:ligne, problème, scénario, correctif attendu), car elle sera confiée telle quelle à une nouvelle session. Quand plusieurs tâches relèvent d'un même sujet (par exemple les findings d'une même review), regroupe-les dans un epic : `cerebro-backlog --new-epic \"Titre\" --description \"contexte commun\"` suivi des tâches, ou `--epic <id>` pour un epic existant. Chaque tâche doit rester autonome ; l'utilisateur peut traiter l'epic d'un bloc. `cerebro-backlog --help` décrit les dépendances entre tâches, les epics et les autres commandes.";
+const SESSION_TASK_INSTRUCTIONS =
+  'Pour un travail comportant plusieurs sous-tâches ou sous-objectifs, tiens une liste synthétique et exhaustive dans le suivi persistant de cette session via `cerebro-tasks` (aide : `cerebro-tasks --help`). Consulte `cerebro-tasks list` au début du travail, après une reprise ou une compaction et avant ton bilan final. Ajoute les points importants à mesure qu’ils sont recensés, puis actualise leur statut (todo, in_progress, blocked, done, cancelled) pendant le travail. Renseigne une note de résultat, de vérification ou de blocage quand elle est utile. Marque done uniquement le travail effectivement réalisé et vérifié ; une fin de tour ou l’arrêt de la session ne clôture rien. Conserve les éléments terminés et utilise cancelled pour les objectifs abandonnés, avec la raison ; réserve delete aux erreurs de saisie ou doublons. Ce suivi appartient à la conversation, sans créer ni clôturer de tâches du backlog du projet.';
 // Le suivi et le backlog fonctionnent toujours ; cerebro-notify seulement si Slack est configuré.
 export const AGENT_INSTRUCTIONS = `${SLACK_ENABLED ? NOTIFY_INSTRUCTIONS : 'Tu tournes dans Cerebro.'} ${BACKLOG_INSTRUCTIONS} ${SESSION_TASK_INSTRUCTIONS}`;
 
@@ -58,10 +61,12 @@ function hookSettings(agent: 'claude' | 'grok'): { hooks: Record<string, object[
       Stop: [entry('Stop')],
       UserPromptSubmit: [entry('UserPromptSubmit')],
       PostToolUse: [entry('PostToolUse')],
-      PreToolUse: [{
-        matcher: agent === 'grok' ? '(?i)ask.*user|^AskUserQuestion$' : 'AskUserQuestion',
-        hooks: [{ type: 'command', command: hookCommand(agent, 'PreToolUse', guarded) }],
-      }],
+      PreToolUse: [
+        {
+          matcher: agent === 'grok' ? '(?i)ask.*user|^AskUserQuestion$' : 'AskUserQuestion',
+          hooks: [{ type: 'command', command: hookCommand(agent, 'PreToolUse', guarded) }],
+        },
+      ],
       ...(agent === 'grok' ? { SessionStart: [entry('SessionStart')] } : {}),
     },
   };
@@ -92,7 +97,8 @@ function unescapeTomlBasic(value: string): string {
   return value
     .replace(/\\\s*\n\s*/g, '')
     .replace(/\\(u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)/g, (_, esc: string) =>
-      esc.length > 1 ? String.fromCodePoint(parseInt(esc.slice(1), 16)) : TOML_ESCAPES[esc] ?? esc);
+      esc.length > 1 ? String.fromCodePoint(parseInt(esc.slice(1), 16)) : (TOML_ESCAPES[esc] ?? esc),
+    );
 }
 
 // Top-level `developer_instructions` of the user's Codex config: our `-c` override replaces it,
@@ -106,8 +112,10 @@ export function readCodexDeveloperInstructions(): string | null {
   }
   const firstTable = text.search(/^\s*\[/m);
   const topLevel = firstTable === -1 ? text : text.slice(0, firstTable);
-  const match = /^[ \t]*"?developer_instructions"?[ \t]*=[ \t]*("""[\s\S]*?"""(?!")|'''[\s\S]*?'''(?!')|"(?:[^"\\\n]|\\.)*"|'[^'\n]*')/m
-    .exec(topLevel);
+  const match =
+    /^[ \t]*"?developer_instructions"?[ \t]*=[ \t]*("""[\s\S]*?"""(?!")|'''[\s\S]*?'''(?!')|"(?:[^"\\\n]|\\.)*"|'[^'\n]*')/m.exec(
+      topLevel,
+    );
   if (match === null) return null;
   const raw = match[1];
   let value: string;
@@ -120,9 +128,12 @@ export function readCodexDeveloperInstructions(): string | null {
 
 function codexConfigArgs(): string[] {
   const args = [
-    '-c', `notify=["node",${JSON.stringify(HOOK_SCRIPT)},"codex","notify"]`,
-    '-c', 'tui.notifications=true',
-    '-c', 'tui.notification_method="osc9"',
+    '-c',
+    `notify=["node",${JSON.stringify(HOOK_SCRIPT)},"codex","notify"]`,
+    '-c',
+    'tui.notifications=true',
+    '-c',
+    'tui.notification_method="osc9"',
   ];
   const userInstructions = readCodexDeveloperInstructions();
   const instructions = userInstructions === null ? AGENT_INSTRUCTIONS : `${userInstructions}\n\n${AGENT_INSTRUCTIONS}`;
@@ -145,7 +156,12 @@ export function buildAgentCommand(
     agentSessionId = resumeSessionId ?? generatedSessionId;
     if (resumeSessionId === null) args.push('--session-id', agentSessionId);
     else args.push('--resume', resumeSessionId);
-    args.push('--settings', JSON.stringify(hookSettings('claude')), ...modeArgs(agent, mode), ...tuningArgs(agent, tuning));
+    args.push(
+      '--settings',
+      JSON.stringify(hookSettings('claude')),
+      ...modeArgs(agent, mode),
+      ...tuningArgs(agent, tuning),
+    );
     args.push('--append-system-prompt', AGENT_INSTRUCTIONS);
     if (resumeSessionId === null && prompt !== '') args.push(prompt);
   } else if (agent === 'grok') {
@@ -161,19 +177,27 @@ export function buildAgentCommand(
       if (prompt !== '') args.push(prompt);
     } else {
       agentSessionId = resumeSessionId;
-      args.push('resume', resumeSessionId, ...codexConfigArgs(), ...modeArgs(agent, mode), ...tuningArgs(agent, tuning));
+      args.push(
+        'resume',
+        resumeSessionId,
+        ...codexConfigArgs(),
+        ...modeArgs(agent, mode),
+        ...tuningArgs(agent, tuning),
+      );
     }
   }
   return { cmd: agent, args, agentSessionId };
 }
 
 export async function getAgentAvailability(): Promise<{ agent: Agent; available: boolean }[]> {
-  return Promise.all(AGENTS.map(async (agent) => {
-    try {
-      await execFileAsync('which', [agent]);
-      return { agent, available: true };
-    } catch {
-      return { agent, available: false };
-    }
-  }));
+  return Promise.all(
+    AGENTS.map(async (agent) => {
+      try {
+        await execFileAsync('which', [agent]);
+        return { agent, available: true };
+      } catch {
+        return { agent, available: false };
+      }
+    }),
+  );
 }

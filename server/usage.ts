@@ -73,7 +73,9 @@ function freshen(window: UsageWindow, now: number): UsageWindow {
 }
 
 function record(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 const execFileAsync = promisify(execFile);
@@ -91,12 +93,15 @@ async function readClaudeCredentials(): Promise<string> {
     if (process.platform !== 'darwin') throw cause;
   }
   const service = 'Claude Code-credentials';
-  const services = customDir === undefined
-    ? [service]
-    : [`${service}-${createHash('sha256').update(customDir).digest('hex').slice(0, 8)}`, service];
+  const services =
+    customDir === undefined
+      ? [service]
+      : [`${service}-${createHash('sha256').update(customDir).digest('hex').slice(0, 8)}`, service];
   for (const name of services) {
     try {
-      const { stdout } = await execFileAsync('security', ['find-generic-password', '-s', name, '-w'], { timeout: 10_000 });
+      const { stdout } = await execFileAsync('security', ['find-generic-password', '-s', name, '-w'], {
+        timeout: 10_000,
+      });
       if (stdout.trim() !== '') return stdout;
     } catch {
       // Try the next service name.
@@ -134,11 +139,18 @@ function claudeAuth(oauth: Record<string, unknown> | null): AgentAuth {
 }
 
 function readCodexAuth(): AgentAuth {
-  const auth = record(JSON.parse(readFileSync(join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json'), 'utf8')));
+  const auth = record(
+    JSON.parse(readFileSync(join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json'), 'utf8')),
+  );
   const tokens = record(auth?.tokens);
   if (tokens === null) {
     const apiKey = typeof auth?.OPENAI_API_KEY === 'string' && auth.OPENAI_API_KEY !== '';
-    return { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: apiKey ? null : 'Pas de connexion Codex' };
+    return {
+      loginExpiresAt: null,
+      accessExpiresAt: null,
+      renewedAt: null,
+      error: apiKey ? null : 'Pas de connexion Codex',
+    };
   }
   return {
     loginExpiresAt: null,
@@ -171,7 +183,12 @@ function readAuth(read: () => AgentAuth): AgentAuth {
     return read();
   } catch (cause) {
     const missing = (cause as NodeJS.ErrnoException).code === 'ENOENT';
-    return { loginExpiresAt: null, accessExpiresAt: null, renewedAt: null, error: missing ? 'Non connecté' : errorText(cause) };
+    return {
+      loginExpiresAt: null,
+      accessExpiresAt: null,
+      renewedAt: null,
+      error: missing ? 'Non connecté' : errorText(cause),
+    };
   }
 }
 
@@ -206,7 +223,10 @@ function codexRollouts(): string[] {
   const root = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'sessions');
   const subdirs = (dir: string): string[] => {
     try {
-      return readdirSync(dir).filter((name) => /^\d+$/.test(name)).sort().reverse();
+      return readdirSync(dir)
+        .filter((name) => /^\d+$/.test(name))
+        .sort()
+        .reverse();
     } catch {
       return [];
     }
@@ -271,9 +291,11 @@ function readCodex(): AgentUsage {
     }
     if (latest !== null) break;
   }
-  if (latest === null) return { agent: 'codex', windows: [], auth: null, updatedAt: null, error: 'Aucune session Codex récente' };
-  const windows = [codexWindow(latest.limits.primary), codexWindow(latest.limits.secondary)]
-    .filter((w): w is UsageWindow => w !== null);
+  if (latest === null)
+    return { agent: 'codex', windows: [], auth: null, updatedAt: null, error: 'Aucune session Codex récente' };
+  const windows = [codexWindow(latest.limits.primary), codexWindow(latest.limits.secondary)].filter(
+    (w): w is UsageWindow => w !== null,
+  );
   return { agent: 'codex', windows, auth: null, updatedAt: latest.timestamp, error: null };
 }
 
@@ -327,7 +349,11 @@ export class UsageTracker {
       this.grokAuth = readAuth(readGrokAuth);
     }
 
-    const auth: Record<Agent, AgentAuth | null> = { claude: this.claudeAuth, codex: this.codexAuth, grok: this.grokAuth };
+    const auth: Record<Agent, AgentAuth | null> = {
+      claude: this.claudeAuth,
+      codex: this.codexAuth,
+      grok: this.grokAuth,
+    };
     return [this.claude, this.codex, GROK_USAGE].map((usage) => ({
       ...usage,
       auth: auth[usage.agent],

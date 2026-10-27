@@ -28,7 +28,12 @@ export interface CommitSettings {
   effort: Effort | null;
   strategy: 'single' | 'atomic';
 }
-export const DEFAULT_COMMIT_SETTINGS: Readonly<CommitSettings> = { agent: 'claude', model: null, effort: null, strategy: 'single' };
+export const DEFAULT_COMMIT_SETTINGS: Readonly<CommitSettings> = {
+  agent: 'claude',
+  model: null,
+  effort: null,
+  strategy: 'single',
+};
 
 /** Session launched to separate the starting content of a copy from the conversation's work, file by file. */
 export interface ResolutionSettings {
@@ -37,10 +42,19 @@ export interface ResolutionSettings {
   model: string | null;
   effort: Effort | null;
 }
-export const DEFAULT_RESOLUTION_SETTINGS: Readonly<ResolutionSettings> = { agent: 'claude', mode: 'auto', model: null, effort: null };
+export const DEFAULT_RESOLUTION_SETTINGS: Readonly<ResolutionSettings> = {
+  agent: 'claude',
+  mode: 'auto',
+  model: null,
+  effort: null,
+};
 
 export const DEFAULT_SESSION_DEFAULTS: Readonly<SessionDefaults> = {
-  agent: 'claude', mode: 'auto', model: null, effort: null, prompt: '',
+  agent: 'claude',
+  mode: 'auto',
+  model: null,
+  effort: null,
+  prompt: '',
 };
 
 // No widget offers « default » (agent configuration) any more: it is read as the default mode, « auto ».
@@ -50,7 +64,10 @@ export function normalizeMode(mode: Mode): Mode {
 
 // Un autre agent ne doit pas recevoir le modèle ou l'effort mémorisé pour le précédent.
 // undefined inherits the saved choice; null explicitly resets to the Cerebro default (see parseTuning).
-export function resolveSessionDefaults(defaults: SessionDefaults, overrides: Partial<SessionDefaults>): SessionDefaults {
+export function resolveSessionDefaults(
+  defaults: SessionDefaults,
+  overrides: Partial<SessionDefaults>,
+): SessionDefaults {
   const agent = overrides.agent ?? defaults.agent;
   return {
     agent,
@@ -111,7 +128,8 @@ export interface SessionWorktree {
   removedAutomatically: boolean;
 }
 
-export type TaskExecution = {type:'llm'} | {type:'command';commandId:string;completion:'manual'|'exit-zero'};
+export type TaskExecution =
+  { type: 'llm' } | { type: 'command'; commandId: string; completion: 'manual' | 'exit-zero' };
 // Élément du backlog d'un projet : un texte à confier plus tard à une session.
 export interface Task {
   id: string;
@@ -221,7 +239,7 @@ function taskFromRow(row: TaskRow, dependsOn: string[]): Task {
     sessionId: row.session_id,
     sourceSessionId: row.source_session_id,
     dependsOn,
-    execution: row.execution ? JSON.parse(row.execution) : {type:'llm'},
+    execution: row.execution ? JSON.parse(row.execution) : { type: 'llm' },
     epicId: row.epic_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -240,29 +258,50 @@ interface PersonaRow {
 
 function personaFromRow(row: PersonaRow): Persona {
   return {
-    id: row.id, name: row.name, description: row.description, prompt: row.prompt, builtin: row.builtin === 1,
-    createdAt: row.created_at ?? 0, updatedAt: row.updated_at ?? row.created_at ?? 0,
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    prompt: row.prompt,
+    builtin: row.builtin === 1,
+    createdAt: row.created_at ?? 0,
+    updatedAt: row.updated_at ?? row.created_at ?? 0,
   };
 }
 
 function projectFromRow(row: ProjectRow): Project {
   return {
-    id: row.id, name: row.name, path: row.path, color: row.color ?? null, createdAt: row.created_at,
+    id: row.id,
+    name: row.name,
+    path: row.path,
+    color: row.color ?? null,
+    createdAt: row.created_at,
     sessionDefaults: row.session_defaults === null ? { ...DEFAULT_SESSION_DEFAULTS } : JSON.parse(row.session_defaults),
     commitSettings: row.commit_settings ? JSON.parse(row.commit_settings) : { ...DEFAULT_COMMIT_SETTINGS },
     councilSettings: row.council_settings ? JSON.parse(row.council_settings) : null,
-    resolutionSettings: row.resolution_settings ? JSON.parse(row.resolution_settings) : { ...DEFAULT_RESOLUTION_SETTINGS },
+    resolutionSettings: row.resolution_settings
+      ? JSON.parse(row.resolution_settings)
+      : { ...DEFAULT_RESOLUTION_SETTINGS },
     workspaceMode: row.workspace_mode ?? 'isolated',
   };
 }
 
 function worktreeFromWorkspace(data: string | null): SessionWorktree | null {
   if (data === null) return null;
-  const workspace = JSON.parse(data) as { mode: string; path: string; branch: string | null; removedAt?: number; removedAutomatically?: boolean };
+  const workspace = JSON.parse(data) as {
+    mode: string;
+    path: string;
+    branch: string | null;
+    removedAt?: number;
+    removedAutomatically?: boolean;
+  };
   if (workspace.mode !== 'isolated') return null;
   return {
-    name: basename(workspace.path), path: workspace.path, branch: workspace.branch, removed: workspace.removedAt !== undefined,
-    removedAt: workspace.removedAt ?? null, removedAutomatically: workspace.removedAutomatically === true,
+    name: basename(workspace.path),
+    path: workspace.path,
+    branch: workspace.branch,
+    removed: workspace.removedAt !== undefined,
+    removedAt: workspace.removedAt ?? null,
+    removedAutomatically: workspace.removedAutomatically === true,
   };
 }
 
@@ -378,12 +417,15 @@ export class CerebroDatabase {
       CREATE TABLE IF NOT EXISTS worktree_operations (id TEXT PRIMARY KEY, data TEXT NOT NULL);
     `);
     // Workspace records survive session deletion so unmerged work is never silently removed.
-    this.connection.exec('CREATE TABLE IF NOT EXISTS session_workspaces (session_id TEXT PRIMARY KEY, data TEXT NOT NULL)');
+    this.connection.exec(
+      'CREATE TABLE IF NOT EXISTS session_workspaces (session_id TEXT PRIMARY KEY, data TEXT NOT NULL)',
+    );
     const taskColumns = this.connection.prepare('PRAGMA table_info(tasks)').all() as unknown as { name: string }[];
     if (!taskColumns.some((column) => column.name === 'epic_id')) {
       this.connection.exec('ALTER TABLE tasks ADD COLUMN epic_id TEXT REFERENCES epics(id) ON DELETE SET NULL');
     }
-    if (!taskColumns.some(column=>column.name==='execution')) this.connection.exec(`ALTER TABLE tasks ADD COLUMN execution TEXT NOT NULL DEFAULT '{"type":"llm"}'`);
+    if (!taskColumns.some((column) => column.name === 'execution'))
+      this.connection.exec(`ALTER TABLE tasks ADD COLUMN execution TEXT NOT NULL DEFAULT '{"type":"llm"}'`);
     this.connection.exec(`
       CREATE TABLE IF NOT EXISTS project_commands (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS operation_results (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -393,8 +435,11 @@ export class CerebroDatabase {
       CREATE TABLE IF NOT EXISTS command_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, data TEXT NOT NULL);
     `);
     // Contextes mémorisés avant la vérification complète des historiques : ils seront recontrôlés.
-    const epicWorkspaceColumns = this.connection.prepare('PRAGMA table_info(epic_workspaces)').all() as unknown as { name: string }[];
-    if (!epicWorkspaceColumns.some((column) => column.name === 'verified')) this.connection.exec('ALTER TABLE epic_workspaces ADD COLUMN verified INTEGER NOT NULL DEFAULT 0');
+    const epicWorkspaceColumns = this.connection.prepare('PRAGMA table_info(epic_workspaces)').all() as unknown as {
+      name: string;
+    }[];
+    if (!epicWorkspaceColumns.some((column) => column.name === 'verified'))
+      this.connection.exec('ALTER TABLE epic_workspaces ADD COLUMN verified INTEGER NOT NULL DEFAULT 0');
     this.connection.exec('CREATE INDEX IF NOT EXISTS tasks_epic_id ON tasks(epic_id)');
     const columns = this.connection.prepare('PRAGMA table_info(sessions)').all() as unknown as { name: string }[];
     if (!columns.some((column) => column.name === 'protected')) {
@@ -404,7 +449,8 @@ export class CerebroDatabase {
       this.connection.exec('ALTER TABLE sessions ADD COLUMN hook_token TEXT');
     }
     for (const column of ['model', 'effort']) {
-      if (!columns.some((c) => c.name === column)) this.connection.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
+      if (!columns.some((c) => c.name === column))
+        this.connection.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
     }
     const epicColumns = ['epic_id', 'epic_title'];
     if (epicColumns.some((name) => !columns.some((column) => column.name === name))) {
@@ -412,7 +458,8 @@ export class CerebroDatabase {
       this.connection.exec('BEGIN');
       try {
         for (const name of epicColumns) {
-          if (!columns.some((column) => column.name === name)) this.connection.exec(`ALTER TABLE sessions ADD COLUMN ${name} TEXT`);
+          if (!columns.some((column) => column.name === name))
+            this.connection.exec(`ALTER TABLE sessions ADD COLUMN ${name} TEXT`);
         }
         this.backfillSessionEpics();
         this.connection.exec('COMMIT');
@@ -421,12 +468,16 @@ export class CerebroDatabase {
         throw error;
       }
     }
-    const projectColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as unknown as { name: string }[];
+    const projectColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as unknown as {
+      name: string;
+    }[];
     if (!projectColumns.some((column) => column.name === 'sort_order')) {
       this.connection.exec('ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
     }
-    if (!projectColumns.some(column => column.name === 'workspace_mode')) {
-      this.connection.exec("ALTER TABLE projects ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'isolated' CHECK (workspace_mode IN ('isolated','shared'))");
+    if (!projectColumns.some((column) => column.name === 'workspace_mode')) {
+      this.connection.exec(
+        "ALTER TABLE projects ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'isolated' CHECK (workspace_mode IN ('isolated','shared'))",
+      );
     }
     if (!projectColumns.some((column) => column.name === 'color')) {
       this.connection.exec('ALTER TABLE projects ADD COLUMN color TEXT');
@@ -441,22 +492,27 @@ export class CerebroDatabase {
         )
       `);
     }
-    const commitColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as {name:string}[];
-    if (!commitColumns.some(column => column.name === 'commit_settings')) {
+    const commitColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as { name: string }[];
+    if (!commitColumns.some((column) => column.name === 'commit_settings')) {
       this.connection.exec(`ALTER TABLE projects ADD COLUMN commit_settings TEXT;
         UPDATE projects SET commit_settings = json_object(
           'agent', COALESCE(json_extract(session_defaults, '$.agent'), 'claude'),
           'model', json_extract(session_defaults, '$.model'),
           'effort', json_extract(session_defaults, '$.effort'), 'strategy', 'single');`);
     }
-    if (!commitColumns.some(column => column.name === 'resolution_settings')) this.connection.exec('ALTER TABLE projects ADD COLUMN resolution_settings TEXT');
+    if (!commitColumns.some((column) => column.name === 'resolution_settings'))
+      this.connection.exec('ALTER TABLE projects ADD COLUMN resolution_settings TEXT');
     this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commits (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
-    this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commit_requests (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, scope TEXT NOT NULL, push INTEGER NOT NULL)');
+    this.connection.exec(
+      'CREATE TABLE IF NOT EXISTS automatic_commit_requests (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, scope TEXT NOT NULL, push INTEGER NOT NULL)',
+    );
     this.connection.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS council_runs (id TEXT PRIMARY KEY, project_id TEXT, data TEXT NOT NULL);`);
-    const councilColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as {name:string}[];
-    if (!councilColumns.some(column => column.name === 'council_settings')) this.connection.exec('ALTER TABLE projects ADD COLUMN council_settings TEXT');
-    this.connection.exec(`CREATE TABLE IF NOT EXISTS personas (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+    const councilColumns = this.connection.prepare('PRAGMA table_info(projects)').all() as { name: string }[];
+    if (!councilColumns.some((column) => column.name === 'council_settings'))
+      this.connection.exec('ALTER TABLE projects ADD COLUMN council_settings TEXT');
+    this.connection
+      .exec(`CREATE TABLE IF NOT EXISTS personas (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
       prompt TEXT NOT NULL, builtin INTEGER NOT NULL DEFAULT 0, created_at INTEGER, updated_at INTEGER)`);
     this.seedPersonas();
     this.convertLegacyCouncilSettings();
@@ -467,8 +523,11 @@ export class CerebroDatabase {
   private seedPersonas(): void {
     if (this.getSetting('personas_seeded') !== null) return;
     const now = Date.now();
-    const insert = this.connection.prepare('INSERT OR IGNORE INTO personas (id, name, description, prompt, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)');
-    for (const persona of DEFAULT_PERSONAS) insert.run(persona.id, persona.name, persona.description, persona.prompt, now, now);
+    const insert = this.connection.prepare(
+      'INSERT OR IGNORE INTO personas (id, name, description, prompt, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)',
+    );
+    for (const persona of DEFAULT_PERSONAS)
+      insert.run(persona.id, persona.name, persona.description, persona.prompt, now, now);
     this.putSetting('personas_seeded', true);
   }
 
@@ -477,21 +536,33 @@ export class CerebroDatabase {
     const convert = (raw: unknown): CouncilSettings | null => {
       if (!isLegacyCouncilSettings(raw)) return null;
       const { settings, created } = convertLegacyCouncilSettings(raw, this.listPersonas());
-      const insert = this.connection.prepare('INSERT INTO personas (id, name, description, prompt, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)');
-      for (const persona of created) insert.run(persona.id, persona.name, persona.description, persona.prompt, persona.createdAt, persona.updatedAt);
+      const insert = this.connection.prepare(
+        'INSERT INTO personas (id, name, description, prompt, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
+      );
+      for (const persona of created)
+        insert.run(persona.id, persona.name, persona.description, persona.prompt, persona.createdAt, persona.updatedAt);
       return settings;
     };
     const global = convert(this.getSetting('council'));
     if (global !== null) this.putSetting('council', global);
-    const rows = this.connection.prepare('SELECT id, council_settings FROM projects WHERE council_settings IS NOT NULL').all() as { id: string; council_settings: string }[];
+    const rows = this.connection
+      .prepare('SELECT id, council_settings FROM projects WHERE council_settings IS NOT NULL')
+      .all() as { id: string; council_settings: string }[];
     for (const row of rows) {
       const settings = convert(JSON.parse(row.council_settings));
-      if (settings !== null) this.connection.prepare('UPDATE projects SET council_settings = ? WHERE id = ?').run(JSON.stringify(settings), row.id);
+      if (settings !== null)
+        this.connection
+          .prepare('UPDATE projects SET council_settings = ? WHERE id = ?')
+          .run(JSON.stringify(settings), row.id);
     }
   }
 
   private backfillSessionEpics(): void {
-    const sessions = this.connection.prepare('SELECT id, project_id, prompt FROM sessions').all() as { id: string; project_id: string; prompt: string }[];
+    const sessions = this.connection.prepare('SELECT id, project_id, prompt FROM sessions').all() as {
+      id: string;
+      project_id: string;
+      prompt: string;
+    }[];
     const fromRun = this.connection.prepare(`SELECT e.id, e.title FROM epic_runs r
       JOIN epics e ON e.id = r.epic_id WHERE r.id = ? AND e.project_id = ?`);
     const fromTasks = this.connection.prepare(`SELECT DISTINCT e.id, e.title FROM tasks t
@@ -500,8 +571,12 @@ export class CerebroDatabase {
     for (const session of sessions) {
       // Les marqueurs identifient aussi les anciennes tentatives remplacées sur la tâche.
       const marker = /^\[CEREBRO_EPIC_STEP ([^\s\]]+) [^\s\]]+\](?:\r?\n|$)/.exec(session.prompt);
-      const origin = marker ? fromRun.get(marker[1], session.project_id) as { id: string; title: string } | undefined : undefined;
-      const candidates = origin ? [origin] : fromTasks.all(session.id, session.project_id) as { id: string; title: string }[];
+      const origin = marker
+        ? (fromRun.get(marker[1], session.project_id) as { id: string; title: string } | undefined)
+        : undefined;
+      const candidates = origin
+        ? [origin]
+        : (fromTasks.all(session.id, session.project_id) as { id: string; title: string }[]);
       // Aucun rapprochement sur le titre : deux epics peuvent porter le même nom.
       if (candidates.length === 1) save.run(candidates[0].id, candidates[0].title, session.id);
     }
@@ -509,10 +584,12 @@ export class CerebroDatabase {
 
   // SQLite ne permet pas de modifier une contrainte CHECK : on reconstruit la table.
   private allowAutoMode(): void {
-    const row = this.connection.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'")
+    const row = this.connection
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'")
       .get() as { sql: string } | undefined;
     if (row === undefined || row.sql.includes("'auto'")) return;
-    const sql = row.sql.replace("('default', 'acceptEdits'", "('default', 'auto', 'acceptEdits'")
+    const sql = row.sql
+      .replace("('default', 'acceptEdits'", "('default', 'auto', 'acceptEdits'")
       .replace(/^CREATE TABLE "?sessions"?/, 'CREATE TABLE sessions_new');
     this.connection.exec('PRAGMA foreign_keys = OFF');
     try {
@@ -535,14 +612,18 @@ export class CerebroDatabase {
   }
 
   listProjects(): Project[] {
-    return (this.connection.prepare('SELECT * FROM projects ORDER BY sort_order ASC, created_at ASC, rowid ASC').all() as unknown as ProjectRow[])
-      .map(projectFromRow);
+    return (
+      this.connection
+        .prepare('SELECT * FROM projects ORDER BY sort_order ASC, created_at ASC, rowid ASC')
+        .all() as unknown as ProjectRow[]
+    ).map(projectFromRow);
   }
 
   reorderProjects(ids: string[]): Project[] | null {
     const projects = this.listProjects();
     const knownIds = new Set(projects.map((project) => project.id));
-    if (ids.length !== projects.length || new Set(ids).size !== ids.length || ids.some((id) => !knownIds.has(id))) return null;
+    if (ids.length !== projects.length || new Set(ids).size !== ids.length || ids.some((id) => !knownIds.has(id)))
+      return null;
 
     this.connection.exec('BEGIN');
     try {
@@ -557,43 +638,87 @@ export class CerebroDatabase {
   }
 
   getProject(id: string): Project | null {
-    const row = this.connection.prepare('SELECT * FROM projects WHERE id = ?').get(id) as unknown as ProjectRow | undefined;
+    const row = this.connection.prepare('SELECT * FROM projects WHERE id = ?').get(id) as unknown as
+      ProjectRow | undefined;
     return row === undefined ? null : projectFromRow(row);
   }
 
   createProject(name: string, path: string, workspaceMode: WorkspaceMode = 'isolated'): Project {
     const project: Project = {
-      id: randomUUID(), name, path, color: null, sessionDefaults: { ...DEFAULT_SESSION_DEFAULTS }, commitSettings: { ...DEFAULT_COMMIT_SETTINGS }, councilSettings: null, resolutionSettings: { ...DEFAULT_RESOLUTION_SETTINGS }, workspaceMode, createdAt: Date.now(),
+      id: randomUUID(),
+      name,
+      path,
+      color: null,
+      sessionDefaults: { ...DEFAULT_SESSION_DEFAULTS },
+      commitSettings: { ...DEFAULT_COMMIT_SETTINGS },
+      councilSettings: null,
+      resolutionSettings: { ...DEFAULT_RESOLUTION_SETTINGS },
+      workspaceMode,
+      createdAt: Date.now(),
     };
-    this.connection.prepare(`INSERT INTO projects (id, name, path, created_at, workspace_mode, sort_order)
-      VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM projects))`)
+    this.connection
+      .prepare(
+        `INSERT INTO projects (id, name, path, created_at, workspace_mode, sort_order)
+      VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM projects))`,
+      )
       .run(project.id, project.name, project.path, project.createdAt, project.workspaceMode);
     return project;
   }
 
-  updateProject(id: string, changes: Partial<Pick<Project, 'name' | 'path' | 'color' | 'sessionDefaults' | 'commitSettings' | 'resolutionSettings' | 'councilSettings' | 'workspaceMode'>>): Project | null {
+  updateProject(
+    id: string,
+    changes: Partial<
+      Pick<
+        Project,
+        | 'name'
+        | 'path'
+        | 'color'
+        | 'sessionDefaults'
+        | 'commitSettings'
+        | 'resolutionSettings'
+        | 'councilSettings'
+        | 'workspaceMode'
+      >
+    >,
+  ): Project | null {
     const current = this.getProject(id);
     if (current === null) return null;
     const next = { ...current, ...changes };
-    this.connection.prepare('UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, resolution_settings = ?, council_settings = ?, workspace_mode = ? WHERE id = ?')
-      .run(next.name, next.path, next.color, JSON.stringify(next.sessionDefaults), JSON.stringify(next.commitSettings), JSON.stringify(next.resolutionSettings),
-        next.councilSettings === null ? null : JSON.stringify(next.councilSettings), next.workspaceMode, id);
+    this.connection
+      .prepare(
+        'UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, resolution_settings = ?, council_settings = ?, workspace_mode = ? WHERE id = ?',
+      )
+      .run(
+        next.name,
+        next.path,
+        next.color,
+        JSON.stringify(next.sessionDefaults),
+        JSON.stringify(next.commitSettings),
+        JSON.stringify(next.resolutionSettings),
+        next.councilSettings === null ? null : JSON.stringify(next.councilSettings),
+        next.workspaceMode,
+        id,
+      );
     return next;
   }
 
   // Réglages globaux de la machine, stockés en JSON par clé.
   getSetting<T>(key: string): T | null {
-    const row = this.connection.prepare('SELECT data FROM settings WHERE key = ?').get(key) as { data: string } | undefined;
-    return row === undefined ? null : JSON.parse(row.data) as T;
+    const row = this.connection.prepare('SELECT data FROM settings WHERE key = ?').get(key) as
+      { data: string } | undefined;
+    return row === undefined ? null : (JSON.parse(row.data) as T);
   }
 
   putSetting(key: string, value: unknown): void {
-    this.connection.prepare('INSERT INTO settings (key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data')
+    this.connection
+      .prepare('INSERT INTO settings (key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data')
       .run(key, JSON.stringify(value));
   }
 
   listPersonas(): Persona[] {
-    return (this.connection.prepare('SELECT * FROM personas ORDER BY created_at, rowid').all() as unknown as PersonaRow[]).map(personaFromRow);
+    return (
+      this.connection.prepare('SELECT * FROM personas ORDER BY created_at, rowid').all() as unknown as PersonaRow[]
+    ).map(personaFromRow);
   }
 
   getPersona(id: string): Persona | null {
@@ -604,7 +729,10 @@ export class CerebroDatabase {
   createPersona(input: PersonaInput): Persona {
     const now = Date.now();
     const persona: Persona = { id: randomUUID(), ...input, builtin: false, createdAt: now, updatedAt: now };
-    this.connection.prepare('INSERT INTO personas (id, name, description, prompt, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)')
+    this.connection
+      .prepare(
+        'INSERT INTO personas (id, name, description, prompt, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
+      )
       .run(persona.id, persona.name, persona.description, persona.prompt, now, now);
     return persona;
   }
@@ -613,7 +741,8 @@ export class CerebroDatabase {
     const current = this.getPersona(id);
     if (current === null) return null;
     const next = { ...current, ...changes, updatedAt: Date.now() };
-    this.connection.prepare('UPDATE personas SET name = ?, description = ?, prompt = ?, updated_at = ? WHERE id = ?')
+    this.connection
+      .prepare('UPDATE personas SET name = ?, description = ?, prompt = ?, updated_at = ? WHERE id = ?')
       .run(next.name, next.description, next.prompt, next.updatedAt, id);
     return next;
   }
@@ -627,9 +756,12 @@ export class CerebroDatabase {
         const remaining = this.listPersonas();
         const global = this.getSetting<CouncilSettings>('council');
         if (global !== null) this.putSetting('council', withoutPersona(global, id, remaining));
-        const rows = this.connection.prepare('SELECT id, council_settings FROM projects WHERE council_settings IS NOT NULL').all() as { id: string; council_settings: string }[];
+        const rows = this.connection
+          .prepare('SELECT id, council_settings FROM projects WHERE council_settings IS NOT NULL')
+          .all() as { id: string; council_settings: string }[];
         const update = this.connection.prepare('UPDATE projects SET council_settings = ? WHERE id = ?');
-        for (const row of rows) update.run(JSON.stringify(withoutPersona(JSON.parse(row.council_settings), id, remaining)), row.id);
+        for (const row of rows)
+          update.run(JSON.stringify(withoutPersona(JSON.parse(row.council_settings), id, remaining)), row.id);
       }
       this.connection.exec('COMMIT');
       return deleted;
@@ -641,10 +773,17 @@ export class CerebroDatabase {
 
   saveCouncilRun(run: CouncilRun): boolean {
     // Une fin d'appel tardive ne doit jamais recréer un rapport après suppression du projet.
-    return Number(this.connection.prepare(`INSERT INTO council_runs (id, project_id, data)
+    return (
+      Number(
+        this.connection
+          .prepare(
+            `INSERT INTO council_runs (id, project_id, data)
       SELECT ?, ?, ? WHERE ? IS NULL OR EXISTS (SELECT 1 FROM projects WHERE id = ?)
-      ON CONFLICT(id) DO UPDATE SET project_id = excluded.project_id, data = excluded.data`)
-      .run(run.id, run.projectId, JSON.stringify(run), run.projectId, run.projectId).changes) > 0;
+      ON CONFLICT(id) DO UPDATE SET project_id = excluded.project_id, data = excluded.data`,
+          )
+          .run(run.id, run.projectId, JSON.stringify(run), run.projectId, run.projectId).changes,
+      ) > 0
+    );
   }
 
   // Les runs enregistrés avant les images jointes n'en ont pas.
@@ -655,18 +794,20 @@ export class CerebroDatabase {
   }
 
   getCouncilRun(id: string): CouncilRun | null {
-    const row = this.connection.prepare('SELECT data FROM council_runs WHERE id = ?').get(id) as { data: string } | undefined;
+    const row = this.connection.prepare('SELECT data FROM council_runs WHERE id = ?').get(id) as
+      { data: string } | undefined;
     return row === undefined ? null : this.readCouncilRun(row.data);
   }
 
   // undefined : tous les runs ; null : ceux lancés hors projet. Les plus récents d'abord.
   listCouncilRuns(projectId?: string | null): CouncilRun[] {
     const order = "ORDER BY json_extract(data, '$.startedAt') DESC, rowid DESC";
-    const rows = projectId === undefined
-      ? this.connection.prepare(`SELECT data FROM council_runs ${order}`).all()
-      : projectId === null
-        ? this.connection.prepare(`SELECT data FROM council_runs WHERE project_id IS NULL ${order}`).all()
-        : this.connection.prepare(`SELECT data FROM council_runs WHERE project_id = ? ${order}`).all(projectId);
+    const rows =
+      projectId === undefined
+        ? this.connection.prepare(`SELECT data FROM council_runs ${order}`).all()
+        : projectId === null
+          ? this.connection.prepare(`SELECT data FROM council_runs WHERE project_id IS NULL ${order}`).all()
+          : this.connection.prepare(`SELECT data FROM council_runs WHERE project_id = ? ${order}`).all(projectId);
     return (rows as { data: string }[]).map((row) => this.readCouncilRun(row.data));
   }
 
@@ -675,40 +816,54 @@ export class CerebroDatabase {
   }
 
   setSessionDefaults(projectId: string, defaults: SessionDefaults): void {
-    this.connection.prepare('UPDATE projects SET session_defaults = ? WHERE id = ?')
+    this.connection
+      .prepare('UPDATE projects SET session_defaults = ? WHERE id = ?')
       .run(JSON.stringify(defaults), projectId);
   }
 
   deleteProject(id: string): boolean {
     if (this.listProjectSessions(id).some((session) => session.protected)) {
-      throw new SessionProtectionError('Ce projet contient des sessions protégées. Décochez leur protection avant de le supprimer.');
+      throw new SessionProtectionError(
+        'Ce projet contient des sessions protégées. Décochez leur protection avant de le supprimer.',
+      );
     }
     this.connection.prepare('DELETE FROM council_runs WHERE project_id = ?').run(id);
     return Number(this.connection.prepare('DELETE FROM projects WHERE id = ?').run(id).changes) > 0;
   }
 
   listSessions(): Session[] {
-    return (this.connection.prepare(`${SESSION_SELECT} ORDER BY s.created_at DESC, s.rowid DESC`).all() as unknown as SessionRow[])
-      .map(sessionFromRow);
+    return (
+      this.connection
+        .prepare(`${SESSION_SELECT} ORDER BY s.created_at DESC, s.rowid DESC`)
+        .all() as unknown as SessionRow[]
+    ).map(sessionFromRow);
   }
 
   listProjectSessions(projectId: string): Session[] {
-    return (this.connection.prepare(`${SESSION_SELECT} WHERE s.project_id = ? ORDER BY s.created_at DESC, s.rowid DESC`)
-      .all(projectId) as unknown as SessionRow[]).map(sessionFromRow);
+    return (
+      this.connection
+        .prepare(`${SESSION_SELECT} WHERE s.project_id = ? ORDER BY s.created_at DESC, s.rowid DESC`)
+        .all(projectId) as unknown as SessionRow[]
+    ).map(sessionFromRow);
   }
 
   getSession(id: string): Session | null {
-    const row = this.connection.prepare(`${SESSION_SELECT} WHERE s.id = ?`).get(id) as unknown as SessionRow | undefined;
+    const row = this.connection.prepare(`${SESSION_SELECT} WHERE s.id = ?`).get(id) as unknown as
+      SessionRow | undefined;
     return row === undefined ? null : sessionFromRow(row);
   }
 
   createSession(
-    input: Pick<Session, 'id' | 'projectId' | 'agent' | 'mode' | 'model' | 'effort' | 'prompt' | 'title' | 'status' | 'agentSessionId'>,
+    input: Pick<
+      Session,
+      'id' | 'projectId' | 'agent' | 'mode' | 'model' | 'effort' | 'prompt' | 'title' | 'status' | 'agentSessionId'
+    >,
     hookToken: string,
     epicId: string | null = null,
   ): Session {
     const epic = epicId === null ? null : this.getEpic(epicId);
-    if (epicId !== null && (!epic || epic.projectId !== input.projectId)) throw new Error('Epic introuvable dans ce projet');
+    if (epicId !== null && (!epic || epic.projectId !== input.projectId))
+      throw new Error('Epic introuvable dans ce projet');
     const now = Date.now();
     const session: Session = {
       ...input,
@@ -722,17 +877,35 @@ export class CerebroDatabase {
       epic: epic ? { id: epic.id, title: epic.title } : null,
       pendingFindings: 0,
     };
-    this.connection.prepare(`
+    this.connection
+      .prepare(
+        `
       INSERT INTO sessions (
         id, project_id, agent, mode, prompt, title, status, attention,
         attention_reason, agent_session_id, exit_code, hook_token, created_at, updated_at, model, effort, epic_id, epic_title
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      session.id, session.projectId, session.agent, session.mode, session.prompt,
-      session.title, session.status, 0, null, session.agentSessionId, null, hookToken,
-      session.createdAt, session.updatedAt, session.model, session.effort,
-      session.epic?.id ?? null, session.epic?.title ?? null,
-    );
+    `,
+      )
+      .run(
+        session.id,
+        session.projectId,
+        session.agent,
+        session.mode,
+        session.prompt,
+        session.title,
+        session.status,
+        0,
+        null,
+        session.agentSessionId,
+        null,
+        hookToken,
+        session.createdAt,
+        session.updatedAt,
+        session.model,
+        session.effort,
+        session.epic?.id ?? null,
+        session.epic?.title ?? null,
+      );
     return session;
   }
 
@@ -743,20 +916,37 @@ export class CerebroDatabase {
   }
 
   setHookToken(id: string, hookToken: string): boolean {
-    return Number(this.connection.prepare('UPDATE sessions SET hook_token = ? WHERE id = ?').run(hookToken, id).changes) > 0;
+    return (
+      Number(this.connection.prepare('UPDATE sessions SET hook_token = ? WHERE id = ?').run(hookToken, id).changes) > 0
+    );
   }
 
-  updateSession(id: string, changes: Partial<Pick<Session, 'title' | 'status' | 'attention' | 'attentionReason' | 'agentSessionId' | 'exitCode'>>): Session | null {
+  updateSession(
+    id: string,
+    changes: Partial<
+      Pick<Session, 'title' | 'status' | 'attention' | 'attentionReason' | 'agentSessionId' | 'exitCode'>
+    >,
+  ): Session | null {
     const current = this.getSession(id);
     if (current === null) return null;
     const next = { ...current, ...changes, updatedAt: Date.now() };
-    this.connection.prepare(`
+    this.connection
+      .prepare(
+        `
       UPDATE sessions SET title = ?, status = ?, attention = ?, attention_reason = ?,
         agent_session_id = ?, exit_code = ?, updated_at = ? WHERE id = ?
-    `).run(
-      next.title, next.status, next.attention ? 1 : 0, next.attentionReason,
-      next.agentSessionId, next.exitCode, next.updatedAt, id,
-    );
+    `,
+      )
+      .run(
+        next.title,
+        next.status,
+        next.attention ? 1 : 0,
+        next.attentionReason,
+        next.agentSessionId,
+        next.exitCode,
+        next.updatedAt,
+        id,
+      );
     return next;
   }
 
@@ -774,12 +964,15 @@ export class CerebroDatabase {
   }
 
   listTasks(): Task[] {
-    const edges = this.connection.prepare('SELECT task_id, depends_on_id FROM task_dependencies').all() as unknown as
-      { task_id: string; depends_on_id: string }[];
+    const edges = this.connection.prepare('SELECT task_id, depends_on_id FROM task_dependencies').all() as unknown as {
+      task_id: string;
+      depends_on_id: string;
+    }[];
     const deps = new Map<string, string[]>();
     for (const edge of edges) deps.set(edge.task_id, [...(deps.get(edge.task_id) ?? []), edge.depends_on_id]);
-    return (this.connection.prepare('SELECT * FROM tasks ORDER BY created_at ASC, rowid ASC').all() as unknown as TaskRow[])
-      .map((row) => taskFromRow(row, deps.get(row.id) ?? []));
+    return (
+      this.connection.prepare('SELECT * FROM tasks ORDER BY created_at ASC, rowid ASC').all() as unknown as TaskRow[]
+    ).map((row) => taskFromRow(row, deps.get(row.id) ?? []));
   }
 
   getTask(id: string): Task | null {
@@ -788,14 +981,20 @@ export class CerebroDatabase {
   }
 
   private taskDependencies(id: string): string[] {
-    return (this.connection.prepare('SELECT depends_on_id FROM task_dependencies WHERE task_id = ?').all(id) as unknown as
-      { depends_on_id: string }[]).map((row) => row.depends_on_id);
+    return (
+      this.connection.prepare('SELECT depends_on_id FROM task_dependencies WHERE task_id = ?').all(id) as unknown as {
+        depends_on_id: string;
+      }[]
+    ).map((row) => row.depends_on_id);
   }
 
   // Tâches qui dépendent de `id` (à rediffuser quand elle disparaît).
   listDependents(id: string): string[] {
-    return (this.connection.prepare('SELECT task_id FROM task_dependencies WHERE depends_on_id = ?').all(id) as unknown as
-      { task_id: string }[]).map((row) => row.task_id);
+    return (
+      this.connection.prepare('SELECT task_id FROM task_dependencies WHERE depends_on_id = ?').all(id) as unknown as {
+        task_id: string;
+      }[]
+    ).map((row) => row.task_id);
   }
 
   setTaskDependencies(id: string, dependsOn: string[]): void {
@@ -811,7 +1010,13 @@ export class CerebroDatabase {
     }
   }
 
-  createTask(projectId: string, text: string, sourceSessionId: string | null, epicId: string | null = null, execution: TaskExecution = {type:'llm'}): Task {
+  createTask(
+    projectId: string,
+    text: string,
+    sourceSessionId: string | null,
+    epicId: string | null = null,
+    execution: TaskExecution = { type: 'llm' },
+  ): Task {
     const now = Date.now();
     const task: Task = {
       id: randomUUID(),
@@ -826,18 +1031,39 @@ export class CerebroDatabase {
       createdAt: now,
       updatedAt: now,
     };
-    this.connection.prepare(`
+    this.connection
+      .prepare(
+        `
       INSERT INTO tasks (id, project_id, text, status, session_id, source_session_id, epic_id, created_at, updated_at, execution)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(task.id, task.projectId, task.text, task.status, null, sourceSessionId, epicId, now, now, JSON.stringify(execution));
+    `,
+      )
+      .run(
+        task.id,
+        task.projectId,
+        task.text,
+        task.status,
+        null,
+        sourceSessionId,
+        epicId,
+        now,
+        now,
+        JSON.stringify(execution),
+      );
     return task;
   }
 
-  updateTask(id: string, changes: Partial<Pick<Task, 'text' | 'status' | 'sessionId' | 'dependsOn' | 'epicId' | 'execution'>>): Task | null {
+  updateTask(
+    id: string,
+    changes: Partial<Pick<Task, 'text' | 'status' | 'sessionId' | 'dependsOn' | 'epicId' | 'execution'>>,
+  ): Task | null {
     const current = this.getTask(id);
     if (current === null) return null;
     const next = { ...current, ...changes, updatedAt: Date.now() };
-    this.connection.prepare('UPDATE tasks SET text = ?, status = ?, session_id = ?, epic_id = ?, updated_at = ?, execution = ? WHERE id = ?')
+    this.connection
+      .prepare(
+        'UPDATE tasks SET text = ?, status = ?, session_id = ?, epic_id = ?, updated_at = ?, execution = ? WHERE id = ?',
+      )
       .run(next.text, next.status, next.sessionId, next.epicId, next.updatedAt, JSON.stringify(next.execution), id);
     if (changes.dependsOn !== undefined) {
       this.setTaskDependencies(id, changes.dependsOn);
@@ -856,11 +1082,13 @@ export class CerebroDatabase {
       const tasks = this.listTasks().filter((task) => task.projectId === projectId);
       const taskIds = tasks.filter((task) => task.status === 'done').map((task) => task.id);
       // Identifier les epics terminés avant de retirer leurs tâches. Un epic vide reste à faire.
-      const epicIds = this.listEpics().filter((epic) => {
-        if (epic.projectId !== projectId) return false;
-        const members = tasks.filter((task) => task.epicId === epic.id);
-        return members.length > 0 && members.every((task) => task.status === 'done');
-      }).map((epic) => epic.id);
+      const epicIds = this.listEpics()
+        .filter((epic) => {
+          if (epic.projectId !== projectId) return false;
+          const members = tasks.filter((task) => task.epicId === epic.id);
+          return members.length > 0 && members.every((task) => task.status === 'done');
+        })
+        .map((epic) => epic.id);
       const dependentIds = [...new Set(taskIds.flatMap((id) => this.listDependents(id)))];
       for (const id of taskIds) this.deleteTask(id);
       for (const id of epicIds) this.deleteEpic(id);
@@ -873,8 +1101,9 @@ export class CerebroDatabase {
   }
 
   listEpics(): Epic[] {
-    return (this.connection.prepare('SELECT * FROM epics ORDER BY created_at ASC, rowid ASC').all() as unknown as EpicRow[])
-      .map(epicFromRow);
+    return (
+      this.connection.prepare('SELECT * FROM epics ORDER BY created_at ASC, rowid ASC').all() as unknown as EpicRow[]
+    ).map(epicFromRow);
   }
 
   getEpic(id: string): Epic | null {
@@ -884,11 +1113,23 @@ export class CerebroDatabase {
 
   createEpic(projectId: string, title: string, description: string, sourceSessionId: string | null): Epic {
     const now = Date.now();
-    const epic: Epic = { id: randomUUID(), projectId, title, description, sourceSessionId, createdAt: now, updatedAt: now };
-    this.connection.prepare(`
+    const epic: Epic = {
+      id: randomUUID(),
+      projectId,
+      title,
+      description,
+      sourceSessionId,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.connection
+      .prepare(
+        `
       INSERT INTO epics (id, project_id, title, description, source_session_id, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(epic.id, projectId, title, description, sourceSessionId, now, now);
+    `,
+      )
+      .run(epic.id, projectId, title, description, sourceSessionId, now, now);
     return epic;
   }
 
@@ -896,7 +1137,8 @@ export class CerebroDatabase {
     const current = this.getEpic(id);
     if (current === null) return null;
     const next = { ...current, ...changes, updatedAt: Date.now() };
-    this.connection.prepare('UPDATE epics SET title = ?, description = ?, updated_at = ? WHERE id = ?')
+    this.connection
+      .prepare('UPDATE epics SET title = ?, description = ?, updated_at = ? WHERE id = ?')
       .run(next.title, next.description, next.updatedAt, id);
     this.connection.prepare('UPDATE sessions SET epic_title = ? WHERE epic_id = ?').run(next.title, id);
     return next;

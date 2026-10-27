@@ -15,11 +15,21 @@ export const STATUS_LABEL: Record<DisplayStatus, string> = {
   dormant: 'En sommeil',
 };
 
-export function isDormant(session: Pick<Session, 'status' | 'updatedAt'> & Partial<Pick<Session, 'pendingFindings'>>, now: number): boolean {
-  return !session.pendingFindings && (session.status === 'idle' || session.status === 'exited') && now - session.updatedAt >= DORMANT_AFTER_MS;
+export function isDormant(
+  session: Pick<Session, 'status' | 'updatedAt'> & Partial<Pick<Session, 'pendingFindings'>>,
+  now: number,
+): boolean {
+  return (
+    !session.pendingFindings &&
+    (session.status === 'idle' || session.status === 'exited') &&
+    now - session.updatedAt >= DORMANT_AFTER_MS
+  );
 }
 
-export function displayStatus(session: Pick<Session, 'status' | 'updatedAt'> & Partial<Pick<Session, 'pendingFindings'>>, now: number): DisplayStatus {
+export function displayStatus(
+  session: Pick<Session, 'status' | 'updatedAt'> & Partial<Pick<Session, 'pendingFindings'>>,
+  now: number,
+): DisplayStatus {
   return isDormant(session, now) ? 'dormant' : session.status;
 }
 
@@ -50,7 +60,8 @@ export const MODE_CHIP: Record<Mode, string> = {
 export const MODE_DESCRIPTION: Record<Mode, string> = {
   auto: 'Gestion automatique des autorisations par l’agent.',
   default: 'Utilise les autorisations définies dans la configuration de l’agent.',
-  acceptEdits: 'Accepte automatiquement les modifications de fichiers. Avec Codex, exécute sans confirmation dans le sandbox du projet.',
+  acceptEdits:
+    'Accepte automatiquement les modifications de fichiers. Avec Codex, exécute sans confirmation dans le sandbox du projet.',
   plan: 'Analyse et prépare un plan sans modifier les fichiers.',
   bypass: 'Exécute sans demander d’autorisation. Avec Codex, désactive également le sandbox.',
 };
@@ -80,9 +91,9 @@ export function relativeTime(ts: number, now: number): string {
 
 export function sessionTitle(title: string): string {
   const t = title.trim();
-  if(/^\[CEREBRO_EPIC_STEP\b/.test(t)){
-    const epic=/de l[’']epic « ([^»]+) »/.exec(t)?.[1];
-    return epic?`Étape de l’epic « ${epic} »`:'Étape d’epic';
+  if (/^\[CEREBRO_EPIC_STEP\b/.test(t)) {
+    const epic = /de l[’']epic « ([^»]+) »/.exec(t)?.[1];
+    return epic ? `Étape de l’epic « ${epic} »` : 'Étape d’epic';
   }
   return t.length > 0 ? t : 'Session';
 }

@@ -30,7 +30,10 @@ const WEBSOCKET_HANDSHAKE_HEADERS = [
 function connectionHeaders(headers: IncomingHttpHeaders): string[] {
   const value = headers.connection;
   const values = Array.isArray(value) ? value : value === undefined ? [] : [value];
-  return values.flatMap((part) => part.split(',')).map((part) => part.trim().toLowerCase()).filter(Boolean);
+  return values
+    .flatMap((part) => part.split(','))
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 export function filteredHeaders(headers: IncomingHttpHeaders, excluded: readonly string[]): OutgoingHttpHeaders {
@@ -49,7 +52,10 @@ export function websocketHeaders(headers: IncomingHttpHeaders, excluded: readonl
 // Retire un cookie de l'en-tête Cookie (ex. le jeton Cerebro, qui n'a rien à faire en amont).
 export function withoutCookie(header: string | undefined, name: string): string | undefined {
   if (header === undefined) return undefined;
-  const kept = header.split(';').map((part) => part.trim()).filter((part) => part.length > 0 && !part.startsWith(`${name}=`));
+  const kept = header
+    .split(';')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0 && !part.startsWith(`${name}=`));
   return kept.length > 0 ? kept.join('; ') : undefined;
 }
 

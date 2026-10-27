@@ -11,7 +11,11 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const procs = {
   server: { color: 36, cmd: process.execPath, args: ['--disable-warning=ExperimentalWarning', 'server/index.ts'] },
-  web: { color: 35, cmd: process.execPath, args: [join(root, 'node_modules', 'vite', 'bin', 'vite.js'), '--config', 'web/vite.config.ts'] },
+  web: {
+    color: 35,
+    cmd: process.execPath,
+    args: [join(root, 'node_modules', 'vite', 'bin', 'vite.js'), '--config', 'web/vite.config.ts'],
+  },
 };
 const WATCH_DIRS = ['server', 'bin'];
 const WATCH_EXT = /\.(ts|mts|js|mjs|cjs|json)$/;

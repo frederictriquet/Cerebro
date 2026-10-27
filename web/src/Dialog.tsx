@@ -74,13 +74,29 @@ export function LaunchSessionDialog({
   useEffect(() => {
     let cancelled = false;
     setWorkspace(null);
-    if (epicId) void api<WorkspaceContext | null>(`/api/epics/${epicId}/workspace`).then(value => { if (!cancelled) setWorkspace(value); }).catch(() => {});
-    return () => { cancelled = true; };
+    if (epicId)
+      void api<WorkspaceContext | null>(`/api/epics/${epicId}/workspace`)
+        .then((value) => {
+          if (!cancelled) setWorkspace(value);
+        })
+        .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [epicId]);
-  const contextLabel = workspace ? workspace.mode === 'isolated' ? 'Poursuivre dans le worktree de l’epic' : 'Poursuivre dans le dossier d’origine de l’epic' : undefined;
+  const contextLabel = workspace
+    ? workspace.mode === 'isolated'
+      ? 'Poursuivre dans le worktree de l’epic'
+      : 'Poursuivre dans le dossier d’origine de l’epic'
+    : undefined;
   return (
     <Modal title={title} onClose={onClose}>
-      {workspace ? <p className="hint">Dossier conservé pour cet epic : <code>{workspace.path}</code>. Le réglage des nouvelles conversations ne le modifie pas.</p> : null}
+      {workspace ? (
+        <p className="hint">
+          Dossier conservé pour cet epic : <code>{workspace.path}</code>. Le réglage des nouvelles conversations ne le
+          modifie pas.
+        </p>
+      ) : null}
       <NewSessionForm
         className="bare"
         projectId={projectId}
@@ -188,7 +204,9 @@ export function AddTaskDialog({
         {error ? <p className="form-error">{error}</p> : null}
         <div className="row-actions">
           <button type="submit" className="btn primary" disabled={busy || images.pending || text.trim() === ''}>
-            <ActivityStatus active={busy || images.pending}>{busy ? 'Ajout…' : images.pending ? 'Envoi des images…' : 'Ajouter'}</ActivityStatus>
+            <ActivityStatus active={busy || images.pending}>
+              {busy ? 'Ajout…' : images.pending ? 'Envoi des images…' : 'Ajouter'}
+            </ActivityStatus>
           </button>
           <button type="button" className="btn" onClick={onClose}>
             Annuler

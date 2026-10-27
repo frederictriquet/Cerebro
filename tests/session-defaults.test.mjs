@@ -29,9 +29,18 @@ const { buildServer } = await import('../server/index.ts');
 const { parseProject } = await import('../web/src/types.ts');
 
 const saved = {
-  agent: 'codex', mode: 'acceptEdits', model: 'gpt-6.1-sol', effort: 'xhigh', prompt: 'Prompt mémorisé\nDeuxième ligne',
+  agent: 'codex',
+  mode: 'acceptEdits',
+  model: 'gpt-6.1-sol',
+  effort: 'xhigh',
+  prompt: 'Prompt mémorisé\nDeuxième ligne',
 };
-catalogFor('codex').models.push({ value: saved.model, label: saved.model, description: '', efforts: ['high', 'xhigh'] });
+catalogFor('codex').models.push({
+  value: saved.model,
+  label: saved.model,
+  description: '',
+  efforts: ['high', 'xhigh'],
+});
 mock.method(UpdateManager.prototype, 'start', () => {});
 mock.method(PeerSync.prototype, 'sync', async function () {
   this.markReady();
@@ -40,16 +49,31 @@ mock.method(PeerSync.prototype, 'sync', async function () {
 
 // Remplacer uniquement le démarrage du PTY : résolution, persistance et commandes restent réelles.
 const launches = [];
-mock.method(SessionManager.prototype, 'launch', async function (project, agent, mode, tuning, prompt, resumeId, existingId = null, validate, joined, title, epicId) {
-  const id = existingId ?? randomUUID();
-  const command = buildAgentCommand(agent, mode, prompt, id, resumeId, tuning);
-  launches.push({ agent, mode, ...tuning, prompt, command, id });
-  if (existingId !== null) return this.db.getSession(existingId);
-  return this.db.createSession({
-    id, projectId: project.id, agent, mode, ...tuning, prompt, title: prompt,
-    status: 'exited', agentSessionId: command.agentSessionId ?? id,
-  }, 'test-token', epicId);
-});
+mock.method(
+  SessionManager.prototype,
+  'launch',
+  async function (project, agent, mode, tuning, prompt, resumeId, existingId = null, validate, joined, title, epicId) {
+    const id = existingId ?? randomUUID();
+    const command = buildAgentCommand(agent, mode, prompt, id, resumeId, tuning);
+    launches.push({ agent, mode, ...tuning, prompt, command, id });
+    if (existingId !== null) return this.db.getSession(existingId);
+    return this.db.createSession(
+      {
+        id,
+        projectId: project.id,
+        agent,
+        mode,
+        ...tuning,
+        prompt,
+        title: prompt,
+        status: 'exited',
+        agentSessionId: command.agentSessionId ?? id,
+      },
+      'test-token',
+      epicId,
+    );
+  },
+);
 
 after(() => {
   mock.restoreAll();
@@ -60,14 +84,35 @@ test('migration, redémarrage et suppression des sessions conservent les réglag
   const path = join(root, 'migration.db');
   let db = new CerebroDatabase(path);
   const project = db.createProject('Existant', root);
-  db.createSession({
-    id: 'old', projectId: project.id, agent: 'claude', mode: 'auto', model: null, effort: null,
-    prompt: 'Ancien', title: 'Ancien', status: 'exited', agentSessionId: 'old',
-  }, 'token');
-  db.createSession({
-    id: 'latest', projectId: project.id, ...saved, title: 'Dernier', status: 'exited', agentSessionId: 'latest',
-  }, 'token');
-  db.connection.exec("UPDATE sessions SET created_at = 1, updated_at = 999 WHERE id = 'old'; UPDATE sessions SET created_at = 2, updated_at = 2 WHERE id = 'latest'");
+  db.createSession(
+    {
+      id: 'old',
+      projectId: project.id,
+      agent: 'claude',
+      mode: 'auto',
+      model: null,
+      effort: null,
+      prompt: 'Ancien',
+      title: 'Ancien',
+      status: 'exited',
+      agentSessionId: 'old',
+    },
+    'token',
+  );
+  db.createSession(
+    {
+      id: 'latest',
+      projectId: project.id,
+      ...saved,
+      title: 'Dernier',
+      status: 'exited',
+      agentSessionId: 'latest',
+    },
+    'token',
+  );
+  db.connection.exec(
+    "UPDATE sessions SET created_at = 1, updated_at = 999 WHERE id = 'old'; UPDATE sessions SET created_at = 2, updated_at = 2 WHERE id = 'latest'",
+  );
   db.close();
   const legacy = new DatabaseSync(path);
   legacy.exec('ALTER TABLE projects DROP COLUMN session_defaults');
@@ -173,8 +218,11 @@ test('Slack hérite des réglages, préserve le prompt du formulaire et mémoris
   const db = new CerebroDatabase(':memory:');
   const manager = new SessionManager(db);
   const peers = {
-    ready: Promise.resolve(), generalResponder: () => true, knownRemotely: () => false,
-    conflictMachines: () => [], owns: () => true,
+    ready: Promise.resolve(),
+    generalResponder: () => true,
+    knownRemotely: () => false,
+    conflictMachines: () => [],
+    owns: () => true,
   };
   const notifier = new SlackNotifier(manager, db, peers);
   const events = [];
@@ -198,7 +246,11 @@ test('Slack hérite des réglages, préserve le prompt du formulaire et mémoris
 
     await notifier.handleDmMessage('test', { ts: '2.0', text: 'Demo/claude+: Changer d’agent' });
     assert.deepEqual(db.getProject(project.id).sessionDefaults, {
-      agent: 'claude', mode: saved.mode, model: null, effort: null, prompt: saved.prompt,
+      agent: 'claude',
+      mode: saved.mode,
+      model: null,
+      effort: null,
+      prompt: saved.prompt,
     });
     assert.equal(launches.at(-1).prompt, 'Changer d’agent');
     assert.equal(events.at(-1).projects[0].sessionDefaults.prompt, saved.prompt);
@@ -272,7 +324,12 @@ test('API : réglages avant lancement, rechargement, backlog et validation des c
     }
     response = await send('GET', '/api/projects');
     // Effort absent : valeur explicite du défaut Cerebro (high pour codex), modèle sans défaut catalogué.
-    assert.deepEqual(response.json().find((p) => p.id === id).sessionDefaults, { ...saved, model: null, effort: 'high', prompt: '' });
+    assert.deepEqual(response.json().find((p) => p.id === id).sessionDefaults, {
+      ...saved,
+      model: null,
+      effort: 'high',
+      prompt: '',
+    });
   } finally {
     await app.close();
   }
@@ -281,45 +338,127 @@ test('API : réglages avant lancement, rechargement, backlog et validation des c
 test('API commit plan executes without launching an agent', async () => {
   const repo = mkdtempSync(join(root, 'git-api-'));
   const git = (...args) => execFileSync('git', ['-C', repo, ...args]);
-  git('init', '-b', 'main'); git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'Test');
+  git('init', '-b', 'main');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Test');
   writeFileSync(join(repo, 'file'), 'new\n');
   const app = await buildServer();
   try {
-    const project = (await app.inject({ method:'POST',url:'/api/projects',payload:{name:'Git API',path:repo} })).json();
+    const project = (
+      await app.inject({ method: 'POST', url: '/api/projects', payload: { name: 'Git API', path: repo } })
+    ).json();
     const before = launches.length;
-    const snapshot = (await app.inject({method:'POST',url:`/api/projects/${project.id}/git/prepare-commit`})).json();
-    const response = await app.inject({method:'POST',url:`/api/projects/${project.id}/git/commit`,payload:{snapshotId:snapshot.id,commits:[{message:'initial',selection:[{path:'file',all:true}]}],acknowledged:[],push:false}});
-    assert.equal(response.statusCode,200);assert.equal(response.json().error,null);assert.equal(response.json().commits.length,1);
-    assert.equal(launches.length,before);
-  } finally {await app.close();}
+    const snapshot = (
+      await app.inject({ method: 'POST', url: `/api/projects/${project.id}/git/prepare-commit` })
+    ).json();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${project.id}/git/commit`,
+      payload: {
+        snapshotId: snapshot.id,
+        commits: [{ message: 'initial', selection: [{ path: 'file', all: true }] }],
+        acknowledged: [],
+        push: false,
+      },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().error, null);
+    assert.equal(response.json().commits.length, 1);
+    assert.equal(launches.length, before);
+  } finally {
+    await app.close();
+  }
 });
 
-test('API command tasks never launch an agent and preserve the explicit validation distinction',async()=>{
-  const app=await buildServer();
-  try{
-    const p=(await app.inject({method:'POST',url:'/api/projects',payload:{name:'Commands',path:root}})).json();
-    const command=(await app.inject({method:'POST',url:`/api/projects/${p.id}/commands`,payload:{name:'Check',executable:process.execPath,args:['-e','console.log("checked")'],cwd:'.',timeoutSeconds:10}})).json();
-    const task=(await app.inject({method:'POST',url:`/api/projects/${p.id}/tasks`,payload:{text:'Check',execution:{type:'command',commandId:command.id,completion:'manual'}}})).json();
-    const count=launches.length;const response=await app.inject({method:'POST',url:`/api/tasks/${task.id}/start`});assert.equal(response.statusCode,202);assert.equal(response.json().session,undefined);
-    let run;do{await new Promise(r=>setTimeout(r,10));run=(await app.inject({method:'GET',url:`/api/tasks/${task.id}/runs`})).json()[0];}while(run.status==='running');
-    assert.equal(run.status,'succeeded');assert.equal(launches.length,count);
-    assert.equal((await app.inject({method:'GET',url:'/api/tasks'})).json().find(t=>t.id===task.id).status,'started');
-  }finally{await app.close();}
+test('API command tasks never launch an agent and preserve the explicit validation distinction', async () => {
+  const app = await buildServer();
+  try {
+    const p = (
+      await app.inject({ method: 'POST', url: '/api/projects', payload: { name: 'Commands', path: root } })
+    ).json();
+    const command = (
+      await app.inject({
+        method: 'POST',
+        url: `/api/projects/${p.id}/commands`,
+        payload: {
+          name: 'Check',
+          executable: process.execPath,
+          args: ['-e', 'console.log("checked")'],
+          cwd: '.',
+          timeoutSeconds: 10,
+        },
+      })
+    ).json();
+    const task = (
+      await app.inject({
+        method: 'POST',
+        url: `/api/projects/${p.id}/tasks`,
+        payload: { text: 'Check', execution: { type: 'command', commandId: command.id, completion: 'manual' } },
+      })
+    ).json();
+    const count = launches.length;
+    const response = await app.inject({ method: 'POST', url: `/api/tasks/${task.id}/start` });
+    assert.equal(response.statusCode, 202);
+    assert.equal(response.json().session, undefined);
+    let run;
+    do {
+      await new Promise((r) => setTimeout(r, 10));
+      run = (await app.inject({ method: 'GET', url: `/api/tasks/${task.id}/runs` })).json()[0];
+    } while (run.status === 'running');
+    assert.equal(run.status, 'succeeded');
+    assert.equal(launches.length, count);
+    assert.equal(
+      (await app.inject({ method: 'GET', url: '/api/tasks' })).json().find((t) => t.id === task.id).status,
+      'started',
+    );
+  } finally {
+    await app.close();
+  }
 });
 
-test('API epic scheduler persists the current step and remains compatible with backlog --done',async()=>{
-  let app=await buildServer();const send=(method,url,payload)=>app.inject({method,url,...(payload===undefined?{}:{payload})});
-  try{
-    const p=(await send('POST','/api/projects',{name:'Scheduled',path:root})).json();const a=(await send('POST',`/api/projects/${p.id}/tasks`,{text:'first'})).json();const b=(await send('POST',`/api/projects/${p.id}/tasks`,{text:'next'})).json();
-    const epic=(await send('POST',`/api/projects/${p.id}/epics`,{title:'Sequential',taskIds:[a.id,b.id]})).json();const before=launches.length;
-    const response=await send('POST',`/api/epics/${epic.id}/start`,{});assert.equal(response.statusCode,202);assert.equal(response.json().session,undefined);
-    assert.equal((await send('POST',`/api/epics/${epic.id}/start`,{})).statusCode,409);
-    await new Promise(r=>setTimeout(r,1100));let tasks=(await send('GET','/api/tasks')).json();const current=tasks.find(t=>t.id===a.id);assert.equal(current.status,'started');assert.equal(tasks.find(t=>t.id===b.id).status,'todo');assert.equal(launches.length,before+1);
-    assert.deepEqual((await send('GET', '/api/sessions')).json().find(s => s.id === current.sessionId).epic, { id: epic.id, title: epic.title });
-    await app.close();app=await buildServer();await new Promise(r=>setTimeout(r,50));assert.equal(launches.length,before+1);
-    const done=await app.inject({method:'POST',url:`/api/backlog/${current.sessionId}/tasks/${a.id}/done`,headers:{'x-cerebro-token':'test-token'},payload:{}});assert.equal(done.statusCode,200);
-    await new Promise(r=>setTimeout(r,1100));tasks=(await send('GET','/api/tasks')).json();assert.equal(tasks.find(t=>t.id===b.id).status,'started');assert.equal(launches.length,before+2);
-  }finally{await app.close();}
+test('API epic scheduler persists the current step and remains compatible with backlog --done', async () => {
+  let app = await buildServer();
+  const send = (method, url, payload) => app.inject({ method, url, ...(payload === undefined ? {} : { payload }) });
+  try {
+    const p = (await send('POST', '/api/projects', { name: 'Scheduled', path: root })).json();
+    const a = (await send('POST', `/api/projects/${p.id}/tasks`, { text: 'first' })).json();
+    const b = (await send('POST', `/api/projects/${p.id}/tasks`, { text: 'next' })).json();
+    const epic = (
+      await send('POST', `/api/projects/${p.id}/epics`, { title: 'Sequential', taskIds: [a.id, b.id] })
+    ).json();
+    const before = launches.length;
+    const response = await send('POST', `/api/epics/${epic.id}/start`, {});
+    assert.equal(response.statusCode, 202);
+    assert.equal(response.json().session, undefined);
+    assert.equal((await send('POST', `/api/epics/${epic.id}/start`, {})).statusCode, 409);
+    await new Promise((r) => setTimeout(r, 1100));
+    let tasks = (await send('GET', '/api/tasks')).json();
+    const current = tasks.find((t) => t.id === a.id);
+    assert.equal(current.status, 'started');
+    assert.equal(tasks.find((t) => t.id === b.id).status, 'todo');
+    assert.equal(launches.length, before + 1);
+    assert.deepEqual((await send('GET', '/api/sessions')).json().find((s) => s.id === current.sessionId).epic, {
+      id: epic.id,
+      title: epic.title,
+    });
+    await app.close();
+    app = await buildServer();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(launches.length, before + 1);
+    const done = await app.inject({
+      method: 'POST',
+      url: `/api/backlog/${current.sessionId}/tasks/${a.id}/done`,
+      headers: { 'x-cerebro-token': 'test-token' },
+      payload: {},
+    });
+    assert.equal(done.statusCode, 200);
+    await new Promise((r) => setTimeout(r, 1100));
+    tasks = (await send('GET', '/api/tasks')).json();
+    assert.equal(tasks.find((t) => t.id === b.id).status, 'started');
+    assert.equal(launches.length, before + 2);
+  } finally {
+    await app.close();
+  }
 });
 
 test('API task launches retain their epic through retry and backlog cleanup', async () => {
@@ -338,8 +477,10 @@ test('API task launches retain their epic through retry and backlog cleanup', as
     await send('PATCH', `/api/epics/${epic.id}`, { title: 'Origine renommée' });
     await send('PATCH', `/api/tasks/${task.id}`, { status: 'done' });
     assert.equal((await send('DELETE', `/api/projects/${project.id}/backlog/completed`)).statusCode, 200);
-    const sessions = (await send('GET', '/api/sessions')).json().filter(s => s.projectId === project.id);
+    const sessions = (await send('GET', '/api/sessions')).json().filter((s) => s.projectId === project.id);
     assert.equal(sessions.length, 2);
-    assert.ok(sessions.every(s => s.epic.id === epic.id && s.epic.title === 'Origine renommée'));
-  } finally { await app.close(); }
+    assert.ok(sessions.every((s) => s.epic.id === epic.id && s.epic.title === 'Origine renommée'));
+  } finally {
+    await app.close();
+  }
 });

@@ -18,15 +18,18 @@ if (CEREBRO_SESSION_ID === undefined || CEREBRO_TOKEN === undefined || CEREBRO_U
   }
 
   try {
-    const response = await fetch(`${CEREBRO_URL.replace(/\/+$/, '')}/api/notify/${encodeURIComponent(CEREBRO_SESSION_ID)}`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        'x-cerebro-token': CEREBRO_TOKEN,
+    const response = await fetch(
+      `${CEREBRO_URL.replace(/\/+$/, '')}/api/notify/${encodeURIComponent(CEREBRO_SESSION_ID)}`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-cerebro-token': CEREBRO_TOKEN,
+        },
+        body: JSON.stringify({ kind: ask ? 'ask' : 'notify', text }),
+        signal: AbortSignal.timeout(10_000),
       },
-      body: JSON.stringify({ kind: ask ? 'ask' : 'notify', text }),
-      signal: AbortSignal.timeout(10_000),
-    });
+    );
     if (!response.ok) {
       let message = `Erreur HTTP ${response.status}`;
       try {
@@ -37,9 +40,11 @@ if (CEREBRO_SESSION_ID === undefined || CEREBRO_TOKEN === undefined || CEREBRO_U
       }
       throw new Error(message);
     }
-    process.stdout.write(ask
-      ? "Question envoyée sur Slack. Termine ton tour maintenant : la réponse arrivera comme prochain message de l'utilisateur.\n"
-      : 'Message envoyé sur Slack.\n');
+    process.stdout.write(
+      ask
+        ? "Question envoyée sur Slack. Termine ton tour maintenant : la réponse arrivera comme prochain message de l'utilisateur.\n"
+        : 'Message envoyé sur Slack.\n',
+    );
   } catch (error) {
     process.stderr.write(`cerebro-notify : ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;

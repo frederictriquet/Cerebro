@@ -20,9 +20,11 @@ export interface SessionTokenUsage {
 }
 
 function record(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
-const count = (v: unknown): number | null => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null;
+const count = (v: unknown): number | null => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null);
 const empty = (): TokenCounts => ({ inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0 });
 
 function counts(value: unknown, claude = false, grok = false): TokenCounts | null {
@@ -31,9 +33,15 @@ function counts(value: unknown, claude = false, grok = false): TokenCounts | nul
   const input = count(usage[grok ? 'prompt_tokens' : 'input_tokens']);
   const output = count(usage[grok ? 'completion_tokens' : 'output_tokens']);
   if (input === null || output === null) return null;
-  const cached = count(usage[claude ? 'cache_read_input_tokens' : grok ? 'cached_prompt_tokens' : 'cached_input_tokens']) ?? 0;
+  const cached =
+    count(usage[claude ? 'cache_read_input_tokens' : grok ? 'cached_prompt_tokens' : 'cached_input_tokens']) ?? 0;
   const written = count(usage[claude ? 'cache_creation_input_tokens' : 'cache_write_input_tokens']) ?? 0;
-  return { inputTokens: input + (claude ? cached + written : 0), outputTokens: output, cachedInputTokens: cached, cacheWriteInputTokens: written };
+  return {
+    inputTokens: input + (claude ? cached + written : 0),
+    outputTokens: output,
+    cachedInputTokens: cached,
+    cacheWriteInputTokens: written,
+  };
 }
 
 /** CLI transcript schemas: only usage counters are retained, never message content. */
@@ -59,11 +67,20 @@ export class TokenAccumulator {
       });
     } else if (agent === 'codex') {
       const payload = record(event.payload);
-      const usage = event.type === 'token_usage_record' ? payload?.thread_token_usage
-        : event.type === 'event_msg' && payload?.type === 'token_count' ? record(payload.info)?.total_token_usage : null;
+      const usage =
+        event.type === 'token_usage_record'
+          ? payload?.thread_token_usage
+          : event.type === 'event_msg' && payload?.type === 'token_count'
+            ? record(payload.info)?.total_token_usage
+            : null;
       // Cumulative counters already include cached input and reasoning output. Never sum snapshots.
       this.codex = counts(usage) ?? this.codex;
-    } else if (agent === 'grok' && event.msg === 'shell.turn.inference_done' && typeof event.sid === 'string' && typeof event.ts === 'string') {
+    } else if (
+      agent === 'grok' &&
+      event.msg === 'shell.turn.inference_done' &&
+      typeof event.sid === 'string' &&
+      typeof event.ts === 'string'
+    ) {
       const tokens = counts(event.ctx, false, true);
       if (tokens === null) return;
       const messages = this.grok.get(event.sid) ?? new Map<string, TokenCounts>();
@@ -76,12 +93,15 @@ export class TokenAccumulator {
     if (agent === 'codex') return this.codex;
     const entries = agent === 'claude' ? this.messages : this.grok.get(id);
     if (entries === undefined || entries.size === 0) return null;
-    return [...entries.values()].reduce((sum, t) => ({
-      inputTokens: sum.inputTokens + t.inputTokens,
-      outputTokens: sum.outputTokens + t.outputTokens,
-      cachedInputTokens: sum.cachedInputTokens + t.cachedInputTokens,
-      cacheWriteInputTokens: sum.cacheWriteInputTokens + t.cacheWriteInputTokens,
-    }), empty());
+    return [...entries.values()].reduce(
+      (sum, t) => ({
+        inputTokens: sum.inputTokens + t.inputTokens,
+        outputTokens: sum.outputTokens + t.outputTokens,
+        cachedInputTokens: sum.cachedInputTokens + t.cachedInputTokens,
+        cacheWriteInputTokens: sum.cacheWriteInputTokens + t.cacheWriteInputTokens,
+      }),
+      empty(),
+    );
   }
 }
 
@@ -91,36 +111,54 @@ async function files(root: string, depth: number): Promise<string[]> {
     const found: string[] = [];
     for (const entry of entries) {
       if (entry.isFile() && entry.name.endsWith('.jsonl')) found.push(join(root, entry.name));
-      else if (entry.isDirectory() && depth > 0) found.push(...await files(join(root, entry.name), depth - 1));
+      else if (entry.isDirectory() && depth > 0) found.push(...(await files(join(root, entry.name), depth - 1)));
     }
     return found;
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
-interface Roots { claude: string; codex: string; grok: string }
+interface Roots {
+  claude: string;
+  codex: string;
+  grok: string;
+}
 
 export class TokenUsageTracker {
   private roots: Roots;
-  private cache = new Map<string, { stamp: string; inode: number; size: number; offset: number; data: TokenAccumulator }>();
+  private cache = new Map<
+    string,
+    { stamp: string; inode: number; size: number; offset: number; data: TokenAccumulator }
+  >();
   private pending: Promise<SessionTokenUsage[]> | null = null;
   private last: { key: string; at: number; result: SessionTokenUsage[] } | null = null;
 
-  constructor(roots: Roots = {
-    claude: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
-    codex: process.env.CODEX_HOME ?? join(homedir(), '.codex'),
-    grok: process.env.GROK_HOME ?? join(homedir(), '.grok'),
-  }) { this.roots = roots; }
+  constructor(
+    roots: Roots = {
+      claude: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
+      codex: process.env.CODEX_HOME ?? join(homedir(), '.codex'),
+      grok: process.env.GROK_HOME ?? join(homedir(), '.grok'),
+    },
+  ) {
+    this.roots = roots;
+  }
 
   async get(sessions: readonly Session[]): Promise<SessionTokenUsage[]> {
     const key = JSON.stringify(sessions.map((s) => [s.id, s.agent, s.agentSessionId]));
-    if (this.pending !== null) { await this.pending; return this.get(sessions); }
+    if (this.pending !== null) {
+      await this.pending;
+      return this.get(sessions);
+    }
     if (this.last?.key === key && Date.now() - this.last.at < 30_000) return this.last.result;
     this.pending = this.read(sessions);
     try {
       const result = await this.pending;
       this.last = { key, at: Date.now(), result };
       return result;
-    } finally { this.pending = null; }
+    } finally {
+      this.pending = null;
+    }
   }
 
   private async parse(agent: Session['agent'], path: string): Promise<TokenAccumulator | null> {
@@ -137,7 +175,11 @@ export class TokenUsageTracker {
         const stream = createReadStream(path, { start: offset, end: info.size - 1 });
         let tail = Buffer.alloc(0);
         const accept = (line: Buffer): void => {
-          try { data.accept(agent, JSON.parse(line.toString('utf8'))); } catch { /* Truncated or malformed record. */ }
+          try {
+            data.accept(agent, JSON.parse(line.toString('utf8')));
+          } catch {
+            /* Truncated or malformed record. */
+          }
         };
         try {
           for await (const chunk of stream) {
@@ -154,11 +196,16 @@ export class TokenUsageTracker {
           // A valid last record without a newline is usable. Revisit it after the next append;
           // each provider's accumulator deduplicates it, including streaming Claude messages.
           if (tail.length > 0) accept(tail);
-        } finally { stream.destroy(); }
+        } finally {
+          stream.destroy();
+        }
       }
       this.cache.set(path, { stamp, inode: info.ino, size: info.size, offset, data });
       return data;
-    } catch { this.cache.delete(path); return null; }
+    } catch {
+      this.cache.delete(path);
+      return null;
+    }
   }
 
   private async read(sessions: readonly Session[]): Promise<SessionTokenUsage[]> {
@@ -182,7 +229,15 @@ export class TokenUsageTracker {
           const suffix = session.agent === 'claude' ? `/${id}.jsonl` : `-${id}.jsonl`;
           const candidates = paths.filter((p) => p.endsWith(suffix));
           // A copied transcript is still the same session: take the most recently modified copy.
-          const dated = await Promise.all(candidates.map(async (path) => ({ path, mtime: await stat(path).then(s => s.mtimeMs, () => 0) })));
+          const dated = await Promise.all(
+            candidates.map(async (path) => ({
+              path,
+              mtime: await stat(path).then(
+                (s) => s.mtimeMs,
+                () => 0,
+              ),
+            })),
+          );
           dated.sort((a, b) => b.mtime - a.mtime);
           const path = dated[0]?.path;
           if (path !== undefined) {

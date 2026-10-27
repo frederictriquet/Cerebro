@@ -14,10 +14,23 @@ const { groupSessions, groupedSessionTitle, sessionEpic } = await import('../web
 after(() => rmSync(root, { recursive: true, force: true }));
 
 function createSession(db, project, epicId = null, overrides = {}) {
-  return db.createSession({
-    id: randomUUID(), projectId: project.id, agent: 'codex', mode: 'auto', model: null, effort: null,
-    prompt: 'Une demande', title: 'Une session', status: 'exited', agentSessionId: 'agent', ...overrides,
-  }, 'token', epicId);
+  return db.createSession(
+    {
+      id: randomUUID(),
+      projectId: project.id,
+      agent: 'codex',
+      mode: 'auto',
+      model: null,
+      effort: null,
+      prompt: 'Une demande',
+      title: 'Une session',
+      status: 'exited',
+      agentSessionId: 'agent',
+      ...overrides,
+    },
+    'token',
+    epicId,
+  );
 }
 
 test('session epic survives retries, task moves, renames, backlog cleanup and restart', () => {
@@ -49,7 +62,9 @@ test('session epic survives retries, task moves, renames, backlog cleanup and re
     assert.equal(db.getSession(loose.id).epic, null);
     assert.deepEqual(db.listProjectSessions(project.id).find((s) => s.id === retry.id).epic, expected);
     assert.deepEqual(parseSession(db.getSession(first.id)).epic, expected);
-  } finally { db.close(); }
+  } finally {
+    db.close();
+  }
 });
 
 test('migration links old steps and replaced attempts by run ID, assigned sessions by tasks, never by title or source', () => {
@@ -84,7 +99,9 @@ test('migration links old steps and replaced attempts by run ID, assigned sessio
     }
     for (const session of [source, ambiguous, crossProject]) assert.equal(db.getSession(session.id).epic, null);
     assert.equal(db.listSessions().length, 6);
-  } finally { db.close(); }
+  } finally {
+    db.close();
+  }
 });
 
 test('an epic from another project or an unknown epic cannot be assigned when launching', () => {
@@ -96,7 +113,9 @@ test('an epic from another project or an unknown epic cannot be assigned when la
     assert.throws(() => createSession(db, project, epic.id), /Epic introuvable/);
     assert.throws(() => createSession(db, project, 'missing'), /Epic introuvable/);
     assert.deepEqual(db.listSessions(), []);
-  } finally { db.close(); }
+  } finally {
+    db.close();
+  }
 });
 
 test('grouping preserves creation order, separates IDs and projects, and survives removed epics', () => {
@@ -110,11 +129,18 @@ test('grouping preserves creation order, separates IDs and projects, and survive
     { id: 'remote', projectId: 'p2', epic, status: 'exited', createdAt: 1 },
   ];
   const groups = groupSessions(sessions, [], []);
-  assert.deepEqual(groups.map((group) => group.kind === 'session' ? group.session.id : group.sessions.map((s) => s.id)),
-    [['new', 'old'], 'loose', ['other'], ['remote']]);
-  assert.deepEqual(groupSessions(sessions.map((s) => ({ ...s, status: 'waiting', updatedAt: Date.now() })), [], [])
-    .map((group) => group.kind === 'session' ? group.session.id : group.sessions.map((s) => s.id)),
-    [['new', 'old'], 'loose', ['other'], ['remote']]);
+  assert.deepEqual(
+    groups.map((group) => (group.kind === 'session' ? group.session.id : group.sessions.map((s) => s.id))),
+    [['new', 'old'], 'loose', ['other'], ['remote']],
+  );
+  assert.deepEqual(
+    groupSessions(
+      sessions.map((s) => ({ ...s, status: 'waiting', updatedAt: Date.now() })),
+      [],
+      [],
+    ).map((group) => (group.kind === 'session' ? group.session.id : group.sessions.map((s) => s.id))),
+    [['new', 'old'], 'loose', ['other'], ['remote']],
+  );
   assert.equal(groupSessions(sessions, [], [{ ...epic, title: 'Nouveau nom' }])[0].epic.title, 'Nouveau nom');
 });
 
@@ -136,7 +162,9 @@ test('legacy payloads use only unambiguous assigned tasks; stored origin takes p
     db.updateTask(db.createTask(project.id, 'Ambiguë', null, first.id).id, { sessionId: session.id });
     assert.equal(sessionEpic(parsed, db.listTasks(), epics), null);
     assert.equal(sessionEpic(parsed, [{ ...task, sourceSessionId: session.id, sessionId: null }], epics), null);
-  } finally { db.close(); }
+  } finally {
+    db.close();
+  }
 });
 
 test('grouped titles remove only generated epic prefixes and preserve personal titles', () => {

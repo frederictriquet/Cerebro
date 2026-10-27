@@ -16,13 +16,21 @@ test('headless spawns strip server secrets and retain CLI authentication in both
     grok: { XAI_API_KEY: 'xai-key-sentinel' },
   };
   const injected = {
-    PATH: `${bin}:${process.env.PATH}`, HOME: directory, CODEX_HOME: join(directory, 'codex'),
-    CEREBRO_SESSION_ID: 'session-sentinel', CEREBRO_TOKEN: 'session-token-sentinel',
-    CEREBRO_URL: 'http://cerebro.invalid', CEREBRO_BIND_TOKEN: 'bind-token-sentinel',
-    CEREBRO_SLACK_TOKEN: 'slack-token-sentinel', CEREBRO_SLACK_APP_TOKEN: 'slack-app-token-sentinel',
-    CEREBRO_SLACK_SIGNING_SECRET: 'slack-signing-secret-sentinel', CEREBRO_SLACK_USER: 'slack-user-sentinel',
-    CEREBRO_DATA_DIR: 'server-data-sentinel', CEREBRO_FUTURE_SECRET: 'future-secret-sentinel',
-    CLAUDECODE: 'nested-session-sentinel', ...Object.assign({}, ...Object.values(credentials)),
+    PATH: `${bin}:${process.env.PATH}`,
+    HOME: directory,
+    CODEX_HOME: join(directory, 'codex'),
+    CEREBRO_SESSION_ID: 'session-sentinel',
+    CEREBRO_TOKEN: 'session-token-sentinel',
+    CEREBRO_URL: 'http://cerebro.invalid',
+    CEREBRO_BIND_TOKEN: 'bind-token-sentinel',
+    CEREBRO_SLACK_TOKEN: 'slack-token-sentinel',
+    CEREBRO_SLACK_APP_TOKEN: 'slack-app-token-sentinel',
+    CEREBRO_SLACK_SIGNING_SECRET: 'slack-signing-secret-sentinel',
+    CEREBRO_SLACK_USER: 'slack-user-sentinel',
+    CEREBRO_DATA_DIR: 'server-data-sentinel',
+    CEREBRO_FUTURE_SECRET: 'future-secret-sentinel',
+    CLAUDECODE: 'nested-session-sentinel',
+    ...Object.assign({}, ...Object.values(credentials)),
   };
   const previous = Object.fromEntries(Object.keys(injected).map((key) => [key, process.env[key]]));
   try {
@@ -49,9 +57,20 @@ else console.log(JSON.stringify(result));
       for (const access of ['none', 'read-only']) {
         await t.test(`${agent} / ${access}`, async () => {
           const result = await runHeadless({
-            agent, model: null, effort: null, prompt: 'Answer ok.', cwd: project, access,
-            schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } }, additionalProperties: false },
-            timeoutMs: 10_000, signal: new AbortController().signal,
+            agent,
+            model: null,
+            effort: null,
+            prompt: 'Answer ok.',
+            cwd: project,
+            access,
+            schema: {
+              type: 'object',
+              required: ['answer'],
+              properties: { answer: { type: 'string' } },
+              additionalProperties: false,
+            },
+            timeoutMs: 10_000,
+            signal: new AbortController().signal,
           });
           assert.deepEqual(result, { answer: 'ok' });
           const received = JSON.parse(await readFile(capture, 'utf8'));
@@ -59,8 +78,11 @@ else console.log(JSON.stringify(result));
           assert.deepEqual(received.credentials, authentication);
           for (const key of ['PATH', 'HOME', 'CODEX_HOME']) assert.equal(received[key], injected[key]);
           if (agent === 'codex' && access === 'read-only') assert.ok(!received.args.includes('shell_tool'));
-          if (agent === 'codex') for (const flag of ['--ignore-user-config', '--ignore-rules']) assert.ok(received.args.includes(flag), 'Codex must load neither user nor project MCP servers.');
-          for (const [key, value] of Object.entries(injected)) assert.equal(process.env[key], value, 'The server environment must stay intact.');
+          if (agent === 'codex')
+            for (const flag of ['--ignore-user-config', '--ignore-rules'])
+              assert.ok(received.args.includes(flag), 'Codex must load neither user nor project MCP servers.');
+          for (const [key, value] of Object.entries(injected))
+            assert.equal(process.env[key], value, 'The server environment must stay intact.');
         });
       }
     }

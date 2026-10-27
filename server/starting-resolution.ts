@@ -7,9 +7,12 @@ const branchLabel = (branch: string | null): string => branch?.replace(/^refs\/h
 /** Where the session can read the starting content of one file, as a command or a path. */
 function startingSource(step: StartingContentStep, view: WorktreeView, workspace: Workspace): string {
   const origin = step.origin;
-  if (origin?.kind === 'target-commit') return `\`git show ${origin.commit}:${step.path}\` (commit ${origin.commit.slice(0, 7)} « ${origin.subject} » de ${branchLabel(view.targetBranch)})`;
-  if (origin?.kind === 'target-worktree') return `le fichier ${view.targetPath}/${step.path}, encore non commité dans le dossier de ${branchLabel(view.targetBranch)}`;
-  if (origin?.kind === 'snapshot' && workspace.startingSnapshot) return `\`git show ${workspace.startingSnapshot}:${step.path}\` (instantané conservé par Cerebro à la création)`;
+  if (origin?.kind === 'target-commit')
+    return `\`git show ${origin.commit}:${step.path}\` (commit ${origin.commit.slice(0, 7)} « ${origin.subject} » de ${branchLabel(view.targetBranch)})`;
+  if (origin?.kind === 'target-worktree')
+    return `le fichier ${view.targetPath}/${step.path}, encore non commité dans le dossier de ${branchLabel(view.targetBranch)}`;
+  if (origin?.kind === 'snapshot' && workspace.startingSnapshot)
+    return `\`git show ${workspace.startingSnapshot}:${step.path}\` (instantané conservé par Cerebro à la création)`;
   return workspace.startingSnapshot
     ? `introuvable : ni dans la cible, ni identique dans l’instantané de création (\`git show ${workspace.startingSnapshot}:${step.path}\` peut en garder une version proche)`
     : 'introuvable : ni dans la cible, ni conservé à la création';
@@ -19,15 +22,24 @@ function startingSource(step: StartingContentStep, view: WorktreeView, workspace
  * Instructions for a session that separates, in the copy, the content copied from the project at creation from
  * the conversation's work, for the files the automatic removal could not settle.
  */
-export function startingResolutionPrompt(view: WorktreeView, workspace: Workspace, plan: StartingContentPlan, conversation: { title: string; prompt: string } | null): string {
-  const kept = plan.steps.filter(step => step.action === 'keep');
-  const automatic = plan.steps.filter(step => step.action !== 'keep');
+export function startingResolutionPrompt(
+  view: WorktreeView,
+  workspace: Workspace,
+  plan: StartingContentPlan,
+  conversation: { title: string; prompt: string } | null,
+): string {
+  const kept = plan.steps.filter((step) => step.action === 'keep');
+  const automatic = plan.steps.filter((step) => step.action !== 'keep');
   const target = branchLabel(view.targetBranch);
-  const files = kept.map(step => [
-    `- ${step.path} (${step.state === 'inherited' ? 'contenu de départ seul' : 'contenu de départ et travail de la conversation mélangés'})`,
-    `  Contenu de départ : ${startingSource(step, view, workspace)}`,
-    `  Constat de Cerebro : ${step.reason ?? 'aucun'}`,
-  ].join('\n')).join('\n');
+  const files = kept
+    .map((step) =>
+      [
+        `- ${step.path} (${step.state === 'inherited' ? 'contenu de départ seul' : 'contenu de départ et travail de la conversation mélangés'})`,
+        `  Contenu de départ : ${startingSource(step, view, workspace)}`,
+        `  Constat de Cerebro : ${step.reason ?? 'aucun'}`,
+      ].join('\n'),
+    )
+    .join('\n');
   const context = conversation
     ? `\n\nConversation d’origine : « ${conversation.title} »${conversation.prompt.trim() ? `\nSa demande initiale :\n<demande_initiale>\n${conversation.prompt.trim().slice(0, MAX_CONVERSATION_PROMPT)}${conversation.prompt.trim().length > MAX_CONVERSATION_PROMPT ? '\n…' : ''}\n</demande_initiale>` : ''}`
     : '';
@@ -52,7 +64,7 @@ Méthode :
 4. Vérifie le résultat avec \`git diff HEAD -- <fichier>\` : il ne doit montrer que le travail de la conversation.
 
 Contraintes :
-- Ne modifie que les fichiers listés ci-dessus.${automatic.length ? ` Les autres fichiers du contenu de départ (${automatic.map(step => step.path).join(', ')}) seront traités automatiquement par « Retirer le contenu de départ » : n’y touche pas.` : ''}
+- Ne modifie que les fichiers listés ci-dessus.${automatic.length ? ` Les autres fichiers du contenu de départ (${automatic.map((step) => step.path).join(', ')}) seront traités automatiquement par « Retirer le contenu de départ » : n’y touche pas.` : ''}
 - Ne crée aucun commit, ne fais ni merge, ni rebase, ni stash, ni checkout de branche : les changements restent non commités pour être relus.
 - Ne modifie pas le dossier du projet (${view.targetPath ?? 'dossier cible'}).${plan.targetUpdate ? `\n- ${target} a reçu ${plan.targetUpdate.commits} commit${plan.targetUpdate.commits === 1 ? '' : 's'} depuis la création : ne les intègre pas, Cerebro le fera au retrait du contenu de départ. Travaille par rapport à HEAD de la copie.` : ''}
 

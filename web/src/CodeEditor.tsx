@@ -63,7 +63,12 @@ export function CodeEditor({ project, onClose }: { project: Project; onClose: ()
       {error ? (
         <p className="form-error code-editor-msg">{error}</p>
       ) : url ? (
-        <iframe className="code-editor-frame" src={url} title={`VS Code : ${project.name}`} allow="clipboard-read; clipboard-write" />
+        <iframe
+          className="code-editor-frame"
+          src={url}
+          title={`VS Code : ${project.name}`}
+          allow="clipboard-read; clipboard-write"
+        />
       ) : (
         <p className="empty-hint code-editor-msg">Démarrage de VS Code… (le premier lancement télécharge le serveur)</p>
       )}

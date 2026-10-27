@@ -1,9 +1,11 @@
 import type { SessionWorktree } from './types.ts';
 
-const removalDate = (at: number): string => new Date(at).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const removalDate = (at: number): string =>
+  new Date(at).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 /** Arrêter ou supprimer une conversation peut retirer sa copie : la reprise devient alors impossible. */
-export const RELEASE_HINT = 'Si sa copie de travail ne contient rien à conserver (aucun changement, commits intégrés, aucun fichier ignoré), elle sera nettoyée automatiquement ; la conversation restera consultable mais ne pourra plus être reprise.';
+export const RELEASE_HINT =
+  'Si sa copie de travail ne contient rien à conserver (aucun changement, commits intégrés, aucun fichier ignoré), elle sera nettoyée automatiquement ; la conversation restera consultable mais ne pourra plus être reprise.';
 
 /** Pourquoi une conversation terminée ne peut plus reprendre, ou null si sa copie existe encore. */
 export function resumeBlockedReason(worktree: SessionWorktree | null): string | null {
@@ -27,7 +29,11 @@ export function WorktreeLabel({ worktree }: { worktree: SessionWorktree | null }
         {worktree.name}
       </span>
       {/* Hors de la pastille du nom, que l'ellipse tronquerait. */}
-      {worktree.removed && worktree.removedAutomatically ? <span className="pill worktree-cleaned" title={title}>copie nettoyée</span> : null}
+      {worktree.removed && worktree.removedAutomatically ? (
+        <span className="pill worktree-cleaned" title={title}>
+          copie nettoyée
+        </span>
+      ) : null}
     </>
   );
 }

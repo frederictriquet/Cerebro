@@ -311,11 +311,17 @@ export async function listPersonas(): Promise<Persona[]> {
 }
 
 export async function createPersona(input: PersonaInput): Promise<Persona> {
-  return parsed(parsePersona(await api<unknown>('/api/personas', { method: 'POST', body: JSON.stringify(input) })), 'persona');
+  return parsed(
+    parsePersona(await api<unknown>('/api/personas', { method: 'POST', body: JSON.stringify(input) })),
+    'persona',
+  );
 }
 
 export async function updatePersona(id: string, patch: Partial<PersonaInput>): Promise<Persona> {
-  const raw = await api<unknown>(`/api/personas/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) });
+  const raw = await api<unknown>(`/api/personas/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
   return parsed(parsePersona(raw), 'persona');
 }
 
@@ -330,7 +336,10 @@ export async function getCouncilSettings(): Promise<CouncilSettings> {
 // Réglages appliqués au lancement : surcharge du projet, sinon réglages globaux (projectId null).
 export async function getEffectiveCouncilSettings(projectId: string | null): Promise<CouncilSettings> {
   const query = projectId === null ? '' : `?projectId=${encodeURIComponent(projectId)}`;
-  return parsed(parseCouncilSettings(await api<unknown>(`/api/council/settings/effective${query}`)), 'réglages du council');
+  return parsed(
+    parseCouncilSettings(await api<unknown>(`/api/council/settings/effective${query}`)),
+    'réglages du council',
+  );
 }
 
 export async function putCouncilSettings(settings: CouncilSettings): Promise<CouncilSettings> {
@@ -352,7 +361,10 @@ export interface CouncilStartInput {
 }
 
 export async function startCouncil(input: CouncilStartInput): Promise<CouncilRun> {
-  return parsed(parseCouncilRun(await api<unknown>('/api/councils', { method: 'POST', body: JSON.stringify(input) })), 'council');
+  return parsed(
+    parseCouncilRun(await api<unknown>('/api/councils', { method: 'POST', body: JSON.stringify(input) })),
+    'council',
+  );
 }
 
 export async function getCouncil(id: string): Promise<CouncilRun> {
@@ -361,12 +373,16 @@ export async function getCouncil(id: string): Promise<CouncilRun> {
 
 // projectId absent : tous les councils ; null : ceux lancés hors projet.
 export async function listCouncils(projectId?: string | null): Promise<CouncilRun[]> {
-  const query = projectId === undefined ? '' : `?projectId=${projectId === null ? 'none' : encodeURIComponent(projectId)}`;
+  const query =
+    projectId === undefined ? '' : `?projectId=${projectId === null ? 'none' : encodeURIComponent(projectId)}`;
   return parseCouncilRunList(await api<unknown>(`/api/councils${query}`));
 }
 
 export async function cancelCouncil(id: string): Promise<CouncilRun> {
-  return parsed(parseCouncilRun(await api<unknown>(`/api/councils/${encodeURIComponent(id)}/cancel`, { method: 'POST' })), 'council');
+  return parsed(
+    parseCouncilRun(await api<unknown>(`/api/councils/${encodeURIComponent(id)}/cancel`, { method: 'POST' })),
+    'council',
+  );
 }
 
 export function deleteCouncil(id: string): Promise<void> {

@@ -93,7 +93,9 @@ function parseBlock(block) {
     const dependencies = DEPENDENCY_LINE.exec(lines[0] ?? '');
     const epic = EPIC_LINE.exec(lines[0] ?? '');
     if (dependencies !== null) {
-      task.dependsOn = dependencies[1].split(/[\s,]+/).filter((dep) => dep !== '')
+      task.dependsOn = dependencies[1]
+        .split(/[\s,]+/)
+        .filter((dep) => dep !== '')
         .map((dep) => (/^\d+$/.test(dep) ? Number(dep) : dep));
     } else if (epic !== null) {
       task.epicId = epic[1].toLowerCase() === 'none' ? null : epic[1];
@@ -134,13 +136,18 @@ async function add(args, epic) {
     let input = '';
     process.stdin.setEncoding('utf8');
     for await (const chunk of process.stdin) input += chunk;
-    tasks = input.split(/^-{3,}[ \t]*$/m).filter((block) => block.trim() !== '').map(parseBlock);
+    tasks = input
+      .split(/^-{3,}[ \t]*$/m)
+      .filter((block) => block.trim() !== '')
+      .map(parseBlock);
   } else {
     tasks = tasks.map((task) => task.trim()).filter((task) => task !== '');
   }
-  if (tasks.length === 0) throw new Error('aucune tâche (argument ou entrée standard, séparateur « --- ») ; voir --help');
+  if (tasks.length === 0)
+    throw new Error('aucune tâche (argument ou entrée standard, séparateur « --- ») ; voir --help');
   const { tasks: created, epic: newEpic } = await call('POST', '', epic === undefined ? { tasks } : { tasks, epic });
-  if (newEpic !== null && newEpic !== undefined) process.stdout.write(`Epic créé : ${newEpic.id}  ${firstLine(newEpic.title)}\n`);
+  if (newEpic !== null && newEpic !== undefined)
+    process.stdout.write(`Epic créé : ${newEpic.id}  ${firstLine(newEpic.title)}\n`);
   process.stdout.write(`${created.length} tâche(s) ajoutée(s) au backlog du projet :\n`);
   created.forEach((task, index) => {
     const deps = task.dependsOn.length > 0 ? ` (après ${task.dependsOn.join(', ')})` : '';
@@ -202,14 +209,18 @@ async function main(argv) {
     case '--epic-create': {
       const { options, rest: positional } = takeOptions(rest, ['description']);
       const [title, ...taskIds] = positional;
-      if (title === undefined || title.startsWith('--')) throw new Error('--epic-create "Titre" [--description "Texte"] [<tâche-id>...]');
+      if (title === undefined || title.startsWith('--'))
+        throw new Error('--epic-create "Titre" [--description "Texte"] [<tâche-id>...]');
       const epic = await call('POST', '/epics', { title, description: options.description, taskIds });
-      process.stdout.write(`Epic créé : ${epic.id}  ${firstLine(epic.title)}${taskIds.length > 0 ? ` (${taskIds.length} tâche(s))` : ''}\n`);
+      process.stdout.write(
+        `Epic créé : ${epic.id}  ${firstLine(epic.title)}${taskIds.length > 0 ? ` (${taskIds.length} tâche(s))` : ''}\n`,
+      );
       return;
     }
     case '--epic-add': {
       const [epicId, ...taskIds] = rest;
-      if (epicId === undefined || taskIds.length === 0) throw new Error('--epic-add <epic-id> <tâche-id> [<tâche-id>...]');
+      if (epicId === undefined || taskIds.length === 0)
+        throw new Error('--epic-add <epic-id> <tâche-id> [<tâche-id>...]');
       await setEpic(epicId, taskIds);
       process.stdout.write(`${taskIds.length} tâche(s) rangée(s) dans l'epic ${epicId}.\n`);
       return;
@@ -238,10 +249,11 @@ async function main(argv) {
     case '--fail':
     case '--block':
     case '--await-validation': {
-      if(rest.length!==2)throw new Error(`${command} <id> "raison"`);
-      const status=command==='--fail'?'failed':command==='--block'?'blocked':'waiting-validation';
-      await call('POST',`/tasks/${encodeURIComponent(rest[0])}/result`,{status,message:rest[1]});
-      process.stdout.write(`${rest[0]} : ${status}.\n`);return;
+      if (rest.length !== 2) throw new Error(`${command} <id> "raison"`);
+      const status = command === '--fail' ? 'failed' : command === '--block' ? 'blocked' : 'waiting-validation';
+      await call('POST', `/tasks/${encodeURIComponent(rest[0])}/result`, { status, message: rest[1] });
+      process.stdout.write(`${rest[0]} : ${status}.\n`);
+      return;
     }
     case '--done': {
       if (rest.length !== 1) throw new Error('--done <id>');
@@ -264,9 +276,11 @@ async function main(argv) {
       if (rest.length === 0) throw new Error('--depends <id> [<id>...]');
       const [id, ...dependsOn] = rest;
       const task = await call('PATCH', `/tasks/${encodeURIComponent(id)}`, { dependsOn });
-      process.stdout.write(dependsOn.length === 0
-        ? `${task.id} : plus aucune dépendance.\n`
-        : `${task.id} : après ${task.dependsOn.join(', ')}.\n`);
+      process.stdout.write(
+        dependsOn.length === 0
+          ? `${task.id} : plus aucune dépendance.\n`
+          : `${task.id} : après ${task.dependsOn.join(', ')}.\n`,
+      );
       return;
     }
     case '--delete': {

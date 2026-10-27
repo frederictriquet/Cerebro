@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { runHeadless, supportsImages } from '../server/headless.ts';
 
-const schema = { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } }, additionalProperties: false };
+const schema = {
+  type: 'object',
+  required: ['answer'],
+  properties: { answer: { type: 'string' } },
+  additionalProperties: false,
+};
 
 // Fake CLIs that record their arguments and stdin, then answer like the real ones would.
 const script = (capture) => `#!/usr/bin/env node
@@ -28,11 +33,23 @@ test('headless: images travel inside a Claude stream-json turn, as Codex --image
   const previousPath = process.env.PATH;
   try {
     await mkdir(bin);
-    for (const agent of ['claude', 'codex', 'grok']) await writeFile(join(bin, agent), script(capture), { mode: 0o755 });
+    for (const agent of ['claude', 'codex', 'grok'])
+      await writeFile(join(bin, agent), script(capture), { mode: 0o755 });
     await writeFile(first, png);
     await writeFile(second, Buffer.from('ffd8ffe0', 'hex'));
     process.env.PATH = `${bin}:${previousPath}`;
-    const run = (agent, images) => runHeadless({ agent, model: null, effort: null, prompt: 'Describe [Image #1] and [Image #2].', schema, access: 'none', timeoutMs: 10_000, signal: new AbortController().signal, images });
+    const run = (agent, images) =>
+      runHeadless({
+        agent,
+        model: null,
+        effort: null,
+        prompt: 'Describe [Image #1] and [Image #2].',
+        schema,
+        access: 'none',
+        timeoutMs: 10_000,
+        signal: new AbortController().signal,
+        images,
+      });
 
     await t.test('claude', async () => {
       assert.deepEqual(await run('claude', [first, second]), { answer: 'ok' });
@@ -45,7 +62,10 @@ test('headless: images travel inside a Claude stream-json turn, as Codex --image
       const turn = JSON.parse(lines[0]);
       assert.equal(turn.type, 'user');
       assert.deepEqual(turn.message.content[0], { type: 'text', text: 'Describe [Image #1] and [Image #2].' });
-      assert.deepEqual(turn.message.content[1], { type: 'image', source: { type: 'base64', media_type: 'image/png', data: png.toString('base64') } });
+      assert.deepEqual(turn.message.content[1], {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: png.toString('base64') },
+      });
       assert.equal(turn.message.content[2].source.media_type, 'image/jpeg');
       assert.equal(turn.message.content.length, 3);
     });

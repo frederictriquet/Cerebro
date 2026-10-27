@@ -21,9 +21,7 @@ interface HolderConfig {
 }
 
 type ClientMessage =
-  | { type: 'input'; data: string }
-  | { type: 'resize'; cols: number; rows: number }
-  | { type: 'kill'; signal: string };
+  { type: 'input'; data: string } | { type: 'resize'; cols: number; rows: number } | { type: 'kill'; signal: string };
 
 const FORCE_KILL_DELAY_MS = 3_000;
 const CLIENT_EXIT_DELAY_MS = 5_000;
@@ -43,12 +41,19 @@ function send(socket: Socket | null, message: unknown): void {
 function validConfig(value: unknown): value is HolderConfig {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const config = value as Record<string, unknown>;
-  return typeof config.cmd === 'string'
-    && Array.isArray(config.args) && config.args.every((argument) => typeof argument === 'string')
-    && typeof config.cwd === 'string'
-    && typeof config.env === 'object' && config.env !== null && !Array.isArray(config.env)
-    && Number.isInteger(config.cols) && Number(config.cols) > 0
-    && Number.isInteger(config.rows) && Number(config.rows) > 0;
+  return (
+    typeof config.cmd === 'string' &&
+    Array.isArray(config.args) &&
+    config.args.every((argument) => typeof argument === 'string') &&
+    typeof config.cwd === 'string' &&
+    typeof config.env === 'object' &&
+    config.env !== null &&
+    !Array.isArray(config.env) &&
+    Number.isInteger(config.cols) &&
+    Number(config.cols) > 0 &&
+    Number.isInteger(config.rows) &&
+    Number(config.rows) > 0
+  );
 }
 
 function run(configPath: string): void {
@@ -60,7 +65,7 @@ function run(configPath: string): void {
   const holderLogPath = join(sessionsDir, `${id}.holder.log`);
   const terminalLog = createWriteStream(join(dataDir, 'logs', `${id}.log`), { flags: 'a' });
   const report = (error: unknown): void => {
-    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
     appendFileSync(holderLogPath, `${new Date().toISOString()} ${message}\n`, { mode: 0o600 });
   };
 
@@ -167,8 +172,13 @@ function run(configPath: string): void {
       child.write(message.data);
       return;
     }
-    if (message.type === 'resize' && Number.isInteger(message.cols) && Number.isInteger(message.rows)
-      && message.cols > 0 && message.rows > 0) {
+    if (
+      message.type === 'resize' &&
+      Number.isInteger(message.cols) &&
+      Number.isInteger(message.rows) &&
+      message.cols > 0 &&
+      message.rows > 0
+    ) {
       cols = message.cols;
       rows = message.rows;
       child.resize(cols, rows);
@@ -288,7 +298,11 @@ process.on('uncaughtException', (error) => {
   const configPath = process.argv[2];
   if (configPath !== undefined) {
     const id = basename(configPath, '.config.json');
-    appendFileSync(join(dirname(configPath), `${id}.holder.log`), `${new Date().toISOString()} ${error.stack ?? error.message}\n`, { mode: 0o600 });
+    appendFileSync(
+      join(dirname(configPath), `${id}.holder.log`),
+      `${new Date().toISOString()} ${error.stack ?? error.message}\n`,
+      { mode: 0o600 },
+    );
   }
   process.exit(1);
 });

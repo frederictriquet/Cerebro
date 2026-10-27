@@ -21,7 +21,12 @@ function codexRolloutExists(threadId: string): boolean {
   // Rollouts live in sessions/YYYY/MM/DD/; check today and yesterday (sessions spanning midnight).
   for (const offset of [0, 1]) {
     const day = new Date(Date.now() - offset * 86_400_000);
-    const dir = join(root, String(day.getFullYear()), String(day.getMonth() + 1).padStart(2, '0'), String(day.getDate()).padStart(2, '0'));
+    const dir = join(
+      root,
+      String(day.getFullYear()),
+      String(day.getMonth() + 1).padStart(2, '0'),
+      String(day.getDate()).padStart(2, '0'),
+    );
     try {
       if (readdirSync(dir).some((name) => name.endsWith(`${threadId}.jsonl`))) return true;
     } catch {

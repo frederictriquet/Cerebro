@@ -152,10 +152,13 @@ function isAgentQuestion(value: unknown): value is AgentQuestion {
   if (!isRecord(value) || typeof value.question !== 'string') return false;
   if (value.header !== null && typeof value.header !== 'string') return false;
   if (typeof value.multiSelect !== 'boolean' || !Array.isArray(value.options)) return false;
-  return value.options.every((option) => isRecord(option)
-    && typeof option.label === 'string'
-    && (option.description === null || typeof option.description === 'string')
-    && (option.preview === null || typeof option.preview === 'string'));
+  return value.options.every(
+    (option) =>
+      isRecord(option) &&
+      typeof option.label === 'string' &&
+      (option.description === null || typeof option.description === 'string') &&
+      (option.preview === null || typeof option.preview === 'string'),
+  );
 }
 
 function isSlackTimestamp(value: unknown): value is string {
@@ -163,17 +166,20 @@ function isSlackTimestamp(value: unknown): value is string {
 }
 
 function activeThreadFrom(value: unknown): ActiveThread | null {
-  if (!isRecord(value)
-    || typeof value.channel !== 'string'
-    || value.channel === ''
-    || !isSlackTimestamp(value.ts)
-    || !isSlackTimestamp(value.lastTs)
-    || !['alert', 'notify', 'ask'].includes(typeof value.kind === 'string' ? value.kind : '')
-    || typeof value.createdAt !== 'number'
-    || !Number.isFinite(value.createdAt)
-    || typeof value.polledAt !== 'number'
-    || !Number.isFinite(value.polledAt)
-    || typeof value.answered !== 'boolean') return null;
+  if (
+    !isRecord(value) ||
+    typeof value.channel !== 'string' ||
+    value.channel === '' ||
+    !isSlackTimestamp(value.ts) ||
+    !isSlackTimestamp(value.lastTs) ||
+    !['alert', 'notify', 'ask'].includes(typeof value.kind === 'string' ? value.kind : '') ||
+    typeof value.createdAt !== 'number' ||
+    !Number.isFinite(value.createdAt) ||
+    typeof value.polledAt !== 'number' ||
+    !Number.isFinite(value.polledAt) ||
+    typeof value.answered !== 'boolean'
+  )
+    return null;
   const questions = value.questions === undefined ? null : value.questions;
   if (questions !== null && (!Array.isArray(questions) || !questions.every(isAgentQuestion))) return null;
   return {
@@ -301,12 +307,14 @@ function escapeMrkdwn(value: string): string {
 }
 
 function decodeSlackText(value: string): string {
-  return value.replace(/&(amp|lt|gt);/g, (entity, name: string) => {
-    if (name === 'amp') return '&';
-    if (name === 'lt') return '<';
-    if (name === 'gt') return '>';
-    return entity;
-  }).trim();
+  return value
+    .replace(/&(amp|lt|gt);/g, (entity, name: string) => {
+      if (name === 'amp') return '&';
+      if (name === 'lt') return '<';
+      if (name === 'gt') return '>';
+      return entity;
+    })
+    .trim();
 }
 
 function safeCodeBlock(value: string): string {
@@ -315,15 +323,18 @@ function safeCodeBlock(value: string): string {
 
 // Converts the agent's Markdown to Slack mrkdwn; code spans and blocks are only escaped.
 export function slackMarkdown(markdown: string): string {
-  return markdown.split(/(```[\s\S]*?(?:```|$)|`[^`\n]+`)/).map((part, index) => {
-    // Slack shows a fence's language tag as text, and requires entities even inside code.
-    if (index % 2 === 1) return escapeMrkdwn(part.replace(/^```[\w+#.-]*\n/, '```\n'));
-    return escapeMrkdwn(part)
-      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<$2|$1>')
-      .replace(/\*\*(.+?)\*\*/g, '*$1*')
-      .replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
-      .replace(/^(\s*)[-*]\s+/gm, '$1• ');
-  }).join('');
+  return markdown
+    .split(/(```[\s\S]*?(?:```|$)|`[^`\n]+`)/)
+    .map((part, index) => {
+      // Slack shows a fence's language tag as text, and requires entities even inside code.
+      if (index % 2 === 1) return escapeMrkdwn(part.replace(/^```[\w+#.-]*\n/, '```\n'));
+      return escapeMrkdwn(part)
+        .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<$2|$1>')
+        .replace(/\*\*(.+?)\*\*/g, '*$1*')
+        .replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
+        .replace(/^(\s*)[-*]\s+/gm, '$1• ');
+    })
+    .join('');
 }
 
 const SLACK_CHUNK = 3_500;
@@ -370,7 +381,7 @@ export function splitMessage(text: string): string[] {
   let open = false;
   for (const chunk of chunks.flatMap(hardSplit)) {
     const prefix = open ? '```\n' : '';
-    if (((chunk.match(/```/g) ?? []).length % 2) === 1) open = !open;
+    if ((chunk.match(/```/g) ?? []).length % 2 === 1) open = !open;
     balanced.push(`${prefix}${chunk}${open ? '\n```' : ''}`);
   }
   return balanced;
@@ -387,20 +398,43 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-interface NotificationTurn {started_at:number;ended_at:number|null;custom_at:number|null;relayed_at:number|null;automatic_at:number|null}
+interface NotificationTurn {
+  started_at: number;
+  ended_at: number | null;
+  custom_at: number | null;
+  relayed_at: number | null;
+  automatic_at: number | null;
+}
 
 export class SlackNotifier {
-  readonly operations:OperationResults;
-  private outgoing=new Map<string,Promise<void>>();
-  private turn(sessionId:string):NotificationTurn|null{return this.db.connection.prepare('SELECT * FROM notification_turns WHERE session_id=?').get(sessionId) as NotificationTurn|undefined??null;}
-  private markTurn(sessionId:string,column:'custom_at'|'relayed_at'|'automatic_at'):void{
-    const session=this.db.getSession(sessionId);if(!session)return;
-    this.db.connection.prepare('INSERT OR IGNORE INTO notification_turns (session_id,started_at) VALUES (?,?)').run(sessionId,session.createdAt);
-    this.db.connection.prepare(`UPDATE notification_turns SET ${column}=? WHERE session_id=?`).run(Date.now(),sessionId);
+  readonly operations: OperationResults;
+  private outgoing = new Map<string, Promise<void>>();
+  private turn(sessionId: string): NotificationTurn | null {
+    return (
+      (this.db.connection.prepare('SELECT * FROM notification_turns WHERE session_id=?').get(sessionId) as
+        NotificationTurn | undefined) ?? null
+    );
   }
-  private serial(id:string,send:()=>Promise<void>):Promise<void>{
-    const previous=this.outgoing.get(id)??Promise.resolve();const next=previous.catch(()=>{}).then(send);this.outgoing.set(id,next);
-    void next.finally(()=>{if(this.outgoing.get(id)===next)this.outgoing.delete(id);}).catch(()=>{});return next;
+  private markTurn(sessionId: string, column: 'custom_at' | 'relayed_at' | 'automatic_at'): void {
+    const session = this.db.getSession(sessionId);
+    if (!session) return;
+    this.db.connection
+      .prepare('INSERT OR IGNORE INTO notification_turns (session_id,started_at) VALUES (?,?)')
+      .run(sessionId, session.createdAt);
+    this.db.connection
+      .prepare(`UPDATE notification_turns SET ${column}=? WHERE session_id=?`)
+      .run(Date.now(), sessionId);
+  }
+  private serial(id: string, send: () => Promise<void>): Promise<void> {
+    const previous = this.outgoing.get(id) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(send);
+    this.outgoing.set(id, next);
+    void next
+      .finally(() => {
+        if (this.outgoing.get(id) === next) this.outgoing.delete(id);
+      })
+      .catch(() => {});
+    return next;
   }
 
   private readonly sessions: SessionManager;
@@ -425,31 +459,38 @@ export class SlackNotifier {
     this.sessions = sessions;
     this.db = db;
     this.peers = peers;
-    this.operations=new OperationResults(db);
-    this.operations.delay=()=>this.settings.delaySeconds*1000;
-    this.operations.wanted=result=>SLACK_ENABLED&&!this.stopped&&(result.ok?this.settings.idle:this.settings.waiting);
-    this.operations.onError=cause=>this.logError(cause);
-    this.operations.send=async result=>{
+    this.operations = new OperationResults(db);
+    this.operations.delay = () => this.settings.delaySeconds * 1000;
+    this.operations.wanted = (result) =>
+      SLACK_ENABLED && !this.stopped && (result.ok ? this.settings.idle : this.settings.waiting);
+    this.operations.onError = (cause) => this.logError(cause);
+    this.operations.send = async (result) => {
       await this.peers.ready;
-      if(this.stopped)return false;
+      if (this.stopped) return false;
       // Les résultats hors projet restent locaux : leur machine d’origine les notifie.
       // L’élection du répondeur général ne déduplique que les commandes entrantes.
-      const project=result.projectId===null?null:this.db.getProject(result.projectId);
-      if(result.projectId!==null&&(!project||!this.peers.owns(project.name)))return false;
-      const councilId=result.kind==='council'?result.id.replace(/^council:/,''):null;
-      const link=councilId!==null?`#/c/${encodeURIComponent(councilId)}`:project?`#/p/${encodeURIComponent(project.id)}`:'#/';
-      const text=`${result.ok?':white_check_mark:':':x:'} *${escapeMrkdwn(project?.name??'Hors projet')}* — ${result.kind} : ${escapeMrkdwn(result.summary)}\nDurée : ${Math.max(0,Math.round((result.finishedAt-result.startedAt)/1000))} s\n<${PUBLIC_URL.replace(/\/+$/,'')}/${link}|Ouvrir dans Cerebro>`;
-      let sent=false;
-      const send=async():Promise<void>=>{
+      const project = result.projectId === null ? null : this.db.getProject(result.projectId);
+      if (result.projectId !== null && (!project || !this.peers.owns(project.name))) return false;
+      const councilId = result.kind === 'council' ? result.id.replace(/^council:/, '') : null;
+      const link =
+        councilId !== null
+          ? `#/c/${encodeURIComponent(councilId)}`
+          : project
+            ? `#/p/${encodeURIComponent(project.id)}`
+            : '#/';
+      const text = `${result.ok ? ':white_check_mark:' : ':x:'} *${escapeMrkdwn(project?.name ?? 'Hors projet')}* — ${result.kind} : ${escapeMrkdwn(result.summary)}\nDurée : ${Math.max(0, Math.round((result.finishedAt - result.startedAt) / 1000))} s\n<${PUBLIC_URL.replace(/\/+$/, '')}/${link}|Ouvrir dans Cerebro>`;
+      let sent = false;
+      const send = async (): Promise<void> => {
         // Recheck after peer coordination and any pending send in this session.
-        if(this.stopped)return;
-        const current=this.operations.get(result.id);if(this.stopped||current?.seenAt||current?.notifiedAt||!this.operations.wanted(result))return;
-        const thread=result.sessionId?this.threads.get(result.sessionId):undefined;
-        if(thread)await this.postThreadReply(thread.channel,thread.ts,text);
-        else await this.slackApi('chat.postMessage',{channel:await this.openDm(),text,unfurl_links:false});
-        sent=true;
+        if (this.stopped) return;
+        const current = this.operations.get(result.id);
+        if (this.stopped || current?.seenAt || current?.notifiedAt || !this.operations.wanted(result)) return;
+        const thread = result.sessionId ? this.threads.get(result.sessionId) : undefined;
+        if (thread) await this.postThreadReply(thread.channel, thread.ts, text);
+        else await this.slackApi('chat.postMessage', { channel: await this.openDm(), text, unfurl_links: false });
+        sent = true;
       };
-      await this.serial(result.sessionId??`operation:${result.id}`,send);
+      await this.serial(result.sessionId ?? `operation:${result.id}`, send);
       return sent;
     };
     if (!SLACK_ENABLED) {
@@ -494,18 +535,26 @@ export class SlackNotifier {
     if (!SLACK_ENABLED) throw new Error("Slack n'est pas configuré");
     const session = this.db.getSession(sessionId);
     if (session === null) throw new Error('Session introuvable');
-    this.markTurn(sessionId,'custom_at');
-    const pending=this.timers.get(sessionId);if(pending)clearTimeout(pending);this.timers.delete(sessionId);
+    this.markTurn(sessionId, 'custom_at');
+    const pending = this.timers.get(sessionId);
+    if (pending) clearTimeout(pending);
+    this.timers.delete(sessionId);
     const header = this.header(session);
-    const suffix = kind === 'ask'
-      ? `\n${this.sessionLink(session.id)}\n_Réponds dans le fil : ta réponse sera envoyée à l'agent._`
-      : `\n${this.sessionLink(session.id)}`;
+    const suffix =
+      kind === 'ask'
+        ? `\n${this.sessionLink(session.id)}\n_Réponds dans le fil : ta réponse sera envoyée à l'agent._`
+        : `\n${this.sessionLink(session.id)}`;
     const message = `${kind === 'ask' ? ':question:' : ':bell:'} ${header}\n${text}${suffix}`;
-    await this.serial(session.id,async()=>{
-      if(this.stopped)return;
-      const thread=this.threads.get(session.id);
-      if(kind==='notify'&&thread&&(this.turn(session.id)?.automatic_at||thread.kind==='ask'&&!thread.answered))await this.postThreadReply(thread.channel,thread.ts,message);
-      else await this.postSessionMessage(session.id,kind,message);
+    await this.serial(session.id, async () => {
+      if (this.stopped) return;
+      const thread = this.threads.get(session.id);
+      if (
+        kind === 'notify' &&
+        thread &&
+        (this.turn(session.id)?.automatic_at || (thread.kind === 'ask' && !thread.answered))
+      )
+        await this.postThreadReply(thread.channel, thread.ts, message);
+      else await this.postSessionMessage(session.id, kind, message);
     });
   }
 
@@ -519,10 +568,19 @@ export class SlackNotifier {
   }
 
   private onSessionEvent(event: SessionEvent): void {
-    if(event.type==='session'){
-      const session=event.session;const turn=this.turn(session.id);
-      if(session.status==='running'&&(!turn||turn.ended_at!==null))this.db.connection.prepare('INSERT INTO notification_turns (session_id,started_at) VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET started_at=excluded.started_at,ended_at=NULL,custom_at=NULL,relayed_at=NULL,automatic_at=NULL').run(session.id,session.updatedAt);
-      if(session.status==='idle'&&turn&&turn.ended_at===null)this.db.connection.prepare('UPDATE notification_turns SET ended_at=? WHERE session_id=?').run(Date.now(),session.id);
+    if (event.type === 'session') {
+      const session = event.session;
+      const turn = this.turn(session.id);
+      if (session.status === 'running' && (!turn || turn.ended_at !== null))
+        this.db.connection
+          .prepare(
+            'INSERT INTO notification_turns (session_id,started_at) VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET started_at=excluded.started_at,ended_at=NULL,custom_at=NULL,relayed_at=NULL,automatic_at=NULL',
+          )
+          .run(session.id, session.updatedAt);
+      if (session.status === 'idle' && turn && turn.ended_at === null)
+        this.db.connection
+          .prepare('UPDATE notification_turns SET ended_at=? WHERE session_id=?')
+          .run(Date.now(), session.id);
     }
     if (event.type === 'session-deleted') {
       const timer = this.timers.get(event.id);
@@ -532,7 +590,9 @@ export class SlackNotifier {
       return;
     }
     if (event.type === 'turn-complete') {
-      this.db.connection.prepare('UPDATE notification_turns SET ended_at=COALESCE(ended_at,?) WHERE session_id=?').run(Date.now(),event.id);
+      this.db.connection
+        .prepare('UPDATE notification_turns SET ended_at=COALESCE(ended_at,?) WHERE session_id=?')
+        .run(Date.now(), event.id);
       this.relayTurnEnd(event.id, event.message);
       return;
     }
@@ -557,30 +617,36 @@ export class SlackNotifier {
     }
     if (thread.moreTurns) thread.moreTurns = false;
     else thread.awaitingReply = false;
-    this.markTurn(sessionId,'relayed_at');
+    this.markTurn(sessionId, 'relayed_at');
     this.stateChanged();
     // The answer itself lands in the thread: the "turn complete" alert would only repeat it.
     const timer = this.timers.get(sessionId);
     if (timer !== undefined) clearTimeout(timer);
     this.timers.delete(sessionId);
-    const text = message !== null && message.trim() !== ''
-      ? slackMarkdown(message)
-      : `\`\`\`\n${safeCodeBlock((this.sessions.screenText(sessionId, 30) ?? []).join('\n').slice(-3_000))}\n\`\`\``;
-    void this.serial(sessionId,async () => {
+    const text =
+      message !== null && message.trim() !== ''
+        ? slackMarkdown(message)
+        : `\`\`\`\n${safeCodeBlock((this.sessions.screenText(sessionId, 30) ?? []).join('\n').slice(-3_000))}\n\`\`\``;
+    void this.serial(sessionId, async () => {
       for (const chunk of splitMessage(text)) await this.postThreadReply(thread.channel, thread.ts, chunk);
     }).catch((error: unknown) => this.logError(error));
   }
 
   private async sendAutomaticAlert(sessionId: string): Promise<void> {
-    await this.serial(sessionId,()=>this.deliverAutomaticAlert(sessionId));
+    await this.serial(sessionId, () => this.deliverAutomaticAlert(sessionId));
   }
   private async deliverAutomaticAlert(sessionId: string): Promise<void> {
     if (this.stopped) return;
     const session = this.db.getSession(sessionId);
     if (session === null || !session.attention || (session.status !== 'waiting' && session.status !== 'idle')) return;
     if (!this.alertWanted(session.status)) return;
-    const turn=this.turn(sessionId);
-    if(turn&&(turn.automatic_at!==null||session.status==='idle'&&(turn.custom_at!==null||turn.relayed_at!==null)))return;
+    const turn = this.turn(sessionId);
+    if (
+      turn &&
+      (turn.automatic_at !== null ||
+        (session.status === 'idle' && (turn.custom_at !== null || turn.relayed_at !== null)))
+    )
+      return;
     // The agent just asked a question and ended its turn: keep its thread as the one to answer.
     const thread = this.threads.get(sessionId);
     if (thread?.kind === 'ask' && !thread.answered) return;
@@ -588,17 +654,21 @@ export class SlackNotifier {
     if (questions !== null) {
       const message = `:question: ${this.header(session)}\n${formatQuestions(questions)}\n${this.sessionLink(session.id)}`;
       await this.postSessionMessage(session.id, 'alert', message, questions);
-      this.markTurn(sessionId,'automatic_at');
+      this.markTurn(sessionId, 'automatic_at');
       return;
     }
     const icon = session.status === 'waiting' ? ':raised_hand:' : ':white_check_mark:';
     const label = session.status === 'waiting' ? 'En attente' : 'Tour terminé';
-    const reason = escapeMrkdwn(session.attentionReason ?? (session.status === 'waiting' ? 'Confirmation requise' : 'Tour terminé'));
+    const reason = escapeMrkdwn(
+      session.attentionReason ?? (session.status === 'waiting' ? 'Confirmation requise' : 'Tour terminé'),
+    );
     const screen = safeCodeBlock((this.sessions.screenText(session.id, 15) ?? []).join('\n').slice(-2_500));
-    const duration=turn?` · durée du tour : ${Math.max(0,Math.round(((turn.ended_at??Date.now())-turn.started_at)/1000))} s`:'';
+    const duration = turn
+      ? ` · durée du tour : ${Math.max(0, Math.round(((turn.ended_at ?? Date.now()) - turn.started_at) / 1000))} s`
+      : '';
     const message = `${icon} ${this.header(session)}${duration}\n*${label} :* ${reason}\n\`\`\`\n${screen}\n\`\`\`\n${this.sessionLink(session.id)} · réponds dans le fil pour écrire dans la session`;
     await this.postSessionMessage(session.id, 'alert', message);
-    this.markTurn(sessionId,'automatic_at');
+    this.markTurn(sessionId, 'automatic_at');
   }
 
   private header(session: Session): string {
@@ -737,14 +807,17 @@ export class SlackNotifier {
     const messages = (response.messages ?? [])
       .map(messageFrom)
       .filter((message): message is SlackMessage => message !== null && laterThan(message.ts, this.dmCursor))
-      .sort((left, right) => laterThan(left.ts, right.ts) ? 1 : laterThan(right.ts, left.ts) ? -1 : 0);
+      .sort((left, right) => (laterThan(left.ts, right.ts) ? 1 : laterThan(right.ts, left.ts) ? -1 : 0));
     for (const message of messages) {
       this.dmCursor = message.ts;
       this.stateDirty = true;
-      if (message.user !== SLACK_USER
-        || message.bot_id !== undefined
-        || message.subtype !== undefined
-        || (message.thread_ts !== undefined && message.thread_ts !== message.ts)) continue;
+      if (
+        message.user !== SLACK_USER ||
+        message.bot_id !== undefined ||
+        message.subtype !== undefined ||
+        (message.thread_ts !== undefined && message.thread_ts !== message.ts)
+      )
+        continue;
       try {
         await this.handleDmMessage(channel, message);
       } catch (error) {
@@ -779,7 +852,8 @@ export class SlackNotifier {
     }
     const council = parseCouncilCommand(text);
     if (council !== null) {
-      const project = council.projectName === null ? null : await this.dmProject(channel, message.ts, council.projectName, general);
+      const project =
+        council.projectName === null ? null : await this.dmProject(channel, message.ts, council.projectName, general);
       if (council.projectName === null ? !general : project === null) return;
       // Several minutes of headless calls: thread polling must not wait for them.
       void this.answerDmCouncil(channel, message.ts, project, council.question);
@@ -798,16 +872,23 @@ export class SlackNotifier {
     const queued = session?.status === 'running';
     if (session === undefined) {
       try {
-        session = await this.sessions.create(project, {
-          ...(command.agent === null ? {} : { agent: command.agent }),
-          prompt: command.text,
-        }, undefined, undefined, undefined, { rememberDefaults: false });
+        session = await this.sessions.create(
+          project,
+          {
+            ...(command.agent === null ? {} : { agent: command.agent }),
+            prompt: command.text,
+          },
+          undefined,
+          undefined,
+          undefined,
+          { rememberDefaults: false },
+        );
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         await this.postThreadReply(channel, message.ts, `:x: Impossible de créer la session : ${escapeMrkdwn(reason)}`);
         return;
       }
-    } else if (!await this.injectDmMessage(session, command.text)) {
+    } else if (!(await this.injectDmMessage(session, command.text))) {
       await this.postThreadReply(channel, message.ts, 'Session inactive : message non transmis.');
       return;
     }
@@ -849,23 +930,30 @@ export class SlackNotifier {
   }
 
   /** Project targeted by a DM command; null when this machine does not handle it (any error reply is posted). */
-  private async dmProject(channel: string, threadTs: string, projectName: string, general: boolean): Promise<Project | null> {
+  private async dmProject(
+    channel: string,
+    threadTs: string,
+    projectName: string,
+    general: boolean,
+  ): Promise<Project | null> {
     const projects = this.db.listProjects();
     const normalizedName = normalizeProjectName(projectName);
     const exact = projects.filter((project) => normalizeProjectName(project.name) === normalizedName);
     // An exact name on another machine beats a prefix match here; that machine handles it.
     if (exact.length === 0 && this.peers.knownRemotely(projectName, true)) return null;
-    const matches = exact.length > 0
-      ? exact
-      : projects.filter((project) => normalizeProjectName(project.name).startsWith(normalizedName));
+    const matches =
+      exact.length > 0
+        ? exact
+        : projects.filter((project) => normalizeProjectName(project.name).startsWith(normalizedName));
     // Handled by the machine that has this project: no "unknown project" reply from this one.
     if (matches.length === 0 && this.peers.knownRemotely(projectName, false)) return null;
     if (matches.length !== 1) {
       // Unknown everywhere: a single machine says so. An ambiguous prefix is only ambiguous here.
       if (matches.length === 0 && !general) return null;
-      const error = matches.length === 0
-        ? `Projet introuvable : « ${projectName} ».`
-        : `Nom de projet ambigu : « ${projectName} ».`;
+      const error =
+        matches.length === 0
+          ? `Projet introuvable : « ${projectName} ».`
+          : `Nom de projet ambigu : « ${projectName} ».`;
       await this.postThreadReply(channel, threadTs, this.helpText(error));
       return null;
     }
@@ -875,7 +963,11 @@ export class SlackNotifier {
     if (conflicts.length > 0) {
       // Same name, other repository: nothing runs until one project is renamed; a single machine says so.
       if (this.peers.conflictResponder(project)) {
-        await this.postThreadReply(channel, threadTs, `:no_entry: « ${escapeMrkdwn(project.name)} » existe aussi sur ${escapeMrkdwn(conflicts.join(', '))} avec un autre dépôt git : commande bloquée. Renomme l'un des deux projets.`);
+        await this.postThreadReply(
+          channel,
+          threadTs,
+          `:no_entry: « ${escapeMrkdwn(project.name)} » existe aussi sur ${escapeMrkdwn(conflicts.join(', '))} avec un autre dépôt git : commande bloquée. Renomme l'un des deux projets.`,
+        );
       }
       return null;
     }
@@ -884,15 +976,24 @@ export class SlackNotifier {
   }
 
   /** `council: question`: headless council run, its synthesis posted in the request thread. */
-  private async answerDmCouncil(channel: string, threadTs: string, project: Project | null, question: string): Promise<void> {
-    await this.slackApi('reactions.add', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' })
-      .catch((error: unknown) => this.logError(error));
+  private async answerDmCouncil(
+    channel: string,
+    threadTs: string,
+    project: Project | null,
+    question: string,
+  ): Promise<void> {
+    await this.slackApi('reactions.add', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' }).catch(
+      (error: unknown) => this.logError(error),
+    );
     let text: string;
     try {
       if (this.councils === null) throw new Error('council indisponible sur cette machine.');
       // readProject absent : valeur des réglages effectifs du projet.
-      const run = await this.councils.start({ projectId: project?.id ?? null, origin: 'slack', question }, randomUUID());
-      text = councilSlackText(await this.councils.finished(run.id) ?? run, project?.name ?? null);
+      const run = await this.councils.start(
+        { projectId: project?.id ?? null, origin: 'slack', question },
+        randomUUID(),
+      );
+      text = councilSlackText((await this.councils.finished(run.id)) ?? run, project?.name ?? null);
     } catch (error) {
       this.logError(error);
       text = `:x: Council impossible : ${escapeMrkdwn(error instanceof Error ? error.message : String(error))}`;
@@ -902,18 +1003,20 @@ export class SlackNotifier {
     } catch (error) {
       this.logError(error);
     }
-    await this.slackApi('reactions.remove', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' })
-      .catch((error: unknown) => this.logError(error));
+    await this.slackApi('reactions.remove', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' }).catch(
+      (error: unknown) => this.logError(error),
+    );
   }
 
   /** `? question`: free-form question answered by Claude from Cerebro's state. */
   private async answerDmQuestion(channel: string, threadTs: string, question: string): Promise<void> {
-    await this.slackApi('reactions.add', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' })
-      .catch((error: unknown) => this.logError(error));
+    await this.slackApi('reactions.add', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' }).catch(
+      (error: unknown) => this.logError(error),
+    );
     let text: string;
     try {
       const factual = await answerFactQuestion(this.db, question);
-      text = slackMarkdown(factual ?? await answerQuestion(this.db, question));
+      text = slackMarkdown(factual ?? (await answerQuestion(this.db, question)));
     } catch (error) {
       this.logError(error);
       text = `:x: Impossible de répondre : ${escapeMrkdwn(error instanceof Error ? error.message : String(error))}`;
@@ -923,8 +1026,9 @@ export class SlackNotifier {
     } catch (error) {
       this.logError(error);
     }
-    await this.slackApi('reactions.remove', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' })
-      .catch((error: unknown) => this.logError(error));
+    await this.slackApi('reactions.remove', { channel, timestamp: threadTs, name: 'hourglass_flowing_sand' }).catch(
+      (error: unknown) => this.logError(error),
+    );
   }
 
   private async postThreadReply(channel: string, threadTs: string, text: string): Promise<void> {
@@ -939,9 +1043,10 @@ export class SlackNotifier {
   private projectLines(): string[] {
     const lines = this.db.listProjects().map((project) => {
       const active = latestActive(this.db.listProjectSessions(project.id));
-      const detail = active === undefined
-        ? '_aucune session active_'
-        : `${escapeMrkdwn(active.title)} (${active.agent}, statut : ${active.status})`;
+      const detail =
+        active === undefined
+          ? '_aucune session active_'
+          : `${escapeMrkdwn(active.title)} (${active.agent}, statut : ${active.status})`;
       return `• *${escapeMrkdwn(project.name)}* — ${detail}`;
     });
     // A single machine answers `list`: projects only present on the other active machines are shown too.
@@ -1006,7 +1111,7 @@ export class SlackNotifier {
     const messages = (response.messages ?? [])
       .map(messageFrom)
       .filter((message): message is SlackMessage => message !== null && laterThan(message.ts, thread.lastTs))
-      .sort((left, right) => laterThan(left.ts, right.ts) ? 1 : laterThan(right.ts, left.ts) ? -1 : 0);
+      .sort((left, right) => (laterThan(left.ts, right.ts) ? 1 : laterThan(right.ts, left.ts) ? -1 : 0));
     for (const message of messages) {
       if (this.threads.get(sessionId) !== thread) return;
       thread.lastTs = message.ts;
@@ -1014,9 +1119,10 @@ export class SlackNotifier {
       if (message.user !== SLACK_USER || message.bot_id !== undefined || message.text === undefined) continue;
       const text = decodeSlackText(message.text);
       const queued = this.db.getSession(sessionId)?.status === 'running' && !isKeyShortcut(text);
-      const transmitted = thread.questions !== null
-        ? await this.answerQuestions(sessionId, thread, text)
-        : await this.injectReply(sessionId, thread.kind, text);
+      const transmitted =
+        thread.questions !== null
+          ? await this.answerQuestions(sessionId, thread, text)
+          : await this.injectReply(sessionId, thread.kind, text);
       if (transmitted) {
         thread.answered = true;
         armReply(thread, queued);
@@ -1059,7 +1165,9 @@ export class SlackNotifier {
       this.sessions.setPendingQuestions(sessionId, null);
       await delay(800);
     }
-    const prefix = dialogOpen ? '[Réponse Slack à tes questions, le dialogue a été fermé]' : '[Réponse Slack à tes questions]';
+    const prefix = dialogOpen
+      ? '[Réponse Slack à tes questions, le dialogue a été fermé]'
+      : '[Réponse Slack à tes questions]';
     if (!this.sessions.writeInput(sessionId, `${prefix} ${answer}`)) return false;
     await delay(150);
     if (!this.sessions.writeInput(sessionId, '\r')) return false;
@@ -1117,7 +1225,8 @@ export class SlackNotifier {
           continue;
         }
         const session = this.db.getSession(sessionId);
-        if (session === null || session.status === 'exited' || Date.now() - thread.createdAt >= THREAD_MAX_AGE_MS) continue;
+        if (session === null || session.status === 'exited' || Date.now() - thread.createdAt >= THREAD_MAX_AGE_MS)
+          continue;
         this.threads.set(sessionId, thread);
       }
     } catch (error) {
@@ -1133,10 +1242,17 @@ export class SlackNotifier {
   private saveState(): void {
     if (!this.stateDirty) return;
     try {
-      writeFileSync(STATE_FILE, `${JSON.stringify({
-        dmCursor: this.dmCursor,
-        threads: Object.fromEntries(this.threads),
-      }, null, 2)}\n`);
+      writeFileSync(
+        STATE_FILE,
+        `${JSON.stringify(
+          {
+            dmCursor: this.dmCursor,
+            threads: Object.fromEntries(this.threads),
+          },
+          null,
+          2,
+        )}\n`,
+      );
       this.stateDirty = false;
     } catch (error) {
       this.logError(error);

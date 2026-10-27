@@ -2,15 +2,23 @@ import { resolve, sep } from 'node:path';
 import { realpathSync } from 'node:fs';
 
 export function canonicalWorktreePath(path: string): string {
-  try { return realpathSync(path); } catch { return resolve(path); }
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
 }
 
-interface Lease { paths: string[]; queued: (() => void)[] }
+interface Lease {
+  paths: string[];
+  queued: (() => void)[];
+}
 const leases = new Set<Lease>();
-const overlaps = (left: string, right: string): boolean => left === right || left.startsWith(right + sep) || right.startsWith(left + sep);
+const overlaps = (left: string, right: string): boolean =>
+  left === right || left.startsWith(right + sep) || right.startsWith(left + sep);
 function leaseFor(path: string): Lease | undefined {
   const absolute = canonicalWorktreePath(path);
-  return [...leases].find(lease => lease.paths.some(root => overlaps(root, absolute)));
+  return [...leases].find((lease) => lease.paths.some((root) => overlaps(root, absolute)));
 }
 export function assertWorktreeAvailable(path: string): void {
   if (leaseFor(path)) throw new Error('Une opération Git utilise cet espace de travail ; attendez sa fin.');

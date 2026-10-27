@@ -57,11 +57,15 @@ function Gauge({ window, now }: { window: UsageWindow; now: number }) {
     `${window.label} : ${percent} % utilisé`,
     elapsed === null ? null : `${Math.round(elapsed)} % de la période écoulée`,
     window.resetsAt === null ? null : `réinitialisation ${resetDate(window.resetsAt)}`,
-  ].filter(Boolean).join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
   // Fragment: label, track and value are cells of the section's grid, so columns line up across agents.
   return (
     <>
-      <span className="gauge-label" title={title}>{window.label}</span>
+      <span className="gauge-label" title={title}>
+        {window.label}
+      </span>
       <div
         className="gauge-track"
         title={title}
@@ -74,7 +78,9 @@ function Gauge({ window, now }: { window: UsageWindow; now: number }) {
         <div className={`gauge-fill ${level(window.percent)}`} style={{ width: `${window.percent}%` }} />
         {elapsed === null ? null : <div className="gauge-pace" style={{ left: `${elapsed}%` }} />}
       </div>
-      <span className={`gauge-value ${level(window.percent)}`} title={title}>{percent} %</span>
+      <span className={`gauge-value ${level(window.percent)}`} title={title}>
+        {percent} %
+      </span>
       {window.resetsAt === null ? null : (
         <span className="gauge-reset">réinit. dans {untilReset(window.resetsAt, now)}</span>
       )}
@@ -93,7 +99,10 @@ function AuthLine({ auth, now }: { auth: AgentAuth; now: number }) {
     const left = Date.parse(auth.loginExpiresAt) - now;
     const tone = left <= DAY_MS ? 'high' : left <= 3 * DAY_MS ? 'warn' : 'ok';
     return (
-      <span className={`auth-line ${tone}`} title={`Le jeton de renouvellement expire le ${fullDate(auth.loginExpiresAt)}`}>
+      <span
+        className={`auth-line ${tone}`}
+        title={`Le jeton de renouvellement expire le ${fullDate(auth.loginExpiresAt)}`}
+      >
         {left <= 0 ? 'Reconnexion requise' : `Reconnexion dans ${untilReset(auth.loginExpiresAt, now)}`}
       </span>
     );
@@ -103,7 +112,9 @@ function AuthLine({ auth, now }: { auth: AgentAuth; now: number }) {
     "Renouvelée automatiquement : la date de reconnexion n'est pas publiée par le CLI",
     auth.accessExpiresAt === null ? null : `jeton d'accès valable jusqu'au ${fullDate(auth.accessExpiresAt)}`,
     expired ? 'il sera renouvelé au prochain lancement' : null,
-  ].filter(Boolean).join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
   return (
     <span className="auth-line ok" title={title}>
       {auth.renewedAt === null
@@ -139,11 +150,18 @@ function UpdateLine({ update, onChange }: { update: AgentUpdate; onChange: (next
           ↑ {update.latest}
         </button>
       ) : update.error === null ? (
-        <span className="update-ok" title={checked ?? undefined}>à jour</span>
+        <span className="update-ok" title={checked ?? undefined}>
+          à jour
+        </span>
       ) : (
-        <span className="update-error" title={update.error}>⚠</span>
+        <span className="update-error" title={update.error}>
+          ⚠
+        </span>
       )}
-      <label className="update-auto" title="Installer automatiquement les nouvelles versions (vérification toutes les heures)">
+      <label
+        className="update-auto"
+        title="Installer automatiquement les nouvelles versions (vérification toutes les heures)"
+      >
         <input
           type="checkbox"
           checked={update.auto}
@@ -179,11 +197,15 @@ function AgentGauges({
   return (
     <div className="usage-agent">
       <div className="usage-agent-head">
-        <span className="usage-agent-name"><AgentLabel agent={usage.agent} /></span>
+        <span className="usage-agent-name">
+          <AgentLabel agent={usage.agent} />
+        </span>
         {usage.auth === null ? null : <AuthLine auth={usage.auth} now={now} />}
       </div>
       {update === undefined ? null : <UpdateLine update={update} onChange={onUpdate} />}
-      {usage.windows.map((w) => <Gauge key={w.label} window={w} now={now} />)}
+      {usage.windows.map((w) => (
+        <Gauge key={w.label} window={w} now={now} />
+      ))}
       {usage.agent === 'codex' && updated !== null ? (
         <span className="usage-updated" title="Codex ne publie ses quotas que pendant qu'il tourne">
           quotas relevés {relativeTime(updated, now)}

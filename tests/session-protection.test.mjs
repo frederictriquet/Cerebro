@@ -23,14 +23,31 @@ const { PeerSync } = await import('../server/peers.ts');
 const { buildServer } = await import('../server/index.ts');
 
 mock.method(UpdateManager.prototype, 'start', () => {});
-mock.method(PeerSync.prototype, 'sync', async function () { this.markReady(); this.markSynced(); });
-after(() => { mock.restoreAll(); rmSync(root, { recursive: true, force: true }); });
+mock.method(PeerSync.prototype, 'sync', async function () {
+  this.markReady();
+  this.markSynced();
+});
+after(() => {
+  mock.restoreAll();
+  rmSync(root, { recursive: true, force: true });
+});
 
 function createSession(db, project, status = 'exited') {
-  return db.createSession({
-    id: randomUUID(), projectId: project.id, agent: 'codex', mode: 'auto', model: null, effort: null,
-    prompt: '', title: 'Conversation', status, agentSessionId: null,
-  }, 'test-token');
+  return db.createSession(
+    {
+      id: randomUUID(),
+      projectId: project.id,
+      agent: 'codex',
+      mode: 'auto',
+      model: null,
+      effort: null,
+      prompt: '',
+      title: 'Conversation',
+      status,
+      agentSessionId: null,
+    },
+    'test-token',
+  );
 }
 
 test('migration defaults existing sessions to unprotected; protection persists without changing activity', () => {
@@ -63,7 +80,9 @@ test('migration defaults existing sessions to unprotected; protection persists w
     db.setSessionProtected(session.id, false);
     assert.equal(db.deleteSession(session.id), true);
     assert.equal(db.deleteProject(project.id), true);
-  } finally { db.close(); }
+  } finally {
+    db.close();
+  }
 });
 
 test('protected sessions reject deletion before stopping processes or removing artifacts; changes are broadcast', async (t) => {
@@ -97,7 +116,9 @@ test('protected sessions reject deletion before stopping processes or removing a
     assert.equal(await manager.delete(session.id), true);
     assert.equal(stop.mock.callCount(), 1);
     assert.equal(existsSync(attachments), false);
-  } finally { db.close(); }
+  } finally {
+    db.close();
+  }
 });
 
 test('purge skips protected idle/exited sessions, active sessions and recent sessions', async (t) => {
@@ -111,7 +132,9 @@ test('purge skips protected idle/exited sessions, active sessions and recent ses
     for (const status of ['idle', 'exited', 'running', 'waiting', 'starting']) {
       for (const protectedValue of [false, true]) {
         const session = createSession(db, project, status);
-        db.connection.prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now() - 2 * 60 * 60_000, session.id);
+        db.connection
+          .prepare('UPDATE sessions SET updated_at = ? WHERE id = ?')
+          .run(Date.now() - 2 * 60 * 60_000, session.id);
         manager.setProtected(session.id, protectedValue);
         (protectedValue || !['idle', 'exited'].includes(status) ? kept : removed).push(session.id);
       }
@@ -124,9 +147,17 @@ test('purge skips protected idle/exited sessions, active sessions and recent ses
     kept.push(other.id);
     assert.equal(await manager.purgeProject(project.id), 2);
     assert.deepEqual(stop.mock.calls.map((call) => call.arguments[0]).sort(), removed.sort());
-    assert.deepEqual(db.listSessions().map((session) => session.id).sort(), kept.sort());
+    assert.deepEqual(
+      db
+        .listSessions()
+        .map((session) => session.id)
+        .sort(),
+      kept.sort(),
+    );
     assert.equal(await manager.purgeProject(project.id), 0);
-  } finally { db.close(); }
+  } finally {
+    db.close();
+  }
 });
 
 for (const deletion of ['session', 'project']) {
@@ -137,13 +168,22 @@ for (const deletion of ['session', 'project']) {
       const session = createSession(db, project);
       const manager = new SessionManager(db);
       let rejectStop;
-      t.mock.method(manager, 'stopProcesses', () => new Promise((resolve, reject) => { rejectStop = reject; }));
+      t.mock.method(
+        manager,
+        'stopProcesses',
+        () =>
+          new Promise((resolve, reject) => {
+            rejectStop = reject;
+          }),
+      );
       const pending = deletion === 'session' ? manager.delete(session.id) : manager.deleteProject(project.id);
       assert.throws(() => manager.setProtected(session.id, true), /Suppression déjà en cours/);
       rejectStop(new Error('Arrêt impossible'));
       await assert.rejects(pending, /Arrêt impossible/);
       assert.equal(manager.setProtected(session.id, true).protected, true);
-    } finally { db.close(); }
+    } finally {
+      db.close();
+    }
   });
 }
 
@@ -168,7 +208,10 @@ test('API validates the checkbox, preserves it after restart, rejects deletion a
     assert.equal(response.json().updatedAt, 0);
     await app.close();
     app = await buildServer();
-    assert.equal((await send('GET', '/api/sessions')).json().find((session) => session.id === protectedSession.id).protected, true);
+    assert.equal(
+      (await send('GET', '/api/sessions')).json().find((session) => session.id === protectedSession.id).protected,
+      true,
+    );
     assert.equal((await send('DELETE', `/api/sessions/${protectedSession.id}`)).statusCode, 409);
     assert.equal((await send('DELETE', `/api/projects/${project.id}`)).statusCode, 409);
     const purge = await send('POST', `/api/projects/${project.id}/purge`);
@@ -181,5 +224,7 @@ test('API validates the checkbox, preserves it after restart, rejects deletion a
     assert.equal((await send('PATCH', protectionUrl, { protected: false })).json().protected, false);
     assert.equal((await send('DELETE', `/api/sessions/${protectedSession.id}`)).statusCode, 204);
     assert.equal((await send('DELETE', `/api/projects/${project.id}`)).statusCode, 204);
-  } finally { await app.close(); }
+  } finally {
+    await app.close();
+  }
 });
