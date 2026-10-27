@@ -732,7 +732,7 @@ function CommandRunView({ task, onActive }: { task: Task; onActive: (active: boo
     void refresh().catch(() => {});
     const timer = window.setInterval(() => void refresh().catch(() => {}), 1000);
     return () => window.clearInterval(timer);
-  }, [task.id]);
+  }, [task.id, onActive]);
   const run = runs[0];
   useEffect(() => {
     if (detail.current?.open && run?.finishedAt)

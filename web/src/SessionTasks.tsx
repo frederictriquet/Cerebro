@@ -58,6 +58,8 @@ export function useSessionTasks(sessionId: string) {
     const timer = window.setInterval(() => void refresh(), 3000);
     return () => {
       window.clearInterval(timer);
+      // Compteur de requêtes, pas un nœud DOM : la valeur courante est bien celle à invalider.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       requestId.current++;
     };
   }, [refresh]);

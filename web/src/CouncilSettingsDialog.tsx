@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { getCouncilSettings, getEffectiveCouncilSettings, listPersonas, putCouncilSettings } from './api.ts';
 import { CouncilAdvisorList } from './CouncilAdvisorList.tsx';
@@ -52,22 +52,22 @@ export function CouncilSettingsDialog({
   const [error, setError] = useState<string | null>(null);
   const [personasOpen, setPersonasOpen] = useState(false);
 
-  const loadSettings = async (): Promise<void> => {
+  const loadSettings = useCallback(async (): Promise<void> => {
     const loaded = projectId === null ? await getCouncilSettings() : await getEffectiveCouncilSettings(projectId);
     setSettings(loaded);
     setSaved(loaded);
-  };
-  const loadPersonas = async (): Promise<void> => {
+  }, [projectId]);
+  const loadPersonas = useCallback(async (): Promise<void> => {
     try {
       setPersonas(await listPersonas());
       setLoadError(null);
     } catch (cause) {
       setLoadError(message(cause));
     }
-  };
+  }, []);
   useEffect(() => {
     void Promise.all([loadPersonas(), loadSettings()]).catch((cause) => setLoadError(message(cause)));
-  }, [projectId]);
+  }, [loadPersonas, loadSettings]);
 
   const selected = settings !== null && personas !== null ? forCatalog(settings, personas).defaultPersonaIds.length : 0;
   const countError =

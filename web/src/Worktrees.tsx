@@ -541,7 +541,7 @@ export function Worktrees({ projectId, workspaceMode }: { projectId?: string; wo
       if (timer !== undefined) window.clearTimeout(timer);
       document.removeEventListener('visibilitychange', visible);
     };
-  }, [refresh]);
+  }, [refresh, machineBase, path]);
   const prepare = async (view: WorktreeView, kind: 'merge' | 'remove'): Promise<void> => {
     if (apiBase() !== machineBase) return;
     setBusy(view.id);

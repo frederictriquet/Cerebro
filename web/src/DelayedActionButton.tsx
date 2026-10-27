@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
 /** Délai de rétractation : l'action ne part qu'une fois ce délai écoulé. */
 const UNDO_WINDOW_MS = 5000;
@@ -31,29 +31,30 @@ export function DelayedActionButton({
   const tick = useRef<number | undefined>(undefined);
   const escapeListener = useRef<((event: KeyboardEvent) => void) | null>(null);
 
-  const stopListening = (): void => {
+  // Stables (refs et setter seulement) : les effets peuvent les déclarer sans se relancer.
+  const stopListening = useCallback((): void => {
     if (escapeListener.current) window.removeEventListener('keydown', escapeListener.current, true);
     escapeListener.current = null;
-  };
+  }, []);
 
-  const stopTick = (): void => {
+  const stopTick = useCallback((): void => {
     window.clearInterval(tick.current);
     tick.current = undefined;
-  };
+  }, []);
 
-  const cancel = (): void => {
+  const cancel = useCallback((): void => {
     window.clearTimeout(fire.current);
     fire.current = undefined;
     stopTick();
     stopListening();
     setRemaining(null);
-  };
+  }, [stopTick, stopListening]);
 
   // Au démontage, le délai reste dû et annulable par Échap jusqu'à son échéance.
-  useEffect(() => stopTick, []);
+  useEffect(() => stopTick, [stopTick]);
   useEffect(() => {
     if (disabled) cancel();
-  }, [disabled]);
+  }, [disabled, cancel]);
 
   const pending = remaining !== null;
 

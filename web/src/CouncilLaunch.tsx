@@ -1,4 +1,13 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type FormEvent,
+} from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
 import {
   ApiError,
@@ -190,7 +199,7 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
     draft.images.map((image) => restoredAttachment(image.n, image.token, image.path)),
   );
 
-  const loadPersonas = async (): Promise<void> => {
+  const loadPersonas = useCallback(async (): Promise<void> => {
     try {
       const loaded = await listPersonas();
       setPersonas(loaded);
@@ -202,8 +211,8 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
     } catch (cause) {
       setLoadError(message(cause));
     }
-  };
-  const loadSettings = async (): Promise<void> => {
+  }, []);
+  const loadSettings = useCallback(async (): Promise<void> => {
     try {
       const loaded = await getEffectiveCouncilSettings(scope);
       setSettings(loaded);
@@ -212,38 +221,40 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
     } catch (cause) {
       setLoadError(message(cause));
     }
-  };
+  }, [scope]);
   // Supprimer une persona répare aussi les participants par défaut côté serveur : un brouillon
   // qui suit ces défauts doit adopter le remplaçant choisi plutôt que perdre un participant.
   const refreshCatalog = (): void => {
     void loadPersonas();
     void loadSettings();
   };
-  const loadRuns = async (): Promise<void> => {
+  const loadRuns = useCallback(async (): Promise<void> => {
     try {
       setRuns(await listCouncils(scope));
       setRunsError(null);
     } catch (cause) {
       setRunsError(message(cause));
     }
-  };
+  }, [scope]);
 
   useEffect(() => {
     void loadPersonas();
     void loadSettings();
     void loadRuns();
-  }, []);
-  const uploadedImages = images.items.flatMap((item) =>
-    item.path === null ? [] : [{ n: item.n, token: item.token, path: item.path }],
+  }, [loadPersonas, loadSettings, loadRuns]);
+  const uploadedImages = useMemo(
+    () =>
+      images.items.flatMap((item) => (item.path === null ? [] : [{ n: item.n, token: item.token, path: item.path }])),
+    [images.items],
   );
-  useEffect(() => writeCouncilDraft(draftKey, { ...draft, images: uploadedImages }), [draft, images.items]);
+  useEffect(() => writeCouncilDraft(draftKey, { ...draft, images: uploadedImages }), [draftKey, draft, uploadedImages]);
   // Suit l'avancement des councils en cours, sans événement temps réel.
   const running = runs?.some((run) => run.status === 'running') ?? false;
   useEffect(() => {
     if (!running) return;
     const timer = window.setInterval(() => void loadRuns(), 5000);
     return () => window.clearInterval(timer);
-  }, [running]);
+  }, [running, loadRuns]);
 
   const known = new Set(personas?.map((persona) => persona.id) ?? []);
   const checkedIds = (draft.personaIds ?? settings?.defaultPersonaIds ?? []).filter((id) => known.has(id));

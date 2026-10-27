@@ -156,6 +156,16 @@ async function fixture(t, projectId, setup = () => {}) {
       if (!slots[index] || deps.some((value, i) => !Object.is(value, slots[index][i]))) effects.push(effect);
       slots[index] = deps;
     },
+    useMemo(factory, deps) {
+      const { slots } = current;
+      const index = current.index++;
+      const memo = slots[index];
+      if (!memo || deps.some((value, i) => !Object.is(value, memo.deps[i]))) slots[index] = { deps, value: factory() };
+      return slots[index].value;
+    },
+    useCallback(callback, deps) {
+      return hooks.useMemo(() => callback, deps);
+    },
   };
   function mount(Component, props) {
     const state = { slots: [], effects: [], index: 0 };

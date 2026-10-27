@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { createPersona, deletePersona, listPersonas, updatePersona, type PersonaInput } from './api.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
@@ -117,17 +117,17 @@ export function PersonasDialog({ onClose, onChange }: { onClose: () => void; onC
   const [deleting, setDeleting] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const load = async (): Promise<void> => {
+  const load = useCallback(async (): Promise<void> => {
     try {
       setPersonas(await listPersonas());
       setLoadError(null);
     } catch (cause) {
       setLoadError(message(cause));
     }
-  };
+  }, []);
   useEffect(() => {
     void load();
-  }, []);
+  }, [load]);
 
   const edit = (next: Draft | null): void => {
     setDraft(next);
