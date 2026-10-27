@@ -11,18 +11,21 @@ export class OperationResults {
   send:(result:OperationResult)=>Promise<boolean>=async()=>false;
   onError:(cause:unknown)=>void=()=>{};
   constructor(db:CerebroDatabase){this.db=db;}
-  list(projectId?:string):OperationResult[]{return (this.db.connection.prepare('SELECT data FROM operation_results ORDER BY rowid DESC').all() as {data:string}[]).map(r=>JSON.parse(r.data)).filter(r=>!projectId||r.projectId===projectId);}
-  get(id:string):OperationResult|null{return this.list().find(r=>r.id===id)??null;}
+  // Requêtes ciblées : la table grossit à chaque fin d’opération et ne doit jamais être parsée en entier.
+  get(id:string):OperationResult|null{const row=this.db.connection.prepare('SELECT data FROM operation_results WHERE id=?').get(id) as {data:string}|undefined;return row?JSON.parse(row.data):null;}
+  list(projectId?:string):OperationResult[]{return (this.db.connection.prepare(projectId?'SELECT data FROM operation_results WHERE project_id=? ORDER BY rowid DESC':'SELECT data FROM operation_results ORDER BY rowid DESC').all(...(projectId?[projectId]:[])) as {data:string}[]).map(r=>JSON.parse(r.data));}
+  // Résultats terminés depuis since, plus récents d’abord.
+  since(since:number):OperationResult[]{return (this.db.connection.prepare('SELECT data FROM operation_results WHERE finished_at>=? ORDER BY rowid DESC').all(since) as {data:string}[]).map(r=>JSON.parse(r.data));}
+  // Supprime les résultats terminés avant before ; leur notification n’est plus planifiable.
+  purge(before:number):number{return Number(this.db.connection.prepare('DELETE FROM operation_results WHERE finished_at<?').run(before).changes);}
   private save(r:OperationResult):void{this.db.connection.prepare('INSERT INTO operation_results VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(r.id,JSON.stringify(r));}
   record(raw:Omit<OperationResult,'seenAt'|'notifiedAt'>):void{
     raw={...raw,summary:raw.summary.slice(0,3000)};
     const old=this.get(raw.id);
     if(old&&old.ok===raw.ok&&old.summary===raw.summary&&old.finishedAt===raw.finishedAt)return;
-    this.purge();const result={...raw,seenAt:null,notifiedAt:null};this.save(result);this.failures.delete(result.id);this.schedule(result);
+    const result={...raw,seenAt:null,notifiedAt:null};this.save(result);this.failures.delete(result.id);this.schedule(result);
   }
-  // Historique borné : au-delà de la rétention, un résultat n'est plus ni affiché ni notifiable.
-  purge(now=Date.now()):void{this.db.connection.prepare("DELETE FROM operation_results WHERE json_extract(data,'$.finishedAt')<?").run(now-RETENTION_MS);}
-  restore():void{this.purge();for(const result of this.list())if(fresh(result))this.schedule(result);}
+  restore():void{for(const result of this.since(Date.now()-FRESH_MS))this.schedule(result);}
   seen(id:string):void{const result=this.get(id);if(!result)return;result.seenAt=Date.now();this.save(result);const timer=this.timers.get(id);if(timer)clearTimeout(timer);this.timers.delete(id);this.failures.delete(id);}
   private schedule(result:OperationResult,wait=this.delay()):void{
     if(this.closed||result.seenAt||result.notifiedAt||!this.wanted(result))return;
@@ -45,5 +48,5 @@ export class OperationResults {
   }
   close():void{this.closed=true;for(const timer of this.timers.values())clearTimeout(timer);this.timers.clear();this.failures.clear();}
 }
-const RETENTION_MS=30*86_400_000;
-function fresh(result:OperationResult):boolean{return Date.now()-result.finishedAt<86_400_000;}
+const FRESH_MS=86_400_000;
+function fresh(result:OperationResult):boolean{return Date.now()-result.finishedAt<FRESH_MS;}

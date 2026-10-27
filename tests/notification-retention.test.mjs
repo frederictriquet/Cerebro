@@ -76,11 +76,12 @@ test('operation results expire after the retention period and with their project
     const recent = result(results, other.id, Date.now() - 29 * 86_400_000);
     const owned = result(results, project.id, Date.now());
     const global = result(results, null, Date.now());
-    // Chaque enregistrement purge l'historique échu, y compris le résultat déjà trop ancien à l'arrivée.
+    // Purge périodique du serveur : seul l'historique échu disparaît.
+    assert.equal(results.purge(Date.now() - 30 * 86_400_000), 1);
     assert.equal(results.get(old), null);
     results.restore();
     assert.deepEqual(results.list().map(r => r.id).sort(), [global, owned, recent].sort());
-    results.purge(Date.now() + 2 * 86_400_000);
+    results.purge(Date.now() - 28 * 86_400_000);
     assert.deepEqual(results.list().map(r => r.id).sort(), [global, owned].sort());
     db.deleteProject(project.id);
     assert.deepEqual(results.list().map(r => r.id), [global]);

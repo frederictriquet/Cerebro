@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type { Workspace } from './provenance.ts';
 import type { StartingContentPlan, StartingContentStep, WorktreeView } from './worktrees.ts';
 
@@ -9,9 +10,11 @@ function startingSource(step: StartingContentStep, view: WorktreeView, workspace
   const origin = step.origin;
   if (origin?.kind === 'target-commit') return `\`git show ${origin.commit}:${step.path}\` (commit ${origin.commit.slice(0, 7)} « ${origin.subject} » de ${branchLabel(view.targetBranch)})`;
   if (origin?.kind === 'target-worktree') return `le fichier ${view.targetPath}/${step.path}, encore non commité dans le dossier de ${branchLabel(view.targetBranch)}`;
-  if (origin?.kind === 'snapshot' && workspace.startingSnapshot) return `\`git show ${workspace.startingSnapshot}:${step.path}\` (instantané conservé par Cerebro à la création)`;
-  return workspace.startingSnapshot
-    ? `introuvable : ni dans la cible, ni identique dans l’instantané de création (\`git show ${workspace.startingSnapshot}:${step.path}\` peut en garder une version proche)`
+  const kept = workspace.startingCopy ? `le fichier ${join(workspace.startingCopy, step.path)}`
+    : workspace.startingSnapshot ? `\`git show ${workspace.startingSnapshot}:${step.path}\`` : null;
+  if (origin?.kind === 'snapshot' && kept) return `${kept} (instantané conservé par Cerebro à la création)`;
+  return kept
+    ? `introuvable : ni dans la cible, ni identique dans l’instantané de création (${kept} peut en garder une version proche)`
     : 'introuvable : ni dans la cible, ni conservé à la création';
 }
 

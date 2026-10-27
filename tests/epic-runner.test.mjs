@@ -163,3 +163,17 @@ test('changing auto validation during asynchronous preparation survives launch c
  await f.until(()=>f.latest().status==='succeeded');
  assert.equal(f.latest().autoValidate,true);assert.equal(f.db.getTask(a.id).status,'done');
 }));
+test('a failing save during a tick is logged instead of rejecting unhandled',async()=>fixture(async f=>{
+ const a=f.task('only');f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.latest().status==='waiting-validation');
+ const unhandled=[];const onUnhandled=reason=>unhandled.push(reason);process.on('unhandledRejection',onUnhandled);
+ const logged=[];const error=console.error;console.error=(...args)=>logged.push(args);
+ const runner=f.runner;runner.save=()=>{throw new Error('SQLITE_BUSY: database is locked');};
+ try{
+  f.db.updateTask(a.id,{status:'done'});
+  for(let i=0;i<5;i++){runner.poke();await new Promise(r=>setTimeout(r,5));}
+ }finally{delete runner.save;console.error=error;process.off('unhandledRejection',onUnhandled);}
+ assert.deepEqual(unhandled,[]);assert.ok(logged.some(args=>args.some(arg=>String(arg).includes('SQLITE_BUSY'))));
+ // Nothing was recorded: the next tick retries from the stored state and completes.
+ assert.equal(f.latest().status,'waiting-validation');
+ await f.until(()=>f.latest().status==='succeeded');
+}));

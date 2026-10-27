@@ -847,6 +847,53 @@ test('council : un conseiller en échec est toléré, une synthèse en échec ga
   }
 });
 
+test('council : un enregistrement SQLite en échec est journalisé sans rejet non géré', async () => {
+  const db = new CerebroDatabase(':memory:');
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  const logged = mock.method(console, 'error', () => {});
+  try {
+    db.putSetting('council', settings);
+    const save = db.saveCouncilRun.bind(db);
+    let busy = false;
+    db.saveCouncilRun = (run) => {
+      if (busy) throw new Error('SQLITE_BUSY: database is locked');
+      return save(run);
+    };
+    // Base verrouillée pendant les réponses et relectures, libérée avant la synthèse.
+    const calls = [];
+    const { runs, completed } = councilRuns(db, calls);
+    const invoke = runs.invoke;
+    runs.invoke = (options) => {
+      busy = options.schema !== SYNTHESIS_SCHEMA;
+      return invoke(options);
+    };
+    await runs.start({ projectId: null, origin: 'web', question: 'Q ?' }, uuid(25));
+    let run = await runs.finished(uuid(25));
+    assert.equal(run.status, 'succeeded', run.error);
+    assert.ok(run.answers.every((a) => a.text !== null));
+    assert.deepEqual(completed.map((r) => r.status), ['succeeded']);
+
+    // Base restée verrouillée jusqu'à la fin : le run ne peut pas être clos, mais rien ne rejette.
+    runs.invoke = (options) => {
+      busy = true;
+      return invoke(options);
+    };
+    await runs.start({ projectId: null, origin: 'web', question: 'Q ?' }, uuid(26));
+    run = await runs.finished(uuid(26));
+    assert.equal(run.status, 'running');
+    assert.equal(completed.length, 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+    assert.ok(logged.mock.calls.some((call) => call.arguments.join(' ').includes('SQLITE_BUSY')));
+  } finally {
+    logged.mock.restore();
+    process.off('unhandledRejection', onUnhandled);
+    db.close();
+  }
+});
+
 test('council : moins de deux réponses fait échouer le run avant la relecture', async () => {
   const db = new CerebroDatabase(':memory:');
   try {

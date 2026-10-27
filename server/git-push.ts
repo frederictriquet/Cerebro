@@ -1,9 +1,7 @@
 import { assertWorktreeAvailable } from './worktree-gate.ts';
-import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { promisify } from 'node:util';
+import { execGit, GitOutputLimitError, runGit } from './git-process.ts';
 
-const exec = promisify(execFile);
 const LIMIT = 64 * 1024;
 export interface PushRemoteResult {
   remote: string;
@@ -27,7 +25,25 @@ export function onPushComplete(listener:(path:string,operation:PushOperation)=>v
 const active = new Map<string, PushOperation>();
 const latest = new Map<string, PushOperation>();
 const git = async (path: string, args: string[]): Promise<string> =>
-  (await exec('git', ['-C', path, ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout.trim();
+  (await execGit(['-C', path, ...args], { env: { GIT_OPTIONAL_LOCKS: '0' } })).toString('utf8').trim();
+
+/** An overflowing status is not empty: that alone proves the worktree is dirty. */
+async function isDirty(path: string): Promise<boolean> {
+  try { return await git(path, ['status', '--porcelain=v1', '-z']) !== ''; }
+  catch (cause) {
+    if (cause instanceof GitOutputLimitError) return true;
+    throw cause;
+  }
+}
+
+/** `symbolic-ref --quiet` exits with 1 on a detached HEAD: that is a state, not a failure. */
+async function currentBranch(path: string): Promise<string | null> {
+  try { return await git(path, ['symbolic-ref', '--quiet', '--short', 'HEAD']) || null; }
+  catch (cause) {
+    if ((cause as { code?: unknown }).code === 1) return null;
+    throw cause;
+  }
+}
 
 /** Canonical worktree identity also serializes aliases of the same project path. */
 async function keyFor(path: string): Promise<string> {
@@ -56,16 +72,19 @@ export async function startPush(path: string, options: PushOptions = {}): Promis
   }).finally(() => {
     op.finishedAt = Date.now();
     active.delete(key);
-    for(const listener of listeners)listener(path,op);
+    // A listener runs inside a detached promise: its failure is logged rather than left as an unhandled rejection.
+    for (const listener of listeners) {
+      try { listener(path, op); } catch (cause) { console.error('[push] Notification de fin de push en échec :', cause instanceof Error ? cause.message : cause); }
+    }
   });
   return op;
 }
 
 async function execute(path: string, op: PushOperation, options: PushOptions): Promise<void> {
-  if (!options.allowDirty && await git(path, ['status', '--porcelain=v1', '-z']) !== '') {
+  if (!options.allowDirty && await isDirty(path)) {
     throw new Error('Le dépôt a des changements : préparez un commit avant de pousser.');
   }
-  const branch = await git(path, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  const branch = await currentBranch(path);
   if (!branch) throw new Error('HEAD détachée : choisissez une branche.');
   op.branch = branch;
   op.head = await git(path, ['rev-parse', '--verify', 'HEAD']);
@@ -84,7 +103,7 @@ async function execute(path: string, op: PushOperation, options: PushOptions): P
   for (const result of op.remotes) {
     result.status = 'running';
     try {
-      if (await git(path, ['symbolic-ref', '--quiet', '--short', 'HEAD']) !== branch
+      if (await currentBranch(path) !== branch
         || await git(path, ['rev-parse', 'HEAD']) !== op.head) {
         throw new Error('La branche ou HEAD a changé pendant le push ; relancez après vérification.');
       }
@@ -92,14 +111,9 @@ async function execute(path: string, op: PushOperation, options: PushOptions): P
       // --no-mirror overrides remote.*.mirror, without bypassing any hook.
       const args = ['-C', path, 'push', '--porcelain', '--progress', '--no-force', '--no-mirror', '--no-follow-tags',
         ...(result.upstream ? ['--set-upstream'] : []), '--', result.remote, `refs/heads/${branch}:refs/heads/${branch}`];
-      result.exitCode = await new Promise<number | null>((resolve, reject) => {
-        const child = spawn('git', args, { env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
-        const append = (data: Buffer): void => { result.output = (result.output + data.toString()).slice(-LIMIT); };
-        child.stdout.on('data', append);
-        child.stderr.on('data', append);
-        child.once('error', reject);
-        child.once('close', resolve);
-      });
+      const append = (data: Buffer): void => { result.output = (result.output + data.toString()).slice(-LIMIT); };
+      // The visible output is the streamed tail; the captured buffer only has to outlast a verbose remote.
+      result.exitCode = (await runGit(args, { maxBuffer: 16 * 1024 * 1024, onOutput: append })).code;
       result.status = result.exitCode === 0 ? 'succeeded' : 'failed';
     } catch (cause) {
       result.status = 'failed';

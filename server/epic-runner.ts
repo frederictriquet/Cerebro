@@ -41,7 +41,7 @@ export class EpicRunner {
   private db:CerebroDatabase;private sessions:SessionManager;private commands:CommandExecutor;private broadcast:(event:unknown)=>void;
   private busy=new Set<string>();private timer:NodeJS.Timeout|null=null;private closed=false;private inFlight=new Set<Promise<void>>();
   constructor(db:CerebroDatabase,sessions:SessionManager,commands:CommandExecutor,broadcast:(event:unknown)=>void){this.db=db;this.sessions=sessions;this.commands=commands;this.broadcast=broadcast;}
-  initialize():void{this.timer=setInterval(()=>this.poke(),1000);this.timer.unref();this.poke();}
+  initialize():void{this.timer=setInterval(()=>{try{this.poke();}catch(cause){console.error('Epic : tour de planification en échec :',cause);}},1000);this.timer.unref();this.poke();}
   close():void{this.closed=true;if(this.timer)clearInterval(this.timer);}
   async shutdown():Promise<void>{this.close();await Promise.allSettled([...this.inFlight]);}
   list(epicId?:string):EpicRun[]{const rows=(this.db.connection.prepare(epicId?'SELECT data FROM epic_runs WHERE epic_id=? ORDER BY rowid DESC':'SELECT data FROM epic_runs ORDER BY rowid DESC').all(...(epicId?[epicId]:[])) as {data:string}[]);const contexts=new Map<string,WorkspaceContext|null|undefined>();const conflicts=new Set<string>();return rows.map(row=>{
@@ -56,6 +56,8 @@ export class EpicRunner {
     // A setting can change while an asynchronous launch holds an older copy of the run.
     if(!updateSettings)run.autoValidate=previous?.autoValidate??run.autoValidate??false;
     run.updatedAt=Date.now();this.db.connection.prepare('INSERT INTO epic_runs VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(run.id,run.epicId,JSON.stringify(run));if(['failed','succeeded','blocked'].includes(run.status)&&(previous?.status!==run.status||previous?.error!==run.error))this.onResult(run);}
+  // Nobody awaits a tick: a transient SQLite failure is logged and retried on the next poke instead of rejecting.
+  private persist(run:EpicRun):boolean{try{this.save(run);return true;}catch(cause){console.error(`Epic ${run.epicId} : exécution ${run.id} non enregistrée :`,cause);return false;}}
   private changeTask(id:string,patch:Parameters<CerebroDatabase['updateTask']>[1]):void{const task=this.db.updateTask(id,patch);if(task)this.broadcast({type:'task',task});}
   private plan(epicId:string){
     const epic=this.db.getEpic(epicId);if(!epic)throw new Error('Epic introuvable.');
@@ -113,7 +115,7 @@ export class EpicRunner {
     const workspace=epicWorkspace(this.db,run.epicId);if(workspace){assertEpicWorkspace(this.db,workspace);run.workspace=workspace;run.contextRoot=workspace.path;}
     if(run.currentTaskId){
       const task=this.db.getTask(run.currentTaskId);const session=run.sessionId?this.db.getSession(run.sessionId):null;
-      const command=run.commandRunId?this.commands.listRuns().find(r=>r.id===run.commandRunId):null;
+      const command=run.commandRunId?this.commands.getRun(run.commandRunId):null;
       if(session?.status==='waiting')throw new Error('Répondez d’abord à la question de la session.');
       const prior=session?workspaceFor(this.db,session.id):null;
       const elsewhere=workspace&&((prior&&canonicalWorktreePath(prior.path)!==canonicalWorktreePath(workspace.path))
@@ -136,9 +138,9 @@ export class EpicRunner {
   poke():void{
     if(this.closed)return;
     for(const run of this.list())if(!this.busy.has(run.id)){
-      if(run.status==='blocked'&&run.blockReason==='session-waiting'&&this.waitOver(run)){run.status='running';run.error=null;run.blockReason=null;run.waitingSince=null;this.save(run);}
+      if(run.status==='blocked'&&run.blockReason==='session-waiting'&&this.waitOver(run)){run.status='running';run.error=null;run.blockReason=null;run.waitingSince=null;if(!this.persist(run))continue;}
       if(!['running','waiting-validation'].includes(run.status))continue;
-      this.busy.add(run.id);const promise=this.tick(run).catch(cause=>{if(this.list().find(r=>r.id===run.id)?.status==='stopped')return;run.status='blocked';run.error=String(cause);run.blockReason=null;this.save(run);}).finally(()=>{this.busy.delete(run.id);this.inFlight.delete(promise);});this.inFlight.add(promise);
+      this.busy.add(run.id);const promise=this.tick(run).catch(cause=>{if(this.list().find(r=>r.id===run.id)?.status==='stopped')return;run.status='blocked';run.error=String(cause);run.blockReason=null;this.persist(run);}).finally(()=>{this.busy.delete(run.id);this.inFlight.delete(promise);});this.inFlight.add(promise);
     }
   }
   // The step's session no longer holds the run: it stopped waiting, or its task is done and it is not asking an explicit question.
