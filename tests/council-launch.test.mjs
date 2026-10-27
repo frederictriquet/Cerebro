@@ -10,8 +10,8 @@ import { withoutPersona } from '../server/council.ts';
 
 // Exécute les vrais composants et leurs handlers en mémoire, avec le transformateur
 // Vite déjà installé. Aucun DOM, serveur ou appel de CLI n'est nécessaire.
-async function compile(name) {
-  const url = new URL(`../web/src/${name}.tsx`, import.meta.url);
+async function compile(name, extension = 'tsx') {
+  const url = new URL(`../web/src/${name}.${extension}`, import.meta.url);
   const source = await readFile(url, 'utf8');
   const { code } = await transformWithOxc(source, url.pathname, { jsx: { runtime: 'automatic' } });
   const transformed = await moduleRunnerTransform(code, null, url.pathname, source);
@@ -30,11 +30,12 @@ async function compile(name) {
   };
 }
 
-const [loadLaunch, loadSettings, loadAdvisorList, loadAttachments] = await Promise.all([
+const [loadLaunch, loadSettings, loadAdvisorList, loadAttachments, loadUseLatest] = await Promise.all([
   compile('CouncilLaunch'),
   compile('CouncilSettingsDialog'),
   compile('CouncilAdvisorList'),
   compile('attachments'),
+  compile('use-latest', 'ts'),
 ]);
 // Composants dont le rendu est déplié dans l'arbre, pour inspecter leurs éléments.
 const inlined = new Map();
@@ -166,6 +167,10 @@ async function fixture(t, projectId, setup = () => {}) {
     useCallback(callback, deps) {
       return hooks.useMemo(() => callback, deps);
     },
+    // Sans commit à simuler, la mise à jour a lieu dès le rendu.
+    useInsertionEffect(effect) {
+      effect();
+    },
   };
   function mount(Component, props) {
     const state = { slots: [], effects: [], index: 0 };
@@ -246,6 +251,7 @@ async function fixture(t, projectId, setup = () => {}) {
       },
     },
   };
+  modules['./use-latest.ts'] = await loadUseLatest(modules);
   modules['./attachments.tsx'] = await loadAttachments(modules);
   modules['./CouncilAdvisorList.tsx'] = await loadAdvisorList(modules);
   const { CouncilAdvisorList } = modules['./CouncilAdvisorList.tsx'];

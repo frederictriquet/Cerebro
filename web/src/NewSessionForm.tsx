@@ -2,6 +2,7 @@ import { ActivityStatus } from './ActivityStatus.tsx';
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ClipboardEvent,
@@ -16,8 +17,34 @@ import { LlmSelector, llmChoices } from './LlmSelector.tsx';
 import { readDraft, writeDraft } from './drafts.ts';
 import { MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from './format.ts';
 import { useStore } from './store.tsx';
-import { DEFAULT_SESSION_DEFAULTS, MODES, type Agent, type Effort, type LaunchSpec, type Mode } from './types.ts';
+import {
+  DEFAULT_SESSION_DEFAULTS,
+  MODES,
+  type Agent,
+  type AgentInfo,
+  type Effort,
+  type LaunchSpec,
+  type Mode,
+} from './types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
+
+type LlmDefaults = Pick<LaunchSpec, 'agent' | 'mode' | 'model' | 'effort'>;
+
+// Réglages du projet ramenés au catalogue : à défaut de son agent, le premier disponible, sans modèle ni effort
+// qu'il ne propose pas. null tant qu'aucun agent n'est disponible.
+function resolveLlmDefaults(agents: AgentInfo[], defaults: LlmDefaults): LlmDefaults | null {
+  const list = agents.filter((a) => a.available);
+  const next = list.find((a) => a.agent === defaults.agent) ?? list[0];
+  if (next === undefined) return null;
+  const model =
+    next.agent === defaults.agent && next.models.some((m) => m.value === defaults.model) ? defaults.model : null;
+  const supported = model === null ? next.efforts : (next.models.find((m) => m.value === model)?.efforts ?? []);
+  const effort =
+    next.agent === defaults.agent && defaults.effort !== null && supported.includes(defaults.effort)
+      ? defaults.effort
+      : null;
+  return { agent: next.agent, mode: defaults.mode, model, effort };
+}
 
 // Agent, mode, modèle, effort et prompt d'une nouvelle session : page projet, et modales lancées depuis une
 // sélection du terminal ou une tâche du backlog.
@@ -111,24 +138,25 @@ export function NewSessionForm({
     if (!promptEdited && initialPrompt === undefined && promptFor === undefined) setPrompt(defaults.prompt);
   }, [defaults.prompt, initialPrompt, promptFor, promptEdited]);
 
+  const resolved = useMemo(
+    () =>
+      resolveLlmDefaults(agents, {
+        agent: defaults.agent,
+        mode: defaults.mode,
+        model: defaults.model,
+        effort: defaults.effort,
+      }),
+    [agents, defaults.agent, defaults.mode, defaults.model, defaults.effort],
+  );
+  // Les réglages du projet changent aussi après chaque choix enregistré : la sélection les suit, sauf pendant un
+  // enregistrement ou un lancement, pour ne pas revenir à une valeur que la réponse va remplacer.
   useEffect(() => {
-    if (savingDefaults > 0 || busy) return;
-    const list = agents.filter((a) => a.available);
-    const next = list.find((a) => a.agent === defaults.agent) ?? list[0];
-    if (next === undefined) return;
-    const nextModel =
-      next.agent === defaults.agent && next.models.some((m) => m.value === defaults.model) ? defaults.model : null;
-    const supported =
-      nextModel === null ? next.efforts : (next.models.find((m) => m.value === nextModel)?.efforts ?? []);
-    setAgent(next.agent);
-    setMode(defaults.mode);
-    setModel(nextModel);
-    setEffort(
-      next.agent === defaults.agent && defaults.effort !== null && supported.includes(defaults.effort)
-        ? defaults.effort
-        : null,
-    );
-  }, [agents, defaults.agent, defaults.mode, defaults.model, defaults.effort, savingDefaults, busy]);
+    if (savingDefaults > 0 || busy || resolved === null) return;
+    setAgent(resolved.agent);
+    setMode(resolved.mode);
+    setModel(resolved.model);
+    setEffort(resolved.effort);
+  }, [resolved, savingDefaults, busy]);
 
   useEffect(() => {
     if (!promptFor) return;

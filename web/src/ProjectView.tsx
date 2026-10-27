@@ -1,10 +1,10 @@
 import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
 import { acquireProjectSlack, getProjectSlack, type ProjectSlackStatus } from './api.ts';
-import { Backlog } from './Backlog.tsx';
+import { Backlog } from './backlog/Backlog.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { CodeEditor } from './CodeEditor.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
-import { Worktrees } from './Worktrees.tsx';
+import { Worktrees } from './worktrees/Worktrees.tsx';
 import { GitStatus } from './GitStatus.tsx';
 import { CommitSettingsDialog } from './CommitSettingsDialog.tsx';
 import { CouncilLaunch } from './CouncilLaunch.tsx';

@@ -2,6 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
 import { useEffect, useRef } from 'react';
+import { useLatest } from './use-latest.ts';
 import { clipboardImage, readClipboardImage, uploadImage, wsUrl } from './api.ts';
 import { parseTermServerMessage, type TermClientMessage } from './types.ts';
 
@@ -47,12 +48,9 @@ export function Term({
   onEscape?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const onApiRef = useRef(onApi);
-  onApiRef.current = onApi;
-  const onSelectionRef = useRef(onSelectionChange);
-  onSelectionRef.current = onSelectionChange;
-  const onEscapeRef = useRef(onEscape);
-  onEscapeRef.current = onEscape;
+  const onApiRef = useLatest(onApi);
+  const onSelectionRef = useLatest(onSelectionChange);
+  const onEscapeRef = useLatest(onEscape);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -261,10 +259,13 @@ export function Term({
 
     return () => {
       closed = true;
+      // Le rappel courant du parent, pas celui du montage : c'est l'intérêt de useLatest.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       onApiRef.current?.(null);
       if (retryTimer !== undefined) clearTimeout(retryTimer);
       dataSub.dispose();
       selectionSub.dispose();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       onSelectionRef.current?.(false);
       host.removeEventListener('paste', onPaste, true);
       ro.disconnect();
@@ -272,7 +273,7 @@ export function Term({
       socketRef.current = null;
       term.dispose();
     };
-  }, [sessionId]);
+  }, [sessionId, onApiRef, onEscapeRef, onSelectionRef]);
 
   return <div className="term-host" ref={hostRef} />;
 }

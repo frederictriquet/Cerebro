@@ -216,6 +216,17 @@ export function dismissPeerNotice(id: string): Promise<void> {
   return api<void>(`/api/peer/notices/${encodeURIComponent(id)}/dismiss`, { method: 'POST' });
 }
 
+// Rapport de review saisi à la main (JSON structuré), rattaché à la session.
+export function publishFindingsReport(sessionId: string, report: unknown): Promise<unknown> {
+  return api(`/api/sessions/${sessionId}/findings`, { method: 'POST', body: JSON.stringify(report) });
+}
+
+// Résultat d'une opération affiché (exécution d'epic, commande, council, commit automatique) : il ne doit plus être
+// notifié. Sans incidence en cas d'échec.
+export function markOperationSeen(id: string): void {
+  void api(`/api/operations/${encodeURIComponent(id)}/seen`, { method: 'POST' }).catch(() => {});
+}
+
 export interface UsageWindow {
   label: string;
   percent: number;

@@ -28,7 +28,10 @@ shared/*.ts               constantes et règles communes au serveur et à l'UI (
 bin/cerebro-hook.mjs      relais de hook (JS pur, sans dépendance)
 web/vite.config.ts        root = web/, build -> web/dist, proxy /api et /ws (ws: true) vers 127.0.0.1:4317
 web/index.html
-web/src/*.tsx|ts|css      UI React
+web/src/*.tsx|ts|css      UI React ; store.tsx porte l'état temps réel (projets, sessions, tâches, epics) et ses
+                          mutations, que les composants appellent au lieu de l'API brute
+web/src/backlog/          backlog d'un projet : un fichier par composant, contexte partagé (context.ts), règles pures (tasks.ts)
+web/src/worktrees/        copies de travail : panneau, hook d'inventaire, ligne et étapes d'une copie, dialogues, model.ts
 ```
 
 ## Modèle de données

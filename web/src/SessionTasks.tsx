@@ -63,21 +63,39 @@ export function useSessionTasks(sessionId: string) {
       requestId.current++;
     };
   }, [refresh]);
+  // Écritures seules : l'appelant relit la liste quand il le juge utile.
+  const save = useCallback(
+    async (id: string | undefined, changes: SessionTaskChanges): Promise<void> => {
+      await api(`/api/sessions/${sessionId}/tasks${id ? `/${id}` : ''}`, {
+        method: id ? 'PATCH' : 'POST',
+        body: JSON.stringify(changes),
+      });
+    },
+    [sessionId],
+  );
+  const remove = useCallback(
+    async (id: string): Promise<void> => {
+      await api(`/api/sessions/${sessionId}/tasks/${id}`, { method: 'DELETE' });
+    },
+    [sessionId],
+  );
   return {
     tasks: data?.sessionId === sessionId ? data.tasks : [],
     loaded: data?.sessionId === sessionId,
     error,
     refresh,
+    save,
+    remove,
   };
 }
 
-export function SessionTasksPanel({
-  sessionId,
-  tasks,
-  loaded,
-  error,
-  refresh,
-}: ReturnType<typeof useSessionTasks> & { sessionId: string }) {
+interface SessionTaskChanges {
+  title?: string;
+  note?: string;
+  status?: SessionTaskStatus;
+}
+
+export function SessionTasksPanel({ tasks, loaded, error, refresh, save, remove }: ReturnType<typeof useSessionTasks>) {
   const [editing, setEditing] = useState<SessionTask | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -89,21 +107,17 @@ export function SessionTasksPanel({
   useEffect(() => {
     if (formOpen) titleInput.current?.focus();
   }, [formOpen, editing?.id]);
-  const base = `/api/sessions/${sessionId}/tasks`;
   const reset = (): void => {
     setEditing(null);
     setTitle('');
     setNote('');
     setFormOpen(false);
   };
-  const mutate = async (method: string, id?: string, body?: unknown, after?: () => void): Promise<void> => {
+  const mutate = async (operation: () => Promise<void>, after?: () => void): Promise<void> => {
     setBusy(true);
     setSaveError(null);
     try {
-      await api(`${base}${id ? `/${id}` : ''}`, {
-        method,
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
+      await operation();
       after?.();
       await refresh();
     } catch (cause) {
@@ -199,7 +213,7 @@ export function SessionTasksPanel({
               reset();
               return;
             }
-            void mutate(editing ? 'PATCH' : 'POST', editing?.id, changes, reset);
+            void mutate(() => save(editing?.id, changes), reset);
           }}
         >
           <input
@@ -232,7 +246,7 @@ export function SessionTasksPanel({
               <DelayedActionButton
                 disabled={busy}
                 title="Supprimer cette sous-tâche"
-                onAction={() => void mutate('DELETE', editing.id, undefined, reset)}
+                onAction={() => void mutate(() => remove(editing.id), reset)}
               >
                 Supprimer
               </DelayedActionButton>
@@ -248,7 +262,9 @@ export function SessionTasksPanel({
                 aria-label={`Statut : ${task.title}`}
                 value={task.status}
                 disabled={busy}
-                onChange={(event) => void mutate('PATCH', task.id, { status: event.target.value })}
+                onChange={(event) =>
+                  void mutate(() => save(task.id, { status: event.target.value as SessionTaskStatus }))
+                }
               >
                 {Object.entries(LABELS).map(([value, label]) => (
                   <option key={value} value={value}>

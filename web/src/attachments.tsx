@@ -1,5 +1,6 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useEffect, useRef, useState } from 'react';
+import { useLatest } from './use-latest.ts';
 
 // Images jointes à un champ de saisie : le texte affiche un jeton court « [Image #N] »
 // (comme Claude Code en terminal) et une miniature ; au moment d'envoyer, chaque jeton est
@@ -40,16 +41,14 @@ export function removeToken(text: string, token: string): string {
 export function useImageAttachments(upload: (image: Blob) => Promise<string>, initial: Attachment[] = []) {
   const [items, setItems] = useState<Attachment[]>(initial);
   const counter = useRef(initial.reduce((max, item) => Math.max(max, item.n), 0));
-  const itemsRef = useRef(items);
-  itemsRef.current = items;
-  const uploadRef = useRef(upload);
-  uploadRef.current = upload;
+  const itemsRef = useLatest(items);
+  const uploadRef = useLatest(upload);
 
   useEffect(
     () => () => {
       for (const item of itemsRef.current) URL.revokeObjectURL(item.previewUrl);
     },
-    [],
+    [itemsRef],
   );
 
   /**

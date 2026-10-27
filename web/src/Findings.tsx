@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Finding, SavedReport } from '../../server/findings.ts';
-import { api } from './api.ts';
+import { publishFindingsReport } from './api.ts';
 import { href } from './route.ts';
 import { useStore } from './store.tsx';
 import type { Session } from './types.ts';
@@ -78,7 +78,7 @@ export function FindingsPanel({
   reports: SavedReport[];
   refresh: () => Promise<void>;
 }) {
-  const { epics } = useStore();
+  const { epics, importFindings } = useStore();
   const sourceEpic = epics.find((item) => item.id === epic?.id);
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [destinations, setDestinations] = useState<Record<string, string | null>>({});
@@ -263,10 +263,12 @@ export function FindingsPanel({
                     disabled={busy || !selected.length}
                     onClick={() =>
                       void run(async () => {
-                        await api(`/api/sessions/${sessionId}/findings/${report.id}/import`, {
-                          method: 'POST',
-                          body: JSON.stringify({ selected: selected.map((f) => f.id), epicId: destination }),
-                        });
+                        await importFindings(
+                          sessionId,
+                          report.id,
+                          selected.map((f) => f.id),
+                          destination,
+                        );
                       })
                     }
                   >
@@ -300,10 +302,7 @@ export function FindingsPanel({
           disabled={busy || !raw.trim()}
           onClick={() =>
             void run(async () => {
-              await api(`/api/sessions/${sessionId}/findings`, {
-                method: 'POST',
-                body: JSON.stringify(JSON.parse(raw)),
-              });
+              await publishFindingsReport(sessionId, JSON.parse(raw));
               setRaw('');
             })
           }

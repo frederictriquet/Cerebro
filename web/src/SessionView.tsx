@@ -8,6 +8,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from 'react';
+import { useLatest } from './use-latest.ts';
 import type { SavedReport } from '../../server/findings.ts';
 import { FindingsNotice, FindingsPanel } from './Findings.tsx';
 import type { Provenance } from '../../server/provenance.ts';
@@ -281,8 +282,7 @@ function QuickReply({
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const mounted = useRef(true);
-  const disabledRef = useRef(disabled);
-  disabledRef.current = disabled;
+  const disabledRef = useLatest(disabled);
 
   useEffect(() => {
     mounted.current = true;
@@ -624,7 +624,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             ×
           </button>
           {drawer === 'tasks' ? (
-            <SessionTasksPanel key={session.id} sessionId={session.id} {...sessionTasks} />
+            <SessionTasksPanel key={session.id} {...sessionTasks} />
           ) : drawer === 'provenance' ? (
             <ProvenancePanel {...provenance} />
           ) : (

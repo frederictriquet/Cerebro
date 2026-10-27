@@ -1,6 +1,6 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useEffect, useRef, useState } from 'react';
-import { api, apiBase } from './api.ts';
+import { api, apiBase, markOperationSeen } from './api.ts';
 import { Modal } from './Dialog.tsx';
 import type { CommitSettings } from './types.ts';
 import type { AutomaticCommit } from '../../server/automatic-commits.ts';
@@ -61,10 +61,7 @@ function AutomaticCommitRun({
       if (disposed || apiBase() !== machineBase) return;
       setOperation(value);
       setError(null);
-      if (value.finishedAt)
-        void api(`/api/operations/${encodeURIComponent(`auto-commit:${value.id}`)}/seen`, { method: 'POST' }).catch(
-          () => {},
-        );
+      if (value.finishedAt) markOperationSeen(`auto-commit:${value.id}`);
     };
     if (apiBase() !== machineBase) return;
     // Reuse the same request in React StrictMode. Reopening also attaches to an active server operation.

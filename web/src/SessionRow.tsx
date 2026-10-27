@@ -9,23 +9,15 @@ import { PreviewButton, ScreenPopover, usePreviewController } from './ScreenPrev
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { groupedSessionTitle } from './session-groups.ts';
-import type { Project, Session } from './types.ts';
+import { useSessionList } from './session-list-context.ts';
+import type { Session } from './types.ts';
 import { RELEASE_HINT, WorktreeLabel, resumeBlockedReason } from './WorktreeLabel.tsx';
 
-export function SessionRow({
-  session,
-  now,
-  project,
-  grouped = false,
-  onError,
-}: {
-  session: Session;
-  now: number;
-  project?: Pick<Project, 'id' | 'name'>;
-  grouped?: boolean;
-  onError: (message: string) => void;
-}) {
-  const { killSession, resumeSession, deleteSession, sendSessionInput } = useStore();
+// Une session regroupée sous son epic n'affiche pas son projet : l'en-tête du groupe le porte.
+export function SessionRow({ session, grouped = false }: { session: Session; grouped?: boolean }) {
+  const { projects, killSession, resumeSession, deleteSession, sendSessionInput } = useStore();
+  const { now, showProject, onError } = useSessionList();
+  const project = showProject && !grouped ? projects.find((item) => item.id === session.projectId) : undefined;
   const reportError =
     (fallback: string) =>
     (err: unknown): void => {

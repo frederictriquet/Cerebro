@@ -1,5 +1,6 @@
 import type { EpicRunRecord } from '../../server/epic-runner.ts';
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useLatest } from './use-latest.ts';
 import { api, wsUrl } from './api.ts';
 import {
   armNotificationPermission,
@@ -30,6 +31,7 @@ import {
   type Project,
   type Session,
   type Task,
+  type TaskExecution,
   type TaskStatus,
 } from './types.ts';
 
@@ -60,15 +62,27 @@ export interface Store {
   renameSession: (id: string, title: string) => Promise<Session>;
   updateProject: (id: string, patch: ProjectPatch) => Promise<Project>;
   sendSessionInput: (id: string, data: string) => Promise<void>;
-  createTask: (projectId: string, text: string, sourceSessionId?: string, epicId?: string | null) => Promise<Task>;
+  createTask: (projectId: string, text: string, options?: NewTaskOptions) => Promise<Task>;
   updateTask: (id: string, patch: TaskPatch) => Promise<Task>;
   deleteTask: (id: string) => Promise<void>;
   deleteCompletedBacklog: (projectId: string) => Promise<void>;
   startTask: (id: string, spec: LaunchSpec) => Promise<Session>;
+  // Tâche commande : le serveur exécute la commande, sans session.
+  startCommandTask: (id: string) => Promise<void>;
   createEpic: (projectId: string, title: string, description?: string) => Promise<Epic>;
   updateEpic: (id: string, patch: { title?: string; description?: string }) => Promise<Epic>;
   deleteEpic: (id: string) => Promise<void>;
-  startEpic: (id: string, spec: LaunchSpec) => Promise<EpicRunRecord>;
+  // Sans réglages de session pour un epic dont toutes les tâches ouvertes sont des commandes.
+  startEpic: (id: string, spec?: LaunchSpec) => Promise<EpicRunRecord>;
+  addEpicReviewTask: (epicId: string) => Promise<Task>;
+  startEpicReview: (epicId: string, spec: LaunchSpec) => Promise<Session>;
+  importFindings: (sessionId: string, reportId: string, selected: string[], epicId: string | null) => Promise<void>;
+}
+
+export interface NewTaskOptions {
+  sourceSessionId?: string;
+  epicId?: string | null;
+  execution?: TaskExecution;
 }
 
 export interface TaskPatch {
@@ -130,14 +144,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
   const [peersVersion, setPeersVersion] = useState(0);
   const [muted, setMutedState] = useState<boolean>(() => readMuted());
-  const mutedRef = useRef(muted);
-  mutedRef.current = muted;
+  const mutedRef = useLatest(muted);
 
-  const setMuted = useCallback((value: boolean) => {
-    mutedRef.current = value;
-    setMutedState(value);
-    writeMuted(value);
-  }, []);
+  const setMuted = useCallback(
+    (value: boolean) => {
+      mutedRef.current = value;
+      setMutedState(value);
+      writeMuted(value);
+    },
+    [mutedRef],
+  );
 
   const [desktopNotif, setDesktopNotifState] = useState<boolean>(() => readDesktopNotif());
 
@@ -281,7 +297,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (timer !== undefined) clearTimeout(timer);
       ws?.close();
     };
-  }, []);
+  }, [mutedRef]);
 
   const createProject = useCallback(async (name: string, path: string): Promise<Project> => {
     const raw = await api<unknown>('/api/projects', {
@@ -388,10 +404,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const createTask = useCallback(
-    async (projectId: string, text: string, sourceSessionId?: string, epicId?: string | null): Promise<Task> => {
+    async (
+      projectId: string,
+      text: string,
+      { sourceSessionId, epicId, execution }: NewTaskOptions = {},
+    ): Promise<Task> => {
       const raw = await api<unknown>(`/api/projects/${projectId}/tasks`, {
         method: 'POST',
-        body: JSON.stringify({ text, sourceSessionId, epicId: epicId ?? null }),
+        body: JSON.stringify({ text, sourceSessionId, epicId: epicId ?? null, execution }),
       });
       const task = parseTask(raw);
       if (!task) throw new Error('Réponse tâche invalide');
@@ -449,6 +469,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return session;
   }, []);
 
+  const startCommandTask = useCallback(async (id: string): Promise<void> => {
+    const raw = await api<{ task: unknown }>(`/api/tasks/${id}/start`, { method: 'POST' });
+    const task = parseTask(raw.task);
+    if (task) setTasks((list) => upsertTask(list, task));
+  }, []);
+
   const createEpic = useCallback(async (projectId: string, title: string, description?: string): Promise<Epic> => {
     const raw = await api<unknown>(`/api/projects/${projectId}/epics`, {
       method: 'POST',
@@ -479,9 +505,39 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setTasks((list) => list.map((t) => (t.epicId === id ? { ...t, epicId: null } : t)));
   }, []);
 
-  const startEpic = useCallback(async (id: string, spec: LaunchSpec): Promise<EpicRunRecord> => {
-    return api<EpicRunRecord>(`/api/epics/${id}/start`, { method: 'POST', body: JSON.stringify(spec) });
+  const startEpic = useCallback(async (id: string, spec?: LaunchSpec): Promise<EpicRunRecord> => {
+    return api<EpicRunRecord>(`/api/epics/${id}/start`, { method: 'POST', body: JSON.stringify(spec ?? {}) });
   }, []);
+
+  const addEpicReviewTask = useCallback(async (epicId: string): Promise<Task> => {
+    const task = parseTask(await api<unknown>(`/api/epics/${epicId}/review-task`, { method: 'POST' }));
+    if (!task) throw new Error('Réponse tâche invalide');
+    setTasks((list) => upsertTask(list, task));
+    return task;
+  }, []);
+
+  const startEpicReview = useCallback(async (epicId: string, spec: LaunchSpec): Promise<Session> => {
+    const raw = await api<unknown>(`/api/epics/${epicId}/review`, { method: 'POST', body: JSON.stringify(spec) });
+    const session = parseSession(raw);
+    if (!session) throw new Error('Réponse session invalide');
+    setSessions((list) => upsertSession(list, session));
+    return session;
+  }, []);
+
+  // Le serveur range les findings retenus dans un epic, existant ou nouveau, et rend l'epic et ses tâches créées.
+  const importFindings = useCallback(
+    async (sessionId: string, reportId: string, selected: string[], epicId: string | null): Promise<void> => {
+      const raw = await api<{ epic: unknown; tasks: unknown }>(
+        `/api/sessions/${sessionId}/findings/${reportId}/import`,
+        { method: 'POST', body: JSON.stringify({ selected, epicId }) },
+      );
+      const epic = parseEpic(raw.epic);
+      if (epic) setEpics((list) => upsertEpic(list, epic));
+      const created = parseTaskList(raw.tasks);
+      setTasks((list) => created.reduce(upsertTask, list));
+    },
+    [],
+  );
 
   const markSeen = useCallback(async (id: string): Promise<void> => {
     setSessions((list) => list.map((s) => (s.id === id ? { ...s, attention: false } : s)));
@@ -524,10 +580,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteTask,
       deleteCompletedBacklog,
       startTask,
+      startCommandTask,
       createEpic,
       updateEpic,
       deleteEpic,
       startEpic,
+      addEpicReviewTask,
+      startEpicReview,
+      importFindings,
     }),
     [
       projects,
@@ -560,10 +620,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteTask,
       deleteCompletedBacklog,
       startTask,
+      startCommandTask,
       createEpic,
       updateEpic,
       deleteEpic,
       startEpic,
+      addEpicReviewTask,
+      startEpicReview,
+      importFindings,
     ],
   );
 

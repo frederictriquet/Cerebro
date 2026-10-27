@@ -1,6 +1,14 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { api, ApiError, apiBase, cancelCouncil, councilExportUrl, councilImageUrl, getCouncil } from './api.ts';
+import {
+  ApiError,
+  apiBase,
+  cancelCouncil,
+  councilExportUrl,
+  councilImageUrl,
+  getCouncil,
+  markOperationSeen,
+} from './api.ts';
 import { readDraft, writeDraft, type DraftImage } from './drafts.ts';
 import { Markdown } from './Markdown.tsx';
 import { go, href } from './route.ts';
@@ -637,9 +645,7 @@ export function CouncilRunView({ councilId }: { councilId: string }) {
         setError(null);
         if (value.finishedAt !== null) {
           // Rapport affiché : le résultat ne doit plus être notifié.
-          void api(`/api/operations/${encodeURIComponent(`council:${value.id}`)}/seen`, { method: 'POST' }).catch(
-            () => {},
-          );
+          markOperationSeen(`council:${value.id}`);
           return;
         }
       } catch (cause) {

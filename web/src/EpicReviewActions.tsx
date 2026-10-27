@@ -1,28 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { EpicRunRecord, EpicRunView } from '../../server/epic-runner.ts';
+import { useState } from 'react';
+import type { EpicRunView } from '../../server/epic-runner.ts';
 import { isReviewTask } from '../../shared/epic-review.ts';
-import { api } from './api.ts';
 import { LaunchSessionDialog } from './Dialog.tsx';
+import { RUN_ACTIVE } from './epic-runs.ts';
 import { useStore } from './store.tsx';
-
-export const RUN_ACTIVE: EpicRunRecord['status'][] = ['running', 'waiting-validation', 'blocked'];
-
-export function useEpicRun(
-  epicId: string,
-  intervalMs = 1000,
-): { run: EpicRunView | null; refresh: () => Promise<void> } {
-  const [run, setRun] = useState<EpicRunView | null>(null);
-  const refresh = useCallback(async (): Promise<void> => {
-    const runs = await api<EpicRunView[]>(`/api/epics/${epicId}/runs`);
-    setRun(runs[0] ?? null);
-  }, [epicId]);
-  useEffect(() => {
-    void refresh().catch(() => {});
-    const timer = window.setInterval(() => void refresh().catch(() => {}), intervalMs);
-    return () => window.clearInterval(timer);
-  }, [refresh, intervalMs]);
-  return { run, refresh };
-}
 
 // « Review de l'epic » et « Ajouter une étape de review » : partagés par le bloc du backlog et l'en-tête du groupe de sessions.
 export function EpicReviewActions({
@@ -34,7 +15,7 @@ export function EpicReviewActions({
   run: EpicRunView | null;
   onError: (message: string) => void;
 }) {
-  const { tasks, projects } = useStore();
+  const { tasks, projects, addEpicReviewTask, startEpicReview } = useStore();
   const [reviewing, setReviewing] = useState(false);
   const workspaceMode = run?.workspace
     ? run.workspace.mode === 'isolated'
@@ -63,7 +44,7 @@ export function EpicReviewActions({
           className="btn"
           title="Ajoute une dernière tâche de review, qui attend toutes les autres et travaille dans le même worktree"
           onClick={() =>
-            void api(`/api/epics/${epic.id}/review-task`, { method: 'POST' }).catch((err: unknown) =>
+            void addEpicReviewTask(epic.id).catch((err: unknown) =>
               onError(err instanceof Error ? err.message : 'Ajout impossible'),
             )
           }
@@ -80,7 +61,7 @@ export function EpicReviewActions({
           submitLabel={`Lancer la review ${workspaceMode === 'shared' ? 'dans le dossier d’origine de l’epic' : "dans le worktree de l'epic"}`}
           onClose={() => setReviewing(false)}
           onLaunch={async (spec) => {
-            await api(`/api/epics/${epic.id}/review`, { method: 'POST', body: JSON.stringify(spec) });
+            await startEpicReview(epic.id, spec);
             setReviewing(false);
           }}
         />

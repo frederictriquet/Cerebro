@@ -1,12 +1,14 @@
-import { useId, useState } from 'react';
-import { EpicReviewActions, useEpicRun } from './EpicReviewActions.tsx';
+import { useId, useMemo, useState } from 'react';
+import { EpicReviewActions } from './EpicReviewActions.tsx';
+import { useEpicRun } from './epic-runs.ts';
 import { FindingsLink } from './FindingsLink.tsx';
 import { isAwaiting } from './format.ts';
 import { href, parseMachine } from './route.ts';
 import { SessionRow } from './SessionRow.tsx';
 import { groupSessions, type SessionGroup } from './session-groups.ts';
 import { useStore } from './store.tsx';
-import type { Project, Session } from './types.ts';
+import { SessionListContext, useSessionList } from './session-list-context.ts';
+import type { Session } from './types.ts';
 import './session-groups.css';
 
 export function SessionList({
@@ -20,43 +22,27 @@ export function SessionList({
   showProject?: boolean;
   onError: (message: string) => void;
 }) {
-  const { tasks, epics, projects } = useStore();
+  const { tasks, epics } = useStore();
+  const scope = useMemo(() => ({ now, showProject, onError }), [now, showProject, onError]);
   return (
-    <ul className="session-table">
-      {groupSessions(sessions, tasks, epics).map((group) =>
-        group.kind === 'session' ? (
-          <SessionRow
-            key={group.session.id}
-            session={group.session}
-            now={now}
-            onError={onError}
-            project={showProject ? projects.find((project) => project.id === group.session.projectId) : undefined}
-          />
-        ) : (
-          <EpicSessions
-            key={JSON.stringify([group.projectId, group.epic.id])}
-            group={group}
-            now={now}
-            onError={onError}
-            project={showProject ? projects.find((project) => project.id === group.projectId) : undefined}
-          />
-        ),
-      )}
-    </ul>
+    <SessionListContext.Provider value={scope}>
+      <ul className="session-table">
+        {groupSessions(sessions, tasks, epics).map((group) =>
+          group.kind === 'session' ? (
+            <SessionRow key={group.session.id} session={group.session} />
+          ) : (
+            <EpicSessions key={JSON.stringify([group.projectId, group.epic.id])} group={group} />
+          ),
+        )}
+      </ul>
+    </SessionListContext.Provider>
   );
 }
 
-function EpicSessions({
-  group,
-  now,
-  project,
-  onError,
-}: {
-  group: Extract<SessionGroup, { kind: 'epic' }>;
-  now: number;
-  project?: Project;
-  onError: (message: string) => void;
-}) {
+function EpicSessions({ group }: { group: Extract<SessionGroup, { kind: 'epic' }> }) {
+  const { projects } = useStore();
+  const { showProject } = useSessionList();
+  const project = showProject ? projects.find((item) => item.id === group.projectId) : undefined;
   const listId = useId();
   // Plus lent que dans le backlog : la liste peut afficher de nombreux epics, et la review n'a besoin que d'un état d'exécution à peu près à jour.
   const { run } = useEpicRun(group.epic.id, 5000);
@@ -136,11 +122,7 @@ function EpicSessions({
         </p>
       ) : null}
       <ul id={listId} className="session-epic-children" hidden={!open}>
-        {open
-          ? group.sessions.map((session) => (
-              <SessionRow key={session.id} session={session} now={now} grouped onError={onError} />
-            ))
-          : null}
+        {open ? group.sessions.map((session) => <SessionRow key={session.id} session={session} grouped />) : null}
       </ul>
     </li>
   );

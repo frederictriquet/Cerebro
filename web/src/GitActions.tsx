@@ -329,17 +329,19 @@ function SessionReviewDialog({
 }
 
 export function SessionGitActions({ sessionId }: { sessionId: string }) {
+  const machineBase = apiBase();
+  // Une autre session ou machine repart d'un état vierge : ni le contexte ni le dialogue de la précédente.
+  return <SessionGitActionsPanel key={`${machineBase}|${sessionId}`} sessionId={sessionId} machineBase={machineBase} />;
+}
+
+function SessionGitActionsPanel({ sessionId, machineBase }: { sessionId: string; machineBase: string }) {
   const { sessions } = useStore();
   const session = sessions.find((s) => s.id === sessionId);
   const [open, setOpen] = useState<'review' | 'commit' | null>(null);
   const [context, setContext] = useState<SessionGitContext | null>(null);
   const [contextError, setContextError] = useState<string | null>(null);
-  const machineBase = apiBase();
   useEffect(() => {
     let disposed = false;
-    setContext(null);
-    setContextError(null);
-    setOpen(null);
     void api<SessionGitContext>(`/api/sessions/${sessionId}/git/context`)
       .then((value) => {
         if (!disposed && apiBase() === machineBase) setContext(value);

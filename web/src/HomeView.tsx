@@ -1,5 +1,5 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { Worktrees } from './Worktrees.tsx';
+import { Worktrees } from './worktrees/Worktrees.tsx';
 import { LlmUsageStats } from './LlmUsageStats.tsx';
 import { CouncilLaunch } from './CouncilLaunch.tsx';
 import { useState, type FormEvent } from 'react';

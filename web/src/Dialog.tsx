@@ -1,5 +1,6 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useLatest } from './use-latest.ts';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
 import type { Agent, LaunchSpec } from './types.ts';
@@ -11,8 +12,7 @@ import { AttachmentStrip, insertToken, removeToken, useImageAttachments } from '
 // Modale native : Échap et un clic hors du contenu la ferment.
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  const onCloseRef = useLatest(onClose);
 
   useEffect(() => {
     const dialog = ref.current;
@@ -27,7 +27,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
       dialog.removeEventListener('cancel', onCancel);
       dialog.close();
     };
-  }, []);
+  }, [onCloseRef]);
 
   return (
     <dialog
@@ -135,7 +135,7 @@ export function AddTaskDialog({
     setBusy(true);
     setError(null);
     try {
-      await createTask(targetId, images.expand(text), sourceSessionId);
+      await createTask(targetId, images.expand(text), { sourceSessionId });
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ajout impossible');
