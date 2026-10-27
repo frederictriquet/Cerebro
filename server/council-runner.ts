@@ -1,6 +1,7 @@
 import { copyFileSync, linkSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { getAgentAvailability } from './agents.ts';
+import { catalogReady } from './catalog.ts';
 import { ATTACHMENTS_DIR } from './config.ts';
 import {
   ANSWER_SCHEMA, MIN_ADVISORS, REVIEW_SCHEMA, SYNTHESIS_SCHEMA, answerPrompt, assignLetters, defaultCouncilSettings, imagePaths, imageToken, parseAnswer,
@@ -148,6 +149,16 @@ export class CouncilRuns {
     return this.db.saveCouncilRun(run);
   }
 
+  // Enregistrement en cours d'exécution : personne n'attend `done`, une erreur SQLite passagère est journalisée sans interrompre le council.
+  private persist(run: CouncilRun): boolean {
+    try {
+      return this.save(run);
+    } catch (cause) {
+      console.error(`Council ${run.id} non enregistré :`, errorMessage(cause));
+      return false;
+    }
+  }
+
   private projectForStart(id: string | null): Project | null {
     if (id === null) return null;
     if (this.deletingProjects.has(id)) throw new CouncilError('Suppression du projet en cours.', 409);
@@ -172,6 +183,8 @@ export class CouncilRuns {
 
   // Idempotent sur `requestId`, qui devient l'identifiant du run.
   async start(input: CouncilStart, requestId: unknown): Promise<CouncilRun> {
+    // Modèles validés contre le catalogue réel, pas contre le repli du démarrage.
+    await catalogReady();
     if (this.closed) throw new CouncilError('Serveur en cours d’arrêt.', 409);
     if (typeof requestId !== 'string' || !/^[\da-f-]{36}$/i.test(requestId)) throw new CouncilError('Identifiant de lancement invalide.');
     const question = typeof input.question === 'string' ? input.question.trim() : '';
@@ -311,7 +324,7 @@ export class CouncilRuns {
     const phase = (value: CouncilPhase): void => {
       signal.throwIfAborted();
       run.phase = value;
-      this.save(run);
+      this.persist(run);
     };
     // Seuls les conseillers lisent le dépôt ; relectures et synthèse portent sur les réponses.
     const reading = readsProject(run);
@@ -330,7 +343,7 @@ export class CouncilRuns {
           answer.error = errorMessage(cause);
         } finally {
           answer.finishedAt = Date.now();
-          this.save(run);
+          this.persist(run);
         }
       }));
       signal.throwIfAborted();
@@ -347,7 +360,7 @@ export class CouncilRuns {
           review.error = errorMessage(cause);
         } finally {
           review.finishedAt = Date.now();
-          this.save(run);
+          this.persist(run);
         }
       }));
       phase('synthesizing');
@@ -363,7 +376,13 @@ export class CouncilRuns {
     } finally {
       run.phase = 'finished';
       run.finishedAt = Date.now();
-      if (this.save(run)) this.onComplete(run);
+      if (this.persist(run)) {
+        try {
+          this.onComplete(run);
+        } catch (cause) {
+          console.error(`Council ${run.id} : notification de fin en échec :`, errorMessage(cause));
+        }
+      }
     }
   }
 

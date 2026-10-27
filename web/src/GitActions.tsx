@@ -6,18 +6,16 @@ import { Modal } from './Dialog.tsx';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
 import type { SessionGitContext, SessionGitSnapshot } from '../../server/session-git.ts';
-import type { GitInfo } from './types.ts';
+import { pushBlockedReason, type GitInfo } from './types.ts';
 import type { PushOperation, PushRemoteResult } from '../../server/git-push.ts';
 import './automatic-commits.css';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
-
-const canPush = (git: GitInfo): boolean => (git.ahead ?? 0) > 0 || (git.hasCommits && !git.hasUpstream);
 
 export function GitActions({ projectId, git, pendingCommits }: { projectId: string; git: GitInfo; pendingCommits: ReactNode }) {
   const [open, setOpen] = useState<'review' | 'single' | 'atomic' | 'push' | null>(null);
   const close = (): void => setOpen(null);
   const hasChanges = git.dirty > 0;
-  const pushable = canPush(git);
+  const pushBlocked = pushBlockedReason(git);
 
   return (
     <>
@@ -39,13 +37,13 @@ export function GitActions({ projectId, git, pendingCommits }: { projectId: stri
       </span>
       <span className="git-actions git-actions-publish" role="group" aria-label="Publication des commits">
         {pendingCommits}
-        {!git.hasUpstream ? <span className="meta">pas d’upstream</span> : null}
+        {git.branch !== null && !git.hasUpstream ? <span className="meta">pas d’upstream</span> : null}
         <button
           type="button"
           className="btn"
           onClick={() => setOpen('push')}
-          disabled={!pushable}
-          title={pushable ? 'Pousser les commits locaux vers les remotes' : 'Rien à pousser'}
+          disabled={pushBlocked !== null}
+          title={pushBlocked ?? 'Pousser les commits locaux vers les remotes'}
         >
           Push
         </button>

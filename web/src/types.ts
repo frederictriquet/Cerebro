@@ -238,6 +238,9 @@ export interface AgentInfo {
 }
 
 export interface GitInfo {
+  // False only outside any Git work tree; `error` reports a repository whose state could not be read.
+  repository: boolean;
+  error?: string;
   branch: string | null;
   dirty: number;
   ahead: number | null;
@@ -636,6 +639,10 @@ export function parseGitInfo(v: unknown): GitInfo | null {
   if (v.hasUpstream !== undefined && typeof v.hasUpstream !== 'boolean') return null;
   const hasCommits = v.hasCommits ?? ahead !== null;
   const hasUpstream = v.hasUpstream ?? ahead !== null;
+  if (v.repository !== undefined && typeof v.repository !== 'boolean') return null;
+  // Serveurs antérieurs : seul le dépôt absent renvoyait une branche nulle.
+  const repository = v.repository ?? branch !== null;
+  const error = typeof v.error === 'string' ? v.error : undefined;
   let pendingCommits: GitInfo['pendingCommits'];
   const preview = v.pendingCommits;
   if (isRecord(preview) && typeof preview.upstream === 'string' && typeof preview.truncated === 'boolean' && Array.isArray(preview.commits)) {
@@ -647,7 +654,14 @@ export function parseGitInfo(v: unknown): GitInfo | null {
     pendingCommits = { upstream: preview.upstream, truncated: preview.truncated, commits };
   }
   const pendingCommitsError = typeof v.pendingCommitsError === 'string' ? v.pendingCommitsError : undefined;
-  return { branch, dirty: v.dirty, ahead, hasCommits, hasUpstream, ...(pendingCommits ? { pendingCommits } : {}), ...(pendingCommitsError ? { pendingCommitsError } : {}) };
+  return { repository, ...(error ? { error } : {}), branch, dirty: v.dirty, ahead, hasCommits, hasUpstream, ...(pendingCommits ? { pendingCommits } : {}), ...(pendingCommitsError ? { pendingCommitsError } : {}) };
+}
+
+// Raison affichée sur le bouton Push désactivé ; null quand un push peut aboutir.
+// Une HEAD détachée n'a ni branche ni upstream, et startPush la refuse toujours.
+export function pushBlockedReason(git: GitInfo): string | null {
+  if (git.branch === null) return 'HEAD détachée : choisissez une branche pour pousser';
+  return (git.ahead ?? 0) > 0 || (git.hasCommits && !git.hasUpstream) ? null : 'Rien à pousser';
 }
 
 export function parseScreenLines(v: unknown): string[] | null {

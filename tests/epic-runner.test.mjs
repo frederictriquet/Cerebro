@@ -204,13 +204,14 @@ test('command output and unrelated session events keep the epic folder cached',a
  f.task('noisy',f.command('let i=0;const t=setInterval(()=>{console.log("line "+i);if(++i===40)clearInterval(t);},3)'));
  const resolutions=()=>queries.filter(q=>/SELECT data,verified FROM epic_workspaces/.test(q)).length;
  const queries=[];const prepare=f.db.connection.prepare.bind(f.db.connection);f.db.connection.prepare=sql=>{queries.push(sql);return prepare(sql);};
- let chunks=0,first=null,last=null,finished;const done=new Promise(resolve=>{finished=resolve;});
+ let notifications=0,first=null,last=null,finished;const done=new Promise(resolve=>{finished=resolve;});
  f.commands.onChange=run=>{f.runner.commandChanged(run);f.runner.poke();
-  if(run.finishedAt!==null)finished();else if(run.output){chunks++;first??=resolutions();last=resolutions();}};
+  if(run.finishedAt!==null)finished();else{notifications++;first??=resolutions();last=resolutions();}};
  try{
   await f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await done;
-  // Only the deferred resolution after the run's creation may land among its chunks.
-  assert.ok(chunks>=10,`${chunks} chunks`);assert.ok(last-first<=1,`${last-first} resolutions for ${chunks} chunks`);
+  // Output is buffered without notification: only lifecycle changes reach the runner, and only the run's creation may resolve the folder.
+  assert.match(f.commands.listRuns()[0].output,/line 39/);
+  assert.ok(notifications<=2,`${notifications} notifications`);assert.ok(last-first<=1,`${last-first} resolutions while the command ran`);
   await f.until(()=>f.latest().status==='waiting-validation');
   // A run whose tick is still in flight is skipped: let it settle before measuring a poke.
   const pause=()=>new Promise(resolve=>setTimeout(resolve,10));
@@ -297,4 +298,18 @@ test('an unresolvable folder is logged once per cause across cache invalidations
   f.db.connection.prepare('INSERT INTO command_runs VALUES (?,?,?)').run(old.id,a.id,JSON.stringify(old));f.runner.invalidateWorkspaces();resolve();
   assert.equal(logged.filter(line=>line.includes('dossier de travail introuvable')).length,2);
  }finally{console.error=original;}
+}));
+test('a failing save during a tick is logged instead of rejecting unhandled',async()=>fixture(async f=>{
+ const a=f.task('only');await f.runner.start(f.epic.id,DEFAULT_SESSION_DEFAULTS);await f.until(()=>f.latest().status==='waiting-validation');
+ const unhandled=[];const onUnhandled=reason=>unhandled.push(reason);process.on('unhandledRejection',onUnhandled);
+ const logged=[];const error=console.error;console.error=(...args)=>logged.push(args);
+ const runner=f.runner;runner.save=()=>{throw new Error('SQLITE_BUSY: database is locked');};
+ try{
+  f.db.updateTask(a.id,{status:'done'});
+  for(let i=0;i<5;i++){runner.poke();await new Promise(r=>setTimeout(r,5));}
+ }finally{delete runner.save;console.error=error;process.off('unhandledRejection',onUnhandled);}
+ assert.deepEqual(unhandled,[]);assert.ok(logged.some(args=>args.some(arg=>String(arg).includes('SQLITE_BUSY'))));
+ // Nothing was recorded: the next tick retries from the stored state and completes.
+ assert.equal(f.latest().status,'waiting-validation');
+ await f.until(()=>f.latest().status==='succeeded');
 }));

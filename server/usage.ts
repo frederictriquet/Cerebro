@@ -200,6 +200,16 @@ async function fetchClaude(oauth: Record<string, unknown> | null): Promise<Agent
   return { agent: 'claude', windows, auth: null, updatedAt: new Date().toISOString(), error: null };
 }
 
+/** Runs a filesystem read, returning null when the entry vanished in the meantime (ENOENT). */
+function ignoreMissing<T>(read: () => T): T | null {
+  try {
+    return read();
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw cause;
+  }
+}
+
 function codexRollouts(): string[] {
   const root = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'sessions');
   const subdirs = (dir: string): string[] => {
@@ -216,8 +226,11 @@ function codexRollouts(): string[] {
     for (const month of subdirs(join(root, year))) {
       for (const day of subdirs(join(root, year, month))) {
         const dir = join(root, year, month, day);
-        for (const name of readdirSync(dir)) {
-          if (name.endsWith('.jsonl')) files.push({ path: join(dir, name), mtime: statSync(join(dir, name)).mtimeMs });
+        for (const name of ignoreMissing(() => readdirSync(dir)) ?? []) {
+          if (!name.endsWith('.jsonl')) continue;
+          // Codex may delete or rename a rollout while we scan: skip it rather than fail the whole read.
+          const mtime = ignoreMissing(() => statSync(join(dir, name)).mtimeMs);
+          if (mtime !== null) files.push({ path: join(dir, name), mtime });
         }
         if (files.length >= CODEX_MAX_FILES) return files.sort((a, b) => b.mtime - a.mtime).map((f) => f.path);
       }
@@ -252,11 +265,13 @@ function codexWindow(value: unknown): UsageWindow | null {
 }
 
 /** Codex only reports its limits inside session rollouts: take the latest token_count event. */
-function readCodex(): AgentUsage {
+export function readCodex(): AgentUsage {
   let latest: { timestamp: string; limits: Record<string, unknown> } | null = null;
   // Newest rollout first: the first rate_limits event found from the end is the latest one.
   for (const path of codexRollouts()) {
-    const lines = readTail(path).split('\n');
+    const tail = ignoreMissing(() => readTail(path));
+    if (tail === null) continue;
+    const lines = tail.split('\n');
     for (let i = lines.length - 1; i >= 0 && latest === null; i--) {
       if (!lines[i].includes('"rate_limits"')) continue;
       try {

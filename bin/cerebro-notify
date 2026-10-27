@@ -37,9 +37,16 @@ if (CEREBRO_SESSION_ID === undefined || CEREBRO_TOKEN === undefined || CEREBRO_U
       }
       throw new Error(message);
     }
+    let queued = false;
+    try {
+      queued = (await response.json())?.queued === true;
+    } catch {
+      // Older servers answer without a body worth reading.
+    }
+    const delivery = queued ? 'en file (limite de débit Slack), envoi automatique dès la fin de la fenêtre' : 'envoyé sur Slack';
     process.stdout.write(ask
-      ? "Question envoyée sur Slack. Termine ton tour maintenant : la réponse arrivera comme prochain message de l'utilisateur.\n"
-      : 'Message envoyé sur Slack.\n');
+      ? `Question : ${delivery}. Termine ton tour maintenant : la réponse arrivera comme prochain message de l'utilisateur.\n`
+      : `Message ${delivery}.\n`);
   } catch (error) {
     process.stderr.write(`cerebro-notify : ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;

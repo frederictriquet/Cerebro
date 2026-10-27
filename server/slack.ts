@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   DATA_DIR,
@@ -121,6 +122,8 @@ interface SlackResponse {
   channel?: { id?: string } | string;
   ts?: string;
   messages?: unknown[];
+  has_more?: boolean;
+  response_metadata?: { next_cursor?: string };
 }
 
 interface SlackMessage {
@@ -144,6 +147,16 @@ const THREAD_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 // conversations.replies is rate limited (~50/min): poll fresh threads often, older ones rarely.
 const FRESH_THREAD_MS = 10 * 60 * 1_000;
 const SLOW_POLL_INTERVAL_MS = 60_000;
+// Read calls of the poll loop (DM history and thread replies) share this budget over a sliding minute,
+// below Slack's Tier 3 limit: many fresh threads are polled in turn instead of triggering a 429.
+export const POLL_CALLS_PER_MINUTE = 45;
+const POLL_WINDOW_MS = 60_000;
+// The DM is read once per tick; threads get the rest, so they never starve the commands it carries.
+const THREAD_POLLS_PER_MINUTE = POLL_CALLS_PER_MINUTE - Math.ceil(POLL_WINDOW_MS / POLL_INTERVAL_MS);
+// Read pages are followed (cursor) up to these bounds: after a long outage, older messages are not skipped.
+const READ_PAGE_SIZE = 200;
+const MAX_DM_PAGES = 10;
+const MAX_THREAD_PAGES = 5;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -301,8 +314,26 @@ function escapeMrkdwn(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
-function decodeSlackText(value: string): string {
-  return value.replace(/&(amp|lt|gt);/g, (entity, name: string) => {
+// Slack's <…> markup: links, user/channel mentions and special commands. Its labels and URLs are still entity-encoded.
+function decodeSlackMarkup(content: string): string {
+  const separator = content.indexOf('|');
+  const target = separator === -1 ? content : content.slice(0, separator);
+  const label = separator === -1 ? '' : content.slice(separator + 1);
+  if (target.startsWith('@')) return label !== '' ? `@${label}` : target;
+  if (target.startsWith('#')) return label !== '' ? `#${label}` : target;
+  if (target.startsWith('!')) {
+    if (label !== '') return label;
+    const command = target.slice(1).split('^')[0];
+    return ['here', 'channel', 'everyone'].includes(command) ? `@${command}` : `<${target}>`;
+  }
+  if (target === `mailto:${label}`) return label;
+  // Auto-linked URLs repeat the URL, possibly without its scheme, as their label.
+  if (label === '' || label === target || label === target.replace(/^https?:\/\//, '')) return target;
+  return `${label} (${target})`;
+}
+
+export function decodeSlackText(value: string): string {
+  return value.replace(/<([^<>\n]+)>/g, (_, content: string) => decodeSlackMarkup(content)).replace(/&(amp|lt|gt);/g, (entity, name: string) => {
     if (name === 'amp') return '&';
     if (name === 'lt') return '<';
     if (name === 'gt') return '>';
@@ -388,16 +419,29 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-interface NotificationTurn {started_at:number;ended_at:number|null;custom_at:number|null;relayed_at:number|null;automatic_at:number|null}
+// Slack 429 window: deferred sends retry once it is over, plus this margin.
+const RATE_LIMIT_MARGIN_MS = 500;
+
+class SlackRateLimitError extends Error {}
+
+interface NotificationTurn {started_at:number;ended_at:number|null;custom_at:number|null;relayed_at:number|null;automatic_at:number|null;automatic_status:string|null}
 
 export class SlackNotifier {
   readonly operations:OperationResults;
   private outgoing=new Map<string,Promise<void>>();
+  // Per session: deliveries sleeping out a rate-limit window, and agent messages waiting behind them in `serial`.
+  private deferredDeliveries=new Map<string,number>();
+  private waitingAgentMessages=new Map<string,Set<()=>void>>();
+  // Chunks of an operation message already posted: a retry after a failed chunk resumes at the next one.
+  private operationChunks=new Map<string,{message:string;sent:number}>();
   private turn(sessionId:string):NotificationTurn|null{return this.db.connection.prepare('SELECT * FROM notification_turns WHERE session_id=?').get(sessionId) as NotificationTurn|undefined??null;}
-  private markTurn(sessionId:string,column:'custom_at'|'relayed_at'|'automatic_at'):void{
+  private markTurn(sessionId:string,column:'custom_at'|'relayed_at'|'automatic_at',alerted?:string):void{
     const session=this.db.getSession(sessionId);if(!session)return;
     this.db.connection.prepare('INSERT OR IGNORE INTO notification_turns (session_id,started_at) VALUES (?,?)').run(sessionId,session.createdAt);
     this.db.connection.prepare(`UPDATE notification_turns SET ${column}=? WHERE session_id=?`).run(Date.now(),sessionId);
+    // Remembers which state was alerted: a repeated signal is skipped, a new one stays notifiable.
+    // The state captured before the Slack call is kept only if still current: a change during the send already reset the turn.
+    if(alerted!==undefined&&session.status===alerted)this.db.connection.prepare('UPDATE notification_turns SET automatic_status=? WHERE session_id=?').run(alerted,sessionId);
   }
   private serial(id:string,send:()=>Promise<void>):Promise<void>{
     const previous=this.outgoing.get(id)??Promise.resolve();const next=previous.catch(()=>{}).then(send);this.outgoing.set(id,next);
@@ -416,9 +460,19 @@ export class SlackNotifier {
   private polling = false;
   private stopped = false;
   private rateLimitedUntil = 0;
+  private readonly threadPolls: number[] = [];
+  // Round-robin order of thread reads: a thread never read yet comes first.
+  private readonly pollTurns = new WeakMap<ActiveThread, number>();
+  private pollTurn = 0;
   private dmCursor = slackTimestampNow();
   private stateDirty = false;
-  private settings: SlackSettings = loadSettings();
+  // Read from disk on first use only, so a disabled Slack never touches the file.
+  private loadedSettings: SlackSettings | null = null;
+  // Last value known to be on disk: restored when a write fails, so memory never outlives a failed save.
+  private persistedSettings: SlackSettings | null = null;
+  // Settings waiting for the queued write; later updates replace them before it runs.
+  private pendingSettings: SlackSettings | null = null;
+  private settingsWrite: Promise<void> = Promise.resolve();
   // Branché par le serveur ; absent, `council:` répond que le council est indisponible.
   councils: CouncilRuns | null = null;
 
@@ -444,10 +498,20 @@ export class SlackNotifier {
       const send=async():Promise<void>=>{
         // Recheck after peer coordination and any pending send in this session.
         if(this.stopped)return;
-        const current=this.operations.get(result.id);if(this.stopped||current?.seenAt||current?.notifiedAt||!this.operations.wanted(result))return;
+        const current=this.operations.get(result.id);if(this.stopped||current?.seenAt||current?.notifiedAt||!this.operations.wanted(result)){this.operationChunks.delete(result.id);return;}
         const thread=result.sessionId?this.threads.get(result.sessionId):undefined;
-        if(thread)await this.postThreadReply(thread.channel,thread.ts,text);
-        else await this.slackApi('chat.postMessage',{channel:await this.openDm(),text,unfurl_links:false});
+        // Same text to the same place only: a new result or another thread starts over.
+        const message=`${thread?`${thread.channel}:${thread.ts}`:'dm'}\n${text}`;
+        const progress=this.operationChunks.get(result.id);
+        const chunks=splitMessage(text);
+        let next=progress?.message===message?progress.sent:0;
+        for(;next<chunks.length;next++){
+          const chunk=chunks[next];
+          if(thread)await this.postThreadReply(thread.channel,thread.ts,chunk);
+          else await this.slackApi('chat.postMessage',{channel:await this.openDm(),text:chunk,unfurl_links:false});
+          this.operationChunks.set(result.id,{message,sent:next+1});
+        }
+        this.operationChunks.delete(result.id);
         sent=true;
       };
       await this.serial(result.sessionId??`operation:${result.id}`,send);
@@ -478,20 +542,54 @@ export class SlackNotifier {
     return this.settings.agentMessages;
   }
 
+  private get settings(): SlackSettings {
+    if (this.loadedSettings === null) this.loadedSettings = this.persistedSettings = loadSettings();
+    return this.loadedSettings;
+  }
+
+  // Applies immediately; the file is written asynchronously (see settingsSaved).
+  // A failed write restores the last persisted settings unless a newer update is still queued.
   updateSettings(patch: Record<string, unknown>): SlackSettings | null {
     const next = mergeSettings(this.settings, patch);
     if (next === null) return null;
-    writeFileSync(SETTINGS_FILE, `${JSON.stringify(next, null, 2)}\n`);
-    this.settings = next;
+    this.loadedSettings = next;
+    this.queueSettingsWrite(next);
     // Pending alerts may no longer be wanted: re-checked when their timer fires.
     return next;
+  }
+
+  // Resolves once the latest settings are on disk; rejects if that write failed.
+  settingsSaved(): Promise<void> {
+    return this.settingsWrite;
+  }
+
+  // Writes are serialized and coalesced: a burst of updates ends with the last value on disk.
+  private queueSettingsWrite(settings: SlackSettings): void {
+    const queued = this.pendingSettings !== null;
+    this.pendingSettings = settings;
+    if (queued) return;
+    const write = this.settingsWrite.catch(() => undefined).then(async () => {
+      const value = this.pendingSettings;
+      this.pendingSettings = null;
+      if (value === null) return;
+      try {
+        await writeFile(SETTINGS_FILE, `${JSON.stringify(value, null, 2)}\n`);
+        this.persistedSettings = value;
+      } catch (error) {
+        if (this.pendingSettings === null && this.loadedSettings === value) this.loadedSettings = this.persistedSettings;
+        throw error;
+      }
+    });
+    write.catch((error: unknown) => this.logError(error));
+    this.settingsWrite = write;
   }
 
   private alertWanted(status: Session['status']): boolean {
     return status === 'waiting' ? this.settings.waiting : status === 'idle' && this.settings.idle;
   }
 
-  async agentMessage(sessionId: string, kind: 'notify' | 'ask', text: string): Promise<void> {
+  // 'queued': Slack is rate limited, the message is posted as soon as the window is over.
+  async agentMessage(sessionId: string, kind: 'notify' | 'ask', text: string): Promise<'sent' | 'queued'> {
     if (!SLACK_ENABLED) throw new Error("Slack n'est pas configuré");
     const session = this.db.getSession(sessionId);
     if (session === null) throw new Error('Session introuvable');
@@ -502,12 +600,40 @@ export class SlackNotifier {
       ? `\n${this.sessionLink(session.id)}\n_Réponds dans le fil : ta réponse sera envoyée à l'agent._`
       : `\n${this.sessionLink(session.id)}`;
     const message = `${kind === 'ask' ? ':question:' : ':bell:'} ${header}\n${text}${suffix}`;
-    await this.serial(session.id,async()=>{
+    let queued!:()=>void;
+    const deferred=new Promise<'queued'>(resolve=>{queued=()=>resolve('queued');});
+    // Until its turn comes, a predecessor deferred by a 429 defers this message too.
+    const waiting=this.waitingAgentMessages.get(session.id)??new Set<()=>void>();
+    this.waitingAgentMessages.set(session.id,waiting);waiting.add(queued);
+    const started=()=>{waiting.delete(queued);if(waiting.size===0&&this.waitingAgentMessages.get(session.id)===waiting)this.waitingAgentMessages.delete(session.id);};
+    const delivery=this.serial(session.id,()=>{started();return this.retryRateLimited(session.id,async()=>{
       if(this.stopped)return;
       const thread=this.threads.get(session.id);
       if(kind==='notify'&&thread&&(this.turn(session.id)?.automatic_at||thread.kind==='ask'&&!thread.answered))await this.postThreadReply(thread.channel,thread.ts,message);
       else await this.postSessionMessage(session.id,kind,message);
-    });
+    },queued);});
+    void delivery.finally(started).catch(()=>{});
+    if(Date.now()<this.rateLimitedUntil||this.deferredDeliveries.has(session.id))queued();
+    const outcome=await Promise.race([delivery.then(()=>'sent' as const),deferred]);
+    if(outcome==='queued')void delivery.catch((error:unknown)=>this.logError(error));
+    return outcome;
+  }
+
+  private rateLimitWait(): number {
+    return Math.max(0,this.rateLimitedUntil-Date.now())+RATE_LIMIT_MARGIN_MS;
+  }
+
+  private async retryRateLimited(id:string,send:()=>Promise<void>,onDeferred:()=>void):Promise<void>{
+    for(;;){
+      try{await send();return;}
+      catch(error){
+        if(!(error instanceof SlackRateLimitError)||this.stopped)throw error;
+        onDeferred();for(const waiter of this.waitingAgentMessages.get(id)??[])waiter();
+        this.deferredDeliveries.set(id,(this.deferredDeliveries.get(id)??0)+1);
+        try{await new Promise(resolve=>setTimeout(resolve,this.rateLimitWait()).unref());}
+        finally{const left=(this.deferredDeliveries.get(id)??1)-1;if(left>0)this.deferredDeliveries.set(id,left);else this.deferredDeliveries.delete(id);}
+      }
+    }
   }
 
   stop(): void {
@@ -522,7 +648,10 @@ export class SlackNotifier {
   private onSessionEvent(event: SessionEvent): void {
     if(event.type==='session'){
       const session=event.session;const turn=this.turn(session.id);
-      if(session.status==='running'&&(!turn||turn.ended_at!==null))this.db.connection.prepare('INSERT INTO notification_turns (session_id,started_at) VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET started_at=excluded.started_at,ended_at=NULL,custom_at=NULL,relayed_at=NULL,automatic_at=NULL').run(session.id,session.updatedAt);
+      // Clé étrangère vers sessions : un événement tardif sur une session supprimée n'insère rien.
+      if(session.status==='running'&&(!turn||turn.ended_at!==null))this.db.connection.prepare('INSERT INTO notification_turns (session_id,started_at) SELECT id,? FROM sessions WHERE id=? ON CONFLICT(session_id) DO UPDATE SET started_at=excluded.started_at,ended_at=NULL,custom_at=NULL,relayed_at=NULL,automatic_at=NULL,automatic_status=NULL').run(session.updatedAt,session.id);
+      // Work resumed within the turn (permission answered…): the next waiting or the final idle is a new alert.
+      else if(session.status==='running'&&turn?.automatic_status!=null)this.db.connection.prepare('UPDATE notification_turns SET automatic_status=NULL WHERE session_id=?').run(session.id);
       if(session.status==='idle'&&turn&&turn.ended_at===null)this.db.connection.prepare('UPDATE notification_turns SET ended_at=? WHERE session_id=?').run(Date.now(),session.id);
     }
     if (event.type === 'session-deleted') {
@@ -538,14 +667,23 @@ export class SlackNotifier {
       return;
     }
     if (event.type !== 'alert' || !this.alertWanted(event.session.status)) return;
-    const previous = this.timers.get(event.session.id);
+    this.scheduleAlert(event.session.id, this.settings.delaySeconds * 1_000);
+  }
+
+  private scheduleAlert(sessionId: string, milliseconds: number): void {
+    const previous = this.timers.get(sessionId);
     if (previous !== undefined) clearTimeout(previous);
     const timer = setTimeout(() => {
-      this.timers.delete(event.session.id);
-      void this.sendAutomaticAlert(event.session.id).catch((error: unknown) => this.logError(error));
-    }, this.settings.delaySeconds * 1_000);
+      this.timers.delete(sessionId);
+      void this.sendAutomaticAlert(sessionId).catch((error: unknown) => {
+        // A Slack 429 window postpones the alert instead of dropping it; a newer alert supersedes it.
+        if (error instanceof SlackRateLimitError && !this.stopped) {
+          if (!this.timers.has(sessionId)) this.scheduleAlert(sessionId, this.rateLimitWait());
+        } else this.logError(error);
+      });
+    }, milliseconds);
     timer.unref();
-    this.timers.set(event.session.id, timer);
+    this.timers.set(sessionId, timer);
   }
 
   private relayTurnEnd(sessionId: string, message: string | null): void {
@@ -580,8 +718,9 @@ export class SlackNotifier {
     const session = this.db.getSession(sessionId);
     if (session === null || !session.attention || (session.status !== 'waiting' && session.status !== 'idle')) return;
     if (!this.alertWanted(session.status)) return;
+    const status=session.status;
     const turn=this.turn(sessionId);
-    if(turn&&(turn.automatic_at!==null||session.status==='idle'&&(turn.custom_at!==null||turn.relayed_at!==null)))return;
+    if(turn&&(turn.automatic_status===session.status||session.status==='idle'&&(turn.custom_at!==null||turn.relayed_at!==null)))return;
     // The agent just asked a question and ended its turn: keep its thread as the one to answer.
     const thread = this.threads.get(sessionId);
     if (thread?.kind === 'ask' && !thread.answered) return;
@@ -589,7 +728,7 @@ export class SlackNotifier {
     if (questions !== null) {
       const message = `:question: ${this.header(session)}\n${formatQuestions(questions)}\n${this.sessionLink(session.id)}`;
       await this.postSessionMessage(session.id, 'alert', message, questions);
-      this.markTurn(sessionId,'automatic_at');
+      this.markTurn(sessionId,'automatic_at',status);
       return;
     }
     const icon = session.status === 'waiting' ? ':raised_hand:' : ':white_check_mark:';
@@ -599,7 +738,7 @@ export class SlackNotifier {
     const duration=turn?` · durée du tour : ${Math.max(0,Math.round(((turn.ended_at??Date.now())-turn.started_at)/1000))} s`:'';
     const message = `${icon} ${this.header(session)}${duration}\n*${label} :* ${reason}\n\`\`\`\n${screen}\n\`\`\`\n${this.sessionLink(session.id)} · réponds dans le fil pour écrire dans la session`;
     await this.postSessionMessage(session.id, 'alert', message);
-    this.markTurn(sessionId,'automatic_at');
+    this.markTurn(sessionId,'automatic_at',status);
   }
 
   private header(session: Session): string {
@@ -659,7 +798,7 @@ export class SlackNotifier {
 
   private async slackApi(method: string, body: Record<string, unknown>): Promise<SlackResponse> {
     if (!SLACK_ENABLED || SLACK_TOKEN === undefined) throw new Error("Slack n'est pas configuré");
-    if (Date.now() < this.rateLimitedUntil) throw new Error('Limite de débit Slack active');
+    if (Date.now() < this.rateLimitedUntil) throw new SlackRateLimitError('Limite de débit Slack active');
     const response = await fetch(`${SLACK_API_URL}/${method}`, {
       method: 'POST',
       headers: {
@@ -673,7 +812,7 @@ export class SlackNotifier {
     if (response.status === 429) {
       const seconds = Number(response.headers.get('retry-after') ?? 1);
       this.rateLimitedUntil = Date.now() + (Number.isFinite(seconds) && seconds > 0 ? seconds : 1) * 1_000;
-      throw new Error('Limite de débit Slack atteinte');
+      throw new SlackRateLimitError('Limite de débit Slack atteinte');
     }
     let value: unknown;
     try {
@@ -689,6 +828,18 @@ export class SlackNotifier {
     return result;
   }
 
+  /**
+   * Reserves one thread read in the poll budget; false once the minute's share is spent.
+   * `force` records a read that cannot wait (DM catch-up pages): threads then yield the budget.
+   */
+  private takeThreadPoll(force = false): boolean {
+    const now = Date.now();
+    while (this.threadPolls.length > 0 && now - this.threadPolls[0] >= POLL_WINDOW_MS) this.threadPolls.shift();
+    if (!force && this.threadPolls.length >= THREAD_POLLS_PER_MINUTE) return false;
+    this.threadPolls.push(now);
+    return true;
+  }
+
   private async poll(): Promise<void> {
     if (this.stopped || this.polling || Date.now() < this.rateLimitedUntil) return;
     this.polling = true;
@@ -698,8 +849,8 @@ export class SlackNotifier {
       } catch (error) {
         this.logError(error);
       }
+      const due: [string, ActiveThread][] = [];
       for (const [sessionId, thread] of [...this.threads]) {
-        if (this.stopped || Date.now() < this.rateLimitedUntil) break;
         const session = this.db.getSession(sessionId);
         if (session === null || session.status === 'exited' || Date.now() - thread.createdAt >= THREAD_MAX_AGE_MS) {
           this.threads.delete(sessionId);
@@ -715,7 +866,15 @@ export class SlackNotifier {
         }
         const age = Date.now() - thread.createdAt;
         if (age > FRESH_THREAD_MS && Date.now() - thread.polledAt < SLOW_POLL_INTERVAL_MS) continue;
+        due.push([sessionId, thread]);
+      }
+      // Round robin: the least recently polled threads use the remaining budget first.
+      due.sort(([, left], [, right]) => (this.pollTurns.get(left) ?? -1) - (this.pollTurns.get(right) ?? -1));
+      for (const [sessionId, thread] of due) {
+        if (this.stopped || Date.now() < this.rateLimitedUntil || !this.takeThreadPoll()) break;
+        if (this.threads.get(sessionId) !== thread) continue;
         thread.polledAt = Date.now();
+        this.pollTurns.set(thread, this.pollTurn++);
         try {
           await this.pollThread(sessionId, thread);
         } catch (error) {
@@ -728,17 +887,43 @@ export class SlackNotifier {
     }
   }
 
+  /**
+   * Reads every page of a history or replies call, as long as `nextPage` allows another call, and
+   * returns the messages later than `after` in chronological order. `complete` is false when pages
+   * were left unread.
+   */
+  private async readMessages(
+    method: 'conversations.history' | 'conversations.replies',
+    body: Record<string, unknown>,
+    after: string,
+    nextPage: (pages: number) => boolean,
+  ): Promise<{ messages: SlackMessage[]; complete: boolean }> {
+    const messages: SlackMessage[] = [];
+    let cursor: string | null = null;
+    for (let pages = 1; ; pages++) {
+      const response = await this.slackApi(method, { ...body, limit: READ_PAGE_SIZE, ...(cursor === null ? {} : { cursor }) });
+      for (const value of response.messages ?? []) {
+        const message = messageFrom(value);
+        if (message !== null && laterThan(message.ts, after)) messages.push(message);
+      }
+      const next = response.response_metadata?.next_cursor;
+      cursor = response.has_more !== false && typeof next === 'string' && next !== '' ? next : null;
+      if (cursor === null || !nextPage(pages)) break;
+    }
+    messages.sort((left, right) => laterThan(left.ts, right.ts) ? 1 : laterThan(right.ts, left.ts) ? -1 : 0);
+    return { messages, complete: cursor === null };
+  }
+
   private async pollDm(): Promise<void> {
     const channel = await this.openDm();
-    const response = await this.slackApi('conversations.history', {
-      channel,
-      oldest: this.dmCursor,
-      limit: 50,
-    });
-    const messages = (response.messages ?? [])
-      .map(messageFrom)
-      .filter((message): message is SlackMessage => message !== null && laterThan(message.ts, this.dmCursor))
-      .sort((left, right) => laterThan(left.ts, right.ts) ? 1 : laterThan(right.ts, left.ts) ? -1 : 0);
+    // History pages run from the newest message backwards: all of them are needed before handling any.
+    const { messages, complete } = await this.readMessages(
+      'conversations.history',
+      { channel, oldest: this.dmCursor },
+      this.dmCursor,
+      (pages) => pages < MAX_DM_PAGES && this.takeThreadPoll(true),
+    );
+    if (!complete) this.logError(new Error(`Historique du DM Slack tronqué à ${MAX_DM_PAGES * READ_PAGE_SIZE} messages : les plus anciens sont ignorés`));
     for (const message of messages) {
       this.dmCursor = message.ts;
       this.stateDirty = true;
@@ -856,11 +1041,23 @@ export class SlackNotifier {
     const exact = projects.filter((project) => normalizeProjectName(project.name) === normalizedName);
     // An exact name on another machine beats a prefix match here; that machine handles it.
     if (exact.length === 0 && this.peers.knownRemotely(projectName, true)) return null;
-    const matches = exact.length > 0
+    // Even when its machine is offline: never run a local prefix match instead.
+    const offlineExact = exact.length === 0 ? this.peers.unreachableMachines(projectName, true) : [];
+    const matches = exact.length > 0 || offlineExact.length > 0
       ? exact
       : projects.filter((project) => normalizeProjectName(project.name).startsWith(normalizedName));
     // Handled by the machine that has this project: no "unknown project" reply from this one.
-    if (matches.length === 0 && this.peers.knownRemotely(projectName, false)) return null;
+    if (matches.length === 0 && offlineExact.length === 0 && this.peers.knownRemotely(projectName, false)) return null;
+    if (matches.length === 0) {
+      // Known only on machines that stopped syncing: nobody would handle it, a single machine says so.
+      const offline = offlineExact.length > 0 ? offlineExact : this.peers.unreachableMachines(projectName, false);
+      if (offline.length > 0) {
+        if (general) {
+          await this.postThreadReply(channel, threadTs, `:zzz: Projet « ${escapeMrkdwn(projectName)} » connu sur ${escapeMrkdwn(offline.join(', '))}, actuellement injoignable.`);
+        }
+        return null;
+      }
+    }
     if (matches.length !== 1) {
       // Unknown everywhere: a single machine says so. An ambiguous prefix is only ambiguous here.
       if (matches.length === 0 && !general) return null;
@@ -998,16 +1195,13 @@ export class SlackNotifier {
   }
 
   private async pollThread(sessionId: string, thread: ActiveThread): Promise<void> {
-    const response = await this.slackApi('conversations.replies', {
-      channel: thread.channel,
-      ts: thread.ts,
-      oldest: thread.lastTs,
-      limit: 50,
-    });
-    const messages = (response.messages ?? [])
-      .map(messageFrom)
-      .filter((message): message is SlackMessage => message !== null && laterThan(message.ts, thread.lastTs))
-      .sort((left, right) => laterThan(left.ts, right.ts) ? 1 : laterThan(right.ts, left.ts) ? -1 : 0);
+    // Replies pages run forwards in time: the unread rest is picked up from lastTs on the next poll.
+    const { messages } = await this.readMessages(
+      'conversations.replies',
+      { channel: thread.channel, ts: thread.ts, oldest: thread.lastTs },
+      thread.lastTs,
+      (pages) => pages < MAX_THREAD_PAGES && this.takeThreadPoll(),
+    );
     for (const message of messages) {
       if (this.threads.get(sessionId) !== thread) return;
       thread.lastTs = message.ts;

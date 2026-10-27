@@ -1,5 +1,5 @@
 import { assertWorktreeAvailable, canonicalWorktreePath } from './worktree-gate.ts';
-import { spawn } from 'node:child_process';
+import { GitOutputLimitError, runGit } from './git-process.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdtemp, open, readFile, readlink, rename, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,29 +16,40 @@ export interface GitSnapshot { root: string; id: string; head: string | null; br
 export interface CommitSelection { path: string; all?: boolean; hunks?: string[] }
 export interface CommitStep { message: string; selection: CommitSelection[] }
 export interface CommitPlan { snapshotId: string; commits: CommitStep[]; acknowledged: string[]; push: boolean }
-export interface CommitResult { commits: { hash: string; title: string }[]; exclusions: string[]; error: string | null; pushId: string | null; operationId?:string }
+export interface CommitResult { commits: { hash: string; title: string }[]; exclusions: string[]; error: string | null; pushId: string | null; operationId?:string; blocked?: boolean }
 interface Saved { path: string; snapshot: GitSnapshot; work: string; index: string; branch: string | null; used: boolean }
 const snapshots = new Map<string, Saved>();
 const locks = new Set<string>();
 
 async function git(path: string, args: string[], index?: string, input?: string | Buffer): Promise<string> {
-  return new Promise((accept, reject) => {
-    const child = spawn('git', ['-C', path, ...args], {
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...(index ? { GIT_INDEX_FILE: index } : {}) },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = ''; let stderr = ''; let exceeded = false;
-    child.stdout.on('data', (data: Buffer) => { stdout += data; if (Buffer.byteLength(stdout) > LIMIT) { exceeded = true; child.kill(); } });
-    child.stderr.on('data', (data: Buffer) => { stderr = (stderr + data).slice(-LIMIT); });
-    child.on('error', reject);
-    child.on('close', code => (code === 0 || code === 1 && args.includes('--no-index')) && !exceeded ? accept(stdout) : reject(new Error(exceeded ? 'Contexte Git trop volumineux (4 Mio).' : stderr || `git ${args[0]} : code ${code}`)));
-    child.stdin.on('error', () => {});
-    child.stdin.end(input);
-  });
+  const result = await runGit(['-C', path, ...args], { env: { GIT_OPTIONAL_LOCKS: '0', ...(index ? { GIT_INDEX_FILE: index } : {}) }, input, maxBuffer: LIMIT })
+    .catch((cause: unknown) => { throw cause instanceof GitOutputLimitError ? new Error('Contexte Git trop volumineux (4 Mio).') : cause; });
+  if (result.code === 0 || result.code === 1 && args.includes('--no-index')) return result.stdout.toString('utf8');
+  throw new Error(result.stderr.toString('utf8') || `git ${args[0]} : code ${result.code}`);
 }
 async function branch(path: string): Promise<string | null> { return (await git(path, ['symbolic-ref', '--quiet', 'HEAD']).catch(() => '')).trim() || null; }
 async function head(path: string): Promise<string | null> { return (await git(path, ['rev-parse', '--verify', 'HEAD']).catch(() => '')).trim() || null; }
 async function indexPath(path: string): Promise<string> { return resolve(path, (await git(path, ['rev-parse', '--git-path', 'index'])).trim()); }
+// A bisect is absent: it only moves HEAD, and committing there reads none of its state.
+const OPERATIONS: [string, string][] = [['MERGE_HEAD', 'une fusion (merge)'], ['CHERRY_PICK_HEAD', 'un cherry-pick'], ['REVERT_HEAD', 'un revert'], ['REBASE_HEAD', 'un rebase'], ['rebase-merge', 'un rebase'], ['rebase-apply', 'un rebase ou git am']];
+/** Refusal to commit while a Git operation is in progress: `git commit` would read its state (MERGE_HEAD becomes a second parent). */
+export class GitOperationInProgress extends Error {
+  readonly operation?: string;
+  constructor(message: string, operation?: string) { super(message); this.operation = operation; }
+}
+/** Throws while a merge, cherry-pick, revert or rebase is in progress in this worktree; only commit creation needs it, never read-only views. */
+export async function assertNoGitOperation(path: string): Promise<void> {
+  const locations = (await git(path, ['rev-parse', ...OPERATIONS.flatMap(([name]) => ['--git-path', name])])).split('\n');
+  for (const [position, [, label]] of OPERATIONS.entries()) {
+    const location = resolve(path, locations[position]);
+    if (await lstat(location).then(() => true, cause => { if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return false; throw cause; }))
+      throw new GitOperationInProgress(`Opération Git en cours (${label}) : terminez-la ou annulez-la avant de créer un commit.`, label);
+  }
+}
+/** Takes the real index lock with Git's own protocol; a lock held elsewhere is a retryable refusal, not a failure. */
+async function lockIndex(index: string): Promise<Awaited<ReturnType<typeof open>>> {
+  return open(`${index}.lock`, 'wx').catch((cause: NodeJS.ErrnoException) => { throw cause.code === 'EEXIST' ? new GitOperationInProgress('Une autre opération Git est en cours (index.lock) : réessayez.', 'index.lock') : cause; });
+}
 async function indexHash(path: string): Promise<string> { return hash(await readFile(await indexPath(path)).catch(cause => { if(cause.code === 'ENOENT') return Buffer.alloc(0); throw cause; })); }
 async function workHash(path: string): Promise<string> {
   const files = [...new Set((await git(path, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])).split('\0').filter(Boolean))].sort();
@@ -63,7 +74,8 @@ function hunks(diff: string): GitHunk[] {
   const start = diff.indexOf('\n@@ ');
   if (start < 0 || /^(new file mode|deleted file mode|old mode|new mode|GIT binary patch)/m.test(diff)) return [];
   const prefix = diff.slice(0, start + 1);
-  return diff.slice(start + 1).split(/(?=^@@ )/m).filter(Boolean).map(hunk => ({ id: hash(prefix + hunk), patch: prefix + hunk }));
+  // The position keeps ids unique even if two hunks of a file had identical text.
+  return diff.slice(start + 1).split(/(?=^@@ )/m).filter(Boolean).map((hunk, position) => ({ id: hash(`${position}\0${prefix}${hunk}`), patch: prefix + hunk }));
 }
 function scan(file: string, diff: string): { warnings: string[]; blocked: boolean } {
   const warnings: string[] = [];
@@ -123,7 +135,8 @@ export async function prepareCommit(path: string, shared?: SharedDependencies | 
       if (bytes > LIMIT) throw new Error('Plan trop volumineux (4 Mio).');
       files.push({ path: file, diff, hunks: hunks(diff), ...scan(file, diff) });
     }
-    if (before.branch !== await branch(path) || before.head !== await head(path) || before.work !== await workHash(path) || before.index !== await indexHash(path)) throw new Error(`État Git modifié pendant la collecte : recommencez. HEAD=${before.head !== await head(path)} work=${before.work !== await workHash(path)} index=${before.index !== await indexHash(path)}`);
+    // Short-circuits: the work tree is only rehashed once the cheaper checks pass.
+    if (before.branch !== await branch(path) || before.head !== await head(path) || before.index !== await indexHash(path) || before.work !== await workHash(path)) throw new Error('Le dépôt a changé pendant la préparation : relancez.');
     const snapshot: GitSnapshot = {
       root: path, id: randomUUID(), branch: before.branch, head: before.head, fingerprint: hash(JSON.stringify(before)), files,
       stagedDiff: await git(path, ['diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv', before.head ?? EMPTY], temporaryIndex),
@@ -201,7 +214,7 @@ export async function executeCommitPlan(path: string, raw: unknown): Promise<Com
   const dir = await mkdtemp(join(tmpdir(), 'cerebro-execute-'));
   const result: CommitResult = { commits: [], exclusions: [], error: null, pushId: null };
   try {
-    lock = await open(`${index}.lock`, 'wx');
+    lock = await lockIndex(index);
     assertWorktreeAvailable(path);
     if (saved.branch !== await branch(path) || saved.snapshot.head !== await head(path) || saved.work !== await workHash(path) || saved.index !== await indexHash(path)) throw new Error('État Git obsolète : préparez un nouveau plan.');
     const selectedPaths = new Set(plan.commits.flatMap(step => step.selection.map(s => s.path)));
@@ -248,12 +261,14 @@ export async function executeCommitPlan(path: string, raw: unknown): Promise<Com
     }
     // Everything, including index preservation, is checked before the first mutation.
     if (saved.branch !== await branch(path) || saved.snapshot.head !== await head(path) || saved.work !== await workHash(path) || saved.index !== await indexHash(path)) throw new Error('État Git obsolète avant exécution.');
+    await assertNoGitOperation(path);
     saved.used = true;
     let expectedHead = saved.snapshot.head;
     let expectedIndex = saved.index;
     for (const step of prepared) {
       assertWorktreeAvailable(path);
       if (saved.branch !== await branch(path) || await head(path) !== expectedHead || saved.work !== await workHash(path) || expectedIndex !== await indexHash(path)) throw new Error('Modifications concurrentes : exécution interrompue.');
+      await assertNoGitOperation(path);
       await git(path, ['commit', '--file=-'], step.index, step.message);
       const oid = (await head(path))!;
       const actualTree = (await git(path, ['rev-parse', 'HEAD^{tree}'])).trim();
@@ -267,13 +282,19 @@ export async function executeCommitPlan(path: string, raw: unknown): Promise<Com
       await writeFile(`${index}.lock`, mergedBytes);
       await rename(`${index}.lock`, index);
       await lock.close(); lock = null;
-      lock = await open(`${index}.lock`, 'wx');
+      lock = await lockIndex(index);
       assertWorktreeAvailable(path);
       if (expectedIndex !== await indexHash(path)) throw new Error('L’index a changé entre deux commits : exécution interrompue.');
       expectedHead = oid;
       if (saved.work !== await workHash(path)) throw new Error('Le worktree a changé pendant le commit (hook ou édition externe) : vérification requise.');
     }
-  } catch (cause) { result.error = errorMessage(cause); }
+  } catch (cause) {
+    result.error = errorMessage(cause);
+    // A refusal is only retryable while nothing was committed; afterwards the plan is half applied.
+    result.blocked = cause instanceof GitOperationInProgress && !result.commits.length;
+    if (cause instanceof GitOperationInProgress && result.commits.length)
+      result.error = `Plan appliqué partiellement : ${result.commits.length} commit(s) sur ${plan.commits.length} créé(s), puis arrêt car une autre opération Git est en cours (${cause.operation ?? 'inconnue'}). Vérifiez l’état du dépôt avant de commiter la suite.`;
+  }
   finally {
     if (lock) { await lock.close(); await rm(`${index}.lock`, { force: true }); }
     await rm(dir, { recursive: true, force: true }); locks.delete(index);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -77,4 +77,98 @@ test('a later epic step joins the first copy and inherits its uncommitted work a
   writeFileSync(join(first.path,'shared'),'step two\n');
   assert.deepEqual((await sessionProvenance(db,'step2')).changes.map(change=>change.path),['shared']);
   assert.deepEqual((await sessionProvenance(db,'step1')).changes.map(change=>change.path),['second','shared']);
+});
+test('permissions Git does not track do not block the copy, an executable bit still counts as a change',async()=>{
+  const modes=join(root,'modes');mkdirSync(modes);
+  git(modes,'init','-b','main');git(modes,'config','user.name','Test');git(modes,'config','user.email','test@example.com');
+  for(const name of ['private','shared','script'])writeFileSync(join(modes,name),`${name}\n`);
+  chmodSync(join(modes,'script'),0o775);git(modes,'add','.');git(modes,'commit','-m','base');
+  // Cloned under another umask than the server's: checkout-index recreates these with the server's permissions.
+  chmodSync(join(modes,'private'),0o600);chmodSync(join(modes,'shared'),0o664);chmodSync(join(modes,'script'),0o700);
+  const modesProject=db.createProject('Modes',modes);
+  db.createSession({id:'modes',projectId:modesProject.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'modes',status:'exited',agentSessionId:'modes'},'token');
+  const workspace=await createWorkspace(db,'modes',modesProject);
+  assert.equal(workspace.mode,'isolated');
+  assert.equal(lstatSync(join(workspace.path,'script')).mode&0o100,0o100);
+  assert.deepEqual((await sessionProvenance(db,'modes')).changes,[]);
+  chmodSync(join(workspace.path,'shared'),0o755);
+  assert.deepEqual((await sessionProvenance(db,'modes')).changes.map(change=>change.path),['shared']);
+});
+test('a project registered through a symbolic link runs inside its copy, never beside it or in the source',async()=>{
+  const nested=join(repo,'packages','app');mkdirSync(nested,{recursive:true});writeFileSync(join(nested,'index'),'app\n');
+  git(repo,'add','packages');git(repo,'commit','-m','nested package');
+  const links=join(root,'links');mkdirSync(links);
+  symlinkSync(repo,join(links,'link'),'dir');symlinkSync(nested,join(links,'app'),'dir');
+  for(const [id,path,inside] of [['via-link',join(links,'link'),''],['via-nested-link',join(links,'app'),join('packages','app')]]){
+    const linked=db.createProject(id,path);
+    db.createSession({id,projectId:linked.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:id,status:'exited',agentSessionId:id},'token');
+    const workspace=await createWorkspace(db,id,linked);
+    assert.equal(workspace.mode,'isolated');
+    assert.equal(workspace.path,join(workspace.root,inside));
+    assert.ok(existsSync(workspace.path),'the session directory exists in the copy');
+    assert.ok(!realpathSync(workspace.path).startsWith(`${realpathSync(repo)}/`)&&realpathSync(workspace.path)!==realpathSync(repo),'the session never runs in the source');
+    assert.equal(workspaceAt(db,workspace.path).sessionId,id);
+  }
+});
+test('a commit touching a non-ASCII file modified before the session stays uncertain',async()=>{
+  const accents=join(root,'accents');mkdirSync(accents);
+  git(accents,'init','-b','main');git(accents,'config','user.name','Test');git(accents,'config','user.email','test@example.com');
+  writeFileSync(join(accents,'café.txt'),'original\n');git(accents,'add','.');git(accents,'commit','-m','base');
+  writeFileSync(join(accents,'café.txt'),'human edit\n');
+  const accentsProject=db.createProject('Accents',accents);
+  db.createSession({id:'accents',projectId:accentsProject.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'accents',status:'exited',agentSessionId:'accents'},'token');
+  const workspace=await createWorkspace(db,'accents',accentsProject);
+  assert.deepEqual(workspace.initialDirty,['café.txt']);
+  // core.quotePath is left at its default: a quoted "caf\303\251.txt" would never match initialDirty.
+  git(workspace.path,'commit','-am','session commit');
+  const [commit]=(await sessionProvenance(db,'accents')).commits;
+  assert.equal(commit.title,'session commit');assert.equal(commit.certainty,'uncertain');
+});
+test('a branch of 300 commits is attributed with a bounded number of Git processes',async()=>{
+  const long=join(root,'long');mkdirSync(long);
+  git(long,'init','-b','main');git(long,'config','user.name','Test');git(long,'config','user.email','test@example.com');
+  writeFileSync(join(long,'dirty.txt'),'original\n');git(long,'add','.');git(long,'commit','-m','base');
+  writeFileSync(join(long,'dirty.txt'),'human edit\n');
+  const longProject=db.createProject('Long',long);
+  db.createSession({id:'long',projectId:longProject.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'long',status:'exited',agentSessionId:'long'},'token');
+  const workspace=await createWorkspace(db,'long',longProject);
+  // 300 first-parent commits built in one fast-import run, among them a merge, an empty commit,
+  // a commit on a file modified before the session and one on a quoted name.
+  const author='committer Test <test@example.com> 1700000000 +0000\n';
+  const blob=text=>`data ${Buffer.byteLength(text)}\n${text}\n`;
+  let stream=`commit refs/perf/side\nmark :9999\n${author}${blob('side')}from ${workspace.base}\nM 100644 inline side.txt\n${blob('side\n')}`;
+  for(let i=1;i<=300;i++){
+    const name=i===100?'dirty.txt':i===200?'é t.txt':`f${i}.txt`;
+    stream+=`commit refs/perf/tip\nmark :${i}\n${author}${blob(`c${i}`)}from ${i===1?workspace.base:`:${i-1}`}\n`;
+    if(i===150)stream+='merge :9999\n';
+    else if(i!==250)stream+=`M 100644 inline "${name}"\n${blob(`${i}\n`)}`;
+  }
+  execFileSync('git',['-C',workspace.root,'fast-import','--quiet'],{input:`${stream}done\n`,stdio:['pipe','ignore','pipe']});
+  git(workspace.root,'update-ref','-m','commit: imported',`refs/heads/${workspace.branch}`,git(workspace.root,'rev-parse','refs/perf/tip'));
+  git(workspace.root,'read-tree','-u','--reset','HEAD');
+  const bin=join(root,'counting-bin');mkdirSync(bin);const log=join(root,'git-calls.log');writeFileSync(log,'');
+  const realGit=execFileSync('sh',['-c','command -v git'],{encoding:'utf8'}).trim();
+  writeFileSync(join(bin,'git'),`#!/bin/sh\necho x >> '${log}'\nexec '${realGit}' "$@"\n`);chmodSync(join(bin,'git'),0o755);
+  const path=process.env.PATH;process.env.PATH=`${bin}:${path}`;
+  let provenance;const started=Date.now();
+  try{provenance=await sessionProvenance(db,'long');}finally{process.env.PATH=path;}
+  const elapsed=Date.now()-started;const calls=readFileSync(log,'utf8').split('\n').filter(Boolean).length;
+  assert.equal(provenance.commits.length,300);
+  const byTitle=Object.fromEntries(provenance.commits.map(commit=>[commit.title,commit.certainty]));
+  assert.equal(byTitle.c1,'workspace');assert.equal(byTitle.c200,'workspace');assert.equal(byTitle.c250,'workspace');
+  assert.equal(byTitle.c100,'uncertain');assert.equal(byTitle.c150,'uncertain');
+  assert.equal(provenance.commits.filter(commit=>commit.certainty==='uncertain').length,2);
+  assert.ok(calls<30,`${calls} processus Git pour 300 commits`);
+  assert.ok(elapsed<10_000,`${elapsed} ms pour 300 commits`);
+});
+test('provenance stays readable during a merge without remaining conflicts; only a session commit plan is refused',async()=>{
+  session('merging');const workspace=await createWorkspace(db,'merging',project);const {SessionGitScopes}=await import('../server/session-git.ts');
+  git(workspace.root,'checkout','-q','-b','merging-target');writeFileSync(join(workspace.root,'shared'),'target\n');git(workspace.root,'commit','-qm','target','--','shared');
+  git(workspace.root,'checkout','-q',workspace.branch);writeFileSync(join(workspace.root,'shared'),'session\n');git(workspace.root,'commit','-qm','session','--','shared');
+  assert.throws(()=>git(workspace.root,'merge','--no-ff','--no-commit','merging-target'));
+  writeFileSync(join(workspace.root,'shared'),'resolved\n');git(workspace.root,'add','shared');
+  const provenance=await sessionProvenance(db,'merging');assert.ok(provenance.changes.some(change=>change.path==='shared'));
+  await assert.rejects(new SessionGitScopes(db).prepare('merging'),/Opération Git en cours \(une fusion/);
+  assert.ok(existsSync(git(workspace.root,'rev-parse','--path-format=absolute','--git-path','MERGE_HEAD')));
+  git(workspace.root,'merge','--abort');
 });
