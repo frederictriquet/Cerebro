@@ -119,7 +119,7 @@ export async function answerQuestion(db: CerebroDatabase, question: string): Pro
     }
     throw new Error('aucune réponse de Claude');
   } catch (error) {
-    if (abort.signal.aborted) throw new Error(`délai de ${ANSWER_TIMEOUT_MS / 60_000} min dépassé`);
+    if (abort.signal.aborted) throw new Error(`délai de ${ANSWER_TIMEOUT_MS / 60_000} min dépassé`, { cause: error });
     throw error;
   } finally {
     clearTimeout(timer);

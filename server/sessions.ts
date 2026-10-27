@@ -399,7 +399,7 @@ export class SessionManager {
     }
     this.emit({ type: 'session', session });
 
-    let cwd = project.path;
+    let cwd: string;
     try {
       const workspace =
         existingId !== null

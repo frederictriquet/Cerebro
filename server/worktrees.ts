@@ -1121,7 +1121,7 @@ export class WorktreeManager {
       .then(async () => {
         if (this.closed) return;
         const temporary = await mkdtemp(join(tmpdir(), 'cerebro-forecast-'));
-        let conflicts: string[] | null = null;
+        let conflicts: string[] | null;
         try {
           const simulated = await this.simulateTargetMerge(view, temporary);
           conflicts = simulated && 'conflicts' in simulated ? simulated.conflicts : [];

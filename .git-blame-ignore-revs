@@ -1,0 +1,2 @@
+# Reformatage Prettier global, à ignorer dans git blame (git config blame.ignoreRevsFile .git-blame-ignore-revs).
+b97efb6db5747f7185df86baf034777edcfaabfc

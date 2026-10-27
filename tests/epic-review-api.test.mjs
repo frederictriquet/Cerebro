@@ -449,7 +449,7 @@ test('review step is added once, depends on every task; epic review needs a fini
     const response = await send('POST', `/api/epics/${epic.id}/review`, { prompt: 'Sois précis.' });
     assert.equal(response.statusCode, 201);
     assert.equal(launches.length, 1);
-    const [launched, , , , prompt, , , , joined, title, , context] = launches[0];
+    const [, , , , prompt, , , , , title, , context] = launches[0];
     assert.equal(context?.path, workspace.path);
     assert.match(prompt, /^Sois précis\./);
     assert.match(prompt, /feature\.txt/);

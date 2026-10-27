@@ -12,7 +12,7 @@ process.env.CODEX_HOME = join(root, 'codex');
 const { CerebroDatabase, DEFAULT_SESSION_DEFAULTS } = await import('../server/db.ts');
 const { CommandExecutor } = await import('../server/commands.ts');
 const { EpicRunner } = await import('../server/epic-runner.ts');
-const { createWorkspace, createWorkspaceInContext, joinWorkspace, workspaceAt, workspaceFor } =
+const { createWorkspace, createWorkspaceInContext, joinWorkspace, workspaceFor } =
   await import('../server/provenance.ts');
 const { epicWorkspace, epicWorkspaceOptions, rememberEpicWorkspace } = await import('../server/epic-workspace.ts');
 const { importFindings, saveReport } = await import('../server/findings.ts');

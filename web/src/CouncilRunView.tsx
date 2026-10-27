@@ -172,6 +172,7 @@ function sessionPrompt(run: CouncilRun, synthesis: CouncilSynthesis): string {
 // Projet cible des suites : celui du council, sinon un projet à choisir.
 // Les images du council rejoignent le brouillon de session sous de nouveaux numéros, après celles
 // qu'il contient déjà ; les jetons du prompt sont renumérotés en conséquence.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- jamais branchée : la suite « Ouvrir une session » ne reprend pas encore les images du council.
 function withCouncilImages(
   prompt: string,
   previous: DraftImage[],

@@ -58,7 +58,7 @@ export function LlmSelector({
     return () => window.clearTimeout(timer);
   }, [available.length, refreshing, refresh]);
   // [SPEC UI web › Vue projet] No default choice: the shown model and effort are always explicit.
-  const { info, models, efforts, model, effort } = llmChoices(agents, value);
+  const { models, efforts, model, effort } = llmChoices(agents, value);
   const missingModel = value.model !== null && !models.some((item) => item.value === value.model);
   const missingEffort = value.effort !== null && !efforts.includes(value.effort);
   return (

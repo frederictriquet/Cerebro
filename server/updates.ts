@@ -105,7 +105,6 @@ const LATEST: Record<Agent, () => Promise<string>> = {
 };
 
 function stripAnsi(text: string): string {
-  // eslint-disable-next-line no-control-regex
   return text.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\r/g, '');
 }
 
@@ -231,7 +230,7 @@ export class UpdateManager {
     current.updating = true;
     const before = current.installed;
     let ok = false;
-    let output = '';
+    let output: string;
     try {
       const pending = execFileAsync(agent, ['update'], {
         timeout: UPDATE_TIMEOUT_MS,

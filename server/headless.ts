@@ -76,6 +76,7 @@ function decode(text: string): unknown {
 }
 
 /** Subset of JSON Schema used by Cerebro's own schemas: type, enum, properties, required, additionalProperties:false, items, min/max. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- schéma JSON parcouru dynamiquement
 export function validateSchema(value: unknown, schema: any, path = '$'): void {
   const fail = (reason: string): never => {
     throw new Error(`Réponse de l’agent non conforme au schéma (${path} : ${reason}).`);

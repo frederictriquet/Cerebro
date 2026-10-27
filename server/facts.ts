@@ -92,7 +92,7 @@ export function renderFacts(query: FactQuery, states: MachineState[]): string {
     if (query.project && projects.length > 1)
       return `Projet ambigu sur ${data.machine} : utilisez son identifiant.\n${FACT_HELP}`;
     for (const project of projects) {
-      let epics = data.epics.filter(
+      const epics = data.epics.filter(
         (e) => e.projectId === project.id && (!query.epic || exact(query.epic, e.id, e.title)),
       );
       if (query.epic && !epics.length) continue;

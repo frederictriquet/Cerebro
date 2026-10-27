@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { sep } from 'node:path';

@@ -211,7 +211,7 @@ test('LLM steps get a readable title and a declared-done step frees its terminal
 process.on('exit', () => rmSync(root, { recursive: true, force: true }));
 test('stop during asynchronous LLM preparation cannot be overwritten by its launch callback', async () =>
   fixture(async (f) => {
-    const a = f.task('slow');
+    f.task('slow');
     let release;
     let beforeLaunch;
     const gate = new Promise((resolve) => {

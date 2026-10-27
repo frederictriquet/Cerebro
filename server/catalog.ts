@@ -69,6 +69,8 @@ export function defaultEffort(efforts: Effort[]): Effort | null {
 async function discoverClaude(): Promise<AgentCatalog> {
   const { stdout } = await execFileAsync('which', ['claude']);
   let release = (): void => {};
+  // Flux d'entrée qui ne produit rien : il garde la session ouverte jusqu'à release().
+  // eslint-disable-next-line require-yield
   const prompt = (async function* () {
     await new Promise<void>((resolve) => {
       release = resolve;

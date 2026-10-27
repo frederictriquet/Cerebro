@@ -29,6 +29,26 @@ Pour le développement, lancez le serveur et Vite avec rechargement automatique 
 npm run dev
 ```
 
+### Qualité du code
+
+Le code est formaté par Prettier et vérifié par ESLint (typescript-eslint et
+eslint-plugin-react-hooks, dont `exhaustive-deps`). Avant chaque commit :
+
+```sh
+npm run format      # reformate le code (format:check vérifie seulement)
+npm run lint        # ESLint, sans avertissement toléré
+npm run typecheck   # TypeScript 7
+npm test
+```
+
+Tout le code passe par Prettier, sans ligne compactée à la main ; une exception
+ESLint locale (`eslint-disable-next-line`) indique sa raison. typescript-eslint
+ne prend pas encore en charge TypeScript 7, qui n'expose pas d'API JavaScript :
+le paquet `typescript` pointe donc sur `@typescript/typescript6` pour le lint,
+et `npm run typecheck` lance le `tsc` de TypeScript 7 installé sous l'alias
+`typescript7`. Le reformatage global est listé dans `.git-blame-ignore-revs` :
+`git config blame.ignoreRevsFile .git-blame-ignore-revs` l'écarte de `git blame`.
+
 ## Statistiques d’utilisation des LLM
 
 L’accueil affiche une barre de répartition des sessions entre Claude, Codex et

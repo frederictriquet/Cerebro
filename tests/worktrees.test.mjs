@@ -318,7 +318,7 @@ test('removal requires integration, no local/ignored files and no live session; 
     await assert.rejects(f.manager.prepare(own.id, 'remove'), /Session/);
     f.db.updateSession(f.id, { status: 'exited' });
     const plan = await f.manager.prepare(own.id, 'remove');
-    const operation = await f.manager.start(own.id, 'remove', plan.token);
+    await f.manager.start(own.id, 'remove', plan.token);
     await f.manager.shutdown();
     assert.equal(existsSync(own.path), false);
     assert.equal(git(f.repo, 'rev-parse', f.workspace.branch), git(f.repo, 'rev-parse', 'HEAD'));

@@ -1,10 +1,8 @@
-import { execFile } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import Fastify from 'fastify';
@@ -66,7 +64,6 @@ import { TokenUsageTracker } from './token-usage.ts';
 import { registerVscodeRelay, VscodeServer } from './vscode.ts';
 
 const MODES: readonly Mode[] = ['default', 'auto', 'acceptEdits', 'plan', 'bypass'];
-const execFileAsync = promisify(execFile);
 const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
