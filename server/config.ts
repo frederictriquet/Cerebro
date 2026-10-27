@@ -25,6 +25,28 @@ export const SLACK_USER = process.env.CEREBRO_SLACK_USER;
 export const SLACK_API_URL = process.env.CEREBRO_SLACK_API_URL ?? 'https://slack.com/api';
 export const SLACK_ALERTS = process.env.CEREBRO_SLACK_ALERTS ?? 'all';
 export const SLACK_DELAY_MS = Number(process.env.CEREBRO_SLACK_DELAY ?? 30) * 1_000;
+// Beyond this, setTimeout overflows and fires at once.
+const MAX_TIMEOUT_SECONDS = Math.floor(2 ** 31 / 1_000) - 1;
+
+/**
+ * Reads a duration in seconds from `name`. Anything but a finite, strictly positive number within
+ * setTimeout's range (empty, `1m`, `0`…) would fire the timer at once: the default is kept and the variable named.
+ */
+export function timeoutSeconds(name: string, fallback: number, env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[name];
+  if (raw === undefined) return fallback;
+  const value = raw.trim() === '' ? Number.NaN : Number(raw);
+  if (Number.isFinite(value) && value > 0 && value <= MAX_TIMEOUT_SECONDS) return value;
+  console.warn(`[config] ${name}=${JSON.stringify(raw)} invalide (nombre de secondes > 0 et ≤ ${MAX_TIMEOUT_SECONDS} attendu) : valeur par défaut ${fallback} s utilisée`);
+  return fallback;
+}
+
+// Seconds before a Git process (and its hooks) is killed: reads stay short, merges, commits and pushes may run hooks.
+export const GIT_TIMEOUTS_MS = {
+  read: timeoutSeconds('CEREBRO_GIT_TIMEOUT_READ', 60) * 1_000,
+  write: timeoutSeconds('CEREBRO_GIT_TIMEOUT_WRITE', 600) * 1_000,
+  network: timeoutSeconds('CEREBRO_GIT_TIMEOUT_NETWORK', 600) * 1_000,
+};
 export const SLACK_ENABLED = SLACK_TOKEN !== undefined && SLACK_USER !== undefined;
 export const PUBLIC_URL = process.env.CEREBRO_PUBLIC_URL ?? `http://${HOST}:${PORT}`;
 // URL used by hook scripts (always local, even when the UI is exposed elsewhere).

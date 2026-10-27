@@ -27,7 +27,7 @@ import { validateCouncilSettings } from './council.ts';
 import { ATTACHMENTS_DIR, BIND_TOKEN, HOOK_LOG, HOST, PORT, ROOT, SLACK_ENABLED } from './config.ts';
 import { CerebroDatabase, normalizeMode, resolveSessionDefaults, SessionProtectionError } from './db.ts';
 import type { Agent, CommitSettings, Epic, Mode, Project, ResolutionSettings, Session, SessionDefaults, Task, TaskExecution, TaskStatus } from './db.ts';
-import { prepareCommit, executeCommitPlan } from './git-plan.ts';
+import { assertNoGitOperation, prepareCommit, executeCommitPlan } from './git-plan.ts';
 import { currentPush, startPush, onPushComplete } from './git-push.ts';
 import { gitSummary } from './git-summary.ts';
 import { handleHook, installGrokHook, isHookPayload } from './hooks.ts';
@@ -475,7 +475,8 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/prepare-commit', async (request, reply) => {
     const project = db.getProject(request.params.id);
     if (project === null) return error(reply, 404, 'Projet introuvable');
-    const result = await orError(reply, () => prepareCommit(project.path));
+    // Early refusal: a plan prepared during a merge or rebase could not be executed anyway.
+    const result = await orError(reply, async () => { await assertNoGitOperation(project.path); return prepareCommit(project.path); });
     return result.ok ? reply.send(result.value) : result.reply;
   });
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/commit', async (request, reply) => {

@@ -1,10 +1,8 @@
 import { reviewInstructions } from './review.ts';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import type { CerebroDatabase } from './db.ts';
-import { executeCommitPlan, parseCommitPlan, prepareCommit, selectionDiff, verifySnapshot, type CommitResult, type CommitSelection, type GitSnapshot } from './git-plan.ts';
+import { execGit } from './git-process.ts';
+import { assertNoGitOperation, executeCommitPlan, parseCommitPlan, prepareCommit, selectionDiff, verifySnapshot, type CommitResult, type CommitSelection, type GitSnapshot } from './git-plan.ts';
 import { sessionProvenance, workspaceFor, type Provenance } from './provenance.ts';
-const exec=promisify(execFile);
 export interface SessionGitSnapshot extends GitSnapshot { provenance: Provenance; scopeNotice: string }
 export interface SessionGitContext { mode:'shared'|'isolated'|'removed';projectId:string;projectName:string;path:string }
 export function sessionGitContext(db:CerebroDatabase,id:string):SessionGitContext {
@@ -18,6 +16,8 @@ export const INHERITED_WARNING='Contenu copié du projet à la création de la c
 const scopes=new Map<string,{sessionId:string;provenance:Provenance;uncertain:Set<string>}>();
 export async function prepareSessionGit(db:CerebroDatabase,id:string):Promise<SessionGitSnapshot>{
   const provenance=await sessionProvenance(db,id);
+  // Provenance stays readable during a merge; only a commit plan is refused early.
+  await assertNoGitOperation(provenance.workspace.root);
   const snapshot=await prepareCommit(provenance.workspace.root,provenance.workspace);
   const uncertain=new Set(snapshot.files.filter(f=>!provenance.changes.some(c=>c.path===f.path&&c.certainty==='workspace')).map(f=>f.path));
   for(const [key] of scopes)if(scopes.size>100)scopes.delete(key);
@@ -48,8 +48,7 @@ export async function sessionReviewContext(id:string,raw:unknown):Promise<{promp
     const commit=saved.provenance.commits.find(c=>c.hash===oid);
     if(!commit)throw new Error('Commit absent de la provenance préparée.');
     if(commit.certainty==='uncertain'&&!p.acknowledged.includes(oid))throw new Error('Confirmez explicitement le périmètre du commit incertain.');
-    const result=await exec('git',['-C',root,'show','--format=fuller','--binary','--no-ext-diff','--no-textconv',oid],{maxBuffer:4*1024*1024});
-    patches.push(result.stdout);
+    patches.push((await execGit(['-C',root,'show','--format=fuller','--binary','--no-ext-diff','--no-textconv',oid],{maxBuffer:4*1024*1024})).toString('utf8'));
   }
   if(!patches.length)throw new Error('Choisissez au moins un fichier, hunk ou commit.');
   const context=patches.join('\n');if(Buffer.byteLength(context)>4*1024*1024)throw new Error('Contexte de review trop volumineux.');

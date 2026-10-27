@@ -101,7 +101,7 @@ test('merge then continued conversation reopens pending work on the same branch,
  let own=await f.view();assert.equal(own.integration,'integrated');assert.equal(own.ahead,0);assert.ok(existsSync(own.path));assert.equal(git(own.path,'symbolic-ref','--short','HEAD'),f.workspace.branch);
  writeFileSync(join(own.path,'next'),'continued\n');own=await f.view();assert.equal(own.dirty,1);assert.equal(own.ahead,0);assert.equal(own.integration,'pending');assert.ok(own.removeBlockers.length);
  git(own.path,'add','next');git(own.path,'commit','-m','continued');own=await f.view();assert.equal(own.dirty,0);assert.equal(own.ahead,1);assert.equal(own.integration,'pending');
- assert.equal((await f.merge()).status,'succeeded');await f.restart();own=await f.view();assert.equal(own.integration,'integrated');assert.equal(own.ahead,0);assert.equal(git(f.repo,'show','HEAD:next'),'continued');
+ assert.equal((await f.merge()).status,'succeeded');assert.equal(git(f.repo,'for-each-ref','refs/cerebro/merges/'),'');await f.restart();own=await f.view();assert.equal(own.integration,'integrated');assert.equal(own.ahead,0);assert.equal(git(f.repo,'show','HEAD:next'),'continued');
 }));
 
 test('dirty source, target, active sessions, command use and missing targets block unsafe actions',async()=>fixture(async f=>{
@@ -121,6 +121,7 @@ test('stale confirmations are refused and merge conflicts preserve both branches
  writeFileSync(join(f.repo,'file'),'target conflicting\n');git(f.repo,'commit','-am','conflict');const sourceHead=git(own.path,'rev-parse','HEAD');const targetHead=git(f.repo,'rev-parse','HEAD');
  const failed=await f.merge();assert.equal(failed.status,'failed');assert.match(failed.error,/conflits éventuels/);assert.equal(git(own.path,'rev-parse','HEAD'),sourceHead);assert.equal(git(f.repo,'rev-parse','HEAD'),targetHead);assert.ok(existsSync(join(f.repo,'.git/MERGE_HEAD')));assert.equal(readFileSync(join(own.path,'file'),'utf8'),'source\n');
  own=await f.view();assert.ok(own.mergeBlockers.some(s=>s.includes('cible doit être propre')));assert.equal(own.integration,'pending');
+ assert.equal(git(f.repo,'for-each-ref','refs/cerebro/merges/'),'');
 }));
 
 test('removal requires integration, no local/ignored files and no live session; branch remains recoverable',async()=>fixture(async f=>{
@@ -149,6 +150,23 @@ test('merges serialize actions, defer interactive input, and obey hooks',async()
  assert.throws(()=>assertWorktreeAvailable(own.path),/opération Git/);let delivered=false;assert.equal(deferWorktreeInput(own.path,()=>{delivered=true;}),true);
  await assert.rejects(f.manager.start(own.id,'merge',p.token),/déjà utilisée/);
  const result=await f.untilFinished(operation);assert.equal(result.status,'failed');assert.match(result.output,/refused/);assert.equal(delivered,true);assert.doesNotThrow(()=>assertWorktreeAvailable(own.path));
+}));
+
+test('a failing deferred input neither skips the next ones nor escapes the release of a running merge',async()=>fixture(async f=>{
+ f.commit();writeFileSync(join(f.repo,'target'),'target');git(f.repo,'add','.');git(f.repo,'commit','-m','diverge');
+ writeFileSync(join(f.repo,'.git/hooks/pre-merge-commit'),'#!/bin/sh\nsleep 0.3\nexit 1\n',{mode:0o755});
+ const unhandled=[];const onUnhandled=cause=>unhandled.push(cause);process.on('unhandledRejection',onUnhandled);
+ const logged=[];const error=console.error;console.error=(...args)=>logged.push(args.join(' '));
+ try{
+  const own=await f.view();const p=await f.manager.prepare(own.id,'merge');const operation=await f.manager.start(own.id,'merge',p.token);
+  let delivered=false;deferWorktreeInput(own.path,()=>{throw new Error('terminal fermé');});deferWorktreeInput(own.path,()=>{delivered=true;});
+  const result=await f.untilFinished(operation);await new Promise(resolve=>setTimeout(resolve,50));
+  assert.equal(result.status,'failed');assert.equal(delivered,true);assert.deepEqual(unhandled,[]);
+  assert.ok(logged.some(line=>/terminal fermé/.test(line)),logged.join('\n'));assert.doesNotThrow(()=>assertWorktreeAvailable(own.path));
+ }finally{console.error=error;process.off('unhandledRejection',onUnhandled);}
+ // Released from a caller's finally, the original error is the one that surfaces.
+ const release=lockWorktrees([f.workspace.root]);deferWorktreeInput(f.workspace.root,()=>{throw new Error('envoi');});console.error=()=>{};
+ try{assert.throws(()=>{try{throw new Error('origine');}finally{release();}},/origine/);}finally{console.error=error;}
 }));
 
 test('target branch is explicit and never follows an unrelated checkout automatically',async()=>fixture(async f=>{
@@ -199,6 +217,14 @@ test('unfinished operation results are restored as interrupted without replaying
  const restored=await f.view();assert.equal(restored.operation.status,'interrupted');assert.equal(git(f.repo,'rev-parse','HEAD'),target);assert.equal(restored.ahead,1);
 }));
 
+test('merge refs left by an interrupted server are purged at the next inventory; other Cerebro refs stay',async()=>fixture(async f=>{
+ const head=f.commit();git(f.repo,'update-ref',`refs/cerebro/merges/${randomUUID()}`,head);git(f.repo,'update-ref',`refs/cerebro/starting/${f.id}`,head);
+ await f.restart();await f.view();
+ assert.equal(git(f.repo,'for-each-ref','refs/cerebro/merges/'),'');
+ assert.equal(git(f.repo,'rev-parse',`refs/cerebro/starting/${f.id}`),head);
+ assert.equal((await f.merge()).status,'succeeded');assert.equal(git(f.repo,'for-each-ref','refs/cerebro/merges/'),'');
+}));
+
 test('unavailable registered worktrees remain visible when their conversation is deleted',async()=>fixture(async f=>{
  const moved=f.workspace.root+'-temporarily-moved';renameSync(f.workspace.root,moved);
  try {
@@ -206,6 +232,74 @@ test('unavailable registered worktrees remain visible when their conversation is
   const own=(await f.manager.list()).worktrees.find(w=>w.sessionId===f.id);
   assert.ok(own);assert.equal(own.session,null);assert.ok(own.error);assert.equal(own.integration,'unknown');assert.ok(own.removeBlockers.length);
  } finally {renameSync(moved,f.workspace.root);}
+}));
+
+test('a conversation whose copy was deleted outside Cerebro before being inventoried can still be deleted',async()=>fixture(async f=>{
+ f.db.connection.prepare('DELETE FROM worktree_inventory').run();
+ rmSync(f.workspace.root,{recursive:true,force:true});
+ assert.equal(await new SessionManager(f.db).delete(f.id),true);
+ assert.equal(f.db.getSession(f.id),null);
+ const kept=f.db.connection.prepare('SELECT data FROM worktree_inventory').all().map(row=>JSON.parse(row.data)).find(r=>r.sessionId===f.id);
+ assert.ok(kept);assert.ok(kept.removedAt);assert.equal(kept.path,f.workspace.root);assert.equal(kept.sessionTitle,'Conversation');
+ // Git still lists the vanished copy as prunable: the inventory neither revives it nor reports an error.
+ const inventory=await f.manager.list();assert.deepEqual(inventory.errors,[]);
+ assert.equal(inventory.worktrees.some(w=>w.path===f.workspace.root),false);
+ assert.ok(f.db.connection.prepare('SELECT data FROM worktree_inventory').all().map(row=>JSON.parse(row.data)).find(r=>r.sessionId===f.id).removedAt);
+}));
+
+test('two projects in one repository: copies go to their own project, the others are listed under both',async()=>{
+ const directory=mkdtempSync(join(root,'monorepo-'));const repo=join(directory,'repo');
+ for(const folder of ['a','b'])mkdirSync(join(repo,folder),{recursive:true});
+ git(repo,'init','-b','main');git(repo,'config','user.email','test@example.com');git(repo,'config','user.name','Test');
+ writeFileSync(join(repo,'a','file'),'a\n');writeFileSync(join(repo,'b','file'),'b\n');git(repo,'add','.');git(repo,'commit','-m','base');
+ const db=new CerebroDatabase(join(directory,'db.sqlite'));const manager=new WorktreeManager(db);
+ try {
+  const first=db.createProject('First',join(repo,'a'));
+  const external=join(directory,'external');git(repo,'worktree','add','-b','external',external);
+  // Discovered while the repository had one project: credited to it.
+  assert.equal((await manager.list()).worktrees.find(w=>w.path===external).projectId,first.id);
+  const second=db.createProject('Second',join(repo,'b'));const id=randomUUID();
+  db.createSession({id,projectId:second.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Second conversation',status:'exited',agentSessionId:'fake'},'token');
+  const own=join(directory,'own');git(repo,'worktree','add','-b',`cerebro/session-${id}`,own);
+  const stored=()=>db.connection.prepare('SELECT data FROM worktree_inventory').all().map(row=>JSON.parse(row.data));
+  const all=await manager.list();
+  assert.equal(all.worktrees.length,3);
+  // The copy named after a conversation of the second project belongs to it, not to the first project found.
+  const copy=all.worktrees.find(w=>w.path===own);assert.equal(copy.projectId,second.id);assert.equal(copy.projectName,'Second');
+  // Nothing tells the principal folder and the external copy apart: credited to neither, named after both.
+  for(const path of [repo,external]){
+   const view=all.worktrees.find(w=>w.path===path);assert.equal(view.projectId,null);
+   assert.equal(view.projectName,'First, Second');assert.equal(view.projectExists,true);
+   assert.equal(stored().find(r=>r.path===path).projectId,null);
+  }
+  for(const project of [first,second]){
+   const listing=await manager.list(project.id);assert.equal(listing.worktrees.length,3);
+   for(const path of [repo,external]){
+    const view=listing.worktrees.find(w=>w.path===path);
+    assert.equal(view.projectId,project.id);assert.equal(view.projectName,project.name);assert.equal(view.projectExists,true);
+   }
+   assert.equal(listing.worktrees.find(w=>w.path===own).projectId,second.id);
+  }
+ } finally {await manager.shutdown();db.close();}
+});
+
+test('discovery reads conversation workspaces once per sync, not once per known worktree',async()=>fixture(async f=>{
+ const externals=[1,2,3].map(n=>{const path=join(root,randomUUID());git(f.repo,'worktree','add','-b',`external-${n}`,path);return path;});
+ // Copies of deleted conversations stay in the table: they must not be resolved again for every worktree.
+ for(let n=0;n<5;n++){
+  const id=randomUUID();f.db.createSession({id,projectId:f.project.id,agent:'codex',mode:'auto',model:null,effort:null,prompt:'',title:'Old',status:'exited',agentSessionId:'fake'},'token');
+  f.db.connection.prepare('INSERT INTO session_workspaces VALUES (?,?)').run(id,JSON.stringify({...f.workspace,sessionId:id,root:join(root,'gone',id,'copy'),path:join(root,'gone',id,'copy'),removedAt:Date.now()}));
+ }
+ await f.manager.list();
+ const prepare=f.db.connection.prepare.bind(f.db.connection);let reads=0;
+ f.db.connection.prepare=sql=>{if(sql==='SELECT data FROM session_workspaces')reads++;return prepare(sql);};
+ try{
+  const inventory=await f.manager.list();
+  assert.ok(reads<=2,`${reads} full reads of session_workspaces for ${inventory.worktrees.length} worktrees`);
+  for(const path of externals)assert.equal(inventory.worktrees.find(w=>w.path===path).projectId,f.project.id);
+  assert.equal(inventory.worktrees.find(w=>w.sessionId===f.id).managed,true);
+  const own=(await f.view()).id;reads=0;await f.manager.get(own);assert.ok(reads<=2,`${reads} full reads for one worktree`);
+ }finally{f.db.connection.prepare=prepare;}
 }));
 
 test('symlink aliases cannot bypass activity checks or the worktree lease',async()=>fixture(async f=>{
@@ -377,6 +471,43 @@ test('ignored copies identical to the project, links into it and regenerable dir
  assert.equal(existsSync(f.workspace.root),false);assert.equal(readFileSync(join(f.repo,'linked','data'),'utf8'),'kept\n');assert.equal(readFileSync(join(f.repo,'.claude','settings.local.json'),'utf8'),'{"permissions":{}}\n');
 }));
 
+test('only regenerable directories at the root of the copy are removed: a nested build or dist directory blocks removal',async()=>fixture(async f=>{
+ mkdirSync(join(f.workspace.root,'src'));writeFileSync(join(f.workspace.root,'src','keep'),'tracked\n');git(f.workspace.root,'add','src');git(f.workspace.root,'commit','-m','src');
+ f.commit();assert.equal((await f.merge()).status,'succeeded');f.db.updateSession(f.id,{status:'exited'});
+ writeFileSync(join(f.repo,'.git','info','exclude'),'build\ndist\ndata/\n');
+ mkdirSync(join(f.workspace.root,'build'));writeFileSync(join(f.workspace.root,'build','out.js'),'built\n');
+ mkdirSync(join(f.workspace.root,'data','build'),{recursive:true});writeFileSync(join(f.workspace.root,'data','build','records.csv'),'valuable\n');
+ mkdirSync(join(f.workspace.root,'src','dist'));writeFileSync(join(f.workspace.root,'src','dist','notes'),'valuable\n');
+ let own=await f.view();assert.deepEqual(own.disposableIgnored,['build/']);assert.deepEqual(own.ignoredFiles.sort(),['data/','src/dist/']);
+ await assert.rejects(f.manager.prepare(own.id,'remove'),/ignoré/);
+ assert.equal(readFileSync(join(f.workspace.root,'data','build','records.csv'),'utf8'),'valuable\n');
+ rmSync(join(f.workspace.root,'data'),{recursive:true});rmSync(join(f.workspace.root,'src','dist'),{recursive:true});
+ own=await f.view();assert.equal(own.ignored,0);
+ const plan=await f.manager.prepare(own.id,'remove');await f.manager.start(own.id,'remove',plan.token);await f.manager.shutdown();
+ assert.equal(existsSync(f.workspace.root),false);
+}));
+
+test('a removal refused by Git leaves the copy usable: shared links and regenerable directories are kept',async()=>fixture(async f=>{
+ f.commit();assert.equal((await f.merge()).status,'succeeded');
+ writeFileSync(join(f.repo,'.git','info','exclude'),'dist\n');
+ mkdirSync(join(f.workspace.root,'dist'),{recursive:true});writeFileSync(join(f.workspace.root,'dist','index.js'),'built in the copy\n');
+ const own=await f.view();assert.deepEqual(own.disposableIgnored,['dist/']);
+ // The lock appears after the last inspection, so only Git itself can refuse the removal.
+ const inspect=f.manager.inspect.bind(f.manager);
+ f.manager.inspect=async(record,operation)=>{const view=await inspect(record,operation);if(operation)git(f.repo,'worktree','lock','--reason','test',record.path);return view;};
+ const plan=await f.manager.prepare(own.id,'remove');
+ const failed=await f.untilFinished(await f.manager.start(own.id,'remove',plan.token));
+ assert.equal(failed.status,'failed');assert.match(failed.error,/lock|verrouill/i);
+ assert.equal(lstatSync(join(f.workspace.root,'node_modules')).isSymbolicLink(),true);
+ assert.equal(readFileSync(join(f.workspace.root,'node_modules','dependency','index.js'),'utf8'),'module.exports = true;\n');
+ assert.equal(readFileSync(join(f.workspace.root,'dist','index.js'),'utf8'),'built in the copy\n');
+ f.manager.inspect=inspect;git(f.repo,'worktree','unlock',f.workspace.root);
+ const retry=await f.manager.prepare(own.id,'remove');
+ await f.manager.start(own.id,'remove',retry.token);await f.manager.shutdown();
+ assert.equal(existsSync(f.workspace.root),false);
+ assert.equal(readFileSync(join(f.repo,'node_modules','dependency','index.js'),'utf8'),'module.exports = true;\n');
+}));
+
 // A twelve-line document: the project edits line 2 before the copy, the conversation edits a line of its choice.
 const LINES=Array.from({length:12},(_,i)=>`line ${i+1}`);
 const document=(edits={})=>LINES.map((line,i)=>edits[i+1]??line).join('\n')+'\n';
@@ -449,6 +580,13 @@ test('a file whose starting content was already taken out is settled unchanged a
  own=await f.view();assert.deepEqual(own.startingContent,[]);assert.equal(own.changesSinceCreation.needsReviewCount,0);
  assert.equal((await sessionProvenance(f.db,f.id)).changes.find(change=>change.path==='doc').certainty,'workspace');
 },projectWithEditedDocument()));
+test('an external diff tool configured in Git does not hide that the starting content was taken out',async()=>fixture(async f=>{
+ // An external diff prints nothing Cerebro can read: the comparison must use Git's own diff.
+ git(f.repo,'config','diff.external','true');
+ writeFileSync(join(f.workspace.root,'doc'),document({3:'conversation'}));
+ const own=await f.view();
+ assert.deepEqual(own.startingContent.map(file=>[file.path,file.state,file.separable]),[['doc','settled',false]]);
+},projectWithEditedDocument()));
 test('a kept file is settled once checked, only with the content it was checked with',async()=>fixture(async f=>{
  const copy=f.workspace.root;
  writeFileSync(join(copy,'doc'),document({2:'conversation over the project edit'}));
@@ -480,6 +618,49 @@ test('conflicts with the target are forecast, then resolved in the copy by updat
  own=await f.manager.finishTargetUpdate(own.id);assert.equal(own.mergeInProgress,false);assert.equal(own.behind,0);assert.equal(own.dirty,0);
  assert.doesNotMatch((await sessionProvenance(f.db,f.id)).warning,/incertaine/);
  assert.equal((await f.merge()).status,'succeeded');assert.equal(readFileSync(join(f.repo,'file'),'utf8'),'session and project work\n');
+}));
+const lines=count=>Array.from({length:count},(_,i)=>`line ${i+1}\n`).join('');
+const withDocument=repo=>{writeFileSync(join(repo,'doc'),lines(10));git(repo,'add','doc');git(repo,'commit','-m','doc');};
+const forecastOf=async f=>{for(let i=0;i<200;i++){const own=await f.view();if(own.integrationConflicts)return own;await new Promise(r=>setTimeout(r,10));}throw new Error('Forecast timeout');};
+test('the conflict forecast follows a file renamed on one side and modified on the other',async()=>fixture(async f=>{
+ const copy=f.workspace.root;
+ git(copy,'mv','doc','renamed');git(copy,'commit','-m','rename');
+ writeFileSync(join(f.repo,'doc'),lines(10).replace('line 2\n','line 2 from the project\n'));git(f.repo,'commit','-am','project edit');
+ let own=await forecastOf(f);
+ assert.deepEqual(own.integrationConflicts,[]);
+ const [major,minor]=/(\d+)\.(\d+)/.exec(execFileSync('git',['version'],{encoding:'utf8'})).slice(1).map(Number);
+ assert.equal(own.integrationNote===null,major>2||major===2&&minor>=38);
+ await f.manager.updateFromTarget(own.id);own=await f.view();
+ assert.equal(own.mergeInProgress,false);assert.equal(existsSync(join(copy,'doc')),false);
+ assert.match(readFileSync(join(copy,'renamed'),'utf8'),/line 2 from the project/);
+},withDocument));
+test('the conflict forecast follows a file renamed by the target and modified in the copy',async()=>fixture(async f=>{
+ const copy=f.workspace.root;
+ writeFileSync(join(copy,'doc'),lines(10).replace('line 9\n','line 9 from the copy\n'));git(copy,'commit','-am','copy edit');
+ git(f.repo,'mv','doc','renamed');git(f.repo,'commit','-m','rename');
+ const own=await forecastOf(f);
+ assert.deepEqual(own.integrationConflicts,[]);
+},withDocument));
+test('the conflict forecast reports a renamed file whose lines both sides changed',async()=>fixture(async f=>{
+ const copy=f.workspace.root;
+ writeFileSync(join(copy,'doc'),lines(10).replace('line 2\n','line 2 from the copy\n'));git(copy,'mv','doc','renamed');git(copy,'commit','-am','rename and edit');
+ writeFileSync(join(f.repo,'doc'),lines(10).replace('line 2\n','line 2 from the project\n'));git(f.repo,'commit','-am','project edit');
+ const own=await forecastOf(f);
+ assert.deepEqual(own.integrationConflicts,['renamed']);
+},withDocument));
+test('updating a copy with the target runs the commit hooks and keeps the merge when they refuse',async()=>fixture(async f=>{
+ const copy=f.workspace.root;f.commit('session work');
+ writeFileSync(join(f.repo,'other'),'project\n');git(f.repo,'add','other');git(f.repo,'commit','-m','other');
+ const hook=join(f.repo,'.git','hooks','commit-msg');const refuse=join(f.repo,'refuse-commits');
+ writeFileSync(hook,`#!/bin/sh\nif [ -e '${refuse}' ]; then echo 'commit-msg refuses' >&2; exit 1; fi\n`,{mode:0o755});
+ writeFileSync(refuse,'');
+ let own=await f.view();const head=git(copy,'rev-parse','HEAD');
+ await assert.rejects(f.manager.updateFromTarget(own.id),/refusé le commit de la mise à jour[^]*commit-msg refuses/);
+ own=await f.view();assert.equal(own.mergeInProgress,true);assert.equal(git(copy,'rev-parse','HEAD'),head);
+ await assert.rejects(f.manager.finishTargetUpdate(own.id),/commit-msg refuses/);
+ own=await f.view();assert.equal(own.mergeInProgress,true);assert.equal(git(copy,'rev-parse','HEAD'),head);
+ rmSync(refuse);
+ own=await f.manager.finishTargetUpdate(own.id);assert.equal(own.mergeInProgress,false);assert.equal(own.behind,0);
 }));
 test('a copy without conflicts is updated with the target in one merge commit',async()=>fixture(async f=>{
  const copy=f.workspace.root;f.commit('session work');
