@@ -3,19 +3,19 @@
 Application web locale pour piloter des sessions interactives des CLIs `claude`, `codex` et `grok`,
 organisées par projet (un projet = un nom + un répertoire de travail).
 
-Stack imposée (déjà installée dans `node_modules`, **ne rien installer d'autre**) :
+Stack :
 - Node 22, TypeScript exécuté directement par Node (type stripping natif) :
   **uniquement de la syntaxe effaçable** (pas d'`enum`, pas de `namespace`, pas de parameter properties),
   imports relatifs avec extension `.ts`, `import type` pour les types (`verbatimModuleSyntax`).
 - Serveur : `fastify`, `@fastify/websocket`, `@fastify/static`, `node-pty`, `@xterm/headless`,
   `@xterm/addon-serialize`, `node:sqlite` (`DatabaseSync`).
-- Front : Vite + React 18/19 + `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`.
-- Vérification : `npx tsc --noEmit -p tsconfig.json` doit passer.
+- Front : Vite + React 19 + `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`.
+- Vérification : `npm run lint`, `npm run typecheck`, `npm run format:check` et `npm test` doivent passer.
 
 ## Arborescence
 
 ```
-server/config.ts          (existe déjà : HOST, PORT=4317, DATA_DIR=~/.cerebro, LOG_DIR, HOOK_SCRIPT, INTERNAL_URL, ROOT)
+server/config.ts          (HOST, PORT=4317, DATA_DIR=~/.cerebro, LOG_DIR, HOOK_SCRIPT, INTERNAL_URL, ROOT)
 server/db.ts              persistance SQLite (DATA_DIR/cerebro.db)
 server/agents.ts          construction des lignes de commande par agent
 server/sessions.ts        SessionManager : PTY, terminal headless, statut, logs
@@ -46,7 +46,7 @@ interface Session {
   agent: Agent;
   mode: Mode;
   prompt: string;           // prompt initial (peut être vide)
-  title: string;            // = 60 premiers caractères du prompt, ou "<agent> session"
+  title: string;            // = 120 premiers caractères du prompt rogné (images jointes affichées « [image] »), ou "<agent> session"
   status: Status;
   attention: boolean;       // true quand passe à waiting/idle via un signal fiable ; remis à false quand l'utilisateur ouvre la session
   attentionReason: string | null;  // ex. "Permission demandée : Bash", "Question", "Tour terminé"
@@ -58,7 +58,7 @@ interface Session {
 ```
 
 Tables SQLite `projects` et `sessions` (colonnes snake_case, conversion vers camelCase dans db.ts).
-Au démarrage du serveur, toute session non `exited` passe à `exited` (les PTY sont morts avec le serveur).
+Au démarrage du serveur, les sessions non `exited` sont réconciliées avec leur holder (voir « Sessions persistantes »).
 
 ## API REST (JSON, préfixe /api)
 
@@ -99,9 +99,11 @@ reporte les fichiers modifiés ou non suivis et rend les dépendances ignorées 
 par des liens partagés. Les sessions historiques ou sans historique gardent leur chemin
 initial et une provenance inconnue. Les actions Git présentent une sélection vérifiable ;
 voir les contrats détaillés du README.
-`env` = `process.env` **sans** les variables `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SSE_PORT`
-(éviter la détection de session imbriquée), plus `TERM=xterm-256color`, `COLORTERM=truecolor`,
-`CEREBRO_SESSION_ID`, `CEREBRO_TOKEN` (aléatoire, par session, gardé en mémoire), `CEREBRO_URL=INTERNAL_URL`.
+`env` = `process.env` **sans** les marqueurs de session imbriquée (`CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT`,
+`GROK_READ_ONLY_SANDBOX`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SSE_PORT`…) ni les secrets `CEREBRO_*` du serveur
+(jeton Slack, `CEREBRO_BIND_TOKEN`), plus `TERM=xterm-256color`, `COLORTERM=truecolor`, `CEREBRO_SESSION_ID`,
+`CEREBRO_TOKEN` (32 octets aléatoires par session, persistés dans `sessions.hook_token` pour survivre aux reprises
+et aux redémarrages du serveur), `CEREBRO_URL=INTERNAL_URL`, `CEREBRO_NOTIFY`, `CEREBRO_BACKLOG` et `bin/` en tête du `PATH`.
 Le prompt est passé comme dernier argument positionnel s'il est non vide.
 
 Hook relay : `HOOK = ['node', HOOK_SCRIPT]`.
@@ -192,14 +194,14 @@ Thème sombre, sobre, dense. Routage par hash : `#/` accueil, `#/p/<projectId>`,
 
 ---
 
-# Lot 2 (ajouts après tests de bout en bout)
+# Fonctions complémentaires
 
 Déjà fait (ne pas casser) : détection à l'écran des dialogues (`inspectScreen` dans sessions.ts : dialogues de
 confiance, menus numérotés, y/n → `waiting` avec la question comme raison), dédoublonnage des alertes, filtrage des
 fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jsonl`,
 `GET /api/sessions/:id/screen` → `{lines: string[]}` (dernières lignes texte de l'écran vivant, `[]` si la session est terminée).
 
-## Serveur (codex)
+## Serveur
 
 - `PATCH /api/sessions/:id` `{title}` → `Session` (renommer ; titre non vide, 120 car. max).
 - `PATCH /api/projects/:id` `{name?, path?}` → `Project` (même validation que la création) ; diffuse `{type:'projects'}`.
@@ -211,16 +213,13 @@ fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jso
   `?token=<valeur>` ou l'en-tête `authorization: Bearer <valeur>` ; un cookie `cerebro_token` (httpOnly, SameSite=Strict)
   est posé quand le token arrive en query sur la page `/`, pour que l'UI fonctionne ensuite sans rien changer côté front.
   Utile si on écoute sur le réseau local (`CEREBRO_HOST=0.0.0.0`).
-- Arrêt propre sur SIGINT/SIGTERM : tuer les PTY, fermer la base, puis sortir.
-- `README.md` (en français) : présentation, prérequis, installation (`npm install`, `npm run build`, `npm start`),
-  développement (`npm run dev`), variables d'environnement, fonctionnement de la détection d'attente par agent
-  (hooks Claude via --settings, hook global `~/.grok/hooks/cerebro.json`, notify + OSC 9 codex, détection écran,
-  heuristique 20 s), modes de permission par agent (tableau), limites connues, dépannage (`hooks.jsonl`).
+- Arrêt propre sur SIGINT/SIGTERM : fermer les connexions et la base, puis sortir ; les agents continuent
+  (voir « Sessions persistantes »).
 - `scripts/cerebro.service` : unité systemd **utilisateur** d'exemple (`ExecStart=/usr/bin/env node server/index.ts`,
   `WorkingDirectory` à adapter, `Restart=on-failure`) + section README pour l'installer (`systemctl --user`).
-- Script npm `"start:prod": "npm run build && node server/index.ts"`.
+- Script npm `"start:prod": "npm run build && npm start"`.
 
-## Front (grok)
+## Interface
 
 - Vue session : **barre de réponse rapide** sous le terminal (utile sur mobile) : boutons `Entrée`, `Échap`, `↑`, `↓`,
   `1`, `2`, `3`, `y`, `n`, `Ctrl+C` (envoie `\x03`, avec confirmation) + un champ texte « Envoyer un message » qui envoie
@@ -245,9 +244,9 @@ fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jso
 
 ---
 
-# Lot 3 : sessions persistantes (survivent à l'arrêt/redémarrage du serveur)
+# Sessions persistantes
 
-Objectif : arrêter, redémarrer ou faire crasher le serveur ne doit **plus** tuer les agents. Seuls « Arrêter »,
+Arrêter, redémarrer ou faire crasher le serveur ne tue pas les agents. Seuls « Arrêter »,
 « Supprimer » (session ou projet) ou la fin naturelle de l'agent terminent une session.
 
 ## Processus « holder » (server/holder.ts)
@@ -278,33 +277,22 @@ Le holder :
 ## Serveur (sessions.ts)
 
 - `launch` : écrit le fichier config, démarre le holder, puis se connecte au socket (réessais toutes les 100 ms, 10 s max ;
-  échec → session `exited`, exitCode 1, erreur loggée). Le `Runtime` ne contient plus d'`IPty` mais une connexion au holder ;
+  échec → session `exited`, exitCode 1, erreur loggée). Le `Runtime` contient une connexion au holder, pas d'`IPty` ;
   le serveur garde son **propre** terminal headless (nécessaire pour `inspectScreen` / `screenText` / snapshot ws) :
   à chaque `snapshot` reçu du holder, il recrée ce terminal et y écrit le snapshot, puis applique les `output`.
-  OSC 9, focus 1004, minuteurs d'inactivité/écran : inchangés, alimentés par les `output` du holder.
-- Le token de hook devient persistant : nouvelle colonne `hook_token` dans `sessions` (migration `ALTER TABLE` si absente),
-  jamais exposée dans l'API ni dans les messages ws.
-- **Démarrage du serveur** : remplacer « tout passer à exited » par une réconciliation : pour chaque session non `exited`,
+  OSC 9, focus 1004 et minuteurs d'inactivité/écran sont alimentés par les `output` du holder.
+- Le token de hook est persistant : colonne `hook_token` de `sessions`, conservé à la reprise et après un redémarrage
+  du serveur, jamais exposé dans l'API ni dans les messages ws.
+- **Démarrage du serveur** : réconciliation de chaque session non `exited` :
   se connecter à `<id>.sock` ; si OK → réattacher (statut `running`, puis la détection d'écran/hook reprend ; programmer
   aussitôt une `inspectScreen`) ; sinon si `<id>.exit.json` existe → `exited` avec ce code ; sinon → `exited` (exitCode null).
   Nettoyer les fichiers sock/exit des sessions terminées.
 - Si la connexion au holder se coupe sans message `exit` (holder tué) : vérifier `exit.json`, sinon tenter une reconnexion
   (3 essais espacés de 1 s), sinon `exited`.
-- `kill` → message `kill` au holder. `shutdown()` (SIGINT/SIGTERM du serveur) : **ne tue plus les agents**, ferme seulement
+- `kill` → message `kill` au holder. `shutdown()` (SIGINT/SIGTERM du serveur) : **ne tue pas les agents**, ferme seulement
   les connexions et la base.
 - Supprimer une session/projet : kill puis suppression des fichiers `sessions/<id>.*` et du log.
-- Option `CEREBRO_KILL_ON_EXIT=1` pour retrouver l'ancien comportement (tuer les agents à l'arrêt du serveur).
-
-## README
-
-Mettre à jour : les sessions survivent au redémarrage du serveur ; comment lister/tuer les holders orphelins à la main
-(`pgrep -af server/holder.ts`) ; `CEREBRO_KILL_ON_EXIT`.
-
-## Vérification attendue
-
-`npx tsc --noEmit -p tsconfig.json`. Le bac à sable codex interdit les sockets réseau ; les sockets Unix dans un dossier
-du workspace peuvent fonctionner : tester si possible avec `CEREBRO_DATA_DIR=./.data/test` et un agent factice
-(ex. `bash`), sinon le signaler.
+- Option `CEREBRO_KILL_ON_EXIT=1` : tuer les agents à l'arrêt du serveur.
 
 ## Opérations déterministes et ordonnancement
 
@@ -454,7 +442,7 @@ Suppression d'un projet : après vérification des protections de session, `Sess
 
 ### Résultats, Slack et interface
 
-- À la fin d'un run : `OperationResult` `{id:'council:<runId>', projectId (null hors projet), sessionId:null, kind:'council', ok: status==='succeeded', summary: recommandation ou « statut : erreur »}`. `OperationResult.projectId` devient nullable : un résultat web hors projet est notifié une seule fois par la machine qui l'exécute et le conserve, avec un lien `#/c/<id>`, même si une autre machine traite les commandes générales. L'élection du répondeur général déduplique seulement les commandes entrantes. `OperationResults.send` confirme l'envoi effectif avant que `deliver` renseigne `notifiedAt` ; un envoi ignoré ou échoué reste en attente. Un run `origin:'slack'` est marqué vu immédiatement : sa réponse arrive dans le fil.
+- À la fin d'un run : `OperationResult` `{id:'council:<runId>', projectId (null hors projet), sessionId:null, kind:'council', ok: status==='succeeded', summary: recommandation ou « statut : erreur »}`. `OperationResult.projectId` est nullable : un résultat web hors projet est notifié une seule fois par la machine qui l'exécute et le conserve, avec un lien `#/c/<id>`, même si une autre machine traite les commandes générales. L'élection du répondeur général déduplique seulement les commandes entrantes. `OperationResults.send` confirme l'envoi effectif avant que `deliver` renseigne `notifiedAt` ; un envoi ignoré ou échoué reste en attente et est retenté selon « Notifications factuelles » du README. Un run `origin:'slack'` est marqué vu immédiatement : sa réponse arrive dans le fil.
 - Slack : `parseCouncilCommand` reconnaît `council: question` et `projet/council: question` (insensible à la casse, le mot-clé prime sur un projet nommé « council »). Résolution du projet identique à `projet: instruction` (machines partagées, conflits). Run lancé avec les réglages effectifs, sans contexte ni image ; sablier sur le message, puis recommandation, première action, accords, désaccords et lien du rapport dans le fil (`councilSlackText`), ou l'erreur.
 - UI : route `#/c/<id>` (`CouncilRunView`) ; lancement depuis le bouton **Council** de l'en-tête projet (modale) et la carte **Council** de l'accueil (`CouncilLaunch`, réglages, personas, runs précédents). Images : Ctrl+V ou glisser-déposer dans la question ou le contexte insère `[Image #n]` au curseur (numérotation commune aux deux champs, `useImageAttachments` comme le formulaire de session), envoi immédiat (`POST /api/council/attachments` hors projet, `POST /api/projects/:id/attachments` dans un projet), vignettes retirables sous les champs ; un jeton effacé du texte retire l'image ; le lancement attend la fin des envois et est bloqué, avec le message, si un participant coché ou le chairman n'est ni `claude` ni `codex`. Le brouillon (question, contexte, participants, images envoyées) est conservé par navigateur et périmètre, et effacé du stockage dès que le lancement aboutit, avant la navigation vers le rapport. Le rapport affiche la question telle que saisie et les images jointes en vignettes (`GET /api/councils/:id/images/:n`), l'export Markdown les liste (`## Images jointes`, jeton et chemin). Suites : tâche de backlog préremplie (`POST /api/projects/:id/tasks`), brouillon du formulaire « Nouvelle session » du projet (les images du council y sont reprises, renumérotées après celles du brouillon existant, jetons du prompt mis à jour), export Markdown.
 - Les appels headless ne sont pas comptés dans les statistiques d'usage.
