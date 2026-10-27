@@ -183,6 +183,15 @@ test('unborn repository and exclusions/scanners are explicit', async () =>
     assert.equal(r.error, null, JSON.stringify(r));
     assert.deepEqual(r.exclusions, ['.env']);
   }, true));
+test('only real binary content gets the binary warning, not text mentioning the marker', async () =>
+  fixture(async (repo) => {
+    writeFileSync(join(repo, 'file'), 'if (/GIT binary patch/.test(diff)) warn();\nGIT binary patch\n');
+    writeFileSync(join(repo, 'image.bin'), Buffer.from([0, 1, 2, 255, 0, 3]));
+    const s = await planner.prepareCommit(repo);
+    const binary = (path) => s.files.find((f) => f.path === path).warnings.some((w) => /binaire/.test(w));
+    assert.equal(binary('file'), false);
+    assert.equal(binary('image.bin'), true);
+  }));
 test('multiple nonadjacent hunks in a single commit and duplicate execution refusal', async () =>
   fixture(async (repo) => {
     const file = join(repo, 'file');

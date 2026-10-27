@@ -17,7 +17,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { GitPushes } from './git-push.ts';
 import { git as runGit, GitError, repositoryRoot, splitZ, type GitOptions } from './git.ts';
-import type { CommitResult, GitCandidate, GitHunk, GitSnapshot } from '../shared/git.ts';
+import {
+  SECRET_WARNING,
+  type CommitResult,
+  type GitCandidate,
+  type GitHunk,
+  type GitSecret,
+  type GitSnapshot,
+} from '../shared/git.ts';
 import { errorMessage } from './util.ts';
 import { workspaceManifest } from './workspace-files.ts';
 
@@ -33,10 +40,17 @@ export interface CommitStep {
   message: string;
   selection: CommitSelection[];
 }
+/** A file declared a false positive of the secret scanner, in the diff that snapshot showed. */
+export interface SecretOverride {
+  path: string;
+  snapshotId: string;
+}
 export interface CommitPlan {
   snapshotId: string;
   commits: CommitStep[];
   acknowledged: string[];
+  /** Never implied: a blocked file is only committed when listed here with the snapshot that showed its exact diff. */
+  overrides?: SecretOverride[];
   push: boolean;
 }
 interface Saved {
@@ -136,23 +150,46 @@ function hunks(diff: string): GitHunk[] {
     .filter(Boolean)
     .map((hunk, position) => ({ id: hash(`${position}\0${prefix}${hunk}`), patch: prefix + hunk }));
 }
-function scan(file: string, diff: string): { warnings: string[]; blocked: boolean } {
+const SECRETS: [GitSecret['kind'], RegExp][] = [
+  ['private-key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g],
+  ['aws', /\bAKIA[0-9A-Z]{16}/g],
+  ['github', /\bgh[pousr]_[A-Za-z0-9]{30,}/g],
+  ['openai', /\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}/g],
+];
+export const SECRET_EXCLUSION = 'Secret détecté : dérogation absente ou diff modifié depuis l’examen.';
+/** Shows what was recognized without revealing it; a key header is a public marker, not the key. */
+const mask = (kind: GitSecret['kind'], value: string): string =>
+  kind === 'private-key' ? value : `${value.slice(0, 4)}…${value.slice(-4)}`;
+/** Recognized patterns on the added lines of the hunks, numbered in the new version of the file. */
+function secrets(diff: string): GitSecret[] {
+  const found: GitSecret[] = [];
+  let line: number | null = null;
+  for (const text of diff.split('\n')) {
+    const header = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text);
+    if (header) line = Number(header[1]);
+    else if (line === null || text.startsWith('\\')) continue;
+    else if (text.startsWith('+')) {
+      for (const [kind, pattern] of SECRETS)
+        for (const match of text.matchAll(pattern)) found.push({ line, kind, excerpt: mask(kind, match[0]) });
+      line++;
+    } else if (!text.startsWith('-')) line++;
+  }
+  return found;
+}
+/** Warnings other than the secret one: those yield to an ordinary review (`acknowledged`). */
+export const reviewWarnings = (file: GitCandidate): string[] => file.warnings.filter((w) => w !== SECRET_WARNING);
+function scan(file: string, diff: string): { warnings: string[]; secrets: GitSecret[]; blocked: boolean } {
   const warnings: string[] = [];
-  const added = diff
-    .split('\n')
-    .filter((line) => line.startsWith('+'))
-    .join('\n');
-  const blocked =
-    /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\b(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|sk-(?:proj-)?[A-Za-z0-9_-]{32,})/.test(
-      added,
-    );
-  if (blocked) warnings.push('Secret détecté : exclu.');
+  const found = secrets(diff);
+  const blocked = found.length > 0;
+  if (blocked) warnings.push(SECRET_WARNING);
   if (/(^|\/)(\.env(?:\.|$)|id_rsa|credentials|secrets?\b)/i.test(file))
     warnings.push('Fichier pouvant contenir des secrets : vérification explicite requise.');
   if (/(^|\/)(node_modules|dist|build|coverage|\.cache|tmp)(\/|$)|\.(log|tmp|bak|min\.js|map)$/.test(file))
     warnings.push('Fichier généré ou temporaire présumé : vérification explicite requise.');
-  if (/GIT binary patch/.test(diff)) warnings.push('Fichier binaire : contenu non inspecté par le scanner.');
-  return { warnings, blocked };
+  // Anchored to Git's own header line: a text file that merely mentions it is not binary.
+  if (/^GIT binary patch$/m.test(diff)) warnings.push('Fichier binaire : contenu non inspecté par le scanner.');
+  return { warnings, secrets: found, blocked };
 }
 
 export interface SharedDependencies {
@@ -188,6 +225,9 @@ export function parseCommitPlan(value: unknown): CommitPlan {
     typeof p.push !== 'boolean' ||
     !Array.isArray(p.acknowledged) ||
     !p.acknowledged.every((x) => typeof x === 'string') ||
+    (p.overrides !== undefined &&
+      (!Array.isArray(p.overrides) ||
+        !p.overrides.every((o) => o && typeof o.path === 'string' && typeof o.snapshotId === 'string'))) ||
     !Array.isArray(p.commits) ||
     p.commits.length === 0 ||
     p.commits.length > 50
@@ -344,11 +384,16 @@ async function stagedTree(path: string, index: string, dir: string): Promise<str
   return (await git(path, ['write-tree'], { index: original })).trim();
 }
 /** Patch of a selection: the whole file, or its selected hunks in their original order. */
-function selectionPatch(plan: CommitPlan, snapshot: GitSnapshot, selection: CommitSelection): string {
+function selectionPatch(
+  plan: CommitPlan,
+  snapshot: GitSnapshot,
+  selection: CommitSelection,
+  overridden: Set<string>,
+): string {
   const file = snapshot.files.find((f) => f.path === selection.path);
   if (!file) throw new Error(`Fichier absent de la sélection collectée : ${selection.path}`);
-  if (file.blocked) throw new Error(`Secret détecté, fichier exclu : ${file.path}`);
-  if (file.warnings.length && !plan.acknowledged.includes(file.path))
+  if (file.blocked && !overridden.has(file.path)) throw new Error(`${SECRET_EXCLUSION} (${file.path})`);
+  if (reviewWarnings(file).length && !plan.acknowledged.includes(file.path))
     throw new Error(`Vérification explicite requise : ${file.path}`);
   if (selection.all) return file.diff;
   const hunks = selection.hunks!.map((id) => file.hunks.find((h) => h.id === id));
@@ -370,6 +415,7 @@ async function prepareCommits(
   snapshot: GitSnapshot,
   index: string,
   dir: string,
+  overridden: Set<string>,
 ): Promise<PreparedCommit[]> {
   let base = snapshot.head ?? EMPTY;
   let staged = await stagedTree(path, index, dir);
@@ -381,7 +427,7 @@ async function prepareCommits(
       // --3way rebases later hunks on the commits already prepared from this snapshot.
       await git(path, ['apply', '--cached', '--3way', '--whitespace=nowarn'], {
         index: temporary,
-        input: selectionPatch(plan, snapshot, selection),
+        input: selectionPatch(plan, snapshot, selection, overridden),
       });
     const tree = (await git(path, ['write-tree'], { index: temporary })).trim();
     const baseTree = (await git(path, ['rev-parse', `${base}^{tree}`])).trim();
@@ -575,7 +621,10 @@ export class GitPlanner {
       this.gate.assertAvailable(path);
       if (!(await matchesSnapshot(saved, path))) throw new Error('État Git obsolète : préparez un nouveau plan.');
       result.exclusions = exclusions(plan, saved.snapshot);
-      const prepared = await prepareCommits(path, plan, saved.snapshot, index, dir);
+      const overridden = this.overridden(plan, saved);
+      const prepared = await prepareCommits(path, plan, saved.snapshot, index, dir, overridden);
+      const selected = new Set(plan.commits.flatMap((step) => step.selection.map((s) => s.path)));
+      result.overridden = [...overridden].filter((file) => selected.has(file));
       // Everything, including index preservation, is checked before the first mutation.
       if (!(await matchesSnapshot(saved, path))) throw new Error('État Git obsolète avant exécution.');
       await assertNoGitOperation(path);
@@ -637,6 +686,17 @@ export class GitPlanner {
       if (saved.work !== (await workHash(path)))
         throw new Error('Le worktree a changé pendant le commit (hook ou édition externe) : vérification requise.');
     }
+  }
+
+  /** Blocked files of the plan's snapshot whose override names a retained snapshot that showed this exact diff. */
+  private overridden(plan: CommitPlan, saved: Saved): Set<string> {
+    const valid = new Set<string>();
+    for (const override of plan.overrides ?? []) {
+      const file = saved.snapshot.files.find((f) => f.path === override.path);
+      if (file?.blocked && this.reviewedDiffs(override.snapshotId, saved.path)?.get(file.path) === file.diff)
+        valid.add(file.path);
+    }
+    return valid;
   }
 
   /** Signatures of the files, read when the snapshot was taken (`workspaceManifest` format), while it is retained. */
