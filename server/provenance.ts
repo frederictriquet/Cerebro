@@ -75,6 +75,11 @@ async function localChanges(root: string): Promise<{ dirty: string[]; staged: st
   return { dirty, staged, untracked };
 }
 const SHARED_DEPENDENCY_DIRS = new Set(['node_modules', '.venv', 'venv', 'vendor']);
+// The code knowledge graph at the root is copied, not shared: an agent refreshing its copy's graph
+// must not rewrite the source's. The scan-root marker holds the source's absolute path; without it,
+// graphify resolves the root from the copy itself. Removing the copy discards it (REGENERABLE_DIRS).
+const COPIED_INDEX_DIRS = new Set(['graphify-out']);
+const INDEX_ROOT_MARKER = '.graphify_root';
 
 async function copyEntry(sourceRoot: string, targetRoot: string, name: string): Promise<void> {
   const source = join(sourceRoot, name);
@@ -109,6 +114,15 @@ async function copyIgnoredContext(sourceRoot: string, targetRoot: string): Promi
         await rm(target, { recursive: true, force: true });
         await symlink(source, target, 'dir');
         shared.push(name);
+      } else if (COPIED_INDEX_DIRS.has(name)) {
+        await mkdir(dirname(target), { recursive: true });
+        await rm(target, { recursive: true, force: true });
+        await cp(source, target, {
+          recursive: true,
+          dereference: false,
+          verbatimSymlinks: true,
+          filter: (path) => basename(path) !== INDEX_ROOT_MARKER,
+        });
       }
       // Other ignored directories are normally generated output or caches. Copying an
       // unbounded tree here would recreate the startup problem this path is avoiding.

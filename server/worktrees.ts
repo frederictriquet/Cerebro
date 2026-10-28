@@ -260,8 +260,9 @@ async function registered(path: string): Promise<RegisteredWorktree[]> {
     });
 }
 /**
- * Ignored directories that a reinstall or a build recreates: dependencies and build outputs or caches. Only
- * at the root of the copy: deeper, a `data/build/` may hold anything. Listed in the README.
+ * Ignored directories that a reinstall or a build recreates: dependencies, build outputs or caches, and the
+ * code knowledge graph copied at creation. Only at the root of the copy: deeper, a `data/build/` may hold
+ * anything. Listed in the README.
  */
 const REGENERABLE_DIRS = new Set([
   'node_modules',
@@ -275,6 +276,7 @@ const REGENERABLE_DIRS = new Set([
   'coverage',
   '__pycache__',
   '.cache',
+  'graphify-out',
 ]);
 /**
  * An ignored entry has nothing to lose when it is a link to the same path of the source project, a

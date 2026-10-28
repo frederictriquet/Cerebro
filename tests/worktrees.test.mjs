@@ -1139,7 +1139,7 @@ test('ignored copies identical to the project, links into it and regenerable dir
     f.commit();
     assert.equal((await f.merge()).status, 'succeeded');
     f.db.updateSession(f.id, { status: 'exited' });
-    writeFileSync(join(f.repo, '.git', 'info', 'exclude'), '.claude/\nlinked\ndist\n');
+    writeFileSync(join(f.repo, '.git', 'info', 'exclude'), '.claude/\nlinked\ndist\ngraphify-out/\n');
     for (const root of [f.repo, f.workspace.root]) {
       mkdirSync(join(root, '.claude'), { recursive: true });
       writeFileSync(join(root, '.claude', 'settings.local.json'), '{"permissions":{}}\n');
@@ -1151,6 +1151,8 @@ test('ignored copies identical to the project, links into it and regenerable dir
     writeFileSync(join(f.workspace.root, 'ignored'), 'local value\n');
     mkdirSync(join(f.workspace.root, 'dist', 'assets'), { recursive: true });
     writeFileSync(join(f.workspace.root, 'dist', 'assets', 'index.js'), 'built in the copy\n');
+    mkdirSync(join(f.workspace.root, 'graphify-out'));
+    writeFileSync(join(f.workspace.root, 'graphify-out', 'graph.json'), '{"nodes":["updated in the copy"]}\n');
     let own = await f.view();
     assert.equal(own.ignored, 1);
     assert.deepEqual(own.ignoredFiles, ['ignored']);
@@ -1158,7 +1160,7 @@ test('ignored copies identical to the project, links into it and regenerable dir
     writeFileSync(join(f.workspace.root, 'ignored'), 'project value\n');
     own = await f.view();
     assert.equal(own.ignored, 0);
-    assert.deepEqual(own.disposableIgnored.sort(), ['.claude/', 'dist/', 'ignored', 'linked']);
+    assert.deepEqual(own.disposableIgnored.sort(), ['.claude/', 'dist/', 'graphify-out/', 'ignored', 'linked']);
     const plan = await f.manager.prepareAction(own.id, 'remove');
     await f.manager.start(own.id, 'remove', plan.token);
     await f.manager.shutdown();

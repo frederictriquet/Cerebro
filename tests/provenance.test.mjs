@@ -36,7 +36,7 @@ git(repo, 'init', '-b', 'main');
 git(repo, 'config', 'user.name', 'Test');
 git(repo, 'config', 'user.email', 'test@example.com');
 for (const name of ['first', 'second', 'shared', 'initial']) writeFileSync(join(repo, name), 'original\n');
-writeFileSync(join(repo, '.gitignore'), 'ignored\nnode_modules/\n.cache/\n');
+writeFileSync(join(repo, '.gitignore'), 'ignored\nnode_modules/\n.cache/\ngraphify-out/\n');
 git(repo, 'add', '.');
 git(repo, 'commit', '-m', 'base');
 writeFileSync(join(repo, 'initial'), 'preexisting\n');
@@ -47,6 +47,9 @@ mkdirSync(join(repo, 'node_modules', 'dependency'), { recursive: true });
 writeFileSync(join(repo, 'node_modules', 'dependency', 'large.bin'), Buffer.alloc(8 * 1024 * 1024, 7));
 mkdirSync(join(repo, '.cache'), { recursive: true });
 writeFileSync(join(repo, '.cache', 'generated.bin'), Buffer.alloc(8 * 1024 * 1024, 8));
+mkdirSync(join(repo, 'graphify-out'));
+writeFileSync(join(repo, 'graphify-out', 'graph.json'), '{"nodes":[]}\n');
+writeFileSync(join(repo, 'graphify-out', '.graphify_root'), `${repo}\n`);
 let db = new CerebroDatabase(join(root, 'test.db'));
 const project = db.createProject('Demo', repo);
 function session(id) {
@@ -87,6 +90,10 @@ test('new workspaces preserve initial context and index without changing the pro
     assert.deepEqual(ws.sharedIgnored, ['node_modules']);
     assert.ok(!Object.keys(ws.baseline).some((name) => name.startsWith('node_modules/')));
     assert.equal(existsSync(join(ws.path, '.cache')), false);
+    assert.equal(lstatSync(join(ws.path, 'graphify-out')).isSymbolicLink(), false, 'graph is copied, not shared');
+    assert.equal(readFileSync(join(ws.path, 'graphify-out', 'graph.json'), 'utf8'), '{"nodes":[]}\n');
+    assert.equal(existsSync(join(ws.path, 'graphify-out', '.graphify_root')), false, 'scan root stays the copy');
+    assert.ok(!Object.keys(ws.baseline).some((name) => name.startsWith('graphify-out/')));
     assert.equal(git(ws.path, 'show', ':initial'), 'preexisting');
     assert.ok(ws.initialDirty.includes('initial'));
   }

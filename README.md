@@ -718,6 +718,10 @@ répertoires ignorés (sorties générées, caches) sont omis. Les gros réperto
 d'être copiés et ne participent ni aux empreintes ni à l'inventaire des changements.
 Ils sont donc partagés et non isolés en écriture : une installation ou une mise à
 jour de dépendances depuis la session modifie aussi ceux du projet source.
+Le graphe de connaissances du code `graphify-out/` (Graphify), s'il existe à la
+racine du projet, est au contraire copié, sans son marqueur `.graphify_root` qui
+désigne le projet source : la session interroge le graphe et le met à jour dans
+sa copie (`graphify update .`) sans toucher à celui du projet.
 Aucun changement du worktree ou de l'index source n'est appliqué. Une modification
 du projet pendant la préparation annule le lancement. Les sous-modules, conflits
 d'index et fichiers spéciaux ne sont pas isolés : le lancement est refusé
@@ -1006,8 +1010,8 @@ sans rien à perdre sont supprimées avec la copie :
 - un lien vers le même chemin du projet source, ou un fichier identique à ce
   chemin dans le projet (par exemple `.claude/settings.local.json`) ;
 - un dossier situé **à la racine** de la copie et nommé `node_modules`, `.venv`,
-  `venv`, `vendor`, `dist`, `build`, `.vite`, `.next`, `coverage`, `__pycache__`
-  ou `.cache` : une installation ou une compilation le recrée ;
+  `venv`, `vendor`, `dist`, `build`, `.vite`, `.next`, `coverage`, `__pycache__`,
+  `.cache` ou `graphify-out` : une installation, une compilation ou Graphify le recrée ;
 - un chemin déclaré régénérable par le projet (champ « Chemins régénérables des
   copies de travail » du formulaire **Éditer**, un chemin relatif par ligne, par
   exemple `web/dist`) ;
