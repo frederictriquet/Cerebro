@@ -1,5 +1,6 @@
 web/dist/
 .claude/
+.codex/
 package-lock.json
 # La documentation est rédigée à la main : seul le code est formaté.
 *.md
