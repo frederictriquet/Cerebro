@@ -928,14 +928,35 @@ prochaine action est aussi proposée directement sur la ligne de la copie.
    **Créer le commit** enregistre ensuite le travail de la conversation.
 2. **Régler les conflits avec la cible.** Cerebro prévoit les fichiers que
    l'intégration laisserait en conflit. **Mettre à jour avec master** merge la cible
-   dans la copie : les conflits se résolvent dans la copie (soi-même ou en le
-   demandant à la conversation), puis **Terminer la mise à jour** crée le commit de
-   merge. Ces commits passent par les hooks et la configuration Git comme les
-   autres ; un hook qui refuse laisse la mise à jour en cours dans la copie, à
-   terminer une fois la cause corrigée. **Annuler la mise à jour** remet la copie
-   dans son état précédent.
+   dans la copie : les conflits se résolvent dans la copie (soi-même, en le
+   demandant à la conversation ou avec **Résoudre avec l'IA**), puis **Terminer la
+   mise à jour** crée le commit de merge. Ces commits passent par les hooks et la
+   configuration Git comme les autres ; un hook qui refuse laisse la mise à jour en
+   cours dans la copie, à terminer une fois la cause corrigée. **Annuler la mise à
+   jour** remet la copie dans son état précédent.
+   **Résoudre avec l'IA** lance une session dans la copie, avec les réglages de
+   résolution du projet (**Réglages LLM**), sans ouvrir son terminal. Elle reçoit les
+   fichiers en conflit (ce que chaque côté en a fait et les commits qui les ont
+   touchés), les commits de la copie et ceux de la cible depuis leur base commune,
+   et l'intention du travail : la demande initiale de la conversation d'origine et,
+   si cette conversation traitait une tâche d'epic, le texte de cette tâche. Elle
+   réécrit les fichiers pour garder les deux intentions et retire les marqueurs ;
+   face à un choix qui vous revient, elle pose la question plutôt que de deviner.
+   Elle ne fait jamais de `git add`, de commit ni d'abandon du merge, et ne modifie
+   pas le dossier du projet. Pendant la mise à jour, chaque fichier est marqué
+   « résolu » ou « marqueurs restants » (un fichier déjà indexé avec des marqueurs
+   compte aussi), et la session liée est affichée avec son état : au travail, en
+   attente d'une réponse, ou ayant fini son tour avec ou sans marqueurs restants.
+   Une seule session de résolution vit par mise à jour ; une fois sortie, une autre
+   peut prendre le relais. **Terminer la mise à jour** reste votre geste : relisez
+   ses changements, puis terminez dès que la session a fini son tour et qu'aucun
+   marqueur ne subsiste. Terminer ou annuler la mise à jour détache la session, qui
+   reste une conversation ordinaire.
 3. **Intégrer** : le bouton reste visible, désactivé tant qu'un blocage subsiste, et
-   la liste des blocages dit quoi faire.
+   la liste des blocages dit quoi faire. Tant que Cerebro prévoit des conflits avec
+   la cible, l'intégration est bloquée : mettez d'abord la copie à jour (étape 2),
+   pour que les conflits se règlent dans la copie et jamais dans le dossier du
+   projet. Une prévision encore en cours de calcul ne bloque pas.
 4. **Publier** : l'intégration reste locale ; **Push** dans l'en-tête du projet
    envoie le travail vers les remotes.
 
@@ -953,8 +974,8 @@ et bloque les mutations.
 
 **Intégrer dans master** (ou la branche cible choisie) prépare une confirmation avec les références source/cible et le chemin
 exact du worktree cible. La cible doit être une branche ouverte dans un autre
-worktree, son index et ses fichiers doivent être propres et les agents qui
-l'utilisent doivent avoir fini leur tour. Aucun commit implicite, push, squash,
+worktree, son index et ses fichiers doivent être propres, les agents qui
+l'utilisent doivent avoir fini leur tour et aucun conflit ne doit être prévu. Aucun commit implicite, push, squash,
 reset ou contournement de hook n'est effectué. Les hooks et la configuration Git
 s'appliquent. Les entrées d'une conversation inactive sont mises en attente
 pendant le merge puis transmises après son résultat. En cas de conflit ou d'échec
