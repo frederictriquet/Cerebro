@@ -10,6 +10,7 @@ import { AGENTS, isAgent, isMode, normalizeMode, type Agent, type Project } from
 import { asRecord } from './util.ts';
 import { error } from './routes-util.ts';
 import { orError, parseSessionDefaults, type RouteContext } from './route-context.ts';
+import { normalizeRegenerablePath } from '../shared/worktrees.ts';
 
 function expandProjectPath(value: string): string {
   if (value === '~') return homedir();
@@ -70,6 +71,7 @@ export function registerProjectRoutes(ctx: RouteContext): void {
     requireProject,
     launchReview,
     recordCommit,
+    worktrees,
   } = ctx;
 
   const broadcastProjects = (): void => broadcast({ type: 'projects', projects: db.listProjects() });
@@ -156,12 +158,23 @@ export function registerProjectRoutes(ctx: RouteContext): void {
         | 'resolutionSettings'
         | 'councilSettings'
         | 'workspaceMode'
+        | 'regenerablePaths'
       >
     > = {};
     if ('workspaceMode' in body) {
       if (body.workspaceMode !== 'isolated' && body.workspaceMode !== 'shared')
         return error(reply, 400, 'Mode de travail invalide');
       changes.workspaceMode = body.workspaceMode;
+    }
+    if ('regenerablePaths' in body) {
+      const raw = body.regenerablePaths;
+      if (!Array.isArray(raw) || raw.length > 50 || raw.some((item) => typeof item !== 'string'))
+        return error(reply, 400, 'Chemins régénérables invalides (50 au plus)');
+      const paths = (raw as string[]).map(normalizeRegenerablePath);
+      const invalid = (raw as string[]).find((_, index) => paths[index] === null);
+      if (invalid !== undefined)
+        return error(reply, 400, `Chemin régénérable invalide : « ${invalid} » (chemin relatif à la copie attendu)`);
+      changes.regenerablePaths = [...new Set(paths as string[])];
     }
     if ('name' in body) {
       if (typeof body.name !== 'string' || body.name.trim() === '')
@@ -223,6 +236,9 @@ export function registerProjectRoutes(ctx: RouteContext): void {
     const updated = db.updateProject(project.id, changes);
     if (updated === null) return error(reply, 404, 'Projet introuvable');
     if (updated.path !== project.path) sessions.forgetInputContexts();
+    // Copies kept only because of a newly declared path can now go.
+    if (JSON.stringify(updated.regenerablePaths) !== JSON.stringify(project.regenerablePaths))
+      void worktrees.resumeAutomaticCleanup(project.id);
     // Un renommage compte comme une apparition : la machine qui renomme prend la main sur Slack.
     if (updated.name !== project.name) peers.renamed(project.id);
     else if (updated.path !== project.path) void peers.sync();

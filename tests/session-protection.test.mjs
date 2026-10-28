@@ -229,3 +229,57 @@ test('API validates the checkbox, preserves it after restart, rejects deletion a
     await app.close();
   }
 });
+
+test('deleting the sessions of an epic keeps protected ones and other sessions, and waits for the epic to stop', async () => {
+  const db = new CerebroDatabase();
+  const project = db.createProject('Epic', root);
+  const epic = db.createEpic(project.id, 'Revue', '', null);
+  const other = db.createEpic(project.id, 'Autre', '', null);
+  const make = (epicId) =>
+    db.createSession(
+      {
+        id: randomUUID(),
+        projectId: project.id,
+        agent: 'codex',
+        mode: 'auto',
+        model: null,
+        effort: null,
+        prompt: '',
+        title: 'Étape',
+        status: 'exited',
+        agentSessionId: null,
+      },
+      'test-token',
+      epicId,
+    );
+  const steps = [make(epic.id), make(epic.id)];
+  const guarded = make(epic.id);
+  const kept = [guarded.id, make(other.id).id, createSession(db, project).id];
+  const run = randomUUID();
+  db.connection
+    .prepare('INSERT INTO epic_runs VALUES (?,?,?)')
+    .run(run, epic.id, JSON.stringify({ id: run, epicId: epic.id, projectId: project.id, status: 'running' }));
+  db.close();
+  const app = await buildServer();
+  const send = (method, url, payload) => app.inject({ method, url, ...(payload === undefined ? {} : { payload }) });
+  try {
+    assert.equal((await send('PATCH', `/api/sessions/${guarded.id}/protection`, { protected: true })).statusCode, 200);
+    assert.equal((await send('DELETE', `/api/epics/${epic.id}/sessions`)).statusCode, 409);
+    const ids = () => send('GET', '/api/sessions').then((response) => response.json().map((session) => session.id));
+    const before = await ids();
+    assert.ok(steps.every((step) => before.includes(step.id)));
+    const reopened = new CerebroDatabase();
+    reopened.connection
+      .prepare('UPDATE epic_runs SET data = ? WHERE id = ?')
+      .run(JSON.stringify({ id: run, epicId: epic.id, projectId: project.id, status: 'succeeded' }), run);
+    reopened.close();
+    const deleted = await send('DELETE', `/api/epics/${epic.id}/sessions`);
+    assert.equal(deleted.statusCode, 200);
+    assert.deepEqual(deleted.json(), { deleted: 2, kept: 1 });
+    const remaining = await ids();
+    assert.ok(kept.every((id) => remaining.includes(id)));
+    assert.ok(steps.every((step) => !remaining.includes(step.id)));
+  } finally {
+    await app.close();
+  }
+});

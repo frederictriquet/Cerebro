@@ -1,14 +1,16 @@
 import { useId, useMemo, useState } from 'react';
+import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { EpicReviewActions } from './EpicReviewActions.tsx';
 import { useEpicRun } from './epic-runs.ts';
 import { FindingsLink } from './FindingsLink.tsx';
-import { attentionCounts, isAwaiting, plural } from './format.ts';
+import { attentionCounts, errorMessage, isAwaiting, plural } from './format.ts';
 import { href, parseMachine } from './route.ts';
 import { SessionRow } from './SessionRow.tsx';
 import { useStoredFlag } from './storage.ts';
 import { groupSessions, type SessionGroup } from './session-groups.ts';
 import { useStore } from './store.tsx';
 import { SessionListContext, useSessionList } from './session-list-context.ts';
+import { isActiveRun } from '../../shared/backlog.ts';
 import type { Session } from '../../shared/types.ts';
 import './session-groups.css';
 
@@ -41,7 +43,7 @@ export function SessionList({
 }
 
 function EpicSessions({ group }: { group: Extract<SessionGroup, { kind: 'epic' }> }) {
-  const { projects } = useStore();
+  const { projects, deleteEpicSessions } = useStore();
   const { showProject } = useSessionList();
   const project = showProject ? projects.find((item) => item.id === group.projectId) : undefined;
   const listId = useId();
@@ -65,6 +67,14 @@ function EpicSessions({ group }: { group: Extract<SessionGroup, { kind: 'epic' }
   const running = group.sessions.filter(
     (session) => session.status === 'starting' || session.status === 'running',
   ).length;
+  const deletable = group.sessions.filter((session) => !session.protected).length;
+  const epicActive = run !== null && isActiveRun(run);
+  const onDeleteSessions = (): void => {
+    setActionError(null);
+    void deleteEpicSessions(group.epic.id).catch((cause: unknown) =>
+      setActionError(errorMessage(cause, 'Suppression impossible')),
+    );
+  };
   return (
     <li className={`session-epic${attention ? ' has-attention' : ''}`}>
       <div className="session-epic-head">
@@ -103,6 +113,19 @@ function EpicSessions({ group }: { group: Extract<SessionGroup, { kind: 'epic' }
             run={run}
             onError={setActionError}
           />
+          {deletable > 0 ? (
+            <DelayedActionButton
+              onAction={onDeleteSessions}
+              disabled={epicActive}
+              title={
+                epicActive
+                  ? 'Epic en cours : arrêtez-le avant de supprimer ses sessions'
+                  : 'Supprime les sessions non protégées de l’epic ; celles encore ouvertes seront arrêtées. Leurs copies de travail sans rien à conserver sont ensuite nettoyées.'
+              }
+            >
+              Supprimer les sessions ({deletable})
+            </DelayedActionButton>
+          ) : null}
         </div>
         {project ? (
           <a className="meta project-jump" href={href(`#/p/${project.id}`)}>

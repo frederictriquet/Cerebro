@@ -2,10 +2,10 @@
 // Dev launcher: API server restarted on changes in server/, shared/ and bin/ + Vite dev server (HMR),
 // prefixed output, and both stopped together on Ctrl+C or when either one dies.
 // The server is restarted by this script rather than `node --watch`: Node's watcher loses track
-// of a file once it is saved by rename (atomic write), whereas a directory watch survives it.
+// of a file once it is saved by rename (atomic write) or recreated by Git, whereas a directory watch survives it.
 import { spawn } from 'node:child_process';
-import { watch } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readdirSync, statSync, watch } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -80,12 +80,36 @@ function scheduleRestart(file) {
   }, 150);
 }
 
-for (const dir of WATCH_DIRS) {
-  // Recursive so that a future subdirectory also triggers a restart (supported on Linux since Node 20).
-  watch(join(root, dir), { recursive: true }, (_event, file) => {
-    if (file && WATCH_EXT.test(file)) scheduleRestart(`${dir}/${file}`);
-  });
+// One plain watch per directory, not `recursive`: on Linux, Node's recursive watch follows each file and loses one
+// deleted then recreated, as `git stash`, `checkout` or `merge` do, so the server kept running stale code. A
+// directory watch reports names and survives that. Subdirectories, present or created later, get their own watch.
+const watched = new Map();
+function unwatch(dir) {
+  watched.get(dir)?.close();
+  watched.delete(dir);
 }
+function watchTree(dir) {
+  if (watched.has(dir)) return;
+  let watcher;
+  try {
+    watcher = watch(dir, (_event, file) => {
+      if (!file) return;
+      const path = join(dir, file);
+      if (WATCH_EXT.test(file)) return scheduleRestart(relative(root, path));
+      const stat = statSync(path, { throwIfNoEntry: false });
+      if (!stat) unwatch(path);
+      else if (stat.isDirectory()) watchTree(path);
+    });
+    watched.set(dir, watcher);
+    watcher.on('error', () => unwatch(dir));
+    for (const entry of readdirSync(dir, { withFileTypes: true }))
+      if (entry.isDirectory() && entry.name !== 'node_modules') watchTree(join(dir, entry.name));
+  } catch {
+    // Directory removed meanwhile: its parent's watch picks it up again if it comes back.
+    unwatch(dir);
+  }
+}
+for (const dir of WATCH_DIRS) watchTree(join(root, dir));
 
 start('server');
 start('web');

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { ActivityStatus } from '../ActivityStatus.tsx';
 import { Modal } from '../Dialog.tsx';
 import { branchName, copyTitle, type Confirmation } from './model.ts';
@@ -7,15 +8,23 @@ export function ConfirmationDialog({
   confirmation,
   busy,
   error,
+  canDeclare,
+  onDeclare,
   onConfirm,
   onClose,
 }: {
   confirmation: Confirmation;
   busy: boolean;
   error: string | null;
+  /** The project of the copy is known here: its regenerable paths can be extended. */
+  canDeclare: boolean;
+  onDeclare: (entry: string) => void;
   onConfirm: () => void;
   onClose: () => void;
 }) {
+  const { view, deleteIgnored } = confirmation;
+  const [acknowledged, setAcknowledged] = useState(false);
+  const hidden = (view.ignored ?? 0) - view.ignoredFiles.length;
   return (
     <Modal
       title={
@@ -48,10 +57,43 @@ export function ConfirmationDialog({
           </p>
         </>
       ) : (
-        <p>
-          La copie propre et intégrée sera retirée. Sa branche, ses commits et la conversation seront conservés. Cette
-          conversation ne pourra plus reprendre dans la copie supprimée.
-        </p>
+        <>
+          <p>
+            La copie propre et intégrée sera retirée. Sa branche, ses commits et la conversation seront conservés. Cette
+            conversation ne pourra plus reprendre dans la copie supprimée.
+          </p>
+          {deleteIgnored ? (
+            <div className="worktree-warning">
+              <p>
+                Ces fichiers ignorés par Git n’existent que dans la copie et seront supprimés définitivement avec elle.
+                {canDeclare
+                  ? ' Un chemin qu’une compilation ou une installation recrée peut être déclaré régénérable : les prochaines copies du projet le supprimeront sans demander, y compris au nettoyage automatique.'
+                  : ''}
+              </p>
+              <ul className="worktree-ignored-list">
+                {view.ignoredFiles.map((entry) => (
+                  <li key={entry}>
+                    <code>{entry}</code>
+                    {canDeclare ? (
+                      <button type="button" className="btn" disabled={busy} onClick={() => onDeclare(entry)}>
+                        Déclarer régénérable
+                      </button>
+                    ) : null}
+                  </li>
+                ))}
+                {hidden > 0 ? <li>… et {hidden} autre(s)</li> : null}
+              </ul>
+              <label className="worktree-reviewed">
+                <input
+                  type="checkbox"
+                  checked={acknowledged}
+                  onChange={(event) => setAcknowledged(event.target.checked)}
+                />
+                Supprimer définitivement ces fichiers ignorés
+              </label>
+            </div>
+          ) : null}
+        </>
       )}
       {error ? (
         <p className="form-error" role="alert">
@@ -62,7 +104,7 @@ export function ConfirmationDialog({
         <button
           type="button"
           className={`btn ${confirmation.kind === 'merge' ? 'primary' : 'danger-ghost'}`}
-          disabled={busy}
+          disabled={busy || (deleteIgnored && !acknowledged)}
           onClick={onConfirm}
         >
           <ActivityStatus active={busy}>

@@ -383,3 +383,20 @@
     margin-left: 0;
   }
 }
+.worktree-ignored-list {
+  margin: 0.5rem 0;
+  padding-left: 1.1rem;
+  max-height: 30vh;
+  overflow: auto;
+  color: var(--text);
+}
+.worktree-ignored-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.6rem;
+  margin: 0.2rem 0;
+}
+.worktree-ignored-list code {
+  overflow-wrap: anywhere;
+}

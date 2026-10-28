@@ -1041,6 +1041,20 @@ export class SessionManager {
     return inactive.length;
   }
 
+  /**
+   * Deletes the sessions of an epic, open ones stopped first; protected ones stay. Returns how many were deleted
+   * and how many protected ones were kept.
+   */
+  async deleteEpicSessions(epicId: string): Promise<{ deleted: number; kept: number }> {
+    const sessions = this.db.listSessions().filter((session) => session.epic?.id === epicId);
+    const deletable = sessions.filter((session) => !session.protected);
+    const results = await Promise.allSettled(deletable.map((session) => this.delete(session.id)));
+    const failed = results.filter((result) => result.status === 'rejected').length;
+    if (failed > 0)
+      throw new Error(`${failed} session(s) impossible(s) à arrêter (${results.length - failed} supprimée(s))`);
+    return { deleted: deletable.length, kept: sessions.length - deletable.length };
+  }
+
   async delete(id: string): Promise<boolean> {
     const session = this.db.getSession(id);
     if (session === null) return false;

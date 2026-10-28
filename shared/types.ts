@@ -204,6 +204,11 @@ export interface Project {
   councilSettings: CouncilSettings | null;
   resolutionSettings: ResolutionSettings;
   workspaceMode: WorkspaceMode;
+  /**
+   * Ignored paths of a copy, relative to its root, that a build or an install recreates (e.g. `web/dist`): removing
+   * the copy deletes them like the regenerable folders at its root.
+   */
+  regenerablePaths: string[];
   createdAt: number;
 }
 
@@ -537,6 +542,10 @@ export function parseProject(v: unknown): Project | null {
   };
   const workspaceMode: WorkspaceMode = v.workspaceMode === 'shared' ? 'shared' : 'isolated';
   const councilSettings = parseCouncilSettings(v.councilSettings);
+  // Absent des serveurs antérieurs aux chemins régénérables déclarés.
+  const regenerablePaths = Array.isArray(v.regenerablePaths)
+    ? v.regenerablePaths.filter((item): item is string => typeof item === 'string')
+    : [];
   return {
     id,
     name,
@@ -547,6 +556,7 @@ export function parseProject(v: unknown): Project | null {
     resolutionSettings,
     councilSettings,
     workspaceMode,
+    regenerablePaths,
     createdAt,
   };
 }

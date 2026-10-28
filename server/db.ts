@@ -56,6 +56,7 @@ interface ProjectRow {
   council_settings: string | null;
   resolution_settings: string | null;
   workspace_mode: WorkspaceMode;
+  regenerable_paths: string | null;
   created_at: number;
 }
 
@@ -170,6 +171,7 @@ function projectFromRow(row: ProjectRow): Project {
       ? JSON.parse(row.resolution_settings)
       : { ...DEFAULT_RESOLUTION_SETTINGS },
     workspaceMode: row.workspace_mode ?? 'isolated',
+    regenerablePaths: row.regenerable_paths ? JSON.parse(row.regenerable_paths) : [],
   };
 }
 
@@ -399,6 +401,7 @@ export class CerebroDatabase {
           'effort', json_extract(session_defaults, '$.effort'), 'strategy', 'single');`);
     }
     this.addColumnIfMissing('projects', 'resolution_settings', 'TEXT');
+    this.addColumnIfMissing('projects', 'regenerable_paths', 'TEXT');
     this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commits (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
     this.connection.exec(
       'CREATE TABLE IF NOT EXISTS automatic_commit_requests (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, scope TEXT NOT NULL, push INTEGER NOT NULL)',
@@ -596,6 +599,7 @@ export class CerebroDatabase {
       councilSettings: null,
       resolutionSettings: { ...DEFAULT_RESOLUTION_SETTINGS },
       workspaceMode,
+      regenerablePaths: [],
       createdAt: Date.now(),
     };
     this.connection
@@ -620,6 +624,7 @@ export class CerebroDatabase {
         | 'resolutionSettings'
         | 'councilSettings'
         | 'workspaceMode'
+        | 'regenerablePaths'
       >
     >,
   ): Project | null {
@@ -628,7 +633,7 @@ export class CerebroDatabase {
     const next = { ...current, ...changes };
     this.connection
       .prepare(
-        'UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, resolution_settings = ?, council_settings = ?, workspace_mode = ? WHERE id = ?',
+        'UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, resolution_settings = ?, council_settings = ?, workspace_mode = ?, regenerable_paths = ? WHERE id = ?',
       )
       .run(
         next.name,
@@ -639,6 +644,7 @@ export class CerebroDatabase {
         JSON.stringify(next.resolutionSettings),
         next.councilSettings === null ? null : JSON.stringify(next.councilSettings),
         next.workspaceMode,
+        JSON.stringify(next.regenerablePaths),
         id,
       );
     return next;

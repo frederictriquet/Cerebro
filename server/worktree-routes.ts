@@ -30,7 +30,13 @@ export function registerWorktreeRoutes(app: FastifyInstance, db: CerebroDatabase
   );
   for (const kind of ['merge', 'remove'] as const) {
     app.post<{ Params: { id: string } }>(`/api/worktrees/:id/prepare-${kind}`, async (request, reply) =>
-      attempt(reply, () => manager.prepareAction(request.params.id, kind)),
+      attempt(reply, () =>
+        manager.prepareAction(
+          request.params.id,
+          kind,
+          (request.body as { deleteIgnored?: unknown } | undefined)?.deleteIgnored === true,
+        ),
+      ),
     );
     app.post<{ Params: { id: string } }>(`/api/worktrees/:id/${kind}`, async (request, reply) =>
       attempt(reply, () => manager.start(request.params.id, kind, (request.body as { token?: unknown })?.token), 202),

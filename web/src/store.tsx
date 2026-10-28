@@ -69,6 +69,8 @@ export interface Store {
   deleteSession: (id: string) => Promise<void>;
   setSessionProtected: (id: string, value: boolean) => Promise<void>;
   purgeProjectSessions: (projectId: string) => Promise<void>;
+  /** Supprime les sessions non protégées d'un epic. */
+  deleteEpicSessions: (epicId: string) => Promise<void>;
   markSeen: (id: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<Session>;
   updateProject: (id: string, patch: ProjectPatch) => Promise<Project>;
@@ -111,6 +113,7 @@ export interface ProjectPatch {
   commitSettings?: Partial<import('../../shared/types.ts').CommitSettings>;
   resolutionSettings?: Partial<import('../../shared/types.ts').ResolutionSettings>;
   workspaceMode?: import('../../shared/types.ts').WorkspaceMode;
+  regenerablePaths?: string[];
   // null : le projet revient aux réglages globaux du council.
   councilSettings?: import('../../shared/types.ts').CouncilSettings | null;
 }
@@ -383,6 +386,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setSessions(sortSessions(parseSessionList(raw)));
   }, []);
 
+  const deleteEpicSessions = useCallback(async (epicId: string): Promise<void> => {
+    try {
+      await api(apiPath`/api/epics/${epicId}/sessions`, { method: 'DELETE' });
+    } finally {
+      // Même après un échec partiel : les sessions déjà supprimées disparaissent de la liste.
+      const raw = await api('/api/sessions');
+      setSessions(sortSessions(parseSessionList(raw)));
+    }
+  }, []);
+
   const setSessionProtected = useCallback(async (id: string, value: boolean): Promise<void> => {
     const session = await apiParsed(apiPath`/api/sessions/${id}/protection`, parseSession, {
       method: 'PATCH',
@@ -566,6 +579,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteSession,
       setSessionProtected,
       purgeProjectSessions,
+      deleteEpicSessions,
       markSeen,
       renameSession,
       updateProject,
@@ -610,6 +624,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteSession,
       setSessionProtected,
       purgeProjectSessions,
+      deleteEpicSessions,
       markSeen,
       renameSession,
       updateProject,

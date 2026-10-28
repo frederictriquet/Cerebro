@@ -276,25 +276,27 @@ const REGENERABLE_DIRS = new Set([
 ]);
 /**
  * An ignored entry has nothing to lose when it is a link to the same path of the source project, a
- * file identical to that path there (e.g. `.claude/settings.local.json` written by the agent), or a
- * regenerable directory at the root of the copy. Another directory qualifies only if every entry below it does,
- * within a small bound.
+ * file identical to that path there (e.g. `.claude/settings.local.json` written by the agent), a
+ * regenerable directory at the root of the copy, or a path the project declares regenerable (`declared`, e.g.
+ * `web/dist`). Another directory qualifies only if every entry below it does, within a small bound.
  */
 async function disposableIgnored(
   root: string,
   source: string,
   name: string,
+  declared: ReadonlySet<string>,
   budget = { entries: 200 },
 ): Promise<boolean> {
   if (--budget.entries < 0) return false;
   const path = join(root, name);
   const stat = await lstat(path).catch(() => null);
   if (!stat) return false;
+  if (declared.has(name)) return true;
   if (stat.isSymbolicLink()) return resolve(dirname(path), await readlink(path)) === resolve(source, name);
   if (stat.isDirectory()) {
     if (dirname(name) === '.' && REGENERABLE_DIRS.has(name)) return true;
     for (const entry of await readdir(path))
-      if (!(await disposableIgnored(root, source, join(name, entry), budget))) return false;
+      if (!(await disposableIgnored(root, source, join(name, entry), declared, budget))) return false;
     return true;
   }
   if (!stat.isFile()) return false;
@@ -380,16 +382,15 @@ async function targetHead(record: WorktreeRecord): Promise<string | null> {
     : null;
 }
 /**
- * Uncommitted and ignored files of the copy, outside the dependency directories shared with the project. Ignored
- * entries with nothing to lose are set apart: a removal deletes them.
+ * Ignored entries of the copy, outside the dependency directories shared with the project: those with nothing to
+ * lose (`disposable`), that a removal deletes, and the others (`kept`).
  */
-async function inspectStatus(
+async function classifyIgnored(
   record: WorktreeRecord,
   workspace: Workspace | null,
-  view: WorktreeView,
-): Promise<{ files: string[]; ignored: string[] }> {
+  declared: ReadonlySet<string>,
+): Promise<{ ignored: string[]; disposable: string[]; kept: string[] }> {
   const sharedIgnored = new Set(await sharedDependencyLinks(workspace ?? record, record.path));
-  const files = parseStatusZ(await git(record.path, STATUS)).filter((path) => !underShared(path, sharedIgnored));
   // The inventory only needs removable ignored entries, not every file below them.
   // Expanding node_modules here made each UI refresh walk thousands of files.
   const ignored = splitZ(
@@ -398,8 +399,19 @@ async function inspectStatus(
   const disposable: string[] = [];
   if (record.managed)
     for (const name of ignored)
-      if (await disposableIgnored(record.path, record.source, name.replace(/\/$/, ''))) disposable.push(name);
-  const kept = ignored.filter((name) => !disposable.includes(name));
+      if (await disposableIgnored(record.path, record.source, name.replace(/\/$/, ''), declared)) disposable.push(name);
+  return { ignored, disposable, kept: ignored.filter((name) => !disposable.includes(name)) };
+}
+/** Uncommitted and ignored files of the copy, outside the dependency directories shared with the project. */
+async function inspectStatus(
+  record: WorktreeRecord,
+  workspace: Workspace | null,
+  view: WorktreeView,
+  declared: ReadonlySet<string>,
+): Promise<{ files: string[]; ignored: string[] }> {
+  const sharedIgnored = new Set(await sharedDependencyLinks(workspace ?? record, record.path));
+  const files = parseStatusZ(await git(record.path, STATUS)).filter((path) => !underShared(path, sharedIgnored));
+  const { ignored, disposable, kept } = await classifyIgnored(record, workspace, declared);
   view.files = files.slice(0, 100);
   view.dirty = files.length;
   view.ignoredFiles = kept.slice(0, 100);
@@ -718,6 +730,19 @@ async function commitTargetMerge(
   }
 }
 /** Why `activity` blocks a merge into, or the removal of, its folder. */
+/**
+ * The removal blocker of ignored entries with something to lose, always the last of `removeBlockers`. A removal that
+ * the user confirmed with their explicit deletion lifts it.
+ */
+const ignoredReason = (count: number): string =>
+  `${count} fichier(s) ignoré(s) conservé(s) : déplacez-les, déclarez-les régénérables dans les réglages du projet, ou confirmez leur suppression au retrait.`;
+/** What prevents an action, minus the ignored entries a removal was confirmed to delete. */
+function actionBlockers(view: WorktreeView, kind: 'merge' | 'remove', deleteIgnored: boolean): string[] {
+  if (kind === 'merge') return view.mergeBlockers;
+  return deleteIgnored
+    ? view.removeBlockers.filter((reason) => reason !== ignoredReason(view.ignored ?? 0))
+    : view.removeBlockers;
+}
 function activityReasons(activity: RepositoryActivity, removing: boolean): string[] {
   const repeat = (count: number, reason: string): string[] => Array.from({ length: count }, () => reason);
   return [
@@ -735,7 +760,17 @@ export class WorktreeManager {
   private services: Services;
   private syncing: Promise<string[]> | null = null;
   private listings = new Map<string, Promise<WorktreeInventory>>();
-  private plans = new Map<string, { id: string; kind: 'merge' | 'remove'; fingerprint: string; expires: number }>();
+  private plans = new Map<
+    string,
+    {
+      id: string;
+      kind: 'merge' | 'remove';
+      fingerprint: string;
+      expires: number;
+      /** Ignored entries with something to lose that the user confirmed to delete with the copy. */
+      deleteIgnored: string[];
+    }
+  >();
   private startingCommits = new Map<string, { commit: string; subject: string } | null>();
   private forecasts = new Map<string, string[] | null>();
   private separations = new Map<string, MixedStartingState>();
@@ -940,8 +975,16 @@ export class WorktreeManager {
     return sharing.length === 1 ? sharing[0] : undefined;
   }
   private record(id: string): WorktreeRecord {
-    const record = records(this.db).find((r) => r.id === id && !r.removedAt);
+    const record = records(this.db).find((r) => r.id === id);
     if (!record) throw new WorktreeError('Worktree introuvable.', 404);
+    // 410: a copy removed meanwhile, often by the automatic cleanup, which the UI can simply drop.
+    if (record.removedAt)
+      throw new WorktreeError(
+        record.autoCleanup?.status === 'removed'
+          ? 'Copie déjà retirée par le nettoyage automatique.'
+          : 'Copie déjà retirée.',
+        410,
+      );
     return record;
   }
   async list(projectId?: string): Promise<WorktreeInventory> {
@@ -1025,7 +1068,7 @@ export class WorktreeManager {
     try {
       const entry = await inspectIdentity(record, view);
       const workspace = record.sessionId ? this.workspaceOf(record.sessionId) : null;
-      const { files, ignored } = await inspectStatus(record, workspace, view);
+      const { files, ignored } = await inspectStatus(record, workspace, view, this.declaredRegenerable(record));
       if (workspace?.mode === 'isolated' && canonicalWorktreePath(workspace.root) === record.path)
         await this.inspectStartingContent(record, workspace, files, view);
       const gitDir = (await git(record.path, ['rev-parse', '--absolute-git-dir'])).trim();
@@ -1173,8 +1216,7 @@ export class WorktreeManager {
     view.removeBlockers = [...commonBlockers, ...activityReasons(activity, true)];
     if (view.ahead === null || view.ahead > 0)
       view.removeBlockers.push('Des commits restent à intégrer, ou leur intégration ne peut pas être vérifiée.');
-    if (view.ignored)
-      view.removeBlockers.push(`${view.ignored} fichier(s) ignoré(s) conservé(s) : déplacez-les avant suppression.`);
+    if (view.ignored) view.removeBlockers.push(ignoredReason(view.ignored));
     view.mergeBlockers = [...commonBlockers, ...activityReasons(activity, false)];
     if (!view.targetPath) view.mergeBlockers.push('La branche cible doit être ouverte dans un worktree Git.');
     if (view.ahead === 0) view.mergeBlockers.push('Aucun nouveau commit à intégrer.');
@@ -1759,16 +1801,34 @@ export class WorktreeManager {
       .prepare('UPDATE session_workspaces SET data=? WHERE session_id=?')
       .run(JSON.stringify(workspace), workspace.sessionId);
   }
-  /** Validates a merge or removal and returns the single-use token that `start` requires to run it. */
-  async prepareAction(id: string, kind: 'merge' | 'remove'): Promise<PreparedWorktreeOperation> {
+  /**
+   * Validates a merge or removal and returns the single-use token that `start` requires to run it. `deleteIgnored`:
+   * the removal also deletes the ignored entries with something to lose, listed in the view the user confirms.
+   */
+  async prepareAction(id: string, kind: 'merge' | 'remove', deleteIgnored = false): Promise<PreparedWorktreeOperation> {
     const view = await this.get(id);
-    const blockers = kind === 'merge' ? view.mergeBlockers : view.removeBlockers;
+    const blockers = actionBlockers(view, kind, deleteIgnored);
     if (blockers.length || !view.fingerprint) throw new WorktreeError(blockers.join('\n'));
+    const ignored = kind === 'remove' && deleteIgnored ? await this.keptIgnored(this.record(id)) : [];
     const token = randomUUID();
     for (const [key, plan] of this.plans) if (plan.expires < Date.now()) this.plans.delete(key);
     if (this.plans.size >= 100) this.plans.delete(this.plans.keys().next().value!);
-    this.plans.set(token, { id, kind, fingerprint: view.fingerprint, expires: Date.now() + 10 * 60_000 });
+    this.plans.set(token, {
+      id,
+      kind,
+      fingerprint: view.fingerprint,
+      expires: Date.now() + 10 * 60_000,
+      deleteIgnored: ignored,
+    });
     return { token, view };
+  }
+  /** Paths the project of the copy declares regenerable. */
+  private declaredRegenerable(record: WorktreeRecord): ReadonlySet<string> {
+    return new Set(record.projectId ? (this.db.getProject(record.projectId)?.regenerablePaths ?? []) : []);
+  }
+  private async keptIgnored(record: WorktreeRecord): Promise<string[]> {
+    const workspace = record.sessionId ? this.workspaceOf(record.sessionId) : null;
+    return (await classifyIgnored(record, workspace, this.declaredRegenerable(record))).kept;
   }
   async start(id: string, kind: 'merge' | 'remove', token: unknown): Promise<WorktreeOperation> {
     const { operation, done } = await this.begin(id, kind, token, false);
@@ -1791,7 +1851,7 @@ export class WorktreeManager {
     const view = await this.get(id);
     if (view.fingerprint !== plan.fingerprint)
       throw new WorktreeError('L’état Git a changé depuis la confirmation : préparez de nouveau l’action.');
-    const blockers = kind === 'merge' ? view.mergeBlockers : view.removeBlockers;
+    const blockers = actionBlockers(view, kind, plan.deleteIgnored.length > 0);
     if (blockers.length) throw new WorktreeError(blockers.join('\n'));
     if (this.plans.get(token as string) !== plan) throw new WorktreeError('Sélection déjà utilisée.');
     const release = this.services.gate.lock([
@@ -1820,18 +1880,23 @@ export class WorktreeManager {
       release();
       throw cause;
     }
-    const promise = this.execute(view, operation, plan.fingerprint).finally(() => {
+    const promise = this.execute(view, operation, plan.fingerprint, plan.deleteIgnored).finally(() => {
       release();
       this.pending.delete(promise);
     });
     this.pending.add(promise);
     return { operation: { ...operation }, done: promise };
   }
-  private async execute(view: WorktreeView, operation: WorktreeOperation, fingerprint: string): Promise<void> {
+  private async execute(
+    view: WorktreeView,
+    operation: WorktreeOperation,
+    fingerprint: string,
+    deleteIgnored: string[],
+  ): Promise<void> {
     try {
       const fresh = await this.inspect(this.record(view.id), operation.id);
       if (fresh.fingerprint !== fingerprint) throw new WorktreeError('État Git modifié avant exécution.');
-      const blockers = operation.kind === 'merge' ? fresh.mergeBlockers : fresh.removeBlockers;
+      const blockers = actionBlockers(fresh, operation.kind, deleteIgnored.length > 0);
       if (blockers.length) throw new WorktreeError(blockers.join('\n'));
       if (operation.kind === 'merge') {
         // Keep the exact requested tip recoverable while merging, even if a branch is rewritten externally meanwhile.
@@ -1862,12 +1927,19 @@ export class WorktreeManager {
         }
       } else {
         const workspace = view.sessionId ? workspaceFor(this.db, view.sessionId) : null;
+        const copy = this.record(view.id);
+        const declared = this.declaredRegenerable(copy);
         // Checked again right before deletion: an entry edited since the inspection blocks the removal.
         for (const raw of fresh.disposableIgnored) {
           const name = raw.replace(/\/$/, '');
-          if (!(await disposableIgnored(view.path, view.source, name)))
+          if (!(await disposableIgnored(view.path, view.source, name, declared)))
             throw new WorktreeError(`${name} a changé : retrait annulé, rien n’a été supprimé de la copie.`);
         }
+        // Git deletes every ignored entry: those with something to lose go only when the user confirmed each of them.
+        if ((await this.keptIgnored(copy)).some((name) => !deleteIgnored.includes(name)))
+          throw new WorktreeError(
+            'Les fichiers ignorés ont changé depuis la confirmation : préparez de nouveau le retrait.',
+          );
         // Git deletes the ignored entries checked above itself, without following links, and refuses a copy
         // locked or dirtied meanwhile. Only the shared dependency links, untracked for Git, go beforehand:
         // they are put back if the removal fails, so the copy kept stays usable.

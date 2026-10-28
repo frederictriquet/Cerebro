@@ -25,6 +25,7 @@ const { createWorkspace, joinWorkspace, sessionProvenance, workspaceFor } = awai
 const { WorktreeManager, rememberWorktree } = await import('../server/worktrees.ts');
 const { SessionManager } = await import('../server/sessions.ts');
 const { createServices } = await import('../server/services.ts');
+const { normalizeRegenerablePath } = await import('../shared/worktrees.ts');
 const git = (path, ...args) =>
   execFileSync('git', ['-C', path, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -1124,7 +1125,11 @@ test('a manual removal confirmed before an automatic cleanup cannot run twice', 
     const plan = await f.manager.prepareAction(own.id, 'remove');
     await f.manager.releaseSession(f.id, f.workspace.root);
     assert.equal(existsSync(own.path), false);
-    await assert.rejects(f.manager.start(own.id, 'remove', plan.token), /introuvable/);
+    // Reported as already done (410), which the panel drops, not as an unknown copy.
+    await assert.rejects(
+      f.manager.start(own.id, 'remove', plan.token),
+      (cause) => cause.statusCode === 410 && /déjà retirée par le nettoyage automatique/.test(cause.message),
+    );
     assert.equal(git(f.repo, 'rev-parse', '--verify', f.workspace.branch).length > 0, true);
   }));
 test('ignored copies identical to the project, links into it and regenerable directories do not block removal, other ignored files do', async () =>
@@ -1190,6 +1195,61 @@ test('only regenerable directories at the root of the copy are removed: a nested
     await f.manager.shutdown();
     assert.equal(existsSync(f.workspace.root), false);
   }));
+
+test('paths the project declares regenerable are removed with the copy, even nested, and allow the automatic cleanup', async () =>
+  fixture(async (f) => {
+    mkdirSync(join(f.workspace.root, 'web'));
+    writeFileSync(join(f.workspace.root, 'web', 'index.html'), 'tracked\n');
+    git(f.workspace.root, 'add', 'web');
+    git(f.workspace.root, 'commit', '-m', 'web');
+    f.commit();
+    assert.equal((await f.merge()).status, 'succeeded');
+    writeFileSync(join(f.repo, '.git', 'info', 'exclude'), 'dist\ndata/\n');
+    mkdirSync(join(f.workspace.root, 'web', 'dist'));
+    writeFileSync(join(f.workspace.root, 'web', 'dist', 'index.js'), 'built\n');
+    mkdirSync(join(f.workspace.root, 'data'));
+    writeFileSync(join(f.workspace.root, 'data', 'records.csv'), 'valuable\n');
+    let own = await f.view();
+    assert.deepEqual(own.ignoredFiles.sort(), ['data/', 'web/dist/']);
+    f.db.updateProject(f.project.id, { regenerablePaths: ['web/dist'] });
+    own = await f.view();
+    assert.deepEqual(own.disposableIgnored, ['web/dist/']);
+    assert.deepEqual(own.ignoredFiles, ['data/']);
+    await f.manager.resumeAutomaticCleanup(f.project.id);
+    assert.equal(existsSync(join(f.workspace.root, 'data', 'records.csv')), true);
+    rmSync(join(f.workspace.root, 'data'), { recursive: true });
+    await f.manager.resumeAutomaticCleanup(f.project.id);
+    assert.equal(existsSync(f.workspace.root), false);
+  }));
+
+test('a removal confirmed with its ignored files deletes exactly those listed', async () =>
+  fixture(async (f) => {
+    f.commit();
+    assert.equal((await f.merge()).status, 'succeeded');
+    writeFileSync(join(f.repo, '.git', 'info', 'exclude'), 'notes\nlater\n');
+    writeFileSync(join(f.workspace.root, 'notes'), 'local\n');
+    let own = await f.view();
+    assert.equal(own.ignored, 1);
+    await assert.rejects(f.manager.prepareAction(own.id, 'remove'), /ignoré/);
+    // A file ignored after the confirmation is not part of it: the removal is refused, nothing is deleted.
+    let plan = await f.manager.prepareAction(own.id, 'remove', true);
+    writeFileSync(join(f.workspace.root, 'later'), 'new\n');
+    await assert.rejects(f.manager.start(own.id, 'remove', plan.token), /changé/);
+    assert.equal(readFileSync(join(f.workspace.root, 'notes'), 'utf8'), 'local\n');
+    rmSync(join(f.workspace.root, 'later'));
+    own = await f.view();
+    plan = await f.manager.prepareAction(own.id, 'remove', true);
+    await f.manager.start(own.id, 'remove', plan.token);
+    await f.manager.shutdown();
+    assert.equal(existsSync(f.workspace.root), false);
+  }));
+
+test('a declared regenerable path stays inside the copy', () => {
+  assert.equal(normalizeRegenerablePath(' ./web/dist/ '), 'web/dist');
+  assert.equal(normalizeRegenerablePath('packages//app/dist'), 'packages/app/dist');
+  for (const raw of ['', '/', '/etc', '../x', 'web/../..', 'web/./dist', '.git', 'a/.git/b', 'a\\b'])
+    assert.equal(normalizeRegenerablePath(raw), null, raw);
+});
 
 test('a removal refused by Git leaves the copy usable: shared links and regenerable directories are kept', async () =>
   fixture(async (f) => {

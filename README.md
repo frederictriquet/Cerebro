@@ -404,6 +404,12 @@ si le réglage du projet change ensuite, pour le traitement global, les reviews
 et le bouton **Traiter** de chaque tâche. Le formulaire rappelle le dossier
 d'origine utilisé.
 
+Dans la liste des sessions, les sessions d'un même epic sont regroupées sous son
+en-tête. **Supprimer les sessions** (avec délai d'annulation) y supprime toutes
+les sessions non protégées du groupe, en arrêtant celles encore ouvertes ; il est
+refusé tant que l'epic s'exécute. Leurs copies de travail sans rien à conserver
+sont ensuite nettoyées automatiquement.
+
 Un epic se crée avant ou après ses tâches, depuis l'interface (« Nouvel epic »,
 puis le sélecteur « Epic » d'une tâche ou du champ d'ajout) ou par l'agent :
 
@@ -970,22 +976,31 @@ Le travail reste consultable sur l'accueil, sous son dernier nom de projet et de
 conversation. Les worktrees sans conversation permettent encore de préparer et
 d'exécuter des plans de commits Git explicites, puis de merger dans la cible.
 
-**Supprimer le worktree** est une action distincte. Elle exige un espace propre,
+**Retirer la copie** est une action distincte, proposée directement sur la ligne
+d'une copie dont le travail est intégré. Elle exige un espace propre,
 une intégration vérifiée des commits, aucune session encore ouverte, aucune
-commande/aucun epic actif qui utilise ce répertoire et aucun fichier ignoré à
-conserver. Seules quelques entrées ignorées par Git, sans rien à perdre, sont
-supprimées avec la copie :
+commande/aucun epic actif qui utilise ce répertoire. Les entrées ignorées par Git
+sans rien à perdre sont supprimées avec la copie :
 
 - un lien vers le même chemin du projet source, ou un fichier identique à ce
   chemin dans le projet (par exemple `.claude/settings.local.json`) ;
 - un dossier situé **à la racine** de la copie et nommé `node_modules`, `.venv`,
   `venv`, `vendor`, `dist`, `build`, `.vite`, `.next`, `coverage`, `__pycache__`
   ou `.cache` : une installation ou une compilation le recrée ;
+- un chemin déclaré régénérable par le projet (champ « Chemins régénérables des
+  copies de travail » du formulaire **Éditer**, un chemin relatif par ligne, par
+  exemple `web/dist`) ;
 - un dossier dont tout le contenu relève des cas précédents.
 
-Un dossier de ces noms placé plus bas, comme `data/build/` ou `packages/app/dist/`,
-n'est pas présumé régénérable. Tout autre fichier ignoré bloque la suppression et
-doit être déplacé ou retiré explicitement : Cerebro ne l'efface jamais de force.
+Un dossier des noms ci-dessus placé plus bas, comme `data/build/` ou
+`packages/app/dist/`, n'est pas présumé régénérable : il faut le déclarer.
+Tout autre fichier ignoré bloque le nettoyage automatique. Le retrait manuel le
+liste dans sa confirmation : il n'est supprimé qu'une fois la case « Supprimer
+définitivement ces fichiers ignorés » cochée, et chaque entrée peut y être déclarée
+régénérable pour les copies suivantes. Déclarer un chemin relance le nettoyage
+automatique des copies du projet. Cerebro n'efface jamais un fichier ignoré
+non déclaré sans cette confirmation ; un fichier ignoré apparu depuis la
+préparation annule le retrait.
 Les worktrees principal, externes, verrouillés ou dont l'identité a
 changé restent protégés. Une confirmation devient invalide si Git a changé entre
 sa préparation et son exécution. La suppression passe par Git sans `--force` et

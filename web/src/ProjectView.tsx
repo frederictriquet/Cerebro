@@ -143,8 +143,9 @@ export function ProjectView({ projectId }: { projectId: string }) {
   const [editName, setEditName] = useState('');
   const [editPath, setEditPath] = useState('');
   const [editColor, setEditColor] = useState<string | null>(null);
+  const [editRegenerable, setEditRegenerable] = useState('');
   const { run: saveProject, busy: editBusy } = useAsyncAction(
-    async (update: Pick<Project, 'name' | 'path' | 'color'>) => {
+    async (update: Pick<Project, 'name' | 'path' | 'color' | 'regenerablePaths'>) => {
       await updateProject(projectId, update);
       setEditing(false);
     },
@@ -191,6 +192,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
     setEditName(project.name);
     setEditPath(project.path);
     setEditColor(project.color);
+    setEditRegenerable(project.regenerablePaths.join('\n'));
     setEditing(true);
     setError(null);
   };
@@ -203,7 +205,11 @@ export function ProjectView({ projectId }: { projectId: string }) {
       setError('Le nom et le chemin sont requis');
       return;
     }
-    await saveProject({ name, path, color: editColor });
+    const regenerablePaths = editRegenerable
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    await saveProject({ name, path, color: editColor, regenerablePaths });
   };
 
   if (codeOpen) return <CodeEditor project={project} onClose={() => setCodeOpen(false)} />;
@@ -224,6 +230,20 @@ export function ProjectView({ projectId }: { projectId: string }) {
               <label>
                 Chemin
                 <PathInput required value={editPath} onChange={setEditPath} />
+              </label>
+              <label>
+                Chemins régénérables des copies de travail
+                <textarea
+                  rows={2}
+                  value={editRegenerable}
+                  placeholder="web/dist"
+                  onChange={(e) => setEditRegenerable(e.target.value)}
+                />
+                <span className="hint">
+                  Un chemin par ligne, relatif à la racine du projet : fichiers ignorés par Git qu’une compilation ou
+                  une installation recrée. Le retrait d’une copie, nettoyage automatique compris, les supprime sans
+                  demander.
+                </span>
               </label>
               <div className="color-field">
                 <span>Couleur</span>

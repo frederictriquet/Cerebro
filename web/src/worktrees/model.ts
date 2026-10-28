@@ -131,11 +131,22 @@ export function startingContentGroups(plan: Journey): {
   return { separable, manual, removable: plan.inherited.length > 0 || separable.length > 0 || plan.settled.length > 0 };
 }
 
+/** What blocks the removal of a copy besides its ignored files, which the removal dialog deletes on confirmation. */
+export function removalBlockers(view: WorktreeView): string[] {
+  // The server lists the ignored files last (ignoredReason in server/worktrees.ts).
+  return !view.error && view.ignored ? view.removeBlockers.slice(0, -1) : view.removeBlockers;
+}
+/** A copy whose work is all in its target: nothing left to do but remove it. */
+export const finished = (view: WorktreeView): boolean =>
+  !view.error && !view.dirty && !view.mergeInProgress && view.ahead === 0 && view.integration === 'integrated';
+
 // No machine stamp: switching machines remounts the whole tree (StoreProvider keyed by machine in App).
 export interface Confirmation {
   kind: 'merge' | 'remove';
   token: string;
   view: WorktreeView;
+  /** The removal also deletes the ignored files listed in `view`. */
+  deleteIgnored: boolean;
 }
 
 export interface Reviewed {
@@ -149,7 +160,8 @@ export type Resolver = Pick<Session, 'id' | 'title'>;
 
 /** What a copy row asks of the panel that owns the dialogs, the busy state and the refresh. */
 export interface WorktreeActions {
-  prepare: (view: WorktreeView, kind: 'merge' | 'remove') => Promise<void>;
+  /** `deleteIgnored`: the removal also deletes the ignored files to keep, listed in the confirmation. */
+  prepare: (view: WorktreeView, kind: 'merge' | 'remove', deleteIgnored?: boolean) => Promise<void>;
   act: (view: WorktreeView, action: string) => Promise<void>;
   chooseTarget: (view: WorktreeView, branch: string) => Promise<void>;
   discard: (view: WorktreeView) => void;

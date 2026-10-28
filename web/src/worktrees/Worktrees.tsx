@@ -5,10 +5,11 @@ import {
   type StartingContentDiscard,
   type WorktreeView,
 } from '../../../shared/worktrees.ts';
-import { api, apiBase, apiParsed } from '../api.ts';
+import { api, apiBase, apiParsed, ApiError } from '../api.ts';
 import { useAsyncAction } from '../async-action.ts';
 import { AutomaticCommitDialog } from '../AutomaticCommitDialog.tsx';
 import { errorMessage } from '../format.ts';
+import { useStore } from '../store.tsx';
 import '../worktrees.css';
 import { CleanedHistory } from './CleanedHistory.tsx';
 import { ConfirmationDialog } from './ConfirmationDialog.tsx';
@@ -59,23 +60,51 @@ function WorktreesPanel({
   const [resolvers, setResolvers] = useState<Map<string, Resolver>>(() => new Map());
   const [committing, setCommitting] = useState<{ view: WorktreeView; reviewed?: Reviewed } | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const { projects, updateProject } = useStore();
   // No apiBase() check after the requests: switching machines remounts the whole tree (StoreProvider keyed by machine).
-  const prepare = async (view: WorktreeView, kind: 'merge' | 'remove'): Promise<void> => {
+  const prepare = async (view: WorktreeView, kind: 'merge' | 'remove', deleteIgnored = false): Promise<void> => {
     await perform(async () => {
       const prepared = await apiParsed(`/api/worktrees/${view.id}/prepare-${kind}`, parsePreparedWorktreeOperation, {
         method: 'POST',
+        body: JSON.stringify({ deleteIgnored }),
       });
-      setConfirmation({ kind, ...prepared });
+      // The preparation is the reference: files declared regenerable meanwhile no longer need a confirmation.
+      setConfirmation({ kind, ...prepared, deleteIgnored: deleteIgnored && !!prepared.view.ignored });
     });
+  };
+  /** After a removal, started here or by the automatic cleanup: the copy leaves the list once Git is done. */
+  const settle = async (): Promise<void> => {
+    setConfirmation(null);
+    await refresh();
+    window.setTimeout(() => void refresh(), 500);
+  };
+  /**
+   * Declares an ignored entry regenerable for the project of the copy. The server then retries its automatic cleanup:
+   * a copy whose conversation is over goes by itself, preparing its removal here would only race with it.
+   */
+  const declareRegenerable = async (view: WorktreeView, entry: string): Promise<void> => {
+    const project = projects.find((item) => item.id === view.projectId);
+    if (!project) return;
+    const declared = await perform(async () => {
+      await updateProject(project.id, {
+        regenerablePaths: [...project.regenerablePaths, entry.replace(/\/$/, '')],
+      });
+    });
+    if (!declared) return;
+    if (!view.session || view.session.status === 'exited') await settle();
+    else await prepare(view, 'remove', true);
   };
   const run = async (): Promise<void> => {
     if (!confirmation) return;
     const { view, kind, token } = confirmation;
     await perform(async () => {
-      await api(`/api/worktrees/${view.id}/${kind}`, { method: 'POST', body: JSON.stringify({ token }) });
-      setConfirmation(null);
-      await refresh();
-      window.setTimeout(() => void refresh(), 500);
+      try {
+        await api(`/api/worktrees/${view.id}/${kind}`, { method: 'POST', body: JSON.stringify({ token }) });
+      } catch (cause) {
+        // Already removed, by the automatic cleanup for instance: what the confirmation asked for is done.
+        if (!(cause instanceof ApiError && cause.status === 410)) throw cause;
+      }
+      await settle();
     });
   };
   /** A synchronous Git action on one copy, followed by a refresh. */
@@ -202,9 +231,12 @@ function WorktreesPanel({
       ) : null}
       {confirmation ? (
         <ConfirmationDialog
+          key={confirmation.token}
           confirmation={confirmation}
           busy={busy}
           error={error}
+          canDeclare={projects.some((item) => item.id === confirmation.view.projectId)}
+          onDeclare={(entry) => void declareRegenerable(confirmation.view, entry)}
           onConfirm={() => void run()}
           onClose={() => setConfirmation(null)}
         />

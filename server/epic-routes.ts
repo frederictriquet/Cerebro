@@ -119,6 +119,13 @@ export function registerEpicRoutes(ctx: RouteContext): void {
     return reply.code(204).send();
   });
 
+  // Supprime les sessions de l'epic, même supprimé : elles gardent son identifiant. Les protégées restent.
+  app.delete<{ Params: { id: string } }>('/api/epics/:id/sessions', async (request, reply) => {
+    if (epicRunner.list(request.params.id).some(isActiveRun))
+      return error(reply, 409, 'Epic en cours : arrêtez-le avant de supprimer ses sessions.');
+    return conflict.attempt(reply, () => sessions.deleteEpicSessions(request.params.id));
+  });
+
   app.get<{ Params: { id: string } }>('/api/epics/:id/runs', async (request) => epicRunner.list(request.params.id));
   app.get<{ Params: { id: string } }>('/api/epics/:id/workspace', async (request, reply) => {
     if (requireEpic(request, reply) === null) return reply;

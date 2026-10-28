@@ -307,3 +307,19 @@ export const parseStartingContentDiscard = parser(
 export const parsePreparedWorktreeOperation = parser(
   object<PreparedWorktreeOperation>({ token: string, view: worktreeView }),
 );
+
+/**
+ * A declared regenerable path in its canonical form (`web/dist`), or null when it could leave the copy or designate
+ * Git's own data: absolute, `.`/`..` segments, `.git`.
+ */
+export function normalizeRegenerablePath(raw: string): string | null {
+  const segments = raw
+    .trim()
+    .replace(/^\.\/+/, '')
+    .replace(/\/+$/, '')
+    .split(/\/+/);
+  if (raw.includes('\0') || raw.includes('\\') || raw.trim().startsWith('/')) return null;
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..' || segment === '.git'))
+    return null;
+  return segments.join('/');
+}

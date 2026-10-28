@@ -97,7 +97,7 @@ export function Backlog({ projectId }: { projectId: string }) {
             ) : null}
           </div>
         </div>
-        <TaskComposer />
+        <TaskComposer key={projectId} />
         {shownEpics.map((epic) => (
           <EpicBlock key={epic.id} epic={epic} showDone={showDone} />
         ))}

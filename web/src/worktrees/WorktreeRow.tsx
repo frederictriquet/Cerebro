@@ -6,7 +6,9 @@ import {
   branchName,
   copyTitle,
   createdLabel,
+  finished,
   journey,
+  removalBlockers,
   startingContentGroups,
   type Resolver,
   type WorktreeActions,
@@ -45,6 +47,22 @@ export function WorktreeRow({
     view.mergeInProgress ||
     view.activeSessions.some((session) => session.status !== 'idle');
   const { removable } = startingContentGroups(plan);
+  const removeBlocked = removalBlockers(view);
+  // Ignored files to keep do not block: the confirmation lists them for an explicit deletion.
+  const remove = (
+    <button
+      type="button"
+      className="btn danger-ghost"
+      disabled={disabled || removeBlocked.length > 0}
+      title={
+        removeBlocked.join('\n') ||
+        (view.ignored ? `${view.ignored} fichier(s) ignoré(s) à confirmer avant suppression` : 'Retirer la copie')
+      }
+      onClick={() => void actions.prepare(view, 'remove', !!view.ignored)}
+    >
+      Retirer la copie
+    </button>
+  );
   const startDiscard = (): void => actions.discard(view);
   const integrateTitle =
     view.mergeBlockers.join('\n') ||
@@ -87,6 +105,8 @@ export function WorktreeRow({
     >
       Intégrer dans {target}
     </button>
+  ) : finished(view) ? (
+    remove
   ) : null;
   return (
     <li className="worktree-row">
@@ -220,8 +240,8 @@ export function WorktreeRow({
           <summary>Retirer cette copie</summary>
           <p>
             Le retrait est distinct de la suppression de la conversation. Il est disponible uniquement quand les
-            changements sont intégrés et qu’aucune donnée locale ne risque d’être effacée. Il a lieu automatiquement à
-            l’arrêt ou à la suppression de la conversation quand ces conditions sont réunies.
+            changements sont intégrés. Il a lieu automatiquement à l’arrêt ou à la suppression de la conversation quand
+            aucune donnée locale ne risque d’être effacée.
           </p>
           {view.autoCleanup && view.autoCleanup.status !== 'removed' ? (
             <p>
@@ -232,25 +252,19 @@ export function WorktreeRow({
           {view.ignored ? (
             <p>
               {view.ignored} fichier(s) ignoré(s) par Git sont présents (par exemple dépendances ou configuration
-              locale). Ce ne sont pas des changements à intégrer ; ils sont conservés et empêchent le retrait de la
-              copie.
+              locale). Ce ne sont pas des changements à intégrer. Ils empêchent le nettoyage automatique ; le retrait
+              les liste et ne les supprime qu’après confirmation. Un chemin qu’une compilation recrée peut être déclaré
+              régénérable (« Éditer » le projet).
             </p>
           ) : null}
-          {view.removeBlockers.length ? (
+          {removeBlocked.length ? (
             <ul>
-              {view.removeBlockers.map((reason) => (
+              {removeBlocked.map((reason) => (
                 <li key={reason}>{reason}</li>
               ))}
             </ul>
           ) : null}
-          <button
-            type="button"
-            className="btn danger-ghost"
-            disabled={disabled || view.removeBlockers.length > 0}
-            onClick={() => void actions.prepare(view, 'remove')}
-          >
-            Retirer la copie
-          </button>
+          {remove}
         </details>
       </div>
     </li>
