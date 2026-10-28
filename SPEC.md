@@ -157,7 +157,7 @@ timeout 2 s, toute erreur ignorée. **N'écrit rien sur stdout/stderr**, sort to
 ## Machine à états (server/hooks.ts + sessions.ts)
 
 Signaux fiables (→ `attention=true` + diffusion `alert` sur les transitions vers waiting/idle) :
-- `Notification` : `payload.notification_type` (ou `type`) = `permission_prompt` ou `elicitation_dialog` → `waiting`, raison = `payload.message` ; `idle_prompt` → `idle` ; autre/absent : si le message contient « permission » → waiting sinon idle.
+- `Notification` : `payload.notification_type` (ou `type`) = `permission_prompt` ou `elicitation_dialog` → `waiting`, raison = `payload.message` ; `idle_prompt` (envoyé ~60 s après `Stop`) → `idle`, raison « Tour terminé », seulement si la session n'est ni `idle` ni `waiting` (filet pour un `Stop` perdu : pas de seconde alerte, et son message « Claude is waiting for your input » n'est jamais affiché) ; autre/absent : si le message contient « permission » → waiting sinon idle.
 - `PreToolUse` dont `tool_name` correspond à `/ask.*user/i` → `waiting`, raison « Question ».
 - `Stop` → `idle`, raison « Tour terminé ».
 - codex `notify` avec `type === 'agent-turn-complete'` → `idle` (+ capture de l'id de thread).

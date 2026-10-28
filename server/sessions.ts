@@ -818,6 +818,16 @@ export class SessionManager {
     return updated;
   }
 
+  /**
+   * Claude sends idle_prompt about 60 s after its Stop hook: it only matters when that Stop was lost.
+   * Its message (« Claude is waiting for your input ») reads like a question, so it is never shown.
+   */
+  reportIdlePrompt(id: string): void {
+    const status = this.db.getSession(id)?.status;
+    if (status === 'idle' || status === 'waiting') return;
+    this.setReliableState(id, 'idle', 'Tour terminé');
+  }
+
   reportTurnComplete(id: string, message: string | null): void {
     this.emit({ type: 'turn-complete', id, message });
   }

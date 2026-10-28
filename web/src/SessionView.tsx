@@ -16,7 +16,7 @@ import {
 } from './format.ts';
 import { SessionGitActions } from './GitActions.tsx';
 import { SessionActions } from './SessionActions.tsx';
-import { SessionMeta } from './SessionMeta.tsx';
+import { SessionMeta, attentionTone } from './SessionMeta.tsx';
 import { SessionPin } from './SessionPin.tsx';
 import { SessionProtection } from './SessionProtection.tsx';
 import { go, href, parseHash, replaceRoute } from './route.ts';
@@ -575,7 +575,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         </div>
         <div className="session-head-actions">
           {session.attentionReason ? (
-            <span className="reason session-head-reason" title={session.attentionReason}>
+            <span className={`session-head-reason ${attentionTone(session)}`} title={session.attentionReason}>
               {session.attentionReason}
             </span>
           ) : null}

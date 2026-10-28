@@ -1871,11 +1871,13 @@ label.block {
   color: var(--muted);
 }
 
-.reason-line.waiting {
+.reason-line.waiting,
+.session-head-reason.waiting {
   color: var(--waiting);
 }
 
-.reason-line.idle {
+.reason-line.idle,
+.session-head-reason.idle {
   color: var(--idle);
 }
 
@@ -2059,10 +2061,6 @@ a.btn:hover {
   align-items: center;
   gap: 6px;
   margin: 6px 0 0;
-}
-
-.reason {
-  color: var(--waiting);
 }
 
 .project-crumb {

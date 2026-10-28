@@ -139,7 +139,7 @@ export function handleHook(
   if (notificationType === 'permission_prompt' || notificationType === 'elicitation_dialog') {
     sessions.setReliableState(sessionId, 'waiting', message ?? 'Permission demandée');
   } else if (notificationType === 'idle_prompt') {
-    sessions.setReliableState(sessionId, 'idle', message ?? 'Tour terminé');
+    sessions.reportIdlePrompt(sessionId);
   } else if (message !== null && /permission/i.test(message)) {
     sessions.setReliableState(sessionId, 'waiting', message);
   } else {
