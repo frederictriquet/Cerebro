@@ -5,6 +5,7 @@ import { ErrorBoundary } from './ErrorBoundary.tsx';
 import { HomeView } from './HomeView.tsx';
 import { ProjectTabs } from './ProjectTabs.tsx';
 import { ProjectView } from './ProjectView.tsx';
+import { usePinnedSessionRedirect } from './pinned-redirect.ts';
 import { SessionView } from './SessionView.tsx';
 import { MachineCompatNotice, MachineWatchProvider } from './MachineSwitcher.tsx';
 import { Sidebar } from './Sidebar.tsx';
@@ -103,6 +104,7 @@ function Shell() {
   const [navOpen, setNavOpen] = useState(false);
   const sidebar = useSidebarLayout();
   usePrefetchWorktreeInventory();
+  usePinnedSessionRedirect(route);
   const routeKey =
     route.kind === 'home'
       ? 'home'

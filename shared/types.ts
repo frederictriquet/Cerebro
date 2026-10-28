@@ -226,6 +226,8 @@ export interface Session {
   status: Status;
   attention: boolean;
   protected: boolean;
+  // Une seule par projet : ouvrir le projet redirige vers elle.
+  pinned: boolean;
   attentionReason: string | null;
   agentSessionId: string | null;
   exitCode: number | null;
@@ -605,6 +607,7 @@ export function parseSession(v: unknown): Session | null {
     status: v.status,
     attention: v.attention,
     protected: v.protected === true,
+    pinned: v.pinned === true,
     attentionReason,
     agentSessionId,
     exitCode,

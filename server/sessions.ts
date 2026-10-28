@@ -887,6 +887,14 @@ export class SessionManager {
     return updated;
   }
 
+  setPinned(id: string, value: boolean): Session | null {
+    if (this.deleting.has(id)) throw new SessionProtectionError('Suppression déjà en cours pour cette session.');
+    const changed = this.db.setSessionPinned(id, value);
+    if (changed === null) return null;
+    for (const session of changed) this.emit({ type: 'session', session });
+    return changed.at(-1) ?? null;
+  }
+
   writeInput(id: string, data: string): boolean {
     const runtime = this.runtimes.get(id);
     if (runtime === undefined) return false;

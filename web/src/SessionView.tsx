@@ -17,6 +17,7 @@ import {
 import { SessionGitActions } from './GitActions.tsx';
 import { SessionActions } from './SessionActions.tsx';
 import { SessionMeta } from './SessionMeta.tsx';
+import { SessionPin } from './SessionPin.tsx';
 import { SessionProtection } from './SessionProtection.tsx';
 import { go, href, parseHash, replaceRoute } from './route.ts';
 import { sessionIsWatched } from './notify.ts';
@@ -568,7 +569,10 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             </SessionMeta>
           </p>
         </div>
-        <SessionProtection session={session} onError={setError} />
+        <div className="session-toggles">
+          <SessionPin session={session} onError={setError} />
+          <SessionProtection session={session} onError={setError} />
+        </div>
         <div className="session-head-actions">
           {session.attentionReason ? (
             <span className="reason session-head-reason" title={session.attentionReason}>

@@ -139,6 +139,16 @@ export function registerSessionRoutes(ctx: RouteContext): void {
     return result.value === null ? error(reply, 404, 'Session introuvable') : reply.send(result.value);
   });
 
+  app.patch<{ Params: { id: string } }>('/api/sessions/:id/pin', async (request, reply) => {
+    const body = asRecord(request.body);
+    if (body === null || typeof body.pinned !== 'boolean')
+      return error(reply, 400, 'Le champ pinned doit être un booléen');
+    const value = body.pinned;
+    const result = await orError(reply, async () => sessions.setPinned(request.params.id, value));
+    if (!result.ok) return result.reply;
+    return result.value === null ? error(reply, 404, 'Session introuvable') : reply.send(result.value);
+  });
+
   app.patch<{ Params: { id: string } }>('/api/sessions/:id', async (request, reply) => {
     if (requireSession(request, reply) === null) return reply;
     const body = asRecord(request.body);

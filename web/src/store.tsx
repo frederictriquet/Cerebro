@@ -51,6 +51,8 @@ export interface Store {
   // une boucle unique relance refreshAgents toutes les 5 s. Retourne le désabonnement.
   watchAgents: () => () => void;
   connected: boolean;
+  // Vrai dès le premier snapshot : les listes reflètent alors le serveur.
+  loaded: boolean;
   // Intervalle de relecture des runs d'epic et de commande : null tant que la connexion courante diffuse
   // leurs événements (ou que son snapshot n'est pas arrivé), RUN_FALLBACK_POLL_MS face à une instance antérieure.
   runPollMs: number | null;
@@ -68,6 +70,7 @@ export interface Store {
   resumeSession: (id: string) => Promise<Session>;
   deleteSession: (id: string) => Promise<void>;
   setSessionProtected: (id: string, value: boolean) => Promise<void>;
+  setSessionPinned: (id: string, value: boolean) => Promise<void>;
   purgeProjectSessions: (projectId: string) => Promise<void>;
   /** Supprime les sessions non protégées d'un epic. */
   deleteEpicSessions: (epicId: string) => Promise<void>;
@@ -168,6 +171,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [epics, setEpics] = useState<Epic[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [connected, setConnected] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   // null : snapshot de la connexion courante pas encore reçu.
   const [runEvents, setRunEvents] = useState<boolean | null>(null);
   const [peersVersion, setPeersVersion] = useState(0);
@@ -243,6 +247,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             setTasks(msg.tasks);
             setEpics(msg.epics);
             setRunEvents(msg.runEvents);
+            setLoaded(true);
             break;
           case 'session':
             setSessions((list) => upsertSession(list, msg.session));
@@ -402,6 +407,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       body: JSON.stringify({ protected: value }),
     });
     setSessions((list) => upsertSession(list, session));
+  }, []);
+
+  const setSessionPinned = useCallback(async (id: string, value: boolean): Promise<void> => {
+    const session = await apiParsed(apiPath`/api/sessions/${id}/pin`, parseSession, {
+      method: 'PATCH',
+      body: JSON.stringify({ pinned: value }),
+    });
+    // L'épingle précédente du projet tombe aussi : la diffusion du serveur le confirmera.
+    setSessions((list) =>
+      upsertSession(
+        session.pinned
+          ? list.map((s) => (s.projectId === session.projectId && s.pinned ? { ...s, pinned: false } : s))
+          : list,
+        session,
+      ),
+    );
   }, []);
 
   const renameSession = useCallback(async (id: string, title: string): Promise<Session> => {
@@ -564,6 +585,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       agentsRefreshError,
       watchAgents,
       connected,
+      loaded,
       runPollMs,
       peersVersion,
       muted,
@@ -578,6 +600,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       resumeSession,
       deleteSession,
       setSessionProtected,
+      setSessionPinned,
       purgeProjectSessions,
       deleteEpicSessions,
       markSeen,
@@ -609,6 +632,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       agentsRefreshError,
       watchAgents,
       connected,
+      loaded,
       runPollMs,
       peersVersion,
       muted,
@@ -623,6 +647,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       resumeSession,
       deleteSession,
       setSessionProtected,
+      setSessionPinned,
       purgeProjectSessions,
       deleteEpicSessions,
       markSeen,

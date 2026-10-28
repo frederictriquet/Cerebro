@@ -72,6 +72,7 @@ interface SessionRow {
   status: Status;
   attention: number;
   protected: number;
+  pinned: number;
   attention_reason: string | null;
   agent_session_id: string | null;
   exit_code: number | null;
@@ -214,6 +215,7 @@ function sessionFromRow(row: SessionRow): Session {
     status: row.status,
     attention: row.attention !== 0,
     protected: row.protected !== 0,
+    pinned: row.pinned !== 0,
     attentionReason: row.attention_reason,
     agentSessionId: row.agent_session_id,
     exitCode: row.exit_code,
@@ -368,6 +370,11 @@ export class CerebroDatabase {
     this.addColumnIfMissing('epic_workspaces', 'verified', 'INTEGER NOT NULL DEFAULT 0');
     this.connection.exec('CREATE INDEX IF NOT EXISTS tasks_epic_id ON tasks(epic_id)');
     this.addColumnIfMissing('sessions', 'protected', 'INTEGER NOT NULL DEFAULT 0');
+    this.addColumnIfMissing('sessions', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
+    // Une seule session épinglée par projet.
+    this.connection.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS sessions_pinned_project ON sessions(project_id) WHERE pinned = 1',
+    );
     this.addColumnIfMissing('sessions', 'hook_token', 'TEXT');
     for (const column of ['model', 'effort']) this.addColumnIfMissing('sessions', column, 'TEXT');
     const epicColumns = ['epic_id', 'epic_title'];
@@ -815,6 +822,7 @@ export class CerebroDatabase {
       ...input,
       attention: false,
       protected: false,
+      pinned: false,
       attentionReason: null,
       exitCode: null,
       createdAt: now,
@@ -900,6 +908,25 @@ export class CerebroDatabase {
     // Changing protection is not activity: keep the session's age and dormant status.
     this.connection.prepare('UPDATE sessions SET protected = ? WHERE id = ?').run(value ? 1 : 0, id);
     return this.getSession(id);
+  }
+
+  /**
+   * Épingle (ou désépingle) une session ; épingler retire l'épingle de l'autre session du projet.
+   * Retourne les sessions modifiées, la session demandée en dernier, ou null si elle est introuvable.
+   */
+  setSessionPinned(id: string, value: boolean): Session[] | null {
+    return this.transaction(() => {
+      const session = this.getSession(id);
+      if (session === null) return null;
+      // Comme la protection, l'épingle n'est pas une activité : l'âge des sessions est conservé.
+      const unpinned = value
+        ? this.listProjectSessions(session.projectId).filter((other) => other.pinned && other.id !== id)
+        : [];
+      const update = this.connection.prepare('UPDATE sessions SET pinned = ? WHERE id = ?');
+      for (const other of unpinned) update.run(0, other.id);
+      update.run(value ? 1 : 0, id);
+      return [...unpinned.map((other) => ({ ...other, pinned: false })), { ...session, pinned: value }];
+    });
   }
 
   deleteSession(id: string): boolean {

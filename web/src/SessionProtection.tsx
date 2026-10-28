@@ -16,7 +16,7 @@ export function SessionProtection({ session, onError }: { session: Session; onEr
 
   return (
     <label
-      className={`session-protection${session.protected ? ' active' : ''}`}
+      className={`session-toggle${session.protected ? ' active' : ''}`}
       title={
         session.protected
           ? 'Session protégée — cliquer pour autoriser sa suppression'

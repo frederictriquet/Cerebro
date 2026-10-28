@@ -1,5 +1,6 @@
 import { SessionActions } from './SessionActions.tsx';
 import { attentionTone, SessionAttention, SessionMeta } from './SessionMeta.tsx';
+import { SessionPin } from './SessionPin.tsx';
 import { SessionProtection } from './SessionProtection.tsx';
 import { displayStatus, errorMessage, isAwaiting, relativeTime, sessionTitle, STATUS_LABEL } from './format.ts';
 import { go, href } from './route.ts';
@@ -63,7 +64,10 @@ export function SessionRow({ session, grouped = false }: { session: Session; gro
         </a>
         <SessionAttention session={session} showReason={awaiting} />
       </div>
-      <SessionProtection session={session} onError={onError} />
+      <div className="session-toggles">
+        <SessionPin session={session} onError={onError} />
+        <SessionProtection session={session} onError={onError} />
+      </div>
       <div className="row-actions">
         {project ? (
           <a className="meta project-jump" href={href(`#/p/${project.id}`)}>
