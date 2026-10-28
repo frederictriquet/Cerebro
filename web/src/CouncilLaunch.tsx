@@ -133,20 +133,33 @@ function PastCouncils({
   );
 }
 
-// Convocation d'un council : question, contexte, participants et réglages propres à ce lancement.
-// Remonté à chaque changement de périmètre : brouillon et réglages ne passent pas d'un projet à l'autre.
-export function CouncilLaunch({ projectId }: { projectId?: string }) {
-  return <CouncilLaunchForm key={projectId ?? 'home'} projectId={projectId} />;
+interface CouncilLaunchProps {
+  projectId?: string;
+  // Brouillon propre à une source (session soumise au council) plutôt qu'au périmètre.
+  draftKey?: string;
+  // Contexte à jour de la source : remplace celui du brouillon, dont question et participants sont gardés.
+  initialContext?: string;
+  // Sans l'historique des councils du périmètre (lancement depuis une modale).
+  embedded?: boolean;
 }
 
-function CouncilLaunchForm({ projectId }: { projectId?: string }) {
+// Convocation d'un council : question, contexte, participants et réglages propres à ce lancement.
+// Remonté à chaque changement de périmètre : brouillon et réglages ne passent pas d'un projet à l'autre.
+export function CouncilLaunch(props: CouncilLaunchProps) {
+  return <CouncilLaunchForm key={props.draftKey ?? props.projectId ?? 'home'} {...props} />;
+}
+
+function CouncilLaunchForm({ projectId, draftKey: ownDraftKey, initialContext, embedded = false }: CouncilLaunchProps) {
   const scope = projectId ?? null;
-  const draftKey = projectId ?? 'home';
+  const draftKey = ownDraftKey ?? projectId ?? 'home';
   const now = useNow();
   const [personas, setPersonas] = useState<Persona[] | null>(null);
   const [settings, setSettings] = useState<CouncilSettings | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<CouncilDraft>(() => readCouncilDraft(draftKey));
+  const [draft, setDraft] = useState<CouncilDraft>(() => {
+    const stored = readCouncilDraft(draftKey);
+    return initialContext === undefined ? stored : { ...stored, context: initialContext };
+  });
   // Agent, modèle et effort choisis pour ce lancement seulement.
   const [overrides, setOverrides] = useState<Record<string, Llm>>({});
   const [readProject, setReadProject] = useState<boolean | null>(null);
@@ -213,8 +226,8 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
   useEffect(() => {
     void loadPersonas();
     void loadSettings();
-    void loadRuns();
-  }, [loadPersonas, loadSettings, loadRuns]);
+    if (!embedded) void loadRuns();
+  }, [loadPersonas, loadSettings, loadRuns, embedded]);
   const uploadedImages = useMemo(
     () =>
       images.items.flatMap((item) => (item.path === null ? [] : [{ n: item.n, token: item.token, path: item.path }])),
@@ -426,10 +439,12 @@ function CouncilLaunchForm({ projectId }: { projectId?: string }) {
           </button>
         </div>
       </form>
-      <section className="council-settings-section">
-        <h3>Councils précédents</h3>
-        <PastCouncils runs={runs} error={runsError} now={now} onDelete={(id) => void remove(id)} />
-      </section>
+      {embedded ? null : (
+        <section className="council-settings-section">
+          <h3>Councils précédents</h3>
+          <PastCouncils runs={runs} error={runsError} now={now} onDelete={(id) => void remove(id)} />
+        </section>
+      )}
       {/* Hors du formulaire : ces dialogues contiennent leurs propres formulaires. */}
       {personasOpen ? (
         <PersonasDialog

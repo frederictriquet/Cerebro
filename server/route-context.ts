@@ -128,7 +128,7 @@ export function createRouteContext(services: RouteServices) {
     rawBody: unknown,
     respond: (session: Session) => unknown,
     validate?: () => Promise<void>,
-    { epicId = null, remember }: { epicId?: string | null; remember?: unknown } = {},
+    { epicId = null, remember, title }: { epicId?: string | null; remember?: unknown; title?: string } = {},
   ): Promise<FastifyReply> => {
     await catalog.ready();
     const defaults = parseSessionDefaults(catalog, project.sessionDefaults, rawBody);
@@ -138,6 +138,7 @@ export function createRouteContext(services: RouteServices) {
       const session = await sessions.create(project, defaults, {
         validate,
         epicId,
+        title,
         rememberDefaults: remember === undefined,
         rememberPrompt: false,
       });

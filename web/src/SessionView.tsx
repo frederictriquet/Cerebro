@@ -16,6 +16,7 @@ import {
 } from './format.ts';
 import { SessionGitActions } from './GitActions.tsx';
 import { SessionActions } from './SessionActions.tsx';
+import { SessionCouncilButton } from './SessionCouncil.tsx';
 import { SessionMeta, attentionTone } from './SessionMeta.tsx';
 import { SessionPin } from './SessionPin.tsx';
 import { SessionProtection } from './SessionProtection.tsx';
@@ -580,6 +581,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             </span>
           ) : null}
           <div className="row-actions">
+            <SessionCouncilButton session={session} onError={setError} />
             <SessionGitActions sessionId={session.id} />
             <SessionActions
               session={session}

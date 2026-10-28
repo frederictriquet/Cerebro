@@ -18,13 +18,14 @@ import {
   type SlackSettings,
   type SlackStatus,
 } from '../../shared/machine.ts';
-import { object, parser, string, type Parser } from '../../shared/parse.ts';
+import { boolean, object, parser, string, type Parser } from '../../shared/parse.ts';
 import {
   parseCouncilRun,
   parseCouncilRunList,
   parseCouncilSettings,
   parsePersona,
   parsePersonaList,
+  parseSession,
   type Agent,
   type CouncilImage,
   type CouncilRun,
@@ -32,6 +33,8 @@ import {
   type Participant,
   type Persona,
   type PersonaInput,
+  type Session,
+  type SessionDefaults,
 } from '../../shared/types.ts';
 import { parseMachine } from './route.ts';
 
@@ -323,4 +326,28 @@ export function councilImageUrl(id: string, n: number): string {
 
 export function councilExportUrl(id: string): string {
   return apiBase() + apiPath`/api/councils/${id}/export`;
+}
+
+// Session qui prend la suite d'un council terminé ; `projectId` sert seulement pour un council hors projet.
+export function startCouncilSession(councilId: string, projectId: string, launch: SessionDefaults): Promise<Session> {
+  return apiParsed(apiPath`/api/councils/${councilId}/session`, parseSession, {
+    method: 'POST',
+    body: JSON.stringify({ projectId, launch }),
+  });
+}
+
+export interface SessionTranscript {
+  text: string;
+  truncated: boolean;
+  // false : transcript introuvable, seule la demande initiale est reprise.
+  complete: boolean;
+}
+
+const parseSessionTranscript = parser(
+  object<SessionTranscript>({ text: string, truncated: boolean, complete: boolean }),
+);
+
+// Conversation d'une session mise en forme pour le contexte d'un council.
+export function getSessionTranscript(sessionId: string): Promise<SessionTranscript> {
+  return apiParsed(apiPath`/api/sessions/${sessionId}/transcript`, parseSessionTranscript);
 }

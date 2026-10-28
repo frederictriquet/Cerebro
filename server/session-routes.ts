@@ -8,9 +8,12 @@ import { sessionProvenance } from './provenance.ts';
 import { sessionGitContext } from './session-git.ts';
 import { startingResolutionPrompt } from './starting-resolution.ts';
 import { conflictResolutionPrompt } from './conflict-resolution.ts';
+import { councilSessionPrompt, exportMarkdown } from './council.ts';
+import { MAX_CONTEXT_LENGTH } from './council-runner.ts';
+import { readSessionTranscript, transcriptContext } from './transcripts.ts';
 import { WorktreeError } from './worktrees.ts';
 import { normalizeMode } from '../shared/types.ts';
-import { asRecord } from './util.ts';
+import { asRecord, errorMessage } from './util.ts';
 import { error, routeErrors, statusCodeOf } from './routes-util.ts';
 import { badRequest, orError, sendSocket, type RouteContext } from './route-context.ts';
 
@@ -21,6 +24,10 @@ const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
   'image/webp': 'webp',
 };
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+// Sous la limite d'un argument de commande (128 Kio sous Linux), consignes de l'agent comprises.
+const MAX_INLINE_COUNCIL_REPORT_BYTES = 100 * 1024;
+// Contexte d'un council tiré d'une session : de la marge pour ce que l'utilisateur y ajoute.
+const COUNCIL_CONTEXT_FROM_SESSION = MAX_CONTEXT_LENGTH - 10_000;
 
 const worktreeConflict = routeErrors(statusCodeOf(WorktreeError, 409));
 
@@ -65,6 +72,44 @@ export function registerSessionRoutes(ctx: RouteContext): void {
     const project = requireProject(request, reply);
     if (project === null) return reply;
     return launchSession(reply, project, request.body, (session) => session);
+  });
+
+  // Reprise d'un council terminé : la session reçoit protagonistes et compte-rendu complet, suivis de la consigne saisie.
+  app.post<{ Params: { id: string } }>('/api/councils/:id/session', async (request, reply) => {
+    const run = db.getCouncilRun(request.params.id);
+    if (run === null) return error(reply, 404, 'Council introuvable.');
+    if (run.finishedAt === null) return error(reply, 409, 'Le council n’est pas terminé.');
+    const body = asRecord(request.body) ?? {};
+    const projectId = run.projectId !== null && db.getProject(run.projectId) !== null ? run.projectId : body.projectId;
+    const project = typeof projectId === 'string' ? db.getProject(projectId) : null;
+    if (project === null) return error(reply, 400, 'Choisissez le projet de la session.');
+    const launch = asRecord(body.launch) ?? {};
+    const instructions = typeof launch.prompt === 'string' ? launch.prompt : '';
+    let prompt = councilSessionPrompt(run, instructions);
+    // Le prompt est passé en argument à la CLI : au-delà, le compte-rendu complet passe par un fichier.
+    if (Buffer.byteLength(prompt) > MAX_INLINE_COUNCIL_REPORT_BYTES) {
+      const dir = join(ATTACHMENTS_DIR, `project-${project.id}`, `council-${run.id}`);
+      const path = join(dir, 'compte-rendu.md');
+      try {
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        writeFileSync(path, exportMarkdown(run), { mode: 0o600 });
+      } catch (cause) {
+        return error(reply, 500, `Compte-rendu non enregistré : ${errorMessage(cause)}`);
+      }
+      prompt = councilSessionPrompt(run, instructions, path);
+    }
+    const question = run.question.trim().split('\n')[0] ?? '';
+    return launchSession(reply, project, { ...launch, prompt }, (session) => session, undefined, {
+      remember: launch,
+      title: `Council · ${question}`.slice(0, 120),
+    });
+  });
+
+  // Conversation d'une session, mise en forme pour servir de contexte à un council.
+  app.get<{ Params: { id: string } }>('/api/sessions/:id/transcript', async (request, reply) => {
+    const session = requireSession(request, reply);
+    if (session === null) return reply;
+    return transcriptContext(session, await readSessionTranscript(session), COUNCIL_CONTEXT_FROM_SESSION);
   });
 
   app.post<{ Params: { id: string } }>('/api/sessions/:id/git/prepare-commit', async (request, reply) => {

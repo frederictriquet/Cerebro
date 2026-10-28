@@ -8,10 +8,11 @@ import {
   councilImageUrl,
   getCouncil,
   markOperationSeen,
+  startCouncilSession,
 } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
-import { readDraft, writeDraft, type DraftImage } from './drafts.ts';
 import { Markdown } from './Markdown.tsx';
+import { NewSessionForm } from './NewSessionForm.tsx';
 import { usePolling } from './polling.tsx';
 import { go, href } from './route.ts';
 import { useStore } from './store.tsx';
@@ -24,6 +25,7 @@ import type {
   CouncilRun,
   CouncilSynthesis,
   Llm,
+  Session,
 } from '../../shared/types.ts';
 import { COUNCIL_STATUS_LABEL, errorMessage, formatDuration, truncate } from './format.ts';
 import './council.css';
@@ -142,40 +144,7 @@ function backlogText(run: CouncilRun, synthesis: CouncilSynthesis): string {
   ].join('\n');
 }
 
-function sessionPrompt(run: CouncilRun, synthesis: CouncilSynthesis): string {
-  return [
-    `Un council de conseillers LLM a examiné la question suivante ; poursuis à partir de sa synthèse (rapport complet : ${reportUrl(run)}).`,
-    '',
-    '## Question',
-    run.question.trim(),
-    ...(run.context.trim() === '' ? [] : ['', '## Contexte', run.context.trim()]),
-    ...SYNTHESIS_SECTIONS.flatMap((section) => ['', `## ${section.label}`, synthesis[section.key].trim() || '—']),
-    '',
-    'Commence par la première action ; signale-moi ce qui contredit la synthèse.',
-  ].join('\n');
-}
-
 // Projet cible des suites : celui du council, sinon un projet à choisir.
-// Les images du council rejoignent le brouillon de session sous de nouveaux numéros, après celles
-// qu'il contient déjà ; les jetons du prompt sont renumérotés en conséquence.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- jamais branchée : la suite « Ouvrir une session » ne reprend pas encore les images du council.
-function withCouncilImages(
-  prompt: string,
-  previous: DraftImage[],
-  run: CouncilRun,
-): { prompt: string; images: DraftImage[] } {
-  let next = previous.reduce((max, image) => Math.max(max, image.n), 0);
-  const images = [...previous];
-  let text = prompt;
-  for (const image of [...run.images].sort((a, b) => a.n - b.n)) {
-    next += 1;
-    const token = `[Image #${next}]`;
-    text = text.split(`[Image #${image.n}]`).join(`\u0000${next}\u0000`);
-    images.push({ n: next, token, path: image.path });
-  }
-  return { prompt: text.replace(/\u0000(\d+)\u0000/g, '[Image #$1]'), images };
-}
-
 function ProjectPicker({ run, value, onChange }: { run: CouncilRun; value: string; onChange: (id: string) => void }) {
   const { projects } = useStore();
   const own = run.projectId === null ? undefined : projects.find((project) => project.id === run.projectId);
@@ -272,58 +241,56 @@ function BacklogFollowUp({
   );
 }
 
-function SessionFollowUp({
-  run,
-  synthesis,
-  onClose,
-}: {
-  run: CouncilRun;
-  synthesis: CouncilSynthesis;
-  onClose: () => void;
-}) {
+function sessionInstructions(run: CouncilRun): string {
+  return run.synthesis === null
+    ? 'Analyse ce compte-rendu et propose-moi la suite.'
+    : 'Commence par la première action ; signale-moi ce qui contredit la synthèse.';
+}
+
+// La session reçoit du serveur le compte-rendu complet (protagonistes, question, contexte, synthèse, avis,
+// relectures, classement) ; le prompt saisi ici devient la consigne qui le suit.
+function SessionFollowUp({ run, onClose }: { run: CouncilRun; onClose: () => void }) {
+  const { projects } = useStore();
   const [projectId, setProjectId] = useTargetProject(run);
-  const [error, setError] = useState<string | null>(null);
+  const [launched, setLaunched] = useState<Session | null>(null);
 
-  const open = (event: FormEvent<HTMLFormElement>): void => {
-    event.preventDefault();
-    if (projectId === '') return;
-    const key = `project.${projectId}`;
-    // Un brouillon déjà en cours est conservé à la suite de la synthèse, avec ses images.
-    const previous = readDraft(key);
-    const prompt = [
-      sessionPrompt(run, synthesis),
-      ...(previous === null || previous.prompt.trim() === '' ? [] : ['', '---', '', previous.prompt]),
-    ].join('\n');
-    const failure = writeDraft(key, { prompt, images: previous?.images ?? [] });
-    if (failure !== null) {
-      setError(`Brouillon non enregistré : ${failure}`);
-      return;
-    }
-    go(`#/p/${encodeURIComponent(projectId)}`);
-  };
-
+  if (launched !== null) {
+    const project = projects.find((p) => p.id === launched.projectId);
+    return (
+      <div className="council-follow-up" role="status">
+        <p>
+          Session <a href={href(`#/s/${encodeURIComponent(launched.id)}`)}>{launched.title}</a> lancée dans{' '}
+          <a href={href(`#/p/${encodeURIComponent(launched.projectId)}`)}>{project?.name ?? 'ce projet'}</a>.
+        </p>
+        <div className="council-follow-up-foot">
+          <button type="button" className="btn" onClick={onClose}>
+            Fermer
+          </button>
+        </div>
+      </div>
+    );
+  }
   return (
-    <form className="council-follow-up" onSubmit={open}>
+    <div className="council-follow-up">
       <p className="meta">
-        La synthèse devient le prompt de la prochaine session du projet
-        {run.images.length > 0 ? ', avec les images jointes' : ''} ; vous pourrez le modifier et choisir l’agent avant
-        de lancer.
+        La session reçoit le compte-rendu complet du council : protagonistes, question
+        {run.context.trim() !== '' ? ', contexte' : ''}
+        {run.images.length > 0 ? ', images jointes' : ''}, synthèse, avis, relectures et classement. Le prompt
+        ci-dessous lui est transmis à la suite, comme consigne.
       </p>
       <ProjectPicker run={run} value={projectId} onChange={setProjectId} />
-      {error ? (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
+      {projectId !== '' ? (
+        <NewSessionForm
+          key={projectId}
+          className="bare"
+          projectId={projectId}
+          initialPrompt={sessionInstructions(run)}
+          submitLabel="Lancer la session"
+          onLaunch={async (spec) => setLaunched(await startCouncilSession(run.id, projectId, spec))}
+          onCancel={onClose}
+        />
       ) : null}
-      <div className="council-follow-up-foot">
-        <button type="button" className="btn" onClick={onClose}>
-          Annuler
-        </button>
-        <button type="submit" className="btn primary" disabled={projectId === ''}>
-          Ouvrir le formulaire de session
-        </button>
-      </div>
-    </form>
+    </div>
   );
 }
 
@@ -335,25 +302,24 @@ function FollowUps({ run }: { run: CouncilRun }) {
       <h2>Suites</h2>
       <div className="council-actions-row">
         {synthesis !== null ? (
-          <>
-            <button
-              type="button"
-              className="btn"
-              aria-expanded={open === 'backlog'}
-              onClick={() => setOpen(open === 'backlog' ? null : 'backlog')}
-            >
-              Ajouter au backlog
-            </button>
-            <button
-              type="button"
-              className="btn"
-              aria-expanded={open === 'session'}
-              onClick={() => setOpen(open === 'session' ? null : 'session')}
-            >
-              Ouvrir une session
-            </button>
-          </>
+          <button
+            type="button"
+            className="btn"
+            aria-expanded={open === 'backlog'}
+            onClick={() => setOpen(open === 'backlog' ? null : 'backlog')}
+          >
+            Ajouter au backlog
+          </button>
         ) : null}
+        <button
+          type="button"
+          className="btn"
+          aria-expanded={open === 'session'}
+          onClick={() => setOpen(open === 'session' ? null : 'session')}
+          title="Poursuivre la discussion dans une session qui reçoit tout le compte-rendu du council"
+        >
+          Poursuivre dans une session
+        </button>
         <a className="btn" href={councilExportUrl(run.id)} download>
           Exporter en Markdown
         </a>
@@ -361,9 +327,7 @@ function FollowUps({ run }: { run: CouncilRun }) {
       {synthesis !== null && open === 'backlog' ? (
         <BacklogFollowUp run={run} synthesis={synthesis} onClose={() => setOpen(null)} />
       ) : null}
-      {synthesis !== null && open === 'session' ? (
-        <SessionFollowUp run={run} synthesis={synthesis} onClose={() => setOpen(null)} />
-      ) : null}
+      {open === 'session' ? <SessionFollowUp run={run} onClose={() => setOpen(null)} /> : null}
     </section>
   );
 }

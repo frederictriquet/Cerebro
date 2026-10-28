@@ -1092,6 +1092,8 @@ et la lecture du projet activée.
 
 - **Depuis un projet** : bouton **Council** de l'en-tête du projet.
 - **Depuis l'accueil** : carte **Council**, pour une question hors projet.
+- **Depuis une session** : bouton **Council** de l'en-tête de la session (voir
+  [Soumettre une session à un council](#soumettre-une-session-à-un-council)).
 - **Depuis Slack** : `council: question` (hors projet) ou
   `projet/council: question` (voir ci-dessous).
 
@@ -1112,7 +1114,7 @@ chaque appel, réponses, relectures et synthèse comprises, sans outil : Claude 
 reçoit dans son message (entrée `stream-json`), Codex par `--image`. Grok ne
 prend pas en charge les images : le lancement est refusé tant qu'un participant
 coché ou le chairman l'utilise. Le rapport affiche les images jointes et l'export
-Markdown les liste ; la suite **Ouvrir une session** les reprend dans le prompt.
+Markdown les liste ; la suite **Poursuivre dans une session** transmet leurs chemins.
 
 Depuis un projet, la case **Laisser les conseillers lire le projet** (valeur par
 défaut issue des réglages) donne aux conseillers, pendant la phase de réponse
@@ -1148,17 +1150,40 @@ avec un lien vers le rapport. Le rapport présente la synthèse, l'avis de chaqu
 conseiller (lettre, persona, agent), les relectures croisées et le classement
 agrégé.
 
-Le panneau **Suites** propose, quand une synthèse existe :
+Le panneau **Suites** d'un council terminé propose :
 
-- **Ajouter au backlog** : une tâche préremplie avec la recommandation, la
-  première action et le lien du rapport, modifiable avant ajout ;
-- **Ouvrir une session** : la synthèse devient le prompt du formulaire « Nouvelle
-  session » du projet (à la suite d'un éventuel brouillon), où l'agent se choisit
-  avant de lancer ;
-- **Exporter en Markdown** (toujours disponible) : question, contexte, synthèse,
-  avis, relectures et classement agrégé dans un fichier `council-<id>.md`.
+- **Ajouter au backlog** (quand une synthèse existe) : une tâche préremplie avec la
+  recommandation, la première action et le lien du rapport, modifiable avant ajout ;
+- **Poursuivre dans une session** : agent, modèle, effort et mode se choisissent
+  avec le sélecteur habituel, et le prompt saisi sert de consigne. La session
+  reçoit d'abord, préparé par le serveur, un message qui explique qu'elle prend la
+  suite d'un council, liste les protagonistes (lettre, persona, angle et LLM de
+  chaque conseiller, LLM du chairman) puis contient le compte-rendu complet : celui
+  de l'export Markdown. Si ce message dépasse 100 Kio (le prompt est passé en
+  argument à la CLI), le compte-rendu est écrit dans
+  `$CEREBRO_DATA_DIR/attachments/project-<id>/council-<id>/compte-rendu.md` et le
+  message ne garde que la question, la synthèse et ce chemin, que l'agent est invité
+  à lire. La session se lance en arrière-plan, titrée `Council · <question>` ; un lien
+  permet de l'ouvrir ;
+- **Exporter en Markdown** : question, contexte, synthèse, avis, relectures et
+  classement agrégé dans un fichier `council-<id>.md`.
 
 Pour un council hors projet, les deux premières suites demandent le projet cible.
+
+### Soumettre une session à un council
+
+Le bouton **Council** de l'en-tête d'une session (y compris d'une session issue
+d'un council) ouvre le formulaire de council du projet, avec la conversation de la
+session comme contexte ; il reste à poser la question et à choisir les
+participants. La conversation est relue à chaque ouverture dans le transcript de
+la CLI (`~/.claude/projects/*/<id>.jsonl`, rollout Codex
+`~/.codex/sessions/AAAA/MM/JJ/*-<id>.jsonl`, `~/.grok/sessions/*/<id>/chat_history.jsonl`) :
+seuls les messages de l'utilisateur et les réponses textuelles de l'agent sont
+repris, sans appels d'outils, réflexions ni messages injectés par la CLI. Au-delà
+de 90 000 caractères, la demande initiale est gardée (tronquée au besoin) avec les
+derniers échanges, et les messages intermédiaires sont omis. Sans transcript
+lisible, seule la demande initiale de la session est reprise. Question et
+participants de ce brouillon sont conservés par session dans le navigateur.
 
 ### Échecs et limites
 
