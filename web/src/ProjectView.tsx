@@ -1,12 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-  type FormEvent,
-  type KeyboardEvent,
-} from 'react';
+import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react';
 import { acquireProjectSlack, getProjectSlack } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
 import { Backlog } from './backlog/Backlog.tsx';
@@ -24,9 +16,9 @@ import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href } from './route.ts';
 import { useNow, usePolling } from './polling.tsx';
 import { PathInput } from './PathInput.tsx';
-import { readStored, writeStored } from './storage.ts';
 import { useStore } from './store.tsx';
 import { ErrorBoundary } from './ErrorBoundary.tsx';
+import { TabBar, tabIds, useStoredTab } from './TabBar.tsx';
 import type { Project, WorkspaceMode } from '../../shared/types.ts';
 import type { ProjectSlackStatus } from '../../shared/machine.ts';
 
@@ -139,78 +131,8 @@ function WorkspaceModeControl({ project }: { project: Project }) {
 }
 
 // Onglets de la page projet, dans l'ordre d'affichage. Le dernier ouvert est retenu par ce navigateur.
-const PROJECT_TABS = [
-  { id: 'sessions', label: 'Sessions' },
-  { id: 'backlog', label: 'Backlog' },
-  { id: 'worktrees', label: 'Copies de travail' },
-  { id: 'councils', label: 'Council' },
-] as const;
-type ProjectTab = (typeof PROJECT_TABS)[number]['id'];
-const TAB_KEY = 'cerebro.project-tab';
-
-function readProjectTab(): ProjectTab {
-  const stored = readStored(TAB_KEY);
-  return PROJECT_TABS.find((tab) => tab.id === stored)?.id ?? 'sessions';
-}
-
-function ProjectTabBar({
-  projectId,
-  tab,
-  counts,
-  onSelect,
-}: {
-  projectId: string;
-  tab: ProjectTab;
-  counts: Partial<Record<ProjectTab, { value: number; title: string }>>;
-  onSelect: (tab: ProjectTab) => void;
-}) {
-  const buttons = useRef(new Map<ProjectTab, HTMLButtonElement>());
-  const onKey = (event: KeyboardEvent<HTMLButtonElement>): void => {
-    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return;
-    event.preventDefault();
-    const index = PROJECT_TABS.findIndex((t) => t.id === tab);
-    const nextIndex =
-      event.key === 'Home'
-        ? 0
-        : event.key === 'End'
-          ? PROJECT_TABS.length - 1
-          : (index + (event.key === 'ArrowRight' ? 1 : -1) + PROJECT_TABS.length) % PROJECT_TABS.length;
-    const next = PROJECT_TABS[nextIndex].id;
-    onSelect(next);
-    buttons.current.get(next)?.focus();
-  };
-  return (
-    <div className="project-view-tabs" role="tablist" aria-label="Sections du projet">
-      {PROJECT_TABS.map(({ id, label }) => {
-        const count = counts[id];
-        return (
-          <button
-            key={id}
-            ref={(el) => {
-              if (el) buttons.current.set(id, el);
-              else buttons.current.delete(id);
-            }}
-            type="button"
-            role="tab"
-            id={`project-tab-${id}-${projectId}`}
-            aria-selected={tab === id}
-            aria-controls={`project-panel-${id}-${projectId}`}
-            tabIndex={tab === id ? 0 : -1}
-            onClick={() => onSelect(id)}
-            onKeyDown={onKey}
-          >
-            {label}
-            {count ? (
-              <span className="pill project-panel-count" title={count.title}>
-                {count.value}
-              </span>
-            ) : null}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
+const PROJECT_TABS = ['sessions', 'backlog', 'worktrees', 'councils'] as const;
+type ProjectTab = (typeof PROJECT_TABS)[number];
 
 export function ProjectView({ projectId }: { projectId: string }) {
   const { projects, sessions, tasks, createSession, purgeProjectSessions, deleteProject, updateProject } = useStore();
@@ -235,11 +157,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
   );
   const [codeOpen, setCodeOpen] = useState(false);
   const [commitSettingsOpen, setCommitSettingsOpen] = useState(false);
-  const [tab, setTab] = useState<ProjectTab>(readProjectTab);
-  const selectTab = (next: ProjectTab): void => {
-    setTab(next);
-    writeStored(TAB_KEY, next);
-  };
+  const [tab, selectTab] = useStoredTab<ProjectTab>('cerebro.project-tab', PROJECT_TABS);
   const openTaskCount = tasks.filter((t) => t.projectId === projectId && t.status !== 'done').length;
 
   useEffect(() => {
@@ -421,20 +339,23 @@ export function ProjectView({ projectId }: { projectId: string }) {
 
       {error ? <p className="form-error">{error}</p> : null}
 
-      <ProjectTabBar
-        projectId={project.id}
-        tab={tab}
-        counts={{
-          sessions: { value: projectSessions.length, title: 'Sessions du projet' },
-          backlog: { value: openTaskCount, title: 'Tâches ouvertes' },
-        }}
+      <TabBar<ProjectTab>
+        idPrefix={`project-${project.id}`}
+        label="Sections du projet"
+        tabs={[
+          { id: 'sessions', label: 'Sessions', count: { value: projectSessions.length, title: 'Sessions du projet' } },
+          { id: 'backlog', label: 'Backlog', count: { value: openTaskCount, title: 'Tâches ouvertes' } },
+          { id: 'worktrees', label: 'Copies de travail' },
+          { id: 'councils', label: 'Council' },
+        ]}
+        selected={tab}
         onSelect={selectTab}
       />
       <div
-        className="project-view-panel"
+        className="view-tab-panel"
         role="tabpanel"
-        id={`project-panel-${tab}-${project.id}`}
-        aria-labelledby={`project-tab-${tab}-${project.id}`}
+        id={tabIds(`project-${project.id}`, tab).panel}
+        aria-labelledby={tabIds(`project-${project.id}`, tab).tab}
       >
         {tab === 'sessions' ? (
           <section className="card project-panel session-table-wrap">
