@@ -44,13 +44,6 @@ export function ConfirmationDialog({
           <p>
             Les commits de cette copie seront intégrés au projet par un merge. Les contrôles Git habituels s’appliquent.
           </p>
-          {confirmation.view.integrationConflicts?.length ? (
-            <p className="worktree-warning">
-              Conflits prévus dans {confirmation.view.integrationConflicts.join(', ')} : ils resteront à résoudre dans{' '}
-              {confirmation.view.targetPath}. Pour les résoudre plutôt dans la copie, annulez et utilisez « Mettre à
-              jour avec {branchName(confirmation.view.targetBranch)} ».
-            </p>
-          ) : null}
           <p>
             Ensuite, publiez avec « Push » dans l’en-tête du projet. La conversation peut continuer dans sa copie ; ses
             nouveaux changements pourront être intégrés plus tard.

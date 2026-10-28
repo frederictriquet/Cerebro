@@ -44,6 +44,8 @@ function mergeTreeAvailable(): Promise<boolean> {
     () => false,
   ));
 }
+/** Merge blocker while the integration is forecast to leave conflicts. */
+const INTEGRATION_CONFLICTS = 'Des conflits sont prévus avec la cible : mettez d’abord la copie à jour.';
 /** Shown with the conflict forecast when Git is too old to simulate the merge itself. */
 const APPROXIMATE_FORECAST =
   'Prévision approchée (Git antérieur à 2.38) : les renommages de dossiers et les fichiers renommés des deux côtés ne sont pas suivis.';
@@ -1332,6 +1334,8 @@ export class WorktreeManager {
     view.mergeBlockers = [...commonBlockers, ...activityReasons(activity, false)];
     if (!view.targetPath) view.mergeBlockers.push('La branche cible doit être ouverte dans un worktree Git.');
     if (view.ahead === 0) view.mergeBlockers.push('Aucun nouveau commit à intégrer.');
+    // The conflicts are resolved in the copy, never in the project folder; an unknown forecast does not block.
+    if (view.integrationConflicts?.length) view.mergeBlockers.push(INTEGRATION_CONFLICTS);
   }
   /**
    * What prevents a merge into the target worktree: uncommitted files, an operation in progress or a session at

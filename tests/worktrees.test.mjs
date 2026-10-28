@@ -288,6 +288,8 @@ test('dirty source, target, active sessions, command use and missing targets blo
 
 test('stale confirmations are refused and merge conflicts preserve both branches and worktree files', async () =>
   fixture(async (f) => {
+    // A merge launched before the conflict forecast is known: it stays unknown here.
+    f.manager.forecast = () => null;
     f.commit('source');
     let own = await f.view();
     const plan = await f.manager.prepareAction(own.id, 'merge');
@@ -1493,6 +1495,7 @@ test('a kept file is settled once checked, only with the content it was checked 
     own = await f.view();
     assert.deepEqual(own.startingContent, []);
   }, projectWithEditedDocument()));
+const FORECAST_BLOCKER = 'Des conflits sont prévus avec la cible : mettez d’abord la copie à jour.';
 test('conflicts with the target are forecast, then resolved in the copy by updating it', async () =>
   fixture(async (f) => {
     const copy = f.workspace.root;
@@ -1506,6 +1509,8 @@ test('conflicts with the target are forecast, then resolved in the copy by updat
       await new Promise((r) => setTimeout(r, 10));
     }
     assert.deepEqual(own.integrationConflicts, ['file']);
+    assert.ok(own.mergeBlockers.includes(FORECAST_BLOCKER));
+    await assert.rejects(f.manager.prepareAction(own.id, 'merge'), /Des conflits sont prévus/);
     await f.manager.updateFromTarget(own.id);
     own = await f.view();
     assert.equal(own.mergeInProgress, true);
@@ -1524,6 +1529,17 @@ test('conflicts with the target are forecast, then resolved in the copy by updat
     assert.doesNotMatch((await sessionProvenance(f.db, f.services.git, f.id)).warning, /incertaine/);
     assert.equal((await f.merge()).status, 'succeeded');
     assert.equal(readFileSync(join(f.repo, 'file'), 'utf8'), 'session and project work\n');
+  }));
+test('an unknown conflict forecast does not block the integration', async () =>
+  fixture(async (f) => {
+    f.manager.forecast = () => null;
+    f.commit('session work');
+    writeFileSync(join(f.repo, 'file'), 'project work\n');
+    git(f.repo, 'commit', '-am', 'project work');
+    const own = await f.view();
+    assert.equal(own.integrationConflicts, null);
+    assert.deepEqual(own.mergeBlockers, []);
+    await f.manager.prepareAction(own.id, 'merge');
   }));
 const lines = (count) => Array.from({ length: count }, (_, i) => `line ${i + 1}\n`).join('');
 const withDocument = (repo) => {
@@ -1548,6 +1564,7 @@ test('the conflict forecast follows a file renamed on one side and modified on t
     git(f.repo, 'commit', '-am', 'project edit');
     let own = await forecastOf(f);
     assert.deepEqual(own.integrationConflicts, []);
+    assert.ok(!own.mergeBlockers.includes(FORECAST_BLOCKER));
     const [major, minor] = /(\d+)\.(\d+)/
       .exec(execFileSync('git', ['version'], { encoding: 'utf8' }))
       .slice(1)

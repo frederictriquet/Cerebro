@@ -64,11 +64,7 @@ export function WorktreeRow({
     </button>
   );
   const startDiscard = (): void => actions.discard(view);
-  const integrateTitle =
-    view.mergeBlockers.join('\n') ||
-    (view.integrationConflicts?.length
-      ? `Conflits prévus : ${view.integrationConflicts.join(', ')}`
-      : `Intégrer dans ${target}`);
+  const integrateTitle = view.mergeBlockers.join('\n') || `Intégrer dans ${target}`;
   // The next action, also offered in the overview so the usual path needs no expansion.
   const primary = view.error ? null : view.mergeInProgress ? (
     <button type="button" className="btn primary" onClick={() => actions.open(view.id)}>

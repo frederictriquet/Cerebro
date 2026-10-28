@@ -64,7 +64,7 @@ export function IntegrateStep({
       {view.ahead ? (
         <button
           type="button"
-          className={`btn ${view.mergeBlockers.length || view.integrationConflicts?.length ? '' : 'primary'}`}
+          className={`btn ${view.mergeBlockers.length ? '' : 'primary'}`}
           disabled={disabled || view.mergeBlockers.length > 0}
           title={integrateTitle}
           onClick={() => void actions.prepare(view, 'merge')}
