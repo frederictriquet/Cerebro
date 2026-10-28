@@ -65,9 +65,18 @@ export function journey(view: WorktreeView): Journey {
     next = null;
   } else if (view.mergeInProgress) {
     status = 'Conflits à résoudre';
-    next = view.conflicts.length
-      ? `Résolvez les conflits dans la copie (${plural(view.conflicts.length, 'fichier')}), puis terminez la mise à jour.`
-      : 'Les conflits sont résolus : terminez la mise à jour.';
+    const resolver = view.resolver;
+    const marked = view.remainingMarkers.length;
+    next =
+      resolver && resolver.status !== 'idle' && resolver.status !== 'exited'
+        ? `La session « ${sessionTitle(resolver.title)} » résout les conflits : attendez la fin de son tour, relisez ses changements, puis terminez la mise à jour.`
+        : resolver && !marked
+          ? `La session « ${sessionTitle(resolver.title)} » a retiré tous les marqueurs : relisez ses changements, puis terminez la mise à jour.`
+          : resolver
+            ? `Il reste des marqueurs dans ${plural(marked, 'fichier')} : aidez la session « ${sessionTitle(resolver.title)} » ou terminez-les vous-même, puis terminez la mise à jour.`
+            : view.conflicts.length
+              ? `Résolvez les conflits dans la copie (${plural(view.conflicts.length, 'fichier')}), vous-même ou avec « Résoudre avec l’IA », puis terminez la mise à jour.`
+              : 'Les conflits sont résolus : terminez la mise à jour.';
   } else if (dirty && !view.ahead && !changes?.count) {
     status = 'Copie de départ';
     next = 'Aucun travail de la conversation : la copie ne contient que le contenu copié du projet.';
@@ -168,4 +177,6 @@ export interface WorktreeActions {
   commit: (view: WorktreeView, reviewed?: Reviewed) => void;
   open: (id: string) => void;
   toggle: (id: string) => void;
+  /** A session was launched to resolve the conflicts of `view`: the inventory exposes it as `view.resolver`. */
+  resolving: (view: WorktreeView) => void;
 }

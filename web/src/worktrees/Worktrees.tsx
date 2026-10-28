@@ -144,6 +144,11 @@ function WorktreesPanel({
     commit: (view, reviewed) => setCommitting({ view, reviewed }),
     open,
     toggle,
+    // No navigation to the session: launching from the panel leaves the user on the copy.
+    resolving: (view) => {
+      open(view.id);
+      void refresh();
+    },
   };
   const copies = visibleInventory?.worktrees.filter((view) => view.managed && !view.primary) ?? [];
   const other = visibleInventory?.worktrees.filter((view) => !view.managed || view.primary) ?? [];

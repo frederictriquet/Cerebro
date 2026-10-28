@@ -59,11 +59,14 @@ function notifyUnauthorized(): void {
 
 export class ApiError extends Error {
   readonly status: number;
+  /** Corps de la réponse, pour les champs qui accompagnent le message (l'identifiant d'une session existante…). */
+  readonly body: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -93,7 +96,7 @@ async function request(url: string, local: boolean, init?: RequestInit): Promise
   if (!res.ok) {
     // Un 401 relayé ne doit pas ouvrir l'écran « Token requis » de la machine locale.
     if (res.status === 401 && local) notifyUnauthorized();
-    throw new ApiError(res.status, bodyError(parsed) ?? res.statusText);
+    throw new ApiError(res.status, bodyError(parsed) ?? res.statusText, parsed);
   }
   return parsed;
 }

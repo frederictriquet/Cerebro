@@ -400,3 +400,13 @@
 .worktree-ignored-list code {
   overflow-wrap: anywhere;
 }
+.worktree-files .pill {
+  margin-left: 0.4rem;
+  font-size: 0.75rem;
+}
+.worktree-files .pill.resolved {
+  color: var(--running);
+}
+.worktree-files .pill.marked {
+  color: var(--waiting);
+}
