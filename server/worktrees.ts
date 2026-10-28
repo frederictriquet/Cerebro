@@ -1169,6 +1169,7 @@ export class WorktreeManager {
         await this.inspectStartingContent(record, workspace, files, view);
       const gitDir = (await git(record.path, ['rev-parse', '--absolute-git-dir'])).trim();
       await inspectMergeInProgress(record.path, gitDir, view);
+      view.resolver = await this.inspectResolver(record, gitDir, view);
       await this.inspectIntegration(record, view);
       await this.inspectBlockers(record, view, entry, gitDir, ownOperation);
       const targetState = await this.inspectTarget(view);
@@ -1220,7 +1221,21 @@ export class WorktreeManager {
       integrationNote: null,
       conflicts: [],
       remainingMarkers: [],
+      resolver: null,
     };
+  }
+  /** The session launched to resolve the merge in progress, as long as it is still the merge it was launched for. */
+  private async inspectResolver(
+    record: WorktreeRecord,
+    gitDir: string,
+    view: WorktreeView,
+  ): Promise<WorktreeView['resolver']> {
+    const resolution = record.conflictResolution;
+    if (!resolution || !view.mergeInProgress) return null;
+    const mergeHead = await readFile(join(gitDir, 'MERGE_HEAD'), 'utf8').catch(() => '');
+    if (mergeHead.split('\n', 1)[0]?.trim() !== resolution.mergeHead) return null;
+    const session = this.db.getSession(resolution.sessionId);
+    return session ? { sessionId: session.id, title: session.title, status: session.status } : null;
   }
   private workspaceOf(sessionId: string): Workspace | null {
     return workspaceFor(this.db, sessionId);
@@ -1590,7 +1605,7 @@ export class WorktreeManager {
     const release = this.services.gate.lock([view.path]);
     try {
       await git(view.path, ['merge', '--abort']);
-      return await this.inspect(this.record(id));
+      return await this.inspect(this.forgetResolver(id));
     } finally {
       release();
     }
@@ -1607,10 +1622,22 @@ export class WorktreeManager {
       if (view.conflicts.length)
         await git(view.path, ['add', '-A', '--', ...view.conflicts.map((file) => `:(literal)${file}`)]);
       await commitTargetUpdate(view.path);
-      return await this.inspect(this.record(id));
+      return await this.inspect(this.forgetResolver(id));
     } finally {
       release();
     }
+  }
+  /** Links the session launched to resolve the conflicts of the merge `mergeHead` to the copy. */
+  rememberResolver(id: string, sessionId: string, mergeHead: string): void {
+    store(this.db, { ...this.record(id), conflictResolution: { sessionId, mergeHead, startedAt: Date.now() } });
+  }
+  /** Once the merge is finished or abandoned, its resolution session stays an ordinary conversation. */
+  private forgetResolver(id: string): WorktreeRecord {
+    const record = this.record(id);
+    if (!record.conflictResolution) return record;
+    delete record.conflictResolution;
+    store(this.db, record);
+    return record;
   }
   /**
    * What resolving the merge of the target left in conflict in the copy needs: the commits of both sides since their

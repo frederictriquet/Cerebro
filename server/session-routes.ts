@@ -7,6 +7,7 @@ import { importFindings, listReports } from './findings.ts';
 import { sessionProvenance } from './provenance.ts';
 import { sessionGitContext } from './session-git.ts';
 import { startingResolutionPrompt } from './starting-resolution.ts';
+import { conflictResolutionPrompt } from './conflict-resolution.ts';
 import { WorktreeError } from './worktrees.ts';
 import { normalizeMode } from '../shared/types.ts';
 import { asRecord } from './util.ts';
@@ -189,6 +190,78 @@ export function registerSessionRoutes(ctx: RouteContext): void {
       return reply.code(201).send(session);
     } catch (caught) {
       return error(reply, 500, caught instanceof Error ? caught.message : 'Impossible de lancer la session');
+    }
+  });
+
+  // Les conflits laissés par « Mettre à jour avec … » sont confiés à une session, dans la copie ; l'utilisateur termine la mise à jour.
+  const launchingResolvers = new Set<string>();
+  app.post<{ Params: { id: string } }>('/api/worktrees/:id/resolve-conflicts', async (request, reply) => {
+    await catalog.ready();
+    const { id } = request.params;
+    if (launchingResolvers.has(id))
+      return error(reply, 409, 'Une session de résolution est déjà en cours de lancement pour cette copie.');
+    const resolution = await worktreeConflict.orError(reply, () => worktrees.conflictResolution(id));
+    if (!resolution.ok) return resolution.reply;
+    const context = resolution.value;
+    const { view } = context;
+    if (view.resolver && view.resolver.status !== 'exited')
+      return reply.code(409).send({
+        error: `La session « ${view.resolver.title} » résout déjà ces conflits.`,
+        sessionId: view.resolver.sessionId,
+      });
+    const project = view.projectId ? db.getProject(view.projectId) : null;
+    if (!project)
+      return error(reply, 409, 'Le projet de cette copie a été retiré : aucune session ne peut y être lancée.');
+    const settings = { ...project.resolutionSettings, mode: normalizeMode(project.resolutionSettings.mode) };
+    const tuning = catalog.parseTuning(settings.agent, { ...settings });
+    if (!tuning)
+      return error(
+        reply,
+        400,
+        'Le modèle ou l’effort de résolution n’est plus proposé par cet agent : modifiez-les dans « Réglages LLM ».',
+      );
+    const origin = view.sessionId ? db.getSession(view.sessionId) : null;
+    const conversation = origin
+      ? { title: origin.title, prompt: origin.prompt }
+      : view.sessionTitle
+        ? { title: view.sessionTitle, prompt: '' }
+        : null;
+    // The epic step the original conversation carried out, the most recently updated when it took several.
+    const linked = origin
+      ? db
+          .listTasks()
+          .filter((task) => task.projectId === project.id && task.sessionId === origin.id)
+          .sort((a, b) => b.updatedAt - a.updatedAt)[0]
+      : undefined;
+    const task = linked
+      ? {
+          title:
+            linked.text
+              .split('\n')
+              .find((line) => line.trim())
+              ?.trim() ?? '',
+          text: linked.text,
+        }
+      : null;
+    const prompt = conflictResolutionPrompt(context, conversation, task);
+    launchingResolvers.add(id);
+    try {
+      const session = await sessions.create(
+        project,
+        { ...settings, ...tuning, prompt },
+        {
+          contextPath: view.path,
+          title: `Conflits · ${conversation?.title ?? basename(view.path)}`.slice(0, 120),
+          rememberDefaults: false,
+          workspace: { mode: 'isolated', path: view.path },
+        },
+      );
+      worktrees.rememberResolver(id, session.id, context.mergeHead);
+      return reply.code(201).send(session);
+    } catch (caught) {
+      return error(reply, 500, caught instanceof Error ? caught.message : 'Impossible de lancer la session');
+    } finally {
+      launchingResolvers.delete(id);
     }
   });
 

@@ -35,6 +35,13 @@ export interface WorktreeRecord {
   autoCleanup?: AutomaticCleanup;
   /** Removed from the visible history; retain provenance and cleanup records. */
   historyDeletedAt?: number;
+  /** Session launched to resolve the conflicts of the target update in progress, identified by its MERGE_HEAD. */
+  conflictResolution?: ConflictResolution;
+}
+export interface ConflictResolution {
+  sessionId: string;
+  mergeHead: string;
+  startedAt: number;
 }
 export interface AutomaticCleanup {
   status: 'removed' | 'kept' | 'failed';
@@ -96,6 +103,8 @@ export interface WorktreeView extends WorktreeRecord {
   conflicts: string[];
   /** Files the merge in progress would commit with conflict markers still in them: in conflict, or already staged. */
   remainingMarkers: string[];
+  /** Session launched to resolve the conflicts of the merge in progress, while it is still that merge. */
+  resolver: { sessionId: string; title: string; status: string } | null;
 }
 /** A copy removed automatically: still listed so its branch and conversation can be found again. */
 export interface CleanedWorktree {
@@ -203,6 +212,7 @@ const worktreeView = object<WorktreeView>({
     object<AutomaticCleanup>({ status: literal('removed', 'kept', 'failed'), at: number, reasons: strings }),
   ),
   historyDeletedAt: optional(number),
+  conflictResolution: optional(object<ConflictResolution>({ sessionId: string, mergeHead: string, startedAt: number })),
   projectExists: boolean,
   session: nullable(sessionSummary),
   primary: boolean,
@@ -261,6 +271,9 @@ const worktreeView = object<WorktreeView>({
   integrationNote: nullable(string),
   conflicts: strings,
   remainingMarkers: strings,
+  resolver: nullable(
+    object<NonNullable<WorktreeView['resolver']>>({ sessionId: string, title: string, status: string }),
+  ),
 });
 
 const step = object<StartingContentStep>({
