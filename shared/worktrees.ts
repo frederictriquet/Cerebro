@@ -94,6 +94,8 @@ export interface WorktreeView extends WorktreeRecord {
   integrationNote: string | null;
   /** Files still in conflict while a merge is in progress in the copy. */
   conflicts: string[];
+  /** Files the merge in progress would commit with conflict markers still in them: in conflict, or already staged. */
+  remainingMarkers: string[];
 }
 /** A copy removed automatically: still listed so its branch and conversation can be found again. */
 export interface CleanedWorktree {
@@ -258,6 +260,7 @@ const worktreeView = object<WorktreeView>({
   integrationConflicts: nullable(strings),
   integrationNote: nullable(string),
   conflicts: strings,
+  remainingMarkers: strings,
 });
 
 const step = object<StartingContentStep>({

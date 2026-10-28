@@ -424,7 +424,103 @@ async function inspectMergeInProgress(path: string, gitDir: string, view: Worktr
   view.mergeInProgress = ['MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'].some(
     (name) => existsSync(join(gitDir, name)),
   );
-  if (view.mergeInProgress) view.conflicts = splitZ(await git(path, ['diff', '--name-only', '-z', '--diff-filter=U']));
+  if (!view.mergeInProgress) return;
+  view.conflicts = splitZ(await git(path, ['diff', '--name-only', '-z', '--diff-filter=U']));
+  view.remainingMarkers = await remainingConflictMarkers(path, view.conflicts);
+}
+const CONFLICT_MARKER = /^(<{7}|>{7})( |$)/m;
+/** Files of `files` whose version in `source` (a revision, or `--cached` for the index) has a conflict marker line. */
+async function filesWithMarkers(path: string, source: string, files: string[]): Promise<Set<string>> {
+  if (!files.length) return new Set();
+  const pattern = ['-l', '-z', '-E', '^(<<<<<<<|>>>>>>>)( |$)'];
+  const args = source === '--cached' ? ['grep', '--cached', ...pattern] : ['grep', ...pattern, source];
+  const output = await git(path, [...args, '--', ...files.map((file) => `:(literal)${file}`)]).catch((cause) => {
+    // Exit code 1: no match. A missing revision has nothing to compare with either.
+    if ((cause instanceof GitError && cause.code === 1) || source !== '--cached') return '';
+    throw cause;
+  });
+  return new Set(splitZ(output).map((name) => (source === '--cached' ? name : name.slice(source.length + 1))));
+}
+/**
+ * Files a merge in progress would commit with conflict markers: the files in conflict, as they are in the copy, and
+ * the files already staged, as they are in the index (staging a file takes it out of the conflicts). A staged file
+ * whose markers already were in one side of the merge keeps them as content.
+ */
+async function remainingConflictMarkers(path: string, conflicts: string[]): Promise<string[]> {
+  const remaining: string[] = [];
+  for (const file of conflicts) {
+    const content = await readFile(join(path, file), 'utf8').catch(() => null);
+    if (content !== null && CONFLICT_MARKER.test(content)) remaining.push(file);
+  }
+  const staged = splitZ(await git(path, ['diff', '--cached', '--name-only', '-z', '--diff-filter=d'])).filter(
+    (file) => !conflicts.includes(file),
+  );
+  const marked = [...(await filesWithMarkers(path, '--cached', staged))];
+  if (marked.length) {
+    const sides = await Promise.all(['HEAD', 'MERGE_HEAD'].map((side) => filesWithMarkers(path, side, marked)));
+    remaining.push(...marked.filter((file) => !sides.some((side) => side.has(file))));
+  }
+  return remaining;
+}
+type ConflictSideState = 'modified' | 'added' | 'deleted' | 'renamed' | 'unchanged';
+/** One file left in conflict: what each side did to it since the merge base, and the commits that touched it. */
+export interface ConflictFile {
+  path: string;
+  /** The copy's side (HEAD). */
+  ours: ConflictSideState;
+  /** The target's side (MERGE_HEAD). */
+  theirs: ConflictSideState;
+  /** Subjects of the copy's commits that touched the file (latest 10). */
+  oursCommits: string[];
+  /** Subjects of the target's commits that touched the file (latest 10). */
+  theirsCommits: string[];
+}
+export interface ConflictCommit {
+  hash: string;
+  subject: string;
+}
+/** Everything needed to resolve a merge of the target left in conflict in a copy. */
+export interface ConflictContext {
+  view: WorktreeView;
+  mergeHead: string;
+  base: string;
+  files: ConflictFile[];
+  /** The copy's commits since the merge base (latest 50). */
+  oursCommits: ConflictCommit[];
+  /** The target's commits since the merge base (latest 50). */
+  theirsCommits: ConflictCommit[];
+  /** Files in conflict without any marker left. */
+  resolved: string[];
+}
+interface MergeSide {
+  commits: ConflictCommit[];
+  /** Each path changed since the merge base; a renamed file is listed under both names, with its former name. */
+  changes: Map<string, { state: ConflictSideState; from?: string }>;
+}
+async function mergeSide(path: string, base: string, revision: string): Promise<MergeSide> {
+  const log = await git(path, ['log', '-n', '50', '--format=%h%x09%s', `${base}..${revision}`]);
+  const commits = log
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const tab = line.indexOf('\t');
+      return { hash: line.slice(0, tab), subject: line.slice(tab + 1) };
+    });
+  const changes: MergeSide['changes'] = new Map();
+  const entries = splitZ(await git(path, ['diff', '--name-status', '-z', '-M', base, revision]));
+  for (let i = 0; i < entries.length; i++) {
+    const status = entries[i][0];
+    if (status === 'R') {
+      const from = entries[++i];
+      const to = entries[++i];
+      changes.set(from, { state: 'renamed' });
+      changes.set(to, { state: 'renamed', from });
+    } else if (status === 'C') {
+      i++;
+      changes.set(entries[++i], { state: 'added' });
+    } else changes.set(entries[++i], { state: status === 'A' ? 'added' : status === 'D' ? 'deleted' : 'modified' });
+  }
+  return { commits, changes };
 }
 /** Whether the integrated commits are in the target's upstream branch, when it has one. */
 async function inspectPublication(record: WorktreeRecord, view: WorktreeView): Promise<void> {
@@ -1123,6 +1219,7 @@ export class WorktreeManager {
       integrationConflicts: null,
       integrationNote: null,
       conflicts: [],
+      remainingMarkers: [],
     };
   }
   private workspaceOf(sessionId: string): Workspace | null {
@@ -1505,11 +1602,7 @@ export class WorktreeManager {
     if (!view.mergeInProgress) throw new WorktreeError('Aucune mise à jour en cours dans cette copie.');
     const release = this.services.gate.lock([view.path]);
     try {
-      const remaining: string[] = [];
-      for (const file of view.conflicts) {
-        const content = await readFile(join(view.path, file), 'utf8').catch(() => null);
-        if (content !== null && /^(<{7}|>{7})( |$)/m.test(content)) remaining.push(file);
-      }
+      const remaining = await remainingConflictMarkers(view.path, view.conflicts);
       if (remaining.length) throw new WorktreeError(`Marqueurs de conflit encore présents : ${remaining.join(', ')}.`);
       if (view.conflicts.length)
         await git(view.path, ['add', '-A', '--', ...view.conflicts.map((file) => `:(literal)${file}`)]);
@@ -1518,6 +1611,61 @@ export class WorktreeManager {
     } finally {
       release();
     }
+  }
+  /**
+   * What resolving the merge of the target left in conflict in the copy needs: the commits of both sides since their
+   * merge base and, for each file in conflict, what each side did to it and the commits that touched it. Read only.
+   */
+  async conflictResolution(id: string): Promise<ConflictContext> {
+    const view = await this.get(id);
+    if (view.error) throw new WorktreeError(view.error);
+    if (!view.mergeInProgress || !view.conflicts.length)
+      throw new WorktreeError('Aucun conflit de mise à jour en cours dans cette copie.');
+    const mergeHead = (await git(view.path, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD']).catch(() => '')).trim();
+    if (!mergeHead) throw new WorktreeError('Les conflits en cours ne viennent pas d’une mise à jour de la copie.');
+    const base = (await git(view.path, ['merge-base', 'HEAD', mergeHead]).catch(() => '')).trim();
+    if (!base) throw new WorktreeError('La copie et la cible n’ont pas d’historique commun.');
+    const [ours, theirs] = await Promise.all([
+      mergeSide(view.path, base, 'HEAD'),
+      mergeSide(view.path, base, mergeHead),
+    ]);
+    const files: ConflictFile[] = [];
+    for (const path of view.conflicts) {
+      // A file renamed on one side is followed under its former name on the other.
+      const names = [...new Set([path, ours.changes.get(path)?.from ?? theirs.changes.get(path)?.from ?? path])];
+      const state = (side: MergeSide): ConflictSideState =>
+        names.map((name) => side.changes.get(name)?.state).find((value) => value !== undefined) ?? 'unchanged';
+      const subjects = async (revision: string): Promise<string[]> =>
+        (
+          await git(view.path, [
+            'log',
+            '-n',
+            '10',
+            '--format=%s',
+            `${base}..${revision}`,
+            '--',
+            ...names.map((name) => `:(literal)${name}`),
+          ])
+        )
+          .split('\n')
+          .filter(Boolean);
+      files.push({
+        path,
+        ours: state(ours),
+        theirs: state(theirs),
+        oursCommits: await subjects('HEAD'),
+        theirsCommits: await subjects(mergeHead),
+      });
+    }
+    return {
+      view,
+      mergeHead,
+      base,
+      files,
+      oursCommits: ours.commits,
+      theirsCommits: theirs.commits,
+      resolved: view.conflicts.filter((file) => !view.remainingMarkers.includes(file)),
+    };
   }
   /**
    * Merges the target into the copy's last commit without touching the copy: with `git merge-tree` when Git has it,
