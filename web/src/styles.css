@@ -1287,20 +1287,49 @@ textarea {
   color: var(--faint);
 }
 
-/* Projet : sessions à gauche, backlog à droite */
-.project-columns {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 22px;
-  align-items: start;
+/* Projet : sessions, backlog, copies de travail et council en onglets */
+.project-view-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--line);
 }
 
-.project-columns > * {
+.project-view-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: -1px;
+  padding: 8px 14px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.project-view-tabs button:hover {
+  color: var(--text);
+}
+
+.project-view-tabs button[aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
+
+.project-view-tabs button:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px rgba(122, 162, 247, 0.45);
+}
+
+.project-view-panel {
   min-width: 0;
 }
 
-.project-columns .card {
-  margin-bottom: 0;
+.project-view-panel .worktrees-panel {
+  margin-top: 0;
 }
 
 .project-panel .project-create {
@@ -1333,12 +1362,6 @@ textarea {
 .new-session-heading > h2,
 .new-session-heading > .hint {
   margin: 0;
-}
-
-@media (max-width: 1100px) {
-  .project-columns {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 .project-panel-head {

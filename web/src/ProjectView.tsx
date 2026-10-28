@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react';
 import { acquireProjectSlack, getProjectSlack } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
 import { Backlog } from './backlog/Backlog.tsx';
@@ -9,7 +17,6 @@ import { Worktrees } from './worktrees/Worktrees.tsx';
 import { GitStatus } from './GitStatus.tsx';
 import { CommitSettingsDialog } from './CommitSettingsDialog.tsx';
 import { CouncilLaunch } from './CouncilLaunch.tsx';
-import { Modal } from './Dialog.tsx';
 import { isDormant } from '../../shared/sessions.ts';
 import { errorMessage } from './format.ts';
 import { SessionList } from './SessionList.tsx';
@@ -17,6 +24,7 @@ import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href } from './route.ts';
 import { useNow, usePolling } from './polling.tsx';
 import { PathInput } from './PathInput.tsx';
+import { readStored, writeStored } from './storage.ts';
 import { useStore } from './store.tsx';
 import { ErrorBoundary } from './ErrorBoundary.tsx';
 import type { Project, WorkspaceMode } from '../../shared/types.ts';
@@ -130,8 +138,82 @@ function WorkspaceModeControl({ project }: { project: Project }) {
   );
 }
 
+// Onglets de la page projet, dans l'ordre d'affichage. Le dernier ouvert est retenu par ce navigateur.
+const PROJECT_TABS = [
+  { id: 'sessions', label: 'Sessions' },
+  { id: 'backlog', label: 'Backlog' },
+  { id: 'worktrees', label: 'Copies de travail' },
+  { id: 'councils', label: 'Council' },
+] as const;
+type ProjectTab = (typeof PROJECT_TABS)[number]['id'];
+const TAB_KEY = 'cerebro.project-tab';
+
+function readProjectTab(): ProjectTab {
+  const stored = readStored(TAB_KEY);
+  return PROJECT_TABS.find((tab) => tab.id === stored)?.id ?? 'sessions';
+}
+
+function ProjectTabBar({
+  projectId,
+  tab,
+  counts,
+  onSelect,
+}: {
+  projectId: string;
+  tab: ProjectTab;
+  counts: Partial<Record<ProjectTab, { value: number; title: string }>>;
+  onSelect: (tab: ProjectTab) => void;
+}) {
+  const buttons = useRef(new Map<ProjectTab, HTMLButtonElement>());
+  const onKey = (event: KeyboardEvent<HTMLButtonElement>): void => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return;
+    event.preventDefault();
+    const index = PROJECT_TABS.findIndex((t) => t.id === tab);
+    const nextIndex =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? PROJECT_TABS.length - 1
+          : (index + (event.key === 'ArrowRight' ? 1 : -1) + PROJECT_TABS.length) % PROJECT_TABS.length;
+    const next = PROJECT_TABS[nextIndex].id;
+    onSelect(next);
+    buttons.current.get(next)?.focus();
+  };
+  return (
+    <div className="project-view-tabs" role="tablist" aria-label="Sections du projet">
+      {PROJECT_TABS.map(({ id, label }) => {
+        const count = counts[id];
+        return (
+          <button
+            key={id}
+            ref={(el) => {
+              if (el) buttons.current.set(id, el);
+              else buttons.current.delete(id);
+            }}
+            type="button"
+            role="tab"
+            id={`project-tab-${id}-${projectId}`}
+            aria-selected={tab === id}
+            aria-controls={`project-panel-${id}-${projectId}`}
+            tabIndex={tab === id ? 0 : -1}
+            onClick={() => onSelect(id)}
+            onKeyDown={onKey}
+          >
+            {label}
+            {count ? (
+              <span className="pill project-panel-count" title={count.title}>
+                {count.value}
+              </span>
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ProjectView({ projectId }: { projectId: string }) {
-  const { projects, sessions, createSession, purgeProjectSessions, deleteProject, updateProject } = useStore();
+  const { projects, sessions, tasks, createSession, purgeProjectSessions, deleteProject, updateProject } = useStore();
   const project = projects.find((p) => p.id === projectId);
   const projectSessions = sessions.filter((s) => s.projectId === projectId);
   const now = useNow();
@@ -153,7 +235,12 @@ export function ProjectView({ projectId }: { projectId: string }) {
   );
   const [codeOpen, setCodeOpen] = useState(false);
   const [commitSettingsOpen, setCommitSettingsOpen] = useState(false);
-  const [councilOpen, setCouncilOpen] = useState(false);
+  const [tab, setTab] = useState<ProjectTab>(readProjectTab);
+  const selectTab = (next: ProjectTab): void => {
+    setTab(next);
+    writeStored(TAB_KEY, next);
+  };
+  const openTaskCount = tasks.filter((t) => t.projectId === projectId && t.status !== 'done').length;
 
   useEffect(() => {
     setEditing(false);
@@ -302,14 +389,6 @@ export function ProjectView({ projectId }: { projectId: string }) {
           <button type="button" className="btn" onClick={() => setCommitSettingsOpen(true)}>
             Réglages LLM
           </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => setCouncilOpen(true)}
-            title="Soumettre une question à un conseil de LLM"
-          >
-            Council
-          </button>
           <button type="button" className="btn" onClick={() => setCodeOpen(true)} title="Ouvrir le projet dans VS Code">
             VS Code
           </button>
@@ -339,54 +418,74 @@ export function ProjectView({ projectId }: { projectId: string }) {
       {commitSettingsOpen ? (
         <CommitSettingsDialog project={project} onClose={() => setCommitSettingsOpen(false)} />
       ) : null}
-      {councilOpen ? (
-        <Modal title={`Council · ${project.name}`} onClose={() => setCouncilOpen(false)}>
-          <CouncilLaunch projectId={project.id} />
-        </Modal>
-      ) : null}
 
       {error ? <p className="form-error">{error}</p> : null}
 
-      <ErrorBoundary zone="Copies de travail" resetKey={project.id}>
-        <Worktrees key={`worktrees-${project.id}`} projectId={project.id} workspaceMode={project.workspaceMode} />
-      </ErrorBoundary>
-      <div className="project-columns">
-        <section className="card project-panel session-table-wrap">
-          <div className="project-panel-head">
-            <h2>
-              Sessions <span className="pill project-panel-count">{projectSessions.length}</span>
-            </h2>
-            {dormantCount > 0 ? (
-              <DelayedActionButton
-                onAction={onPurge}
-                title="Supprime les sessions non protégées inactives depuis plus d'une heure ; celles encore ouvertes seront arrêtées"
-              >
-                Purger les sessions en sommeil ({dormantCount})
-              </DelayedActionButton>
-            ) : null}
-          </div>
-          <NewSessionForm
-            key={`new-session-${project.id}`}
-            className="project-create"
-            heading="Nouvelle session"
-            projectId={project.id}
-            draftKey={`project.${project.id}`}
-            onLaunch={async (spec) => {
-              await createSession(project.id, spec);
-            }}
-          />
-          {projectSessions.length === 0 ? (
-            <p className="empty-hint">Aucune session pour ce projet.</p>
-          ) : (
-            <ErrorBoundary zone="Sessions" resetKey={project.id}>
-              <SessionList key={`sessions-${project.id}`} sessions={projectSessions} now={now} onError={setError} />
+      <ProjectTabBar
+        projectId={project.id}
+        tab={tab}
+        counts={{
+          sessions: { value: projectSessions.length, title: 'Sessions du projet' },
+          backlog: { value: openTaskCount, title: 'Tâches ouvertes' },
+        }}
+        onSelect={selectTab}
+      />
+      <div
+        className="project-view-panel"
+        role="tabpanel"
+        id={`project-panel-${tab}-${project.id}`}
+        aria-labelledby={`project-tab-${tab}-${project.id}`}
+      >
+        {tab === 'sessions' ? (
+          <section className="card project-panel session-table-wrap">
+            <div className="project-panel-head">
+              <h2>
+                Sessions <span className="pill project-panel-count">{projectSessions.length}</span>
+              </h2>
+              {dormantCount > 0 ? (
+                <DelayedActionButton
+                  onAction={onPurge}
+                  title="Supprime les sessions non protégées inactives depuis plus d'une heure ; celles encore ouvertes seront arrêtées"
+                >
+                  Purger les sessions en sommeil ({dormantCount})
+                </DelayedActionButton>
+              ) : null}
+            </div>
+            <NewSessionForm
+              key={`new-session-${project.id}`}
+              className="project-create"
+              heading="Nouvelle session"
+              projectId={project.id}
+              draftKey={`project.${project.id}`}
+              onLaunch={async (spec) => {
+                await createSession(project.id, spec);
+              }}
+            />
+            {projectSessions.length === 0 ? (
+              <p className="empty-hint">Aucune session pour ce projet.</p>
+            ) : (
+              <ErrorBoundary zone="Sessions" resetKey={project.id}>
+                <SessionList key={`sessions-${project.id}`} sessions={projectSessions} now={now} onError={setError} />
+              </ErrorBoundary>
+            )}
+          </section>
+        ) : tab === 'backlog' ? (
+          <ErrorBoundary zone="Backlog" resetKey={project.id}>
+            <Backlog projectId={project.id} />
+          </ErrorBoundary>
+        ) : tab === 'worktrees' ? (
+          <ErrorBoundary zone="Copies de travail" resetKey={project.id}>
+            <Worktrees key={`worktrees-${project.id}`} projectId={project.id} workspaceMode={project.workspaceMode} />
+          </ErrorBoundary>
+        ) : (
+          <section className="card project-panel" aria-label="Council">
+            <h2>Council</h2>
+            <p className="hint">Soumettez une question à plusieurs conseillers, relus anonymement puis synthétisés.</p>
+            <ErrorBoundary zone="Council" resetKey={project.id}>
+              <CouncilLaunch projectId={project.id} />
             </ErrorBoundary>
-          )}
-        </section>
-
-        <ErrorBoundary zone="Backlog" resetKey={project.id}>
-          <Backlog projectId={project.id} />
-        </ErrorBoundary>
+          </section>
+        )}
       </div>
     </div>
   );
