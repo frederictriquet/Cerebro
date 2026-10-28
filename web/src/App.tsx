@@ -12,6 +12,7 @@ import { SidebarRail, useSidebarLayout } from './SidebarRail.tsx';
 import { StoreProvider, useStore } from './store.tsx';
 import { useMachine, useRoute } from './route.ts';
 import { NowProvider, usePolling } from './polling.tsx';
+import { usePrefetchWorktreeInventory } from './worktrees/useWorktreeInventory.ts';
 import type { PeerNotice } from '../../shared/machine.ts';
 
 function TokenScreen() {
@@ -101,6 +102,7 @@ function Shell() {
   const route = useRoute();
   const [navOpen, setNavOpen] = useState(false);
   const sidebar = useSidebarLayout();
+  usePrefetchWorktreeInventory();
   const routeKey =
     route.kind === 'home'
       ? 'home'

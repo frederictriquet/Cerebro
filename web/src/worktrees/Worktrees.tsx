@@ -45,7 +45,12 @@ function WorktreesPanel({
   projectId?: string;
   workspaceMode?: WorkspaceMode;
 }) {
-  const { inventory: visibleInventory, loadError, refresh, forget } = useWorktreeInventory(path, machineBase);
+  const {
+    inventory: visibleInventory,
+    loadError,
+    refresh,
+    forget,
+  } = useWorktreeInventory(path, machineBase, projectId);
   /** One Git action on a copy at a time: it locks the panel and its error replaces the previous one. */
   const { run: perform, busy, error, setError } = useAsyncAction((action: () => Promise<void>) => action());
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
@@ -124,6 +129,8 @@ function WorktreesPanel({
     other.every((view) => view.primary) &&
     !loadError &&
     !inventoryErrors.length;
+  // A shared project usually shows nothing: until its inventory is known, stay hidden rather than appear then vanish.
+  if (projectId && workspaceMode === 'shared' && !visibleInventory && !loadError && !error) return null;
   if (
     projectId &&
     workspaceMode === 'shared' &&
