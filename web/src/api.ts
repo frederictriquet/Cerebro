@@ -8,6 +8,7 @@ import {
   parseProjectSlackStatus,
   parseSessionTokenUsages,
   parseSlackStatus,
+  parseSlackWatchList,
   type AgentUpdate,
   type AgentUsage,
   type GeneralSlackStatus,
@@ -17,6 +18,8 @@ import {
   type SessionTokenUsage,
   type SlackSettings,
   type SlackStatus,
+  type SlackWatchList,
+  type WatchDelivery,
 } from '../../shared/machine.ts';
 import { boolean, object, parser, string, type Parser } from '../../shared/parse.ts';
 import {
@@ -180,6 +183,23 @@ export function getSlackStatus(): Promise<SlackStatus> {
 
 export function updateSlackSettings(patch: Partial<SlackSettings>): Promise<SlackStatus> {
   return apiParsed('/api/slack', parseSlackStatus, { method: 'PATCH', body: JSON.stringify(patch) });
+}
+
+export function getSlackWatches(): Promise<SlackWatchList> {
+  return apiParsed('/api/slack/watches', parseSlackWatchList);
+}
+
+// null: the watch follows the Slack settings again.
+export async function setSlackWatchDelivery(
+  sessionId: string,
+  watchId: string,
+  deliver: WatchDelivery[] | null,
+): Promise<void> {
+  await api(apiPath`/api/slack/watches/${sessionId}/${watchId}`, { method: 'PATCH', body: JSON.stringify({ deliver }) });
+}
+
+export async function removeSlackWatch(sessionId: string, watchId: string): Promise<void> {
+  await api(apiPath`/api/slack/watches/${sessionId}/${watchId}`, { method: 'DELETE' });
 }
 
 export function getGeneralSlack(): Promise<GeneralSlackStatus> {

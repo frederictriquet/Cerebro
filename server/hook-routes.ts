@@ -1,10 +1,14 @@
 import { SLACK_ENABLED } from './config.ts';
 import { appendHookLog } from './hook-log.ts';
 import { handleHook, isHookPayload } from './hooks.ts';
+import { WatchError } from './slack.ts';
+import { watchRequestFrom } from './slack-state.ts';
 import { isAgent } from '../shared/types.ts';
 import { asRecord } from './util.ts';
-import { error } from './routes-util.ts';
+import { error, routeErrors, statusCodeOf } from './routes-util.ts';
 import type { RouteContext } from './route-context.ts';
+
+const { orError: watchOrError } = routeErrors(statusCodeOf(WatchError, 500));
 
 // Routes appelées par les agents (hooks, cerebro-notify), authentifiées par le jeton de la session.
 export function registerHookRoutes(ctx: RouteContext): void {
@@ -32,9 +36,8 @@ export function registerHookRoutes(ctx: RouteContext): void {
     // Even without Slack, the end of the turn must show as a question in the UI.
     if (body.kind === 'ask') sessions.markAsked(session.id, text);
     if (!SLACK_ENABLED) return error(reply, 503, "Slack n'est pas configuré");
-    if (!notifier.agentMessagesAllowed()) {
-      return error(reply, 503, 'Messages des agents désactivés dans les réglages Slack de Cerebro');
-    }
+    const refusal = notifier.agentMessagesRefusal(session.id);
+    if (refusal !== null) return error(reply, 503, refusal);
     try {
       const outcome = await notifier.agentMessage(session.id, body.kind, text);
       return reply.send({ ok: true, queued: outcome === 'queued' });
@@ -42,6 +45,37 @@ export function registerHookRoutes(ctx: RouteContext): void {
       console.error('[slack]', caught instanceof Error ? caught.message : caught);
       return error(reply, 502, "Impossible d'envoyer le message Slack");
     }
+  });
+
+  // Slack threads and channels watched for the session (`cerebro-slack-watch`), read with the user token.
+  app.get<{ Params: { id: string } }>('/api/slack-watch/:id', async (request, reply) => {
+    const checked = tokenSession(request, reply);
+    if (!checked.ok) return checked.reply;
+    const listed = await watchOrError(reply, () => notifier.watchesFor(checked.value.id));
+    return listed.ok ? reply.send({ watches: listed.value }) : listed.reply;
+  });
+
+  app.post<{ Params: { id: string } }>('/api/slack-watch/:id', async (request, reply) => {
+    const checked = tokenSession(request, reply);
+    if (!checked.ok) return checked.reply;
+    const body = asRecord(request.body);
+    const asked = body === null ? 'Corps JSON attendu' : watchRequestFrom(body);
+    const added = await watchOrError(reply, () => {
+      notifier.requireWatches();
+      if (typeof asked === 'string') throw new WatchError(400, asked);
+      return notifier.addWatch(checked.value.id, asked);
+    });
+    if (!added.ok) return added.reply;
+    return reply.code(added.value.renewed ? 200 : 201).send(added.value);
+  });
+
+  app.delete<{ Params: { id: string; ref: string } }>('/api/slack-watch/:id/:ref', async (request, reply) => {
+    const checked = tokenSession(request, reply);
+    if (!checked.ok) return checked.reply;
+    const removed = await watchOrError(reply, () => notifier.removeWatches(checked.value.id, request.params.ref));
+    if (!removed.ok) return removed.reply;
+    if (removed.value.length === 0) return error(reply, 404, 'Surveillance introuvable pour cette session');
+    return reply.send({ removed: removed.value });
   });
 
   app.post<{ Params: { id: string } }>('/api/hook/:id', async (request, reply) => {
@@ -62,6 +96,7 @@ export function registerHookRoutes(ctx: RouteContext): void {
       payload: body.payload,
     });
     handleHook(sessions, session.id, body.agent, body.event, body.payload);
+    if (body.event === 'PostToolUse') notifier.watchAfterPost(session.id, body.payload);
     return reply.code(204).send();
   });
 }

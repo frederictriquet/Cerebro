@@ -193,6 +193,29 @@ export interface AggregatedRank {
   votes: number;
 }
 
+/** How a message read in a watched Slack thread or channel reaches its session. */
+export const WATCH_DELIVERIES = ['inject', 'dm', 'notify'] as const;
+export type WatchDelivery = (typeof WATCH_DELIVERIES)[number];
+/** Once the session has ended, nothing can be typed into it. */
+export const WATCH_ENDED_DELIVERIES = ['dm', 'notify'] as const;
+export type WatchEndedDelivery = (typeof WATCH_ENDED_DELIVERIES)[number];
+
+/**
+ * What Cerebro posts to Slack about one project, in place of the machine's Slack settings. `off`: nothing (alerts,
+ * agent messages, operation results, watched messages are only typed into the session); `custom`: these values.
+ * Replies to a command sent from Slack still answer in its thread.
+ */
+export interface ProjectSlackSettings {
+  mode: 'off' | 'custom';
+  waiting: boolean;
+  idle: boolean;
+  agentMessages: boolean;
+  /** Never empty. */
+  watchDeliveryLive: WatchDelivery[];
+  /** Empty drops the message. */
+  watchDeliveryEnded: WatchEndedDelivery[];
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -202,6 +225,8 @@ export interface Project {
   commitSettings: CommitSettings;
   // null : le projet suit les réglages globaux du council.
   councilSettings: CouncilSettings | null;
+  // null : le projet suit les réglages Slack de la machine.
+  slackSettings: ProjectSlackSettings | null;
   resolutionSettings: ResolutionSettings;
   workspaceMode: WorkspaceMode;
   /**
@@ -331,6 +356,7 @@ export type EventsMessage =
   | { type: 'alert'; session: Session }
   | { type: 'findings-available'; session: Session }
   | { type: 'peers' }
+  | { type: 'slack-watches' }
   | { type: 'epic-run'; run: EpicRun }
   | { type: 'command-run'; run: Omit<CommandRun, 'output'> };
 
@@ -365,6 +391,24 @@ function parseLlm(v: unknown): Llm | null {
     agent: v.agent,
     model: typeof v.model === 'string' ? v.model : null,
     effort: isEffort(v.effort) ? v.effort : null,
+  };
+}
+
+// Modes known to this version, in their canonical order.
+function modesOf<T extends string>(v: unknown, allowed: readonly T[]): T[] {
+  return Array.isArray(v) ? allowed.filter((mode) => v.includes(mode)) : [];
+}
+
+export function parseProjectSlackSettings(v: unknown): ProjectSlackSettings | null {
+  if (!isRecord(v) || (v.mode !== 'off' && v.mode !== 'custom')) return null;
+  const live = modesOf(v.watchDeliveryLive, WATCH_DELIVERIES);
+  return {
+    mode: v.mode,
+    waiting: v.waiting === true,
+    idle: v.idle === true,
+    agentMessages: v.agentMessages === true,
+    watchDeliveryLive: live.length > 0 ? live : ['inject'],
+    watchDeliveryEnded: modesOf(v.watchDeliveryEnded, WATCH_ENDED_DELIVERIES),
   };
 }
 
@@ -548,6 +592,8 @@ export function parseProject(v: unknown): Project | null {
   };
   const workspaceMode: WorkspaceMode = v.workspaceMode === 'shared' ? 'shared' : 'isolated';
   const councilSettings = parseCouncilSettings(v.councilSettings);
+  // Absent des serveurs antérieurs aux réglages Slack par projet.
+  const slackSettings = parseProjectSlackSettings(v.slackSettings);
   // Absent des serveurs antérieurs aux chemins régénérables déclarés.
   const regenerablePaths = Array.isArray(v.regenerablePaths)
     ? v.regenerablePaths.filter((item): item is string => typeof item === 'string')
@@ -561,6 +607,7 @@ export function parseProject(v: unknown): Project | null {
     commitSettings,
     resolutionSettings,
     councilSettings,
+    slackSettings,
     workspaceMode,
     regenerablePaths,
     createdAt,
@@ -879,6 +926,8 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
     }
     case 'peers':
       return { type: 'peers' };
+    case 'slack-watches':
+      return { type: 'slack-watches' };
     // Runs d'epic et de commande : le serveur et cette interface partagent leur type.
     case 'epic-run':
       return isRecord(v.run) &&

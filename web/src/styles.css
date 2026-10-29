@@ -3102,6 +3102,114 @@ a.btn:hover {
   cursor: not-allowed;
 }
 
+.slack-watch-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.slack-watch-settings h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.slack-deliveries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.slack-deliveries legend {
+  width: 100%;
+  padding: 0;
+  margin-bottom: 2px;
+  color: var(--muted);
+}
+
+.slack-deliveries .meta {
+  width: 100%;
+  margin: 0;
+}
+
+.slack-watch-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.slack-watch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.slack-watch:first-child {
+  border-top: 0;
+}
+
+.slack-watch-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.slack-watch-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+
+.slack-watch-deliver {
+  align-items: center;
+  flex: 1 1 100%;
+}
+
+.slack-watch-deliver legend {
+  float: left;
+  width: auto;
+  margin: 0;
+}
+
+.slack-watch-deliver .meta {
+  width: auto;
+}
+
+.slack-watches.compact {
+  flex-shrink: 0;
+  max-height: 30vh;
+  overflow: auto;
+  margin: 0;
+  padding: 6px 14px;
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+
+.slack-watches.compact h2 {
+  font-size: 13px;
+  margin: 0 0 2px;
+}
+
+.slack-watches.compact .slack-watch {
+  padding: 4px 0;
+}
+
 .peer-conflict {
   margin: 8px 0 0;
   padding: 8px 10px;

@@ -1,4 +1,11 @@
-import { SLACK_API_URL, SLACK_ENABLED, SLACK_TOKEN, SLACK_USER } from './config.ts';
+import {
+  SLACK_API_URL,
+  SLACK_ENABLED,
+  SLACK_TOKEN,
+  SLACK_USER,
+  SLACK_USER_TOKEN,
+  SLACK_WATCH_UNCONFIGURED,
+} from './config.ts';
 import { isRecord } from './util.ts';
 
 export interface SlackResponse {
@@ -9,6 +16,10 @@ export interface SlackResponse {
   messages?: unknown[];
   has_more?: boolean;
   response_metadata?: { next_cursor?: string };
+  // users.info
+  user?: unknown;
+  // chat.getPermalink
+  permalink?: string;
 }
 
 export interface SlackMessage {
@@ -18,12 +29,30 @@ export interface SlackMessage {
   bot_id?: string;
   subtype?: string;
   thread_ts?: string;
+  // Display name of a bot author (bot_profile.name, or username of legacy bot messages).
+  botName?: string;
+  // Posted by an app on the user's behalf (the claude.ai connector: `app_id`, or its « Envoyé avec @Claude »
+  // context block on scheduled messages), not typed by them in Slack.
+  viaApp?: true;
+}
+
+// Slack clients send rich_text blocks only; a context block comes from an app.
+function postedByApp(value: Record<string, unknown>): boolean {
+  if (typeof value.app_id === 'string') return true;
+  return Array.isArray(value.blocks) && value.blocks.some((block) => isRecord(block) && block.type === 'context');
 }
 
 export type SlackCall = (method: string, body: Record<string, unknown>) => Promise<SlackResponse>;
 
 export function messageFrom(value: unknown): SlackMessage | null {
   if (!isRecord(value) || typeof value.ts !== 'string') return null;
+  const profileName = isRecord(value.bot_profile) ? value.bot_profile.name : undefined;
+  const botName =
+    typeof profileName === 'string' && profileName !== ''
+      ? profileName
+      : typeof value.username === 'string' && value.username !== ''
+        ? value.username
+        : undefined;
   return {
     ts: value.ts,
     ...(typeof value.text === 'string' ? { text: value.text } : {}),
@@ -31,6 +60,8 @@ export function messageFrom(value: unknown): SlackMessage | null {
     ...(typeof value.bot_id === 'string' ? { bot_id: value.bot_id } : {}),
     ...(typeof value.subtype === 'string' ? { subtype: value.subtype } : {}),
     ...(typeof value.thread_ts === 'string' ? { thread_ts: value.thread_ts } : {}),
+    ...(botName === undefined ? {} : { botName }),
+    ...(postedByApp(value) ? { viaApp: true as const } : {}),
   };
 }
 
@@ -40,9 +71,37 @@ const RATE_LIMIT_MARGIN_MS = 500;
 /** Thrown while Slack asks to slow down: the caller may retry once `SlackTransport.rateLimitWait()` is over. */
 export class SlackRateLimitError extends Error {}
 
-/** Calls the Slack Web API, and stops calling it while Slack asks to slow down. */
+/** Methods the user token may call: it reads what the user sees and never acts on their behalf. */
+export const SLACK_USER_READ_METHODS: ReadonlySet<string> = new Set([
+  'conversations.replies',
+  'conversations.history',
+  'users.info',
+  'chat.getPermalink',
+]);
+
+interface TransportOptions {
+  /** Error message while no token is configured. */
+  unconfigured: string;
+  /** When set, any other method is refused before reaching Slack. */
+  methods?: ReadonlySet<string>;
+}
+
+/**
+ * Calls the Slack Web API, and stops calling it while Slack asks to slow down. Built with the bot token by
+ * default; each token gets its own transport, so its 429 window only pauses its own calls.
+ */
 export class SlackTransport {
   rateLimitedUntil = 0;
+  private readonly token: string | undefined;
+  private readonly options: TransportOptions;
+
+  constructor(
+    token: string | undefined = SLACK_ENABLED ? SLACK_TOKEN : undefined,
+    options: TransportOptions = { unconfigured: "Slack n'est pas configuré" },
+  ) {
+    this.token = token;
+    this.options = options;
+  }
 
   rateLimited(): boolean {
     return Date.now() < this.rateLimitedUntil;
@@ -54,12 +113,15 @@ export class SlackTransport {
   }
 
   async call(method: string, body: Record<string, unknown>): Promise<SlackResponse> {
-    if (!SLACK_ENABLED || SLACK_TOKEN === undefined) throw new Error("Slack n'est pas configuré");
+    if (this.token === undefined) throw new Error(this.options.unconfigured);
+    if (this.options.methods !== undefined && !this.options.methods.has(method)) {
+      throw new Error(`Méthode Slack non autorisée pour ce jeton : ${method}`);
+    }
     if (this.rateLimited()) throw new SlackRateLimitError('Limite de débit Slack active');
     const response = await fetch(`${SLACK_API_URL}/${method}`, {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${SLACK_TOKEN}`,
+        authorization: `Bearer ${this.token}`,
         // Form encoding: read methods such as conversations.replies ignore JSON bodies.
         'content-type': 'application/x-www-form-urlencoded',
       },
@@ -154,4 +216,9 @@ export class SlackClient {
       .catch(() => {});
     return next;
   }
+}
+
+/** Transport of the user token (CEREBRO_SLACK_USER_TOKEN), restricted to SLACK_USER_READ_METHODS. */
+export function slackUserTransport(token: string | undefined = SLACK_USER_TOKEN): SlackTransport {
+  return new SlackTransport(token, { unconfigured: SLACK_WATCH_UNCONFIGURED, methods: SLACK_USER_READ_METHODS });
 }

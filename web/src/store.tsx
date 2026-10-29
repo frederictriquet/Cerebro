@@ -58,6 +58,8 @@ export interface Store {
   runPollMs: number | null;
   // Incrémenté à chaque changement de prise de main Slack entre machines : déclenche un rechargement.
   peersVersion: number;
+  // Incrémenté à chaque changement des surveillances Slack (ajout, retrait, lecture, expiration).
+  slackWatchesVersion: number;
   muted: boolean;
   setMuted: (value: boolean) => void;
   desktopNotif: boolean;
@@ -119,6 +121,8 @@ export interface ProjectPatch {
   regenerablePaths?: string[];
   // null : le projet revient aux réglages globaux du council.
   councilSettings?: import('../../shared/types.ts').CouncilSettings | null;
+  // null : le projet revient aux réglages Slack de la machine.
+  slackSettings?: import('../../shared/types.ts').ProjectSlackSettings | null;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -175,6 +179,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // null : snapshot de la connexion courante pas encore reçu.
   const [runEvents, setRunEvents] = useState<boolean | null>(null);
   const [peersVersion, setPeersVersion] = useState(0);
+  const [slackWatchesVersion, setSlackWatchesVersion] = useState(0);
   const [muted, setMutedState] = useState<boolean>(() => readMuted());
   const mutedRef = useLatest(muted);
 
@@ -272,6 +277,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             break;
           case 'peers':
             setPeersVersion((n) => n + 1);
+            break;
+          case 'slack-watches':
+            setSlackWatchesVersion((n) => n + 1);
             break;
           case 'alert':
             setSessions((list) => upsertSession(list, msg.session));
@@ -588,6 +596,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       loaded,
       runPollMs,
       peersVersion,
+      slackWatchesVersion,
       muted,
       setMuted,
       desktopNotif,
@@ -635,6 +644,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       loaded,
       runPollMs,
       peersVersion,
+      slackWatchesVersion,
       muted,
       setMuted,
       desktopNotif,

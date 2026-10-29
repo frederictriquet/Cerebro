@@ -8,10 +8,12 @@ import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { Worktrees } from './worktrees/Worktrees.tsx';
 import { GitStatus } from './GitStatus.tsx';
 import { CommitSettingsDialog } from './CommitSettingsDialog.tsx';
+import { ProjectSlackDialog, projectSlackLabel } from './ProjectSlackDialog.tsx';
 import { CouncilLaunch } from './CouncilLaunch.tsx';
 import { isDormant } from '../../shared/sessions.ts';
 import { errorMessage } from './format.ts';
 import { SessionList } from './SessionList.tsx';
+import { SlackWatches } from './SlackWatches.tsx';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href } from './route.ts';
 import { useNow, usePolling } from './polling.tsx';
@@ -157,6 +159,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
   );
   const [codeOpen, setCodeOpen] = useState(false);
   const [commitSettingsOpen, setCommitSettingsOpen] = useState(false);
+  const [slackSettingsOpen, setSlackSettingsOpen] = useState(false);
   const [tab, selectTab] = useStoredTab<ProjectTab>('cerebro.project-tab', PROJECT_TABS);
   const openTaskCount = tasks.filter((t) => t.projectId === projectId && t.status !== 'done').length;
 
@@ -218,6 +221,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
   };
 
   if (codeOpen) return <CodeEditor project={project} onClose={() => setCodeOpen(false)} />;
+  const slackLabel = projectSlackLabel(project);
 
   return (
     <div className="pane padded">
@@ -304,6 +308,14 @@ export function ProjectView({ projectId }: { projectId: string }) {
           )}
         </div>
         <div className="row-actions">
+          <button
+            type="button"
+            className="btn"
+            title="Ce que Cerebro poste dans Slack pour ce projet"
+            onClick={() => setSlackSettingsOpen(true)}
+          >
+            Slack{slackLabel === null ? '' : ` : ${slackLabel}`}
+          </button>
           <button type="button" className="btn" onClick={() => setCommitSettingsOpen(true)}>
             Réglages LLM
           </button>
@@ -333,6 +345,9 @@ export function ProjectView({ projectId }: { projectId: string }) {
           </ErrorBoundary>
         </div>
       </header>
+      {slackSettingsOpen ? (
+        <ProjectSlackDialog project={project} onClose={() => setSlackSettingsOpen(false)} />
+      ) : null}
       {commitSettingsOpen ? (
         <CommitSettingsDialog project={project} onClose={() => setCommitSettingsOpen(false)} />
       ) : null}
@@ -358,38 +373,43 @@ export function ProjectView({ projectId }: { projectId: string }) {
         aria-labelledby={tabIds(`project-${project.id}`, tab).tab}
       >
         {tab === 'sessions' ? (
-          <section className="card project-panel session-table-wrap">
-            <div className="project-panel-head">
-              <h2>
-                Sessions <span className="pill project-panel-count">{projectSessions.length}</span>
-              </h2>
-              {dormantCount > 0 ? (
-                <DelayedActionButton
-                  onAction={onPurge}
-                  title="Supprime les sessions non protégées inactives depuis plus d'une heure ; celles encore ouvertes seront arrêtées"
-                >
-                  Purger les sessions en sommeil ({dormantCount})
-                </DelayedActionButton>
-              ) : null}
-            </div>
-            <NewSessionForm
-              key={`new-session-${project.id}`}
-              className="project-create"
-              heading="Nouvelle session"
-              projectId={project.id}
-              draftKey={`project.${project.id}`}
-              onLaunch={async (spec) => {
-                await createSession(project.id, spec);
-              }}
-            />
-            {projectSessions.length === 0 ? (
-              <p className="empty-hint">Aucune session pour ce projet.</p>
-            ) : (
-              <ErrorBoundary zone="Sessions" resetKey={project.id}>
-                <SessionList key={`sessions-${project.id}`} sessions={projectSessions} now={now} onError={setError} />
-              </ErrorBoundary>
-            )}
-          </section>
+          <>
+            <section className="card project-panel session-table-wrap">
+              <div className="project-panel-head">
+                <h2>
+                  Sessions <span className="pill project-panel-count">{projectSessions.length}</span>
+                </h2>
+                {dormantCount > 0 ? (
+                  <DelayedActionButton
+                    onAction={onPurge}
+                    title="Supprime les sessions non protégées inactives depuis plus d'une heure ; celles encore ouvertes seront arrêtées"
+                  >
+                    Purger les sessions en sommeil ({dormantCount})
+                  </DelayedActionButton>
+                ) : null}
+              </div>
+              <NewSessionForm
+                key={`new-session-${project.id}`}
+                className="project-create"
+                heading="Nouvelle session"
+                projectId={project.id}
+                draftKey={`project.${project.id}`}
+                onLaunch={async (spec) => {
+                  await createSession(project.id, spec);
+                }}
+              />
+              {projectSessions.length === 0 ? (
+                <p className="empty-hint">Aucune session pour ce projet.</p>
+              ) : (
+                <ErrorBoundary zone="Sessions" resetKey={project.id}>
+                  <SessionList key={`sessions-${project.id}`} sessions={projectSessions} now={now} onError={setError} />
+                </ErrorBoundary>
+              )}
+            </section>
+            <ErrorBoundary zone="Fils Slack surveillés" resetKey={project.id}>
+              <SlackWatches sessions={projectSessions} showSession />
+            </ErrorBoundary>
+          </>
         ) : tab === 'backlog' ? (
           <ErrorBoundary zone="Backlog" resetKey={project.id}>
             <Backlog projectId={project.id} />

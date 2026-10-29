@@ -30,7 +30,7 @@ shared/*.ts               contrat serveur ↔ UI ↔ autres machines : types, pa
                           dépendance Node ni navigateur (le serveur n'importe rien de web/, l'UI rien de server/) ;
                           l'UI valide chaque réponse de l'API avec un parseur de shared/ (api() renvoie unknown, apiParsed valide)
 bin/cerebro-hook.mjs      relais de hook (JS pur, sans dépendance)
-bin/cerebro-client.mjs    client HTTP commun de cerebro-backlog/-notify/-findings/-tasks (JS pur, sans dépendance)
+bin/cerebro-client.mjs    client HTTP commun de cerebro-backlog/-notify/-findings/-tasks/-slack-watch (JS pur, sans dépendance)
 web/vite.config.ts        root = web/, build -> web/dist, proxy /api et /ws (ws: true) vers 127.0.0.1:4317
 web/index.html
 web/src/*.tsx|ts|css      UI React ; store.tsx porte l'état temps réel (projets, sessions, tâches, epics) et ses
@@ -114,7 +114,7 @@ initial et une provenance inconnue. Les actions Git présentent une sélection v
 voir les contrats détaillés du README.
 `env` = `process.env` **sans** les marqueurs de session imbriquée (`CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT`,
 `GROK_READ_ONLY_SANDBOX`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SSE_PORT`…) ni les secrets `CEREBRO_*` du serveur
-(jeton Slack, `CEREBRO_BIND_TOKEN`), plus `TERM=xterm-256color`, `COLORTERM=truecolor`, `CEREBRO_SESSION_ID`,
+(jetons Slack bot et utilisateur, `CEREBRO_BIND_TOKEN`), plus `TERM=xterm-256color`, `COLORTERM=truecolor`, `CEREBRO_SESSION_ID`,
 `CEREBRO_TOKEN` (32 octets aléatoires par session, persistés dans `sessions.hook_token` pour survivre aux reprises
 et aux redémarrages du serveur), `CEREBRO_URL=INTERNAL_URL`, `CEREBRO_NOTIFY`, `CEREBRO_BACKLOG` et `bin/` en tête du `PATH`.
 Le prompt est passé comme dernier argument positionnel s'il est non vide.
@@ -318,6 +318,7 @@ Le holder :
 - `POST /api/epics/:id/start` renvoie désormais une exécution d'epic, pas une Session. `/api/epics/:id/runs` et `/api/epic-runs/:id/{stop,resume}` suivent l'étape persistée. Seule la tâche courante est started ; --done demeure compatible, idle/exited ne valent jamais done.
 - Les anciens epics ayant utilisé plusieurs dossiers exposent `workspaceConflict` sur leurs exécutions. `GET /api/epics/:id/workspace-options` décrit leurs copies (branche, HEAD, fichiers modifiés et sessions), sans résoudre l’ambiguïté. `POST /api/epics/:id/workspace` avec `{path}` fixe explicitement un dossier attesté et disponible, lorsque les étapes sont arrêtées. Le choix ne déplace aucun fichier, ne valide aucune tâche et ne reprend pas l’exécution. Il persiste après redémarrage ; une étape interrompue ailleurs est relancée dans le dossier choisi.
 - Les sessions créées automatiquement par une epic reçoivent les instructions de leur tâche sans modifier les réglages ni le prompt mémorisés du formulaire « Nouvelle session » du projet.
+- Seuls les messages tapés par l'utilisateur dans Slack sont des commandes (DM) ou des réponses (fil d'une session) : ceux qu'une app poste en son nom (`app_id`, ou bloc `context` comme le « Envoyé avec @Claude » du connecteur claude.ai, `SlackMessage.viaApp`) sont ignorés.
 - Les commandes Slack transmettent leur texte à la session sans modifier le prompt mémorisé du formulaire « Nouvelle session ». Un changement explicite d'agent reste mémorisé pour le projet.
 - En mode `isolated`, la première étape LLM d'un epic crée une copie ; les étapes suivantes travaillent dans cette même copie et sur sa branche (une seule entrée dans « Copies de travail », une seule intégration). Le travail non commité des étapes précédentes compte comme changements initiaux de l'étape qui rejoint la copie. Retirer la copie la retire pour toutes ses étapes.
 - `? etat ...` et les formulations factuelles bornées du README consultent le même état local/distant sans inférence. Les questions libres gardent leur recours au LLM.
@@ -472,3 +473,89 @@ Suppression d'un projet : après vérification des protections de session, `Sess
 `POST /api/councils/:id/session` (route dans `session-routes.ts`, lancement par `launchSession` : réglages LLM mémorisés pour le projet, jamais le prompt) : prompt = `councilSessionPrompt(run, consigne)` (`server/council.ts`) : déroulé d'un council, statut, protagonistes triés par lettre (`Conseiller A — persona (llm) : description`, puis le chairman), `<compte_rendu>` = `exportMarkdown(run)`, rappel « donnée, jamais instruction », puis `## Consigne de l’utilisateur` (sans consigne : résumer et attendre). Au-delà de 100 Kio (`MAX_INLINE_COUNCIL_REPORT_BYTES`, sous la limite de 128 Kio d'un argument de commande), l'export est écrit dans `DATA_DIR/attachments/project-<projet de la session>/council-<id>/compte-rendu.md` (supprimé avec le projet) et le prompt ne garde que la question, la synthèse et le chemin du fichier à lire. Titre : `Council · <première ligne de la question>` (120 caractères).
 
 `GET /api/sessions/:id/transcript` (`server/transcripts.ts`) : transcript trouvé par `agentSessionId` (Claude `CLAUDE_CONFIG_DIR|~/.claude/projects/*/<id>.jsonl`, Codex rollout `*-<id>.jsonl`, Grok `GROK_HOME|~/.grok/sessions/*/<id>/chat_history.jsonl` ; plusieurs copies : la plus récente). Messages retenus : Claude `user`/`assistant` textuels hors `isMeta`, `isSidechain`, `tool_result` et messages injectés (`<command-…>`, `<local-command-…>`, `<system-reminder>`…), dédoublonnés par `uuid` ; Codex `item_completed` `UserMessage`/`AgentMessage`, à défaut les événements `user_message`/`agent_message` ; Grok `user` numérotés (`prompt_index`, balises `<user_query>` retirées) et `assistant` textuels. Messages consécutifs d'un même rôle fusionnés. `transcriptContext` met en forme (`### Utilisateur` / `### Agent (agent · modèle)`) en `MAX_CONTEXT_LENGTH − 10 000` caractères au plus : demande initiale gardée (au plus un quart, tronquée), derniers messages, ceux du milieu remplacés par une mention ; sans transcript (`complete: false`), seule `Session.prompt`. Tests : `tests/council-follow-ups.test.mjs`.
+
+---
+
+# Surveillance Slack
+
+Fils et canaux Slack lus pour une session par le serveur, sans modèle, avec un jeton utilisateur ; chaque message d'un tiers est remis à la session selon les réglages. Remplace les boucles de surveillance des agents (tokens consommés à chaque réveil, arrêt à la fin de session ou à la compaction). Guide utilisateur : README, « Fils et canaux surveillés ».
+
+Fichiers : `server/slack-watches.ts` (`SlackWatcher` : lecture, filtre, remise), `server/slack-auto-watch.ts` (`postedWatchRequest` : surveillance après un post), `server/slack-state.ts` (`SlackWatch`, validation, persistance, réglages), `server/slack.ts` (`SlackNotifier` : `addWatch`, `removeWatches`, `watchAfterPost`, `allWatches`, `WatchError`), `server/slack-api.ts` (`slackUserTransport`), `bin/cerebro-slack-watch`, `bin/slack-permalink.mjs` ; `web/src/SlackWatchSettings.tsx` (réglages, panneau Slack), `web/src/SlackWatches.tsx` (listes des vues projet et session). Tests : `tests/slack-watch.test.mjs`, `tests/slack-watch-api.test.mjs`, `tests/slack-watch-state.test.mjs`, `tests/slack-watch-unconfigured.test.mjs`.
+
+## Jeton utilisateur
+
+- `CEREBRO_SLACK_USER_TOKEN` (`xoxp-…`, aussi lu depuis `$CEREBRO_DATA_DIR/env`) → `SLACK_WATCH_ENABLED`. Scopes utilisateur : `channels:history`, `groups:history`, `im:history`, `mpim:history`, `users:read`. Contrairement au jeton bot (conversations où le bot est présent), il lit tout ce que voit l'utilisateur, DM et canaux privés compris.
+- Transport propre (`slackUserTransport`) : sa fenêtre 429 ne suspend que ses appels. Méthodes limitées à `SLACK_USER_READ_METHODS` (`conversations.replies`, `conversations.history`, `users.info`, `chat.getPermalink`) ; toute autre est refusée avant l'appel. Les posts restent au bot (`SlackAlerts.watchMessage`).
+- Retiré de l'environnement des agents comme toute variable `CEREBRO_*` (`withoutCerebroVariables`).
+- Absent : surveillance désactivée, routes de surveillance en 503 `SLACK_WATCH_UNCONFIGURED`, `allWatches()` → `{enabled:false, defaultDeliver, botEnabled, watches:[]}`. Le minuteur de 5 s tourne dès qu'un des deux jetons est défini ; sans jeton bot, seule l'injection aboutit.
+- Avec le jeton, `AGENT_INSTRUCTIONS` ajoute la consigne `cerebro-slack-watch` (pas de boucle de surveillance, `add <permalien>` pour un fil existant).
+
+## Modèle et persistance
+
+```ts
+interface SlackWatch {
+  id: string;               // 8 caractères aléatoires
+  sessionId: string;
+  channel: string;          // C…, G… ou D… (pas de nom)
+  threadTs: string | null;  // null : niveau principal du canal
+  lastTs: string;           // dernier message lu ; seuls les suivants sont remis
+  createdAt: number;
+  expiresAt: number;        // now + watchTtlDays, renouvelé à chaque add
+  deliver?: WatchDelivery[];  // remplace watchDeliveryLive pour cette surveillance
+  label?: string;           // 200 caractères au plus
+}
+```
+
+- `SlackState.watches: Map<sessionId, SlackWatch[]>`, distincte de `threads` (un fil de notification par session). Écrite dans `slack-state.json` (`watches: {sessionId: SlackWatch[]}`). Au chargement : entrée invalide ou id en double journalisé et ignoré, surveillance expirée ou de session supprimée écartée, surveillance d'une session `exited` conservée.
+- Réglages (`SlackSettings`, `slack.json`, `PATCH /api/slack`, validés par `mergeSettings`) : `watchDeliveryLive` (sous-ensemble non vide de `inject|dm|notify`, défaut `['inject']`), `watchDeliveryEnded` (sous-ensemble éventuellement vide de `dm|notify`, défaut `['dm']`), `watchIntervalSec` (entier 5–3600, défaut 30), `watchTtlDays` (entier 1–365, défaut 7), `watchIncludeSelf` (défaut false), `watchAutoOnPost` (défaut true). `GET /api/slack` (`SlackStatus`) ajoute `watchEnabled`.
+
+## Routes
+
+| Méthode | Route | Corps / réponse |
+|---|---|---|
+| GET | /api/slack-watch/:id | jeton de la session (`tokenSession`) → `{watches}` |
+| POST | /api/slack-watch/:id | `{channel, threadTs?, label?, deliver?, since?}` (`watchRequestFrom`) → 201 `{watch, renewed:false}`, ou 200 `{watch, renewed:true}` pour un même canal et fil : expiration repoussée, libellé et remise remplacés s'ils sont fournis, `lastTs` ramené à `since` s'il est antérieur. 400 si invalide, 409 au-delà de `MAX_WATCHES_PER_SESSION` (50) |
+| DELETE | /api/slack-watch/:id/:ref | `ref` = id, `threadTs`, ou canal d'une surveillance de niveau principal → `{removed}` ; 404 si rien ne correspond |
+| GET | /api/slack/watches | interface web : `SlackWatchList` `{enabled, defaultDeliver, botEnabled, watches}` de toutes les sessions (`defaultDeliver` = `watchDeliveryLive`, `botEnabled` = jeton bot défini) |
+| PATCH | /api/slack/watches/:sessionId/:watchId | interface web : `{deliver}`, sous-ensemble non vide de `inject|dm|notify`, ou `null` pour suivre de nouveau `watchDeliveryLive` → `{watch}` ; 400 si invalide, 404 |
+| DELETE | /api/slack/watches/:sessionId/:watchId | interface web : retire une surveillance → `{removed}` ; 404 |
+
+Toute modification (ajout, retrait, remise, lecture qui avance `lastTs`, expiration, réglages Slack) diffuse `{type:'slack-watches'}` sur `/ws/events` (seulement si la liste a réellement changé) ; l'interface relit alors `/api/slack/watches`, et aussi à chaque reconnexion.
+
+`cerebro-slack-watch` (via `cerebro-client.mjs`, `CEREBRO_SESSION_ID`/`CEREBRO_TOKEN`) : `add <canal> [thread_ts] | add <permalien>` avec `--label`, `--deliver a,b`, `--since <ts>` ; `list [--json]` ; `remove <id|thread_ts|canal|permalien>`. `parseSlackPermalink` : `https://<espace>.slack.com/archives/<canal>[/p<ts sans point>][?thread_ts=…]` → `{channel, threadTs}` (le lien d'une réponse désigne son fil, celui d'un message hors fil le fil qu'il ouvre, celui d'un canal seul le niveau principal).
+
+## Surveillance automatique
+
+`POST /api/hook/:id` avec `event:'PostToolUse'` → `watchAfterPost` (si jeton utilisateur et `watchAutoOnPost`). `postedWatchRequest(payload)` :
+- `mcp__claude_ai_Slack__slack_send_message` : `tool_response` = `[{type:'text', text:'{"message_link":…,"message_context":{"message_ts":…,"channel_id":…}}'}]` ; surveille `tool_input.thread_ts` ou, à défaut, le fil ouvert par le message posté, avec `since` = `message_ts` (seules les réponses suivantes) ; canal = `channel_id` de la réponse (le `D…` d'un DM adressé à un `U…`).
+- `mcp__claude_ai_Slack__slack_schedule_message` : seulement avec `thread_ts` (un message de niveau principal programmé n'a pas encore de `ts`).
+- Autre outil → rien ; forme inattendue → avertissement journalisé, pas d'erreur. Un post dans un fil déjà surveillé le renouvelle.
+
+## Lecture (`SlackWatcher.poll`, minuteur de 5 s)
+
+- Sans lecture concurrente ; d'abord suppression des surveillances expirées ou de sessions supprimées, puis vidage des injections en attente. Rien pendant une fenêtre 429 du jeton utilisateur.
+- Échues : lues depuis plus de `watchIntervalSec` (toutes au démarrage), triées de la moins récemment lue à la plus récente (tour de rôle).
+- Budget : `WATCH_CALLS_PER_MINUTE` = 40 pages `conversations.*` sur une minute glissante, distinct des 45/min du bot. Chaque page consomme une unité ; budget épuisé → les surveillances restantes attendent. `users.info` (nom mis en cache) et `chat.getPermalink` n'entrent pas dans ce budget et sont sautés pendant une fenêtre 429.
+- Fil : `conversations.replies {channel, ts: threadTs, oldest: lastTs}` ; niveau principal : `conversations.history {channel, oldest: lastTs}` en ne gardant que les messages sans `thread_ts` ou avec `thread_ts === ts`. Au plus `MAX_WATCH_PAGES` = 5 pages par lecture ; un historique incomplet est journalisé (messages les plus anciens perdus), un fil reprend au cycle suivant.
+- `lastTs` avance sur chaque message lu, remis ou non. Une surveillance retirée pendant la lecture n'est pas remise.
+- Filtre : sous-types remis seulement parmi `bot_message`, `thread_broadcast`, `file_share`, `me_message` (pas d'arrivées, modifications, suppressions) ; écartés le bot Cerebro (`auth.test` du jeton bot, une fois : `user_id`, `bot_id`) et l'utilisateur (`user === CEREBRO_SLACK_USER` sans `bot_id`) sauf `watchIncludeSelf` ; tous les autres bots sont remis. Auteur : `bot_profile.name`/`username`, sinon `users.info` (nom affiché, nom réel, nom de connexion, à défaut l’ID `U…`).
+
+## Remise
+
+- Les messages d'un même cycle sont regroupés par session. Modes : `watch.deliver ?? watchDeliveryLive` si la session n'est pas `exited`, sinon `watchDeliveryEnded`.
+- `inject` : `injectionText` — une ligne `[Slack #<canal>[ · thread <ts>][ · <libellé>]] <auteur> : <texte décodé>` puis le permalien, par message, texte tronqué à 3 000 caractères ; une seule saisie par `typeIntoSession` (mise en file par l'agent s'il travaille). File d'attente par session tant qu'elle est `starting` ou `waiting` (un dialogue n'est jamais fermé pour elle). Session terminée ou saisie échouée → modes de `watchDeliveryEnded` non encore utilisés pour ces messages.
+- `dm`, `notify` : `SlackAlerts.watchMessage` (jeton bot), en arrière-plan avec reprise après 429 ; mrkdwn citant chaque message sous « *auteur* dans <provenance> · Voir dans Slack », précédé de l'en-tête de session (` · session terminée` le cas échéant) et suivi du lien Cerebro. `dm` : message propre dans le DM. `notify` : réponse dans le fil de notification de la session, nouveau fil (comme `cerebro-notify`) si la session vit sans fil, DM si elle est terminée. Les alertes de tour ne sont pas modifiées.
+
+## Interface
+
+- Panneau Slack de la barre latérale, section « Fils surveillés » (`SlackWatchSettings`) : cases des modes « Session active » (le dernier coché est verrouillé) et « Session terminée » (aucun : messages ignorés), relecture d'un fil (s), durée de vie (j), « Surveiller après un post », « Inclure mes messages ». Sans jeton utilisateur, message d'activation ; sans jeton bot, DM et Notification indiquent « jeton du bot requis ».
+- `SlackWatches` : carte « Fils Slack surveillés » de l'onglet Sessions de la vue projet (avec lien vers la session, « (terminée) ») et de la vue session ; par surveillance : libellé ou « Fil »/« Canal entier », canal, date du fil, expiration, dernier message lu, cases de remise (remise propre cochée, sinon celle des réglages marquée « par défaut » ; dernier mode verrouillé ; bouton « Par défaut » pour revenir aux réglages ; désactivées pour une session terminée, où s'applique `watchDeliveryEnded`), bouton « Retirer ». Masquée sans surveillance.
+
+## Réglages Slack par projet
+
+- `Project.slackSettings: ProjectSlackSettings | null` (colonne `projects.slack_settings`, JSON ; null : réglages de la machine). `ProjectSlackSettings` = `{mode:'off'|'custom', waiting, idle, agentMessages, watchDeliveryLive (non vide), watchDeliveryEnded}` (`shared/types.ts`, où vivent aussi `WATCH_DELIVERIES`/`WATCH_ENDED_DELIVERIES`, réexportés par `machine.ts`). `parseProject` lit l'absence (serveur plus ancien) comme null.
+- `PATCH /api/projects/:id` `{slackSettings: ProjectSlackSettings | null}` validé strictement par `projectSlackSettingsFrom` (400 « Réglages Slack du projet invalides »).
+- `projectSettings(machine, own)` (`slack-state.ts`) → réglages effectifs : null → ceux de la machine ; `custom` → ses champs remplacent ceux de la machine ; `off` → `waiting`/`idle`/`agentMessages` false, `watchDeliveryLive=['inject']`, `watchDeliveryEnded=[]`. `delaySeconds` et les réglages de lecture (`watchIntervalSec`, `watchTtlDays`, `watchIncludeSelf`, `watchAutoOnPost`) restent ceux de la machine.
+- `SlackNotifier.settingsFor(projectId)` les fournit à `SlackAlerts` (alertes automatiques et leur délai, par projet de la session), à `OperationResults.wanted` (par `result.projectId`, null hors projet) et à `SlackWatcher` (remise, par session). `agentMessagesRefusal(sessionId)` → motif du 503 de `cerebro-notify` (« pour ce projet » si le projet a ses propres réglages). `WatchHooks.posting(sessionId)` est faux pour un projet `off` : la remise propre d'une surveillance (`watch.deliver`) est alors ignorée.
+- Non concernés : réponses relayées dans le fil d'une commande Slack (`relayTurnEnd`), réponses aux commandes du DM, messages entre machines.
+- Interface : bouton « Slack[ : coupé | : personnalisé] » de l'en-tête projet → `ProjectSlackDialog` (Réglages généraux / Aucun envoi / Personnalisé ; valeurs initiales d'un réglage personnalisé : celles de la machine). La carte « Fils Slack surveillés » prend la remise du projet comme défaut (« par défaut (projet) ») et grise les cases d'un projet `off` (« Slack coupé pour ce projet »).

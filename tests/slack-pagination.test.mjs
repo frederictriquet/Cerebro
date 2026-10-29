@@ -86,6 +86,24 @@ test('le DM suit le curseur Slack et traite tous les messages dans l’ordre chr
   assert.equal(calls.filter((call) => call.method === 'conversations.history').length, 1);
 });
 
+test('un message posté par le connecteur Slack de Claude au nom de l’utilisateur n’est pas une commande', async () => {
+  handled.length = 0;
+  notifier.state.dmCursor = ts(449);
+  // Formes réelles : envoi direct (app_id), message programmé (seulement le bloc « Envoyé avec @Claude »).
+  const signed = [
+    { type: 'rich_text', elements: [] },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: '*Envoyé avec* <@UCLAUDE>' }] },
+  ];
+  dm = [
+    { ts: ts(450), text: '[Cerebro test] Surveillance : ignorer', user: 'test', app_id: 'ACLAUDE', blocks: signed },
+    { ts: ts(451), text: 'Demo: programmé', user: 'test', client_msg_id: 'x', blocks: signed },
+    { ts: ts(452), text: 'Demo: tapé', user: 'test', client_msg_id: 'y', blocks: [{ type: 'rich_text', elements: [] }] },
+  ];
+  await notifier.poller.pollDm();
+  assert.deepEqual(handled, ['Demo: tapé']);
+  assert.equal(notifier.state.dmCursor, ts(452));
+});
+
 test('un fil paginé est lu jusqu’au bout, ou repris depuis le dernier message lu', async () => {
   db.createSession(
     {

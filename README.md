@@ -82,6 +82,7 @@ dont le journal global peut être purgé indépendamment des sessions.
 | `CEREBRO_GIT_TIMEOUT_NETWORK` | `600` | Idem pour push et fetch. À l'expiration, l'opération échoue avec « Opération Git interrompue après N s ». Pour ces trois variables, une valeur non numérique, nulle ou négative est ignorée (avertissement au démarrage) au profit du défaut. |
 | `CEREBRO_SLACK_TOKEN` | non défini | Jeton bot Slack `xoxb-…`. Sans ce jeton, l'intégration Slack est inactive. |
 | `CEREBRO_SLACK_USER` | non défini | ID Slack (`U…`) du destinataire des messages privés. |
+| `CEREBRO_SLACK_USER_TOKEN` | non défini | Jeton utilisateur Slack `xoxp-…`, en lecture seule. Active la [surveillance de fils et canaux](#fils-et-canaux-surveillés) ; indépendant du jeton bot. |
 | `CEREBRO_SLACK_ALERTS` | `all` | Alertes automatiques par défaut : `all`, `waiting` (questions et confirmations seulement) ou `off`. Modifiable ensuite dans l'interface. |
 | `CEREBRO_SLACK_DELAY` | `30` | Délai par défaut en secondes avant une alerte automatique. Modifiable ensuite dans l'interface. |
 | `CEREBRO_MACHINE_NAME` | nom d'hôte | Nom de la machine dans le sélecteur multi-machines. |
@@ -214,12 +215,168 @@ sont enregistrés dans `$CEREBRO_DATA_DIR/slack.json` et priment sur
 valeurs initiales. Si les messages des agents sont désactivés, `cerebro-notify`
 échoue avec un message explicite.
 
+**Réglages par projet.** Le bouton « Slack » de l'en-tête d'un projet choisit
+ce que Cerebro poste dans Slack pour ce projet :
+
+- **Réglages généraux** (par défaut) : le panneau de la barre latérale
+  s'applique.
+- **Aucun envoi** : ni alerte, ni message d'agent (`cerebro-notify` échoue avec
+  un message explicite), ni résultat d'opération. Les messages des fils surveillés
+  sont seulement tapés dans la session, même si un fil a sa propre remise, et
+  ignorés une fois la session terminée. Utile pour un projet dont rien ne doit
+  apparaître dans Slack.
+- **Personnalisé** : ses propres choix de confirmations, fins de tour, messages
+  des agents et remise des fils surveillés (session active ou terminée), à la
+  place de ceux du panneau.
+
+Le délai avant alerte et la lecture des fils surveillés (intervalle, durée de
+vie, vos propres messages, surveillance après un post) restent communs. Une
+commande envoyée depuis Slack (`projet: instruction`) reçoit toujours sa réponse
+dans son fil, quel que soit le réglage du projet. Le bouton affiche « Slack :
+coupé » ou « Slack : personnalisé » quand le projet ne suit pas les réglages
+généraux.
+
 Les variables peuvent aussi être placées dans `$CEREBRO_DATA_DIR/env` (par défaut
 `~/.cerebro/env`, format `CLE=valeur`, à protéger avec `chmod 600`), chargé au démarrage par le serveur et par Vite en mode dev. Les consignes `cerebro-notify` sont données
 aux agents au lancement ou à la reprise d'une session ; le jeton Slack n'est jamais
 transmis à leur environnement. Dans le bac à sable `workspace-write` de Codex, le
 réseau (y compris local) est coupé : Codex doit demander l'autorisation d'exécuter
 `cerebro-notify` hors du bac à sable.
+
+### Fils et canaux surveillés
+
+Une session qui attend une réponse dans Slack n'a pas à lancer de boucle de
+surveillance : une telle boucle consomme des tokens à chaque réveil, même quand
+rien n'arrive, et s'arrête avec la session ou à la compaction. Cerebro lit
+lui-même les fils et canaux enregistrés pour la session, sans modèle, et lui
+remet chaque message d'un tiers. Aucun token de modèle n'est consommé tant que
+rien n'arrive ; un message injecté est ensuite traité par la session comme
+n'importe quel prompt.
+
+**Jeton utilisateur.** Le jeton bot ne lit que les conversations où le bot est
+présent. La surveillance utilise donc un jeton utilisateur `xoxp-…`, qui lit
+tout ce que vous voyez : canaux publics et privés dont vous êtes membre,
+messages privés et de groupe. Dans l'app Slack (la même que celle du bot ou une
+autre), ouvrez « OAuth & Permissions » et ajoutez ces User Token Scopes :
+
+| Scope | Lecture permise |
+|---|---|
+| `channels:history` | Canaux publics |
+| `groups:history` | Canaux privés |
+| `im:history` | Messages privés |
+| `mpim:history` | Messages de groupe |
+| `users:read` | Nom des auteurs |
+
+Réinstallez l'app dans l'espace de travail, copiez le « User OAuth Token » dans
+`CEREBRO_SLACK_USER_TOKEN` (de préférence dans `$CEREBRO_DATA_DIR/env`), puis
+redémarrez Cerebro. Cerebro n'appelle avec ce jeton que des méthodes de lecture
+(`conversations.history`, `conversations.replies`, `users.info`,
+`chat.getPermalink`) et refuse toute autre méthode avant qu'elle n'atteigne
+Slack. Il ne poste jamais en votre nom : les remises en DM ou en notification
+passent par le bot, les posts des sessions par leur connecteur Slack. Comme le
+jeton bot, il n'est jamais transmis aux agents. Sans ce jeton, la surveillance
+est désactivée : `cerebro-slack-watch` et ses routes répondent 503, le reste de
+l'intégration Slack fonctionne normalement. À l'inverse, la surveillance
+fonctionne sans jeton bot, mais seule l'injection est alors possible.
+Renseignez aussi `CEREBRO_SLACK_USER`, qui permet d'écarter vos propres
+messages.
+
+**Surveillance automatique après un post.** Quand une session Claude poste
+avec le connecteur Slack de claude.ai (`slack_send_message`, ou
+`slack_schedule_message` dans un fil), un hook `PostToolUse` installé par
+Cerebro enregistre le fil concerné : le fil où elle a répondu, ou celui qu'ouvre
+son nouveau message. Seules les réponses postées après ce message sont remises.
+Poster à nouveau dans le même fil renouvelle la surveillance. Ce comportement
+se désactive avec le réglage « Surveiller après un post ».
+
+**Surveillance manuelle.** Pour un fil existant (une discussion en cours, un
+DM), la session utilise `cerebro-slack-watch`, disponible dans son `PATH` comme
+`cerebro-notify`. Les consignes de lancement le lui indiquent dès que le jeton
+utilisateur est configuré.
+
+```sh
+cerebro-slack-watch add https://acme.slack.com/archives/C0123ABCD/p1761730000123456
+cerebro-slack-watch add C0123ABCD 1761730000.123456 --label "Revue du lot 3"
+cerebro-slack-watch add C0123ABCD --deliver inject,dm   # niveau principal du canal
+cerebro-slack-watch add D0456EFGH --since 1761700000.000000
+cerebro-slack-watch list
+cerebro-slack-watch remove 1761730000.123456
+```
+
+`add` accepte un permalien (« Copier le lien » dans Slack) ou un identifiant
+de canal (`C…`, `G…` ou `D…`, jamais un nom) suivi éventuellement du `ts` du
+fil. Sans fil, Cerebro surveille le niveau principal du canal : les messages
+hors fil, sans les réponses dans les fils. Par défaut, seuls les messages
+postés après l'ajout sont remis ; `--since <ts>` remet aussi ceux postés depuis
+cet horodatage. `--label` ajoute un libellé aux messages remis, `--deliver`
+remplace les modes de remise de la session active pour cette surveillance.
+Cette remise propre se règle aussi dans la carte « Fils Slack surveillés »
+(cases Injecter, DM, Notification de chaque fil ; « Par défaut » revient aux
+réglages du panneau Slack).
+Ajouter à nouveau une surveillance existante la renouvelle et met à jour son
+libellé et sa remise. `remove` accepte l'identifiant affiché par `list`, le
+`ts` du fil, le canal (pour un niveau principal) ou le permalien.
+
+**Messages remis.** Cerebro remet les messages des autres personnes et des
+autres bots, par exemple un agent qui répond dans le fil. Il écarte vos propres
+messages, notamment ceux que vos sessions postent, sauf avec le réglage
+« Inclure mes messages ». Il écarte aussi les messages du bot Cerebro, ainsi que
+les arrivées, modifications et suppressions. Chaque message est remis avec son
+auteur, sa provenance et son permalien, tronqué à 3 000 caractères.
+
+**Modes de remise.** Ils se règlent dans le panneau Slack de la barre latérale,
+section « Fils surveillés » :
+
+| Mode | Effet | Session active | Session terminée |
+|---|---|:---:|:---:|
+| Injecter | Tapé dans la session comme prochain message, sous la forme `[Slack #canal · thread ts · libellé] Auteur : texte` suivie du permalien. Plusieurs messages reçus ensemble forment une seule injection. | par défaut | — |
+| DM | Posté dans le message privé du bot Cerebro, avec le projet, la session et le lien Cerebro. | possible | par défaut |
+| Notification | Posté dans le fil de notification de la session, comme `cerebro-notify` : une réponse dans ce fil est tapée dans la session. Une fois la session terminée, il passe en DM. | possible | possible |
+
+Au moins un mode reste coché pour une session active. Pour une session
+terminée, aucun mode coché signifie que les messages sont ignorés. Si la session
+attend une réponse à une question ou à une confirmation, l'injection attend la
+fermeture du dialogue au lieu de l'interrompre. Si la session se termine
+entre-temps, ou si la saisie échoue, le message suit la remise prévue pour les
+sessions terminées. Une surveillance survit à la fin de sa session : aucune
+réponse tardive n'est perdue jusqu'à son expiration. Les modes DM et
+Notification exigent le jeton bot.
+
+Le même panneau règle aussi :
+
+- l'intervalle minimal entre deux lectures d'une même surveillance (30 s par
+  défaut, de 5 à 3 600 s) ;
+- la durée de vie d'une surveillance (7 jours par défaut, de 1 à 365), qui
+  repart de zéro à chaque nouvel ajout ;
+- « Surveiller après un post » (actif par défaut) et « Inclure mes messages »
+  (inactif par défaut).
+
+Ces réglages sont enregistrés dans `$CEREBRO_DATA_DIR/slack.json`. Les
+surveillances, avec le dernier message lu de chacune, sont enregistrées dans
+`slack-state.json` : un redémarrage reprend la lecture là où elle s'était
+arrêtée. Les vues projet et session listent les surveillances actives, avec leur
+expiration, le dernier message lu, une éventuelle remise propre et un bouton
+« Retirer ».
+
+**Limites.**
+
+- Le jeton utilisateur a son propre budget de lecture, distinct de celui du
+  bot : 40 pages d'historique ou de fil par minute au plus, sous la limite Tier 3
+  de Slack. Les surveillances sont lues à tour de rôle, la moins récemment lue
+  d'abord. Au-delà d'une vingtaine de surveillances actives, avec l'intervalle
+  de 30 s, chacune est donc lue moins souvent. Une limite de débit (429) de Slack
+  suspend les lectures jusqu'à la fin du délai demandé.
+- Une lecture parcourt au plus 5 pages. Sur un canal très actif, les messages
+  les plus anciens au-delà sont ignorés et une erreur est journalisée. Les pages
+  restantes d'un fil sont lues à la lecture suivante.
+- Une session compte au plus 50 surveillances.
+- Une surveillance expirée est supprimée sans être lue, de même que celles
+  d'une session supprimée. Pour suivre un fil plus longtemps, ajoutez-le de
+  nouveau ou allongez la durée de vie.
+- La surveillance automatique ne concerne que les sessions Claude qui
+  utilisent le connecteur Slack de claude.ai. Un message de niveau principal
+  programmé n'a pas encore de `ts` et n'est pas surveillé. Les autres agents
+  utilisent `cerebro-slack-watch`.
 
 ## Détection de l'attente
 

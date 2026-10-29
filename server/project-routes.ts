@@ -6,6 +6,7 @@ import { validateCouncilSettings } from './council.ts';
 import { assertNoGitOperation } from './git-plan.ts';
 import { gitSummary } from './git-summary.ts';
 import { reviewInstructions } from './review.ts';
+import { projectSlackSettingsFrom } from './slack-state.ts';
 import { AGENTS, isAgent, isMode, normalizeMode, type Agent, type Project } from '../shared/types.ts';
 import { asRecord } from './util.ts';
 import { error } from './routes-util.ts';
@@ -157,6 +158,7 @@ export function registerProjectRoutes(ctx: RouteContext): void {
         | 'commitSettings'
         | 'resolutionSettings'
         | 'councilSettings'
+        | 'slackSettings'
         | 'workspaceMode'
         | 'regenerablePaths'
       >
@@ -220,6 +222,12 @@ export function registerProjectRoutes(ctx: RouteContext): void {
         if ('error' in result) return error(reply, 400, result.error);
         changes.councilSettings = result.settings;
       }
+    }
+    if ('slackSettings' in body) {
+      // null : le projet revient aux réglages Slack de la machine.
+      const settings = body.slackSettings === null ? null : projectSlackSettingsFrom(body.slackSettings);
+      if (body.slackSettings !== null && settings === null) return error(reply, 400, 'Réglages Slack du projet invalides');
+      changes.slackSettings = settings;
     }
     if ('resolutionSettings' in body) {
       const settings = patchLlmSettings(

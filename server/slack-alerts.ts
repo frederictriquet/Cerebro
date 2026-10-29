@@ -40,7 +40,8 @@ export class SlackAlerts {
   private readonly db: CerebroDatabase;
   private readonly sessions: SessionManager;
   private readonly peers: PeerSync;
-  private readonly settings: () => SlackSettings;
+  // The Slack settings as they apply to a project (null: outside any project).
+  private readonly settings: (projectId: string | null) => SlackSettings;
   private readonly limits: SlackRateLimits;
   private readonly timers = new Map<string, NodeJS.Timeout>();
   // Per session: deliveries sleeping out a rate-limit window, and agent messages waiting behind them in `serial`.
@@ -55,7 +56,7 @@ export class SlackAlerts {
     db: CerebroDatabase,
     sessions: SessionManager,
     peers: PeerSync,
-    settings: () => SlackSettings,
+    settings: (projectId: string | null) => SlackSettings,
     limits: SlackRateLimits,
   ) {
     this.client = client;
@@ -91,8 +92,9 @@ export class SlackAlerts {
         .run(alerted, sessionId);
   }
 
-  private alertWanted(status: Session['status']): boolean {
-    return status === 'waiting' ? this.settings().waiting : status === 'idle' && this.settings().idle;
+  private alertWanted(session: Session): boolean {
+    const settings = this.settings(session.projectId);
+    return session.status === 'waiting' ? settings.waiting : session.status === 'idle' && settings.idle;
   }
 
   private cancelAlert(sessionId: string): void {
@@ -156,6 +158,38 @@ export class SlackAlerts {
     return outcome;
   }
 
+  /**
+   * Posts what a watched thread or channel received for a session. `dm`: a message of its own in the DM.
+   * `notify`: the session's notification channel, like `cerebro-notify`: its thread, or a new one while the session
+   * runs, so a reply there is typed into it; the DM once it has ended. Unlike agent messages, the turn's alerts are
+   * left as they are.
+   */
+  async watchMessage(sessionId: string, mode: 'dm' | 'notify', text: string): Promise<void> {
+    const session = this.db.getSession(sessionId);
+    if (session === null) throw new Error('Session introuvable');
+    const icon = mode === 'notify' ? ':bell:' : ':speech_balloon:';
+    const ended = session.status === 'exited' ? ' · _session terminée_' : '';
+    const message = `${icon} ${sessionHeader(this.db, session)}${ended}\n${text}\n${sessionLink(session.id)}`;
+    await this.client.serial(session.id, () =>
+      this.retryRateLimited(
+        session.id,
+        async () => {
+          if (this.client.stopped) return;
+          const thread = mode === 'notify' ? this.state.threads.get(session.id) : undefined;
+          if (thread !== undefined) {
+            for (const chunk of splitMessage(message))
+              await this.client.postThreadReply(thread.channel, thread.ts, chunk);
+          } else if (mode === 'notify' && this.db.getSession(session.id)?.status !== 'exited') {
+            await this.postSessionMessage(session.id, 'notify', message);
+          } else {
+            for (const chunk of splitMessage(message)) await this.client.postToDm(chunk);
+          }
+        },
+        () => {},
+      ),
+    );
+  }
+
   /** Runs `send` again after each Slack 429 window; `onDeferred` is told as soon as it has to wait. */
   private async retryRateLimited(id: string, send: () => Promise<void>, onDeferred: () => void): Promise<void> {
     for (;;) {
@@ -211,8 +245,8 @@ export class SlackAlerts {
       this.relayTurnEnd(event.id, event.message);
       return;
     }
-    if (event.type !== 'alert' || !this.alertWanted(event.session.status)) return;
-    this.scheduleAlert(event.session.id, this.settings().delaySeconds * 1_000);
+    if (event.type !== 'alert' || !this.alertWanted(event.session)) return;
+    this.scheduleAlert(event.session.id, this.settings(event.session.projectId).delaySeconds * 1_000);
   }
 
   private scheduleAlert(sessionId: string, milliseconds: number): void {
@@ -261,7 +295,7 @@ export class SlackAlerts {
     if (this.client.stopped) return;
     const session = this.db.getSession(sessionId);
     if (session === null || !session.attention || (session.status !== 'waiting' && session.status !== 'idle')) return;
-    if (!this.alertWanted(session.status)) return;
+    if (!this.alertWanted(session)) return;
     const status = session.status;
     const turn = this.turn(sessionId);
     if (

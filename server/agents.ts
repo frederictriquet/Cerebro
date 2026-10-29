@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { modeArgs, tuningArgs, type Tuning } from './agent-args.ts';
 import { readCodexString } from './codex-config.ts';
-import { HOOK_SCRIPT, SLACK_ENABLED } from './config.ts';
+import { HOOK_SCRIPT, SLACK_ENABLED, SLACK_WATCH_ENABLED } from './config.ts';
 import { AGENTS, type Agent, type Mode } from '../shared/types.ts';
 
 export type { Tuning } from './agent-args.ts';
@@ -16,8 +16,16 @@ const BACKLOG_INSTRUCTIONS =
   "Cerebro tient un backlog de tâches par projet. Si l'utilisateur demande de mettre des éléments (par exemple les findings d'une review) dans le backlog, envoie-les sur l'entrée standard de `cerebro-backlog`, une tâche par élément, séparées par une ligne `---` ; chaque tâche doit se suffire à elle-même (fichier:ligne, problème, scénario, correctif attendu), car elle sera confiée telle quelle à une nouvelle session. Quand plusieurs tâches relèvent d'un même sujet (par exemple les findings d'une même review), regroupe-les dans un epic : `cerebro-backlog --new-epic \"Titre\" --description \"contexte commun\"` suivi des tâches, ou `--epic <id>` pour un epic existant. Chaque tâche doit rester autonome ; l'utilisateur peut traiter l'epic d'un bloc. Pour le backlog d'un autre projet (par exemple une limite de Cerebro lui-même repérée en travaillant ici), place `--project <nom>` en tête de la commande : ajout et consultation seulement. `cerebro-backlog --help` décrit les dépendances entre tâches, les epics et les autres commandes.";
 const SESSION_TASK_INSTRUCTIONS =
   'Pour un travail comportant plusieurs sous-tâches ou sous-objectifs, tiens une liste synthétique et exhaustive dans le suivi persistant de cette session via `cerebro-tasks` (aide : `cerebro-tasks --help`). Consulte `cerebro-tasks list` au début du travail, après une reprise ou une compaction et avant ton bilan final. Ajoute les points importants à mesure qu’ils sont recensés, puis actualise leur statut (todo, in_progress, blocked, done, cancelled) pendant le travail. Renseigne une note de résultat, de vérification ou de blocage quand elle est utile. Marque done uniquement le travail effectivement réalisé et vérifié ; une fin de tour ou l’arrêt de la session ne clôture rien. Conserve les éléments terminés et utilise cancelled pour les objectifs abandonnés, avec la raison ; réserve delete aux erreurs de saisie ou doublons. Ce suivi appartient à la conversation, sans créer ni clôturer de tâches du backlog du projet.';
-// Le suivi et le backlog fonctionnent toujours ; cerebro-notify seulement si Slack est configuré.
-export const AGENT_INSTRUCTIONS = `${SLACK_ENABLED ? NOTIFY_INSTRUCTIONS : 'Tu tournes dans Cerebro.'} ${BACKLOG_INSTRUCTIONS} ${SESSION_TASK_INSTRUCTIONS}`;
+const SLACK_WATCH_INSTRUCTIONS =
+  'Par défaut, Cerebro surveille les fils Slack où cette session poste avec le connecteur Slack : les réponses des autres y arrivent seules comme prochain message. Ne lance donc aucune boucle pour surveiller Slack. Pour suivre un fil ou un canal existant, utilise `cerebro-slack-watch add <permalien>` (aide : `cerebro-slack-watch --help`).';
+// Le suivi et le backlog fonctionnent toujours ; cerebro-notify seulement si Slack est configuré, la surveillance
+// Slack seulement avec le jeton utilisateur.
+export const AGENT_INSTRUCTIONS = [
+  SLACK_ENABLED ? NOTIFY_INSTRUCTIONS : 'Tu tournes dans Cerebro.',
+  ...(SLACK_WATCH_ENABLED ? [SLACK_WATCH_INSTRUCTIONS] : []),
+  BACKLOG_INSTRUCTIONS,
+  SESSION_TASK_INSTRUCTIONS,
+].join(' ');
 
 export interface AgentCommand {
   cmd: string;

@@ -1,0 +1,102 @@
+#!/usr/bin/env node
+
+import { request, requireSession, run, sessionPath } from './cerebro-client.mjs';
+import { parseSlackPermalink } from './slack-permalink.mjs';
+
+const HELP = `Usage : cerebro-slack-watch <commande>
+
+Surveillance par Cerebro de fils et canaux Slack pour la session courante, sans
+modèle ni boucle : chaque message d'un tiers est remis selon les réglages Slack
+de Cerebro (par défaut tapé comme prochain message de la session ; en DM une
+fois la session terminée).
+
+  add <canal> [thread_ts] [options]     surveille un fil, ou le niveau principal
+                                        du canal sans thread_ts
+  add <permalien> [options]             surveille le fil du message lié
+      --label "Texte"                   libellé affiché avec chaque message
+      --deliver inject,dm,notify        remise propre à cette surveillance
+      --since <ts>                      remet aussi les messages postés depuis ts
+                                        (par défaut : seulement les nouveaux)
+  list [--json]                         surveillances de la session
+  remove <id|thread_ts|canal|permalien> retire une surveillance
+  --help, -h                            cette aide
+
+<canal> est un identifiant (C…, G… ou D…), pas un nom. Ajouter à nouveau une
+surveillance existante la renouvelle (durée de vie repartant de zéro).`;
+
+function takeOption(args, name) {
+  const index = args.indexOf(name);
+  if (index === -1) return undefined;
+  const value = args[index + 1];
+  if (value === undefined || value.startsWith('--')) throw new Error(`${name} attend une valeur`);
+  args.splice(index, 2);
+  return value;
+}
+
+// Canal et fil d'un permalien, ou des arguments <canal> [thread_ts].
+function target(args) {
+  const link = parseSlackPermalink(args[0]);
+  if (link !== null) {
+    if (args.length > 1) throw new Error('un permalien se suffit : argument en trop');
+    return link;
+  }
+  if (args.length === 0 || args.length > 2) throw new Error('add <canal> [thread_ts] ou add <permalien>');
+  return { channel: args[0], threadTs: args[1] ?? null };
+}
+
+function describe(watch) {
+  const place = watch.threadTs === null ? `canal ${watch.channel}` : `fil ${watch.channel} ${watch.threadTs}`;
+  const label = watch.label === undefined ? '' : ` « ${watch.label} »`;
+  const deliver = watch.deliver === undefined ? '' : ` remise ${watch.deliver.join(',')}`;
+  const expires = new Date(watch.expiresAt).toLocaleString('fr-FR');
+  return `${watch.id}  ${place}${label}${deliver}, jusqu'au ${expires}`;
+}
+
+await run('cerebro-slack-watch', async () => {
+  const args = process.argv.slice(2);
+  const command = args.shift();
+  if (command === undefined || command === '--help' || command === '-h' || command === 'help') {
+    process.stdout.write(`${HELP}\n`);
+    return;
+  }
+  requireSession();
+  if (command === 'add') {
+    const label = takeOption(args, '--label');
+    const deliver = takeOption(args, '--deliver');
+    const since = takeOption(args, '--since');
+    const unknown = args.find((arg) => arg.startsWith('--'));
+    if (unknown !== undefined) throw new Error(`option inconnue : ${unknown}`);
+    const body = {
+      ...target(args),
+      ...(label === undefined ? {} : { label }),
+      ...(deliver === undefined
+        ? {}
+        : {
+            deliver: deliver
+              .split(',')
+              .map((mode) => mode.trim())
+              .filter(Boolean),
+          }),
+      ...(since === undefined ? {} : { since }),
+    };
+    const { watch, renewed } = await request(sessionPath('slack-watch'), { method: 'POST', body });
+    process.stdout.write(`${renewed ? 'Surveillance renouvelée' : 'Surveillance ajoutée'} : ${describe(watch)}\n`);
+    return;
+  }
+  if (command === 'list') {
+    const { watches } = await request(sessionPath('slack-watch'));
+    if (args.includes('--json')) process.stdout.write(`${JSON.stringify(watches, null, 2)}\n`);
+    else if (watches.length === 0) process.stdout.write('Aucune surveillance Slack pour cette session.\n');
+    else process.stdout.write(`${watches.map(describe).join('\n')}\n`);
+    return;
+  }
+  if (command === 'remove') {
+    if (args.length !== 1) throw new Error('remove <id|thread_ts|canal|permalien>');
+    const link = parseSlackPermalink(args[0]);
+    const ref = link === null ? args[0] : (link.threadTs ?? link.channel);
+    const { removed } = await request(`${sessionPath('slack-watch')}/${encodeURIComponent(ref)}`, { method: 'DELETE' });
+    process.stdout.write(`Surveillance retirée : ${removed.map(describe).join('\n')}\n`);
+    return;
+  }
+  throw new Error(`commande inconnue : ${command} (voir --help)`);
+});

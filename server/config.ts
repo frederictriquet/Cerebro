@@ -43,6 +43,11 @@ export const REMOTES_FILE = join(DATA_DIR, 'remotes.json');
 export const HOOK_SCRIPT = join(ROOT, 'bin', 'cerebro-hook.mjs');
 export const SLACK_TOKEN = process.env.CEREBRO_SLACK_TOKEN;
 export const SLACK_USER = process.env.CEREBRO_SLACK_USER;
+// User token (xoxp), read-only: watched threads and channels are read as the user, DMs and private channels included.
+// Optional: without it, watches are disabled and their routes answer SLACK_WATCH_UNCONFIGURED.
+export const SLACK_USER_TOKEN = process.env.CEREBRO_SLACK_USER_TOKEN?.trim() || undefined;
+export const SLACK_WATCH_ENABLED = SLACK_USER_TOKEN !== undefined;
+export const SLACK_WATCH_UNCONFIGURED = 'Surveillance Slack non configurée (CEREBRO_SLACK_USER_TOKEN)';
 // Overridable for tests against a fake Slack API.
 export const SLACK_API_URL = process.env.CEREBRO_SLACK_API_URL ?? 'https://slack.com/api';
 export const SLACK_ALERTS = process.env.CEREBRO_SLACK_ALERTS ?? 'all';

@@ -102,7 +102,7 @@ export async function buildServer(
     for (const socket of eventSockets) sendSocket(socket, event);
   };
   const peers = new PeerSync(db, () => broadcast({ type: 'peers' }));
-  const notifier = new SlackNotifier(sessions, db, peers);
+  const notifier = new SlackNotifier(sessions, db, peers, () => broadcast({ type: 'slack-watches' }));
   const vscode = new VscodeServer();
   // Au-delà de 30 jours, résultats d’opérations et runs terminés ne servent plus : la purge borne les tables.
   const purgeHistory = (): void => {
@@ -137,6 +137,7 @@ export async function buildServer(
         !path.startsWith('/api/hook/') &&
         !path.startsWith('/api/notify/') &&
         !path.startsWith('/api/session-tasks/') &&
+        !path.startsWith('/api/slack-watch/') &&
         !path.startsWith('/api/backlog/')) ||
       path.startsWith('/ws/') ||
       path.startsWith('/m/') ||

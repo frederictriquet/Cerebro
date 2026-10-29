@@ -54,6 +54,7 @@ interface ProjectRow {
   session_defaults: string | null;
   commit_settings: string | null;
   council_settings: string | null;
+  slack_settings: string | null;
   resolution_settings: string | null;
   workspace_mode: WorkspaceMode;
   regenerable_paths: string | null;
@@ -168,6 +169,7 @@ function projectFromRow(row: ProjectRow): Project {
     sessionDefaults: row.session_defaults === null ? { ...DEFAULT_SESSION_DEFAULTS } : JSON.parse(row.session_defaults),
     commitSettings: row.commit_settings ? JSON.parse(row.commit_settings) : { ...DEFAULT_COMMIT_SETTINGS },
     councilSettings: row.council_settings ? JSON.parse(row.council_settings) : null,
+    slackSettings: row.slack_settings ? JSON.parse(row.slack_settings) : null,
     resolutionSettings: row.resolution_settings
       ? JSON.parse(row.resolution_settings)
       : { ...DEFAULT_RESOLUTION_SETTINGS },
@@ -416,6 +418,7 @@ export class CerebroDatabase {
     this.connection.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS council_runs (id TEXT PRIMARY KEY, project_id TEXT, data TEXT NOT NULL);`);
     this.addColumnIfMissing('projects', 'council_settings', 'TEXT');
+    this.addColumnIfMissing('projects', 'slack_settings', 'TEXT');
     this.connection
       .exec(`CREATE TABLE IF NOT EXISTS personas (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
       prompt TEXT NOT NULL, builtin INTEGER NOT NULL DEFAULT 0, created_at INTEGER, updated_at INTEGER)`);
@@ -604,6 +607,7 @@ export class CerebroDatabase {
       sessionDefaults: { ...DEFAULT_SESSION_DEFAULTS },
       commitSettings: { ...DEFAULT_COMMIT_SETTINGS },
       councilSettings: null,
+      slackSettings: null,
       resolutionSettings: { ...DEFAULT_RESOLUTION_SETTINGS },
       workspaceMode,
       regenerablePaths: [],
@@ -630,6 +634,7 @@ export class CerebroDatabase {
         | 'commitSettings'
         | 'resolutionSettings'
         | 'councilSettings'
+        | 'slackSettings'
         | 'workspaceMode'
         | 'regenerablePaths'
       >
@@ -640,7 +645,7 @@ export class CerebroDatabase {
     const next = { ...current, ...changes };
     this.connection
       .prepare(
-        'UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, resolution_settings = ?, council_settings = ?, workspace_mode = ?, regenerable_paths = ? WHERE id = ?',
+        'UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, resolution_settings = ?, council_settings = ?, slack_settings = ?, workspace_mode = ?, regenerable_paths = ? WHERE id = ?',
       )
       .run(
         next.name,
@@ -650,6 +655,7 @@ export class CerebroDatabase {
         JSON.stringify(next.commitSettings),
         JSON.stringify(next.resolutionSettings),
         next.councilSettings === null ? null : JSON.stringify(next.councilSettings),
+        next.slackSettings === null ? null : JSON.stringify(next.slackSettings),
         next.workspaceMode,
         JSON.stringify(next.regenerablePaths),
         id,

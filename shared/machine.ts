@@ -1,6 +1,25 @@
 // Contracts about the machine itself, read by the web UI: version and remote machines, Slack, agent usage and updates.
-import { array, boolean, isRecord, literal, nullable, number, object, parser, string, type Parser } from './parse.ts';
-import { AGENTS, type Agent } from './types.ts';
+import {
+  array,
+  boolean,
+  isRecord,
+  literal,
+  nullable,
+  number,
+  object,
+  optional,
+  parser,
+  string,
+  type Parser,
+} from './parse.ts';
+import {
+  AGENTS,
+  WATCH_DELIVERIES,
+  WATCH_ENDED_DELIVERIES,
+  type Agent,
+  type WatchDelivery,
+  type WatchEndedDelivery,
+} from './types.ts';
 
 export interface VersionInfo {
   version: string;
@@ -52,15 +71,56 @@ export interface PeerNotice {
   text: string;
 }
 
+// Shared with the per-project Slack settings (types.ts).
+export { WATCH_DELIVERIES, WATCH_ENDED_DELIVERIES, type WatchDelivery, type WatchEndedDelivery };
+
 // Notification preferences editable from the web UI; env variables only provide the defaults.
 export interface SlackSettings {
   waiting: boolean;
   idle: boolean;
   agentMessages: boolean;
   delaySeconds: number;
+  /** Delivery of watched messages while the session runs (never empty). */
+  watchDeliveryLive: WatchDelivery[];
+  /** Delivery once the session has ended; empty drops the message. */
+  watchDeliveryEnded: WatchEndedDelivery[];
+  /** Minimum seconds between two reads of the same watch. */
+  watchIntervalSec: number;
+  /** Lifetime of a watch, renewed each time it is added again. */
+  watchTtlDays: number;
+  /** Also deliver the user's own messages (those their sessions post through the connector). */
+  watchIncludeSelf: boolean;
+  /** A session posting to Slack watches that thread on its own. */
+  watchAutoOnPost: boolean;
 }
 
-export type SlackStatus = { enabled: boolean } & SlackSettings;
+// enabled: bot token set (alerts, DM); watchEnabled: user token set (watched threads and channels).
+export type SlackStatus = { enabled: boolean; watchEnabled: boolean } & SlackSettings;
+
+/** A Slack thread, or the top level of a channel (threadTs null), watched for a session. */
+export interface SlackWatchInfo {
+  id: string;
+  sessionId: string;
+  channel: string;
+  threadTs: string | null;
+  /** Slack timestamp of the latest message already read. */
+  lastTs: string;
+  createdAt: number;
+  expiresAt: number;
+  /** Replaces the delivery settings for this watch. */
+  deliver?: WatchDelivery[];
+  label?: string;
+}
+
+/** Watches of every session; enabled is false without the user token. */
+export interface SlackWatchList {
+  enabled: boolean;
+  /** Delivery of a watch without its own while its session runs (`watchDeliveryLive`). */
+  defaultDeliver: WatchDelivery[];
+  /** The bot token is set: the dm and notify modes can post. */
+  botEnabled: boolean;
+  watches: SlackWatchInfo[];
+}
 
 export interface UsageWindow {
   label: string;
@@ -173,10 +233,37 @@ const nullableString = nullable(string);
 export const parseSlackStatus = parser(
   object<SlackStatus>({
     enabled: boolean,
+    watchEnabled: boolean,
     waiting: boolean,
     idle: boolean,
     agentMessages: boolean,
     delaySeconds: number,
+    watchDeliveryLive: array(literal(...WATCH_DELIVERIES)),
+    watchDeliveryEnded: array(literal(...WATCH_ENDED_DELIVERIES)),
+    watchIntervalSec: number,
+    watchTtlDays: number,
+    watchIncludeSelf: boolean,
+    watchAutoOnPost: boolean,
+  }),
+);
+export const parseSlackWatchList = parser(
+  object<SlackWatchList>({
+    enabled: boolean,
+    defaultDeliver: array(literal(...WATCH_DELIVERIES)),
+    botEnabled: boolean,
+    watches: array(
+      object<SlackWatchInfo>({
+        id: string,
+        sessionId: string,
+        channel: string,
+        threadTs: nullable(string),
+        lastTs: string,
+        createdAt: number,
+        expiresAt: number,
+        deliver: optional(array(literal(...WATCH_DELIVERIES))),
+        label: optional(string),
+      }),
+    ),
   }),
 );
 export const parseGeneralSlackStatus = parser(

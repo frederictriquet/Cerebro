@@ -103,3 +103,64 @@ test('a failed settings write restores the persisted settings in memory', async 
   rmSync(file, { recursive: true });
   errors.mock.restore();
 });
+
+test('watch settings have defaults, and invalid values are rejected', async () => {
+  rmSync(file, { force: true });
+  const notifier = create();
+  const status = notifier.status();
+  assert.deepEqual(status.watchDeliveryLive, ['inject']);
+  assert.deepEqual(status.watchDeliveryEnded, ['dm']);
+  assert.equal(status.watchIntervalSec, 30);
+  assert.equal(status.watchTtlDays, 7);
+  assert.equal(status.watchIncludeSelf, false);
+  assert.equal(status.watchAutoOnPost, true);
+
+  // Modes are kept in canonical order, without repeats; the ended delivery may be empty (nothing sent).
+  const updated = notifier.updateSettings({
+    watchDeliveryLive: ['notify', 'inject', 'notify'],
+    watchDeliveryEnded: [],
+    watchIntervalSec: 60,
+    watchTtlDays: 3,
+    watchIncludeSelf: true,
+    watchAutoOnPost: false,
+  });
+  assert.deepEqual(updated.watchDeliveryLive, ['inject', 'notify']);
+  assert.deepEqual(updated.watchDeliveryEnded, []);
+  assert.equal(updated.watchIntervalSec, 60);
+  assert.equal(updated.watchTtlDays, 3);
+  await notifier.settingsSaved();
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).watchDeliveryLive, ['inject', 'notify']);
+
+  for (const patch of [
+    { watchDeliveryLive: [] },
+    { watchDeliveryLive: ['shout'] },
+    { watchDeliveryLive: 'inject' },
+    { watchDeliveryEnded: ['inject'] },
+    { watchDeliveryEnded: null },
+    { watchIntervalSec: 1 },
+    { watchIntervalSec: 30.5 },
+    { watchIntervalSec: 3_601 },
+    { watchTtlDays: 0 },
+    { watchTtlDays: 366 },
+    { watchTtlDays: '7' },
+    { watchIncludeSelf: 'yes' },
+    { watchAutoOnPost: 1 },
+    // One invalid field rejects the whole patch.
+    { watchTtlDays: 5, watchDeliveryLive: [] },
+  ]) {
+    assert.equal(notifier.updateSettings(patch), null, JSON.stringify(patch));
+  }
+  assert.deepEqual(notifier.status(), { enabled: false, watchEnabled: false, ...updated });
+});
+
+test('invalid watch settings in slack.json fall back to their defaults one by one', () => {
+  writeFileSync(
+    file,
+    JSON.stringify({ watchDeliveryLive: [], watchDeliveryEnded: ['notify', 'dm'], watchIntervalSec: 2, watchTtlDays: 14 }),
+  );
+  const status = create().status();
+  assert.deepEqual(status.watchDeliveryLive, ['inject']);
+  assert.deepEqual(status.watchDeliveryEnded, ['dm', 'notify']);
+  assert.equal(status.watchIntervalSec, 30);
+  assert.equal(status.watchTtlDays, 14);
+});

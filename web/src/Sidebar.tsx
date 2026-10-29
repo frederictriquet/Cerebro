@@ -10,6 +10,7 @@ import { useStore } from './store.tsx';
 import { UsageGauges } from './UsageGauges.tsx';
 import { WorktreeLabel } from './WorktreeLabel.tsx';
 import { SessionEpicBadge } from './SessionEpicBadge.tsx';
+import { NumberSetting, SLACK_ALERT_TOGGLES, SlackWatchSettings } from './SlackWatchSettings.tsx';
 import type { Session } from '../../shared/types.ts';
 import type { GeneralSlackStatus, SlackSettings, SlackStatus } from '../../shared/machine.ts';
 import { useSessionPreview } from './ScreenPreview.tsx';
@@ -56,13 +57,13 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
         <div className={`ws-pill ${connected ? 'on' : 'off'}`}>{connected ? 'connecté' : 'reconnexion…'}</div>
         <button
           type="button"
-          className={`slack-pill ${slack?.enabled ? 'on' : 'off'}`}
+          className={`slack-pill ${slack?.enabled || slack?.watchEnabled ? 'on' : 'off'}`}
           aria-expanded={showSlack}
           title={
             slack === null
               ? 'Statut Slack indisponible : cliquer pour réessayer'
-              : slack.enabled
-                ? 'Réglages des notifications Slack'
+              : slack.enabled || slack.watchEnabled
+                ? 'Réglages des notifications et des fils surveillés Slack'
                 : 'Slack non configuré (voir README)'
           }
           onClick={() => (slack === null ? loadSlack(true) : setShowSlack(!showSlack))}
@@ -122,18 +123,7 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
   );
 }
 
-const SLACK_TOGGLES: { key: 'waiting' | 'idle' | 'agentMessages'; label: string; hint: string }[] = [
-  { key: 'waiting', label: 'Confirmations', hint: 'Une session attend une validation ou une réponse' },
-  { key: 'idle', label: 'Fins de tour', hint: "L'agent a terminé et rend la main" },
-  {
-    key: 'agentMessages',
-    label: 'Messages des agents',
-    hint: 'Envoyés par cerebro-notify (notifications et questions)',
-  },
-];
-
 function SlackPanel({ status, onChange }: { status: SlackStatus; onChange: (status: SlackStatus) => void }) {
-  const [delay, setDelay] = useState(String(status.delaySeconds));
   const [error, setError] = useState<string | null>(null);
 
   const save = async (patch: Partial<SlackSettings>): Promise<void> => {
@@ -148,22 +138,12 @@ function SlackPanel({ status, onChange }: { status: SlackStatus; onChange: (stat
     }
   };
 
-  const saveDelay = (): void => {
-    const seconds = Number(delay);
-    if (delay.trim() === '' || !Number.isFinite(seconds) || seconds < 0 || seconds > 3600) {
-      setDelay(String(status.delaySeconds));
-      setError('Délai entre 0 et 3600 secondes');
-      return;
-    }
-    if (Math.round(seconds) !== status.delaySeconds) void save({ delaySeconds: Math.round(seconds) });
-  };
-
   return (
     <div className="slack-panel">
       {status.enabled ? null : (
         <p className="empty-hint">Slack n'est pas configuré : ces réglages s'appliqueront une fois le jeton défini.</p>
       )}
-      {SLACK_TOGGLES.map((toggle) => (
+      {SLACK_ALERT_TOGGLES.map((toggle) => (
         <label key={toggle.key} className="slack-toggle" title={toggle.hint}>
           <input
             type="checkbox"
@@ -173,25 +153,22 @@ function SlackPanel({ status, onChange }: { status: SlackStatus; onChange: (stat
           {toggle.label}
         </label>
       ))}
-      <label className="slack-delay">
-        Délai avant alerte
-        <input
-          type="number"
-          min={0}
-          max={3600}
-          step={5}
-          value={delay}
-          disabled={!status.waiting && !status.idle}
-          onChange={(e) => setDelay(e.target.value)}
-          onBlur={saveDelay}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') e.currentTarget.blur();
-          }}
-        />
-        s
-      </label>
-      {error ? <p className="form-error">{error}</p> : null}
+      <NumberSetting
+        key={`delay-${status.delaySeconds}`}
+        label="Délai avant alerte"
+        unit="s"
+        value={status.delaySeconds}
+        min={0}
+        max={3600}
+        step={5}
+        disabled={!status.waiting && !status.idle}
+        invalid="Délai entre 0 et 3600 secondes"
+        onSave={(value) => void save({ delaySeconds: value })}
+        onError={setError}
+      />
       <GeneralSlackLead />
+      <SlackWatchSettings status={status} save={(patch) => void save(patch)} onError={setError} />
+      {error ? <p className="form-error">{error}</p> : null}
     </div>
   );
 }

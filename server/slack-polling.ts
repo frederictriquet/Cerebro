@@ -44,6 +44,37 @@ export async function typeIntoSession(
   return sessions.writeInput(sessionId, '\r');
 }
 
+/**
+ * Reads every page of a history or replies call, as long as `nextPage` allows another call, and returns the
+ * messages later than `after` in chronological order. `complete` is false when pages were left unread.
+ */
+export async function readMessages(
+  client: SlackClient,
+  method: 'conversations.history' | 'conversations.replies',
+  body: Record<string, unknown>,
+  after: string,
+  nextPage: (pages: number) => boolean,
+): Promise<{ messages: SlackMessage[]; complete: boolean }> {
+  const messages: SlackMessage[] = [];
+  let cursor: string | null = null;
+  for (let pages = 1; ; pages++) {
+    const response = await client.call(method, {
+      ...body,
+      limit: READ_PAGE_SIZE,
+      ...(cursor === null ? {} : { cursor }),
+    });
+    for (const value of response.messages ?? []) {
+      const message = messageFrom(value);
+      if (message !== null && laterThan(message.ts, after)) messages.push(message);
+    }
+    const next = response.response_metadata?.next_cursor;
+    cursor = response.has_more !== false && typeof next === 'string' && next !== '' ? next : null;
+    if (cursor === null || !nextPage(pages)) break;
+  }
+  messages.sort((left, right) => (laterThan(left.ts, right.ts) ? 1 : laterThan(right.ts, left.ts) ? -1 : 0));
+  return { messages, complete: cursor === null };
+}
+
 function sameQuestions(left: AgentQuestion[] | null, right: AgentQuestion[]): boolean {
   return left === right || (left !== null && JSON.stringify(left) === JSON.stringify(right));
 }
@@ -144,41 +175,11 @@ export class SlackPoller {
     return true;
   }
 
-  /**
-   * Reads every page of a history or replies call, as long as `nextPage` allows another call, and
-   * returns the messages later than `after` in chronological order. `complete` is false when pages
-   * were left unread.
-   */
-  private async readMessages(
-    method: 'conversations.history' | 'conversations.replies',
-    body: Record<string, unknown>,
-    after: string,
-    nextPage: (pages: number) => boolean,
-  ): Promise<{ messages: SlackMessage[]; complete: boolean }> {
-    const messages: SlackMessage[] = [];
-    let cursor: string | null = null;
-    for (let pages = 1; ; pages++) {
-      const response = await this.client.call(method, {
-        ...body,
-        limit: READ_PAGE_SIZE,
-        ...(cursor === null ? {} : { cursor }),
-      });
-      for (const value of response.messages ?? []) {
-        const message = messageFrom(value);
-        if (message !== null && laterThan(message.ts, after)) messages.push(message);
-      }
-      const next = response.response_metadata?.next_cursor;
-      cursor = response.has_more !== false && typeof next === 'string' && next !== '' ? next : null;
-      if (cursor === null || !nextPage(pages)) break;
-    }
-    messages.sort((left, right) => (laterThan(left.ts, right.ts) ? 1 : laterThan(right.ts, left.ts) ? -1 : 0));
-    return { messages, complete: cursor === null };
-  }
-
   async pollDm(): Promise<void> {
     const channel = await this.client.openDm();
     // History pages run from the newest message backwards: all of them are needed before handling any.
-    const { messages, complete } = await this.readMessages(
+    const { messages, complete } = await readMessages(
+      this.client,
       'conversations.history',
       { channel, oldest: this.state.dmCursor },
       this.state.dmCursor,
@@ -196,6 +197,8 @@ export class SlackPoller {
       if (
         message.user !== SLACK_USER ||
         message.bot_id !== undefined ||
+        // A session posting to the DM through the Slack connector is not a command.
+        message.viaApp === true ||
         message.subtype !== undefined ||
         (message.thread_ts !== undefined && message.thread_ts !== message.ts)
       )
@@ -210,7 +213,8 @@ export class SlackPoller {
 
   async pollThread(sessionId: string, thread: ActiveThread): Promise<void> {
     // Replies pages run forwards in time: the unread rest is picked up from lastTs on the next poll.
-    const { messages } = await this.readMessages(
+    const { messages } = await readMessages(
+      this.client,
       'conversations.replies',
       { channel: thread.channel, ts: thread.ts, oldest: thread.lastTs },
       thread.lastTs,
@@ -220,7 +224,9 @@ export class SlackPoller {
       if (this.state.threads.get(sessionId) !== thread) return;
       thread.lastTs = message.ts;
       this.state.markDirty();
-      if (message.user !== SLACK_USER || message.bot_id !== undefined || message.text === undefined) continue;
+      // A session posting in its own thread through the Slack connector is not typed back into it.
+      if (message.user !== SLACK_USER || message.bot_id !== undefined || message.viaApp || message.text === undefined)
+        continue;
       const text = decodeSlackText(message.text);
       const queued = this.db.getSession(sessionId)?.status === 'running' && !isKeyShortcut(text);
       const transmitted =

@@ -6,8 +6,13 @@ import { UsageTracker } from './usage.ts';
 import { compatibility, VERSION_INFO } from './version.ts';
 import { isAgent } from '../shared/types.ts';
 import { asRecord } from './util.ts';
-import { error } from './routes-util.ts';
+import { error, routeErrors, statusCodeOf } from './routes-util.ts';
 import { orError, type RouteContext } from './route-context.ts';
+import { WatchError } from './slack.ts';
+import { deliveryModes } from './slack-state.ts';
+import { WATCH_DELIVERIES } from '../shared/machine.ts';
+
+const { orError: watchOrError } = routeErrors(statusCodeOf(WatchError, 500));
 
 // Routes propres à la machine : opérations, synchronisation entre machines, agents, quotas, mises à jour, Slack.
 export function registerSystemRoutes(ctx: RouteContext): void {
@@ -90,6 +95,39 @@ export function registerSystemRoutes(ctx: RouteContext): void {
   });
 
   app.get('/api/slack', async () => notifier.status());
+
+  // Watched threads and channels of every session; the web UI filters them by project or session.
+  app.get('/api/slack/watches', async () => notifier.allWatches());
+
+  app.delete<{ Params: { sessionId: string; watchId: string } }>(
+    '/api/slack/watches/:sessionId/:watchId',
+    async (request, reply) => {
+      const result = await watchOrError(reply, () =>
+        notifier.removeWatches(request.params.sessionId, request.params.watchId),
+      );
+      if (!result.ok) return result.reply;
+      if (result.value.length === 0) return error(reply, 404, 'Surveillance introuvable');
+      return reply.send({ removed: result.value });
+    },
+  );
+
+  // Delivery of one watch: a non-empty list of modes, or null to follow the settings again.
+  app.patch<{ Params: { sessionId: string; watchId: string } }>(
+    '/api/slack/watches/:sessionId/:watchId',
+    async (request, reply) => {
+      const asked = asRecord(request.body)?.deliver;
+      const deliver = asked === null ? null : deliveryModes(asked, WATCH_DELIVERIES, false);
+      const result = await watchOrError(reply, () => {
+        notifier.requireWatches();
+        if (asked !== null && deliver === null)
+          throw new WatchError(400, `deliver attendu : null ou un ou plusieurs modes parmi ${WATCH_DELIVERIES.join(', ')}`);
+        return notifier.setWatchDelivery(request.params.sessionId, request.params.watchId, deliver);
+      });
+      if (!result.ok) return result.reply;
+      if (result.value === null) return error(reply, 404, 'Surveillance introuvable');
+      return reply.send({ watch: result.value });
+    },
+  );
 
   app.patch('/api/slack', async (request, reply) => {
     const body = asRecord(request.body);

@@ -17,6 +17,7 @@ import {
 import { SessionGitActions } from './GitActions.tsx';
 import { SessionActions } from './SessionActions.tsx';
 import { SessionCouncilButton } from './SessionCouncil.tsx';
+import { SlackWatches } from './SlackWatches.tsx';
 import { SessionMeta, attentionTone } from './SessionMeta.tsx';
 import { SessionPin } from './SessionPin.tsx';
 import { SessionProtection } from './SessionProtection.tsx';
@@ -606,6 +607,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           expanded={drawer === 'findings'}
           onToggle={() => toggleDrawer('findings')}
         />
+      </ErrorBoundary>
+      <ErrorBoundary zone="Fils Slack surveillés" resetKey={session.id}>
+        <SlackWatches sessions={[session]} showSession={false} />
       </ErrorBoundary>
       {drawer !== null ? (
         <section
