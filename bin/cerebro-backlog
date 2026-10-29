@@ -34,6 +34,15 @@ par une seule session depuis l'interface) :
   --epic-delete <epic-id>          supprime un epic créé par cette session
                                    (ses tâches restent dans le backlog)
 
+Autre projet (par exemple une limite de Cerebro repérée en travaillant ailleurs) :
+  --project <nom|id>           à placer avant la commande : vise le backlog de ce
+                               projet pour l'ajout de tâches (--epic, --new-epic
+                               compris), --list, --epics et --epic-create sans
+                               tâches existantes ; --delete et --epic-delete
+                               (avec ou sans --project) y suppriment ce que la
+                               session a créé
+  --projects                   projets de Cerebro (nom, identifiant)
+
 Autres commandes :
   --list                       tâches du projet : identifiant, statut, epic, dépendances
   --depends <id> [<id>...]     remplace les dépendances de la tâche <id>
@@ -55,8 +64,26 @@ process.stdout.on('error', (error) => {
 const DEPENDENCY_LINE = /^after\s*:\s*(.*)$/i;
 const EPIC_LINE = /^epic\s*:\s*(\S+)\s*$/i;
 
+// Projet visé par --project ; null : celui de la session.
+let project = null;
+// Commandes permises avec --project : consultation, ajout et suppression de ce que la session a créé ; les
+// autres n'agissent que sur le projet de la session.
+const PROJECT_COMMANDS = new Set([
+  undefined,
+  '--',
+  '--list',
+  '--epics',
+  '--projects',
+  '--epic-create',
+  '--epic',
+  '--new-epic',
+  '--delete',
+  '--epic-delete',
+]);
+
 function call(method, suffix, body) {
-  return request(`${sessionPath('backlog')}${suffix}`, {
+  const query = project === null ? '' : `?project=${encodeURIComponent(project)}`;
+  return request(`${sessionPath('backlog')}${suffix}${query}`, {
     method,
     body,
     tooLarge: 'envoi trop volumineux : découpez-le en plusieurs appels',
@@ -132,7 +159,8 @@ async function add(args, epic) {
   const { tasks: created, epic: newEpic } = await call('POST', '', epic === undefined ? { tasks } : { tasks, epic });
   if (newEpic !== null && newEpic !== undefined)
     process.stdout.write(`Epic créé : ${newEpic.id}  ${firstLine(newEpic.title)}\n`);
-  process.stdout.write(`${created.length} tâche(s) ajoutée(s) au backlog du projet :\n`);
+  const where = project === null ? 'du projet' : `de ${project}`;
+  process.stdout.write(`${created.length} tâche(s) ajoutée(s) au backlog ${where} :\n`);
   created.forEach((task, index) => {
     const deps = task.dependsOn.length > 0 ? ` (après ${task.dependsOn.join(', ')})` : '';
     const inEpic = task.epicId !== null && task.epicId !== undefined ? ` [epic ${task.epicId}]` : '';
@@ -179,9 +207,23 @@ async function setEpic(epicId, taskIds) {
   }
 }
 
-async function main(argv) {
+async function main(args) {
+  let argv = args;
+  if (argv[0] === '--project') {
+    if (argv[1] === undefined || argv[1] === '') throw new Error('--project attend un nom ou un identifiant de projet');
+    project = argv[1];
+    argv = argv.slice(2);
+  }
   const [command, ...rest] = argv;
+  if (project !== null && !PROJECT_COMMANDS.has(command) && !(command !== undefined && !command.startsWith('-'))) {
+    throw new Error(`${command} n'agit que sur le projet de la session : retirez --project`);
+  }
   switch (command) {
+    case '--projects': {
+      for (const { id, name, current } of await call('GET', '/projects'))
+        process.stdout.write(`${id}  ${name}${current ? ' [projet de la session]' : ''}\n`);
+      return;
+    }
     case '--help':
     case '-h':
       process.stdout.write(USAGE);
@@ -285,6 +327,7 @@ function addFrom(args, epic) {
   if (args[0] === '--') return add(args.slice(1), epic);
   // Une option inconnue est refusée plutôt que d'être ajoutée comme tâche.
   const option = args.find((arg) => arg.startsWith('-'));
+  if (option === '--project') throw new Error('--project se place en tête : cerebro-backlog --project <nom> …');
   if (option !== undefined) {
     throw new Error(`option inconnue « ${option} » ; voir --help (« -- » pour une tâche commençant par « - »)`);
   }

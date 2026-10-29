@@ -1,5 +1,5 @@
 import type { FastifyReply } from 'fastify';
-import type { Epic, Session, Task } from '../shared/types.ts';
+import type { Epic, Project, Session, Task } from '../shared/types.ts';
 import { asRecord } from './util.ts';
 import { error, type Outcome } from './routes-util.ts';
 import { badRequest, conflict, type RouteContext } from './route-context.ts';
@@ -18,10 +18,38 @@ const MAX_BACKLOG_TASKS = 100;
 // Worst case: 3 UTF-8 bytes per UTF-16 code unit (non-ASCII text), plus JSON escaping and envelope.
 const BACKLOG_BODY_LIMIT = MAX_BACKLOG_TASKS * MAX_TASK_LENGTH * 3 + 1024 * 1024;
 
-// Routes de bin/cerebro-backlog, authentifiées par le jeton de session : elles n'agissent que sur le
-// backlog du projet de la session.
+type BacklogRequest = { params: { id: string }; query: unknown };
+
+// Routes de bin/cerebro-backlog, authentifiées par le jeton de session : elles agissent sur le backlog du
+// projet de la session. Le paramètre `project` (nom ou identifiant) vise le backlog d'un autre projet,
+// pour la consultation et l'ajout seulement ; une session ne supprime ailleurs que ce qu'elle y a créé.
 export function registerBacklogRoutes(ctx: RouteContext): void {
   const { app, db, epicRunner, broadcast, broadcastTasks, tokenSession, projectTasks, publishFindings } = ctx;
+
+  // Projet visé : celui de la session sauf `?project=` (identifiant, ou nom sans tenir compte de la casse).
+  const targetProject = (session: Session, request: BacklogRequest, reply: FastifyReply): Outcome<string> => {
+    const wanted = asRecord(request.query)?.project;
+    if (wanted === undefined || wanted === '') return { ok: true, value: session.projectId };
+    if (typeof wanted !== 'string') return { ok: false, reply: error(reply, 400, 'project doit être un texte') };
+    const projects = db.listProjects();
+    const byId = projects.find((p) => p.id === wanted);
+    if (byId !== undefined) return { ok: true, value: byId.id };
+    const named = projects.filter((p) => p.name.toLowerCase() === wanted.trim().toLowerCase());
+    if (named.length === 1) return { ok: true, value: (named[0] as Project).id };
+    const names = (named.length > 1 ? named : projects).map((p) => `${p.name} (${p.id})`).join(', ');
+    return named.length > 1
+      ? { ok: false, reply: error(reply, 400, `Plusieurs projets s'appellent ainsi, précisez l'identifiant : ${names}`) }
+      : { ok: false, reply: error(reply, 404, `Projet introuvable : ${wanted}. Projets : ${names}`) };
+  };
+
+  app.get<{ Params: { id: string } }>('/api/backlog/:id/projects', async (request, reply) => {
+    const checked = tokenSession(request, reply);
+    if (!checked.ok) return checked.reply;
+    const session = checked.value;
+    return db
+      .listProjects()
+      .map(({ id, name }) => ({ id, name, current: id === session.projectId }));
+  });
 
   app.post<{ Params: { id: string } }>(
     '/api/backlog/:id/findings',
@@ -55,7 +83,9 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
     const checked = tokenSession(request, reply);
     if (!checked.ok) return checked.reply;
     const session = checked.value;
-    return projectTasks(session.projectId).map(
+    const target = targetProject(session, request, reply);
+    if (!target.ok) return target.reply;
+    return projectTasks(target.value).map(
       ({ id, status, text, dependsOn, epicId, sourceSessionId, sessionId }) => ({
         id,
         status,
@@ -79,10 +109,12 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
     const checked = tokenSession(request, reply);
     if (!checked.ok) return checked.reply;
     const session = checked.value;
-    const tasks = projectTasks(session.projectId);
+    const target = targetProject(session, request, reply);
+    if (!target.ok) return target.reply;
+    const tasks = projectTasks(target.value);
     return db
       .listEpics()
-      .filter((e) => e.projectId === session.projectId)
+      .filter((e) => e.projectId === target.value)
       .map(({ id, title, description, sourceSessionId }) => ({
         id,
         title,
@@ -97,7 +129,13 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
     const checked = tokenSession(request, reply);
     if (!checked.ok) return checked.reply;
     const session = checked.value;
-    const result = createEpic(ctx, session.projectId, asRecord(request.body), session.id);
+    const target = targetProject(session, request, reply);
+    if (!target.ok) return target.reply;
+    const body = asRecord(request.body);
+    // Dans un autre projet, la session ajoute sans réorganiser : pas de tâches existantes rangées dans l'epic.
+    if (target.value !== session.projectId && Array.isArray(body?.taskIds) && body.taskIds.length > 0)
+      return error(reply, 400, "Dans un autre projet, un epic se crée vide ou avec ses nouvelles tâches (--new-epic)");
+    const result = createEpic(ctx, target.value, body, session.id);
     if (!result.ok) return error(reply, 400, result.message);
     const { id, title, description } = result.epic;
     return reply.code(201).send({ id, title, description, tasks: result.taskIds });
@@ -122,7 +160,11 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
     const checked = tokenSession(request, reply);
     if (!checked.ok) return checked.reply;
     const session = checked.value;
-    const found = projectEpic(session, request.params.epicId, reply);
+    const own = db.getEpic(request.params.epicId);
+    const found =
+      own !== null && own.sourceSessionId === session.id
+        ? { ok: true as const, value: own }
+        : projectEpic(session, request.params.epicId, reply);
     if (!found.ok) return found.reply;
     const epic = found.value;
     if (epic.sourceSessionId !== session.id)
@@ -158,6 +200,9 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
       const checked = tokenSession(request, reply);
       if (!checked.ok) return checked.reply;
       const session = checked.value;
+      const target = targetProject(session, request, reply);
+      if (!target.ok) return target.reply;
+      const projectId = target.value;
       const body = asRecord(request.body);
       if (
         body === null ||
@@ -167,13 +212,13 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
       ) {
         return error(reply, 400, `tasks doit contenir entre 1 et ${MAX_BACKLOG_TASKS} tâches`);
       }
-      const existing = new Set(projectTasks(session.projectId).map((t) => t.id));
+      const existing = new Set(projectTasks(projectId).map((t) => t.id));
       const epics = db.listEpics();
       // `epic` : epic de toutes les tâches de l'envoi, existant (identifiant) ou à créer ({ title, description? }).
       let defaultEpic: string | null = null;
       let newEpic: { title: string; description: string } | null = null;
       if (typeof body.epic === 'string') {
-        const checked = checkEpic(body.epic, session.projectId, epics);
+        const checked = checkEpic(body.epic, projectId, epics);
         if (!checked.ok) return error(reply, 400, checked.message);
         defaultEpic = checked.id;
       } else if (body.epic !== undefined && body.epic !== null) {
@@ -211,7 +256,7 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
         }
         let epicId: string | null | undefined;
         if (item?.epicId !== undefined) {
-          const checked = checkEpic(item.epicId, session.projectId, epics);
+          const checked = checkEpic(item.epicId, projectId, epics);
           if (!checked.ok) return error(reply, 400, `Tâche ${index + 1} : ${checked.message}`);
           epicId = checked.id;
         }
@@ -223,13 +268,13 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
       try {
         ({ createdEpic, created } = db.transaction(() => {
           const createdEpic =
-            newEpic === null ? null : db.createEpic(session.projectId, newEpic.title, newEpic.description, session.id);
+            newEpic === null ? null : db.createEpic(projectId, newEpic.title, newEpic.description, session.id);
           const fallbackEpic = createdEpic?.id ?? defaultEpic;
           // Les nouvelles tâches ne dépendent que de tâches existantes ou antérieures : pas de cycle possible.
           const tasks: Task[] = [];
           for (const { text, deps, epicId } of items) {
             const task = db.createTask(
-              session.projectId,
+              projectId,
               text,
               session.id,
               epicId === undefined ? fallbackEpic : epicId,
@@ -287,7 +332,7 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
     if (!checked.ok) return checked.reply;
     const session = checked.value;
     const task = db.getTask(request.params.taskId);
-    if (task === null || task.projectId !== session.projectId)
+    if (task === null || (task.projectId !== session.projectId && task.sourceSessionId !== session.id))
       return error(reply, 404, 'Tâche introuvable dans ce projet');
     if (task.sourceSessionId !== session.id)
       return error(reply, 403, 'Seules les tâches créées par cette session peuvent être supprimées ici');

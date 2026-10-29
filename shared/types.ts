@@ -337,7 +337,11 @@ export type EventsMessage =
 export type TermClientMessage = { type: 'input'; data: string } | { type: 'resize'; cols: number; rows: number };
 
 export type TermServerMessage =
-  { type: 'snapshot'; data: string } | { type: 'output'; data: string } | { type: 'exit'; exitCode: number | null };
+  | { type: 'snapshot'; data: string }
+  | { type: 'output'; data: string }
+  | { type: 'exit'; exitCode: number | null }
+  // Size of the shared PTY: every client renders at exactly this size, whatever its window.
+  | { type: 'size'; cols: number; rows: number };
 
 export function isAgent(v: unknown): v is Agent {
   return v === 'claude' || v === 'codex' || v === 'grok';
@@ -901,6 +905,12 @@ export function parseTermServerMessage(v: unknown): TermServerMessage | null {
     const data = asString(v.data);
     if (data === null) return null;
     return { type: v.type, data };
+  }
+  if (v.type === 'size') {
+    const { cols, rows } = v;
+    if (typeof cols !== 'number' || typeof rows !== 'number') return null;
+    if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return null;
+    return { type: 'size', cols, rows };
   }
   if (v.type === 'exit') {
     if (!('exitCode' in v) || v.exitCode === undefined) return { type: 'exit', exitCode: null };

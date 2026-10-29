@@ -244,3 +244,10 @@ test('new and resumed agent sessions receive instructions to maintain and reread
     }
   }
 });
+
+test('codex sessions run inline so the web terminal keeps mouse selection', () => {
+  for (const resume of [null, 'existing']) {
+    const { args } = buildAgentCommand('codex', 'auto', '', 'generated', resume);
+    assert.ok(args.includes('--no-alt-screen'));
+  }
+});

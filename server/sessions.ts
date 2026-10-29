@@ -33,7 +33,10 @@ export type SessionEvent =
   | { type: 'turn-complete'; id: string; message: string | null };
 
 export type TerminalEvent =
-  { type: 'snapshot'; data: string } | { type: 'output'; data: string } | { type: 'exit'; exitCode: number | null };
+  | { type: 'snapshot'; data: string }
+  | { type: 'output'; data: string }
+  | { type: 'exit'; exitCode: number | null }
+  | { type: 'size'; cols: number; rows: number };
 
 /** Optional settings of SessionManager.create: everything but the project and its form overrides. */
 export interface CreateSessionOptions {
@@ -606,6 +609,7 @@ export class SessionManager {
         runtime.cols = message.cols;
       if (typeof message.rows === 'number' && Number.isInteger(message.rows) && message.rows > 0)
         runtime.rows = message.rows;
+      this.broadcastSize(runtime);
       return;
     }
     if (message.type === 'snapshot' && typeof message.data === 'string') {
@@ -943,10 +947,24 @@ export class SessionManager {
     const runtime = this.runtimes.get(id);
     if (runtime === undefined) return false;
     if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return false;
+    const changed = cols !== runtime.cols || rows !== runtime.rows;
     runtime.cols = cols;
     runtime.rows = rows;
     runtime.terminal.resize(cols, rows);
-    return this.sendHolder(runtime, { type: 'resize', cols, rows });
+    const sent = this.sendHolder(runtime, { type: 'resize', cols, rows });
+    if (changed) this.broadcastSize(runtime);
+    return sent;
+  }
+
+  /** Size of the live PTY, shared by every client: each one renders at exactly this size. */
+  terminalSize(id: string): { cols: number; rows: number } | null {
+    const runtime = this.runtimes.get(id);
+    return runtime === undefined ? null : { cols: runtime.cols, rows: runtime.rows };
+  }
+
+  private broadcastSize(runtime: Runtime): void {
+    for (const listener of runtime.terminalListeners)
+      listener({ type: 'size', cols: runtime.cols, rows: runtime.rows });
   }
 
   terminalSnapshot(id: string): string | null {

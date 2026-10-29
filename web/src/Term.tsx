@@ -64,6 +64,9 @@ export function Term({
   const onSelectionRef = useLatest(onSelectionChange);
   const onEscapeRef = useLatest(onEscape);
   const [link, setLink] = useState<LinkState>(LINK_OPEN);
+  // Taille imposée par un autre poste qui affiche la même session, null quand c'est la nôtre.
+  const [borrowed, setBorrowed] = useState<{ cols: number; rows: number } | null>(null);
+  const claimRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -104,6 +107,7 @@ export function Term({
     term.attachCustomKeyEventHandler((event) => {
       // xterm traduit Ctrl+V en ^V et annule l'événement : le navigateur ne colle alors jamais.
       // On le lui laisse, pour que l'événement paste (texte ou image) ait lieu.
+      if (event.type === 'keydown') claim();
       if (event.ctrlKey && !event.altKey && !event.metaKey && event.code === 'KeyV') return false;
       // Échap seul est réservé à Cerebro (retour au projet) ; Maj+Échap et le bouton rapide l'envoient à la session.
       const escape = onEscapeRef.current;
@@ -130,8 +134,19 @@ export function Term({
     let link: ReconnectingSocket | null = null;
     const current = (): WebSocket | null => link?.current() ?? null;
     let closed = false;
-    let lastCols = 0;
-    let lastRows = 0;
+    // Le PTY n'a qu'une taille : tous les postes qui l'affichent doivent la reprendre à l'identique,
+    // sinon chacun redécoupe à sa largeur un écran tracé pour une autre. Le dernier poste actif
+    // (frappe, clic, focus) l'impose à sa fenêtre, les autres s'y alignent.
+    let ptyCols = 0;
+    let ptyRows = 0;
+    let fitCols = 0;
+    let fitRows = 0;
+    // Dernière taille demandée par ce poste : il garde la main tant que le serveur confirme celle-là.
+    let claimedCols = 0;
+    let claimedRows = 0;
+    let owner = false;
+    let connected = false;
+    let lastBorrowed = '';
     let reconnecting = false;
     let pending = '';
     let dropped = false;
@@ -159,10 +174,13 @@ export function Term({
     };
 
     const api: TermApi = {
+      // Saisie ou boutons rapides de ce poste : il reprend la main sur la taille.
       sendInput(data: string): boolean {
+        claim();
         return send(current(), { type: 'input', data });
       },
       sendArrow(direction: 'up' | 'down'): boolean {
+        claim();
         const application = term.modes.applicationCursorKeysMode;
         const data = direction === 'up' ? (application ? '\x1bOA' : '\x1b[A') : application ? '\x1bOB' : '\x1b[B';
         return send(current(), { type: 'input', data });
@@ -176,24 +194,54 @@ export function Term({
     };
     onApiRef.current?.(api);
 
-    const sendResize = (): void => {
-      const cols = term.cols;
-      const rows = term.rows;
-      if (cols < 2 || rows < 2) return;
-      if (cols === lastCols && rows === lastRows) return;
-      lastCols = cols;
-      lastRows = rows;
-      send(current(), { type: 'resize', cols, rows });
+    // Taille qui remplit cette fenêtre, sans l'appliquer.
+    const measure = (): boolean => {
+      if (host.clientWidth < 20 || host.clientHeight < 20) return false;
+      const dims = fit.proposeDimensions();
+      if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return false;
+      if (dims.cols < 2 || dims.rows < 2) return false;
+      fitCols = dims.cols;
+      fitRows = dims.rows;
+      return true;
     };
 
-    const doFit = (): void => {
-      if (host.clientWidth < 20 || host.clientHeight < 20) return;
-      try {
-        fit.fit();
-      } catch {
-        return;
+    const applySize = (): void => {
+      // Sans taille connue du serveur (session terminée), le terminal suit simplement la fenêtre.
+      const cols = ptyCols || fitCols;
+      const rows = ptyRows || fitRows;
+      if (cols >= 2 && rows >= 2 && (term.cols !== cols || term.rows !== rows)) term.resize(cols, rows);
+      const foreign = !owner && ptyCols > 0 && fitCols > 0 && (ptyCols !== fitCols || ptyRows !== fitRows);
+      const key = foreign ? `${ptyCols}x${ptyRows}` : '';
+      if (key === lastBorrowed || closed) return;
+      lastBorrowed = key;
+      setBorrowed(foreign ? { cols: ptyCols, rows: ptyRows } : null);
+    };
+
+    // Ce poste prend la main : le PTY adopte la taille de sa fenêtre, les autres postes s'y alignent.
+    const claim = (): void => {
+      if (!measure()) return;
+      if (fitCols !== ptyCols || fitRows !== ptyRows) {
+        if (!send(current(), { type: 'resize', cols: fitCols, rows: fitRows })) return;
+        ptyCols = fitCols;
+        ptyRows = fitRows;
       }
-      sendResize();
+      claimedCols = fitCols;
+      claimedRows = fitRows;
+      owner = true;
+      applySize();
+    };
+    claimRef.current = () => {
+      claim();
+      term.focus();
+    };
+
+    // La fenêtre change de taille : le poste qui a la main garde le PTY ajusté, les autres seulement leur bandeau.
+    const onHostResize = (): void => {
+      if (owner) {
+        claim();
+      } else if (measure()) {
+        applySize();
+      }
     };
 
     const dataSub = term.onData(input);
@@ -240,25 +288,40 @@ export function Term({
       );
     };
     host.addEventListener('paste', onPaste, true);
+    // Un clic ou le retour du focus dans ce terminal (fenêtre réactivée) : ce poste reprend la main.
+    host.addEventListener('pointerdown', claim, true);
+    host.addEventListener('focusin', claim);
 
     const ro = new ResizeObserver(() => {
-      doFit();
+      onHostResize();
     });
     ro.observe(host);
 
     link = openReconnectingSocket(wsUrl(`/ws/term/${sessionId}`), {
       onOpen: () => {
         reconnecting = false;
-        lastCols = 0;
-        lastRows = 0;
-        doFit();
+        // Ouvrir la session la prend en main ; une simple reconnexion ne la reprend pas à un autre poste.
+        const first = !connected;
+        connected = true;
+        if (first || owner) claim();
         flushPending();
         term.focus();
       },
       onMessage: (raw) => {
         const msg = parseTermServerMessage(raw);
         if (!msg) return;
-        if (msg.type === 'snapshot') {
+        if (msg.type === 'size') {
+          ptyCols = msg.cols;
+          ptyRows = msg.rows;
+          owner = ptyCols === claimedCols && ptyRows === claimedRows;
+          // Le poste qui a la main réajuste si sa fenêtre a bougé depuis sa demande (mise en page qui se stabilise).
+          if (owner) {
+            claim();
+          } else {
+            measure();
+            applySize();
+          }
+        } else if (msg.type === 'snapshot') {
           term.reset();
           term.write(msg.data);
         } else if (msg.type === 'output') {
@@ -271,7 +334,7 @@ export function Term({
       },
     });
     const firstFrame = requestAnimationFrame(() => {
-      doFit();
+      if (measure()) applySize();
       term.focus();
     });
 
@@ -286,6 +349,9 @@ export function Term({
       // eslint-disable-next-line react-hooks/exhaustive-deps
       onSelectionRef.current?.(false);
       host.removeEventListener('paste', onPaste, true);
+      host.removeEventListener('pointerdown', claim, true);
+      host.removeEventListener('focusin', claim);
+      claimRef.current = () => undefined;
       ro.disconnect();
       link?.close();
       term.dispose();
@@ -301,6 +367,17 @@ export function Term({
           {link.pending > 0 ? ` · ${link.pending} caractère${link.pending > 1 ? 's' : ''} en attente d’envoi` : ''}
           {link.dropped ? ' · frappes au-delà de la limite ignorées' : ''}
         </div>
+      ) : borrowed ? (
+        <button
+          type="button"
+          className="term-link term-size"
+          onClick={() => {
+            claimRef.current();
+          }}
+        >
+          Dimensions imposées par un autre écran ({borrowed.cols}×{borrowed.rows}) — cliquer ou taper pour les adapter à
+          cette fenêtre
+        </button>
       ) : null}
     </>
   );

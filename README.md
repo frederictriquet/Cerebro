@@ -350,6 +350,19 @@ mettre ses findings dans le backlog, puis les traiter séparément.
   La commande affiche les identifiants créés ; `--list`, `--depends` et
   `--delete` (tâches créées par la session) agissent avec le seul jeton de
   session. `cerebro-backlog --help` détaille l'usage.
+
+  Pour signaler depuis une session un besoin qui relève d'un autre projet
+  (typiquement une limite de Cerebro repérée en travaillant sur un autre
+  dépôt), `--project <nom|id>` en tête vise le backlog de ce projet :
+
+  ```sh
+  printf 'Tâche 1\n---\nTâche 2\n' | cerebro-backlog --project Cerebro --new-epic "Titre"
+  cerebro-backlog --project Cerebro --list
+  cerebro-backlog --projects                     # noms et identifiants
+  ```
+
+  Ailleurs que dans son projet, une session ne fait qu'ajouter et consulter :
+  elle n'y modifie ni ne clôture rien, et ne supprime que ce qu'elle y a créé.
 - **À la main** : en haut du backlog, l'onglet « Avec agent » crée une tâche
   confiée à un agent. L'onglet « Commande » crée une tâche qui lance une
   commande enregistrée pour le projet.

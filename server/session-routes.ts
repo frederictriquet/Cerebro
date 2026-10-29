@@ -398,6 +398,9 @@ export function registerSessionRoutes(ctx: RouteContext): void {
     }
 
     const unsubscribe = sessions.onTerminalEvent(id, (event) => sendSocket(socket, event));
+    // The size first: the snapshot is laid out for it, and a client writing it at another width garbles it.
+    const size = sessions.terminalSize(id);
+    if (size !== null) sendSocket(socket, { type: 'size', ...size });
     sendSocket(socket, { type: 'snapshot', data: snapshot });
     if (session.status === 'exited') sendSocket(socket, { type: 'exit', exitCode: session.exitCode });
 

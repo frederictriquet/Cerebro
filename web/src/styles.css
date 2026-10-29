@@ -2107,6 +2107,9 @@ a.btn:hover {
   position: absolute;
   inset: 0;
   padding: 8px 10px 10px;
+  /* Taille imposée par un écran plus grand : l'excédent est masqué plutôt que de déborder sur l'interface
+     (des barres de défilement fausseraient la mesure de la fenêtre). */
+  overflow: hidden;
 }
 
 .term-host .xterm {
@@ -2115,6 +2118,8 @@ a.btn:hover {
 
 .term-host .xterm-viewport {
   overflow-y: auto;
+  /* Noir par défaut chez xterm : visible sous une grille plus petite que la fenêtre (taille imposée par un autre écran). */
+  background-color: transparent;
 }
 
 .home.pane.padded {
@@ -3218,6 +3223,13 @@ a.btn:hover {
   font-size: 12px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
   pointer-events: none;
+}
+
+.term-link.term-size {
+  border-color: var(--accent);
+  color: var(--text);
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 .error-boundary {
