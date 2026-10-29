@@ -943,7 +943,7 @@ export class CerebroDatabase {
   }
 
   listTasks(): Task[] {
-    const edges = this.connection.prepare('SELECT task_id, depends_on_id FROM task_dependencies').all() as unknown as {
+    const edges = this.connection.prepare('SELECT task_id, depends_on_id FROM task_dependencies ORDER BY rowid').all() as unknown as {
       task_id: string;
       depends_on_id: string;
     }[];
@@ -961,7 +961,7 @@ export class CerebroDatabase {
 
   private taskDependencies(id: string): string[] {
     return (
-      this.connection.prepare('SELECT depends_on_id FROM task_dependencies WHERE task_id = ?').all(id) as unknown as {
+      this.connection.prepare('SELECT depends_on_id FROM task_dependencies WHERE task_id = ? ORDER BY rowid').all(id) as unknown as {
         depends_on_id: string;
       }[]
     ).map((row) => row.depends_on_id);
