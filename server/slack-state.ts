@@ -325,7 +325,7 @@ export interface SlackWatch {
   label?: string;
 }
 
-const WATCH_LABEL_MAX = 200;
+export const WATCH_LABEL_MAX = 200;
 
 export function slackWatchFrom(value: unknown): SlackWatch | null {
   if (

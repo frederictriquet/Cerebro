@@ -25,9 +25,30 @@ function messageContext(response: unknown): { channel: unknown; ts: unknown } | 
   return null;
 }
 
+const AUTO_LABEL_MAX = 60;
+
+/**
+ * Label of a watch started by a post: the first line of the message, Slack markup reduced to its text
+ * (`<url|texte>`, `<@U…>`, `*gras*`…), shortened. undefined when nothing readable remains.
+ */
+export function postedLabel(message: unknown): string | undefined {
+  if (typeof message !== 'string') return undefined;
+  const line =
+    message
+      .replace(/<([^<>|]*)\|([^<>]*)>/g, '$2')
+      .replace(/<([^<>]*)>/g, '$1')
+      .replace(/[*~`]+/g, '')
+      .split('\n')
+      .map((candidate) => candidate.replace(/\s+/g, ' ').trim())
+      .find((candidate) => candidate !== '') ?? '';
+  if (line === '') return undefined;
+  return line.length > AUTO_LABEL_MAX ? `${line.slice(0, AUTO_LABEL_MAX - 1).trimEnd()}…` : line;
+}
+
 /**
  * The thread to watch after a session posted through the Slack connector, from the PostToolUse payload: the
- * thread replied to, or the new top-level message, from just after the post. null when the tool posts nothing to
+ * thread replied to, or the new top-level message, from just after the post, labelled with the start of the
+ * message. null when the tool posts nothing to
  * watch; a string, the reason, when the payload does not have the expected shape.
  */
 export function postedWatchRequest(payload: Record<string, unknown>): WatchRequest | string | null {
@@ -40,7 +61,7 @@ export function postedWatchRequest(payload: Record<string, unknown>): WatchReque
   if (tool === SCHEDULE_TOOL) {
     // A scheduled top-level message has no timestamp until Slack posts it: nothing to watch yet.
     if (threadTs === undefined) return null;
-    const request = watchRequestFrom({ channel: input.channel_id, threadTs });
+    const request = watchRequestFrom({ channel: input.channel_id, threadTs, label: postedLabel(input.message) });
     return typeof request === 'string' ? `${tool} : ${request}` : request;
   }
   const context = messageContext(payload.tool_response);
@@ -49,6 +70,7 @@ export function postedWatchRequest(payload: Record<string, unknown>): WatchReque
     channel: typeof context.channel === 'string' ? context.channel : input.channel_id,
     threadTs: threadTs ?? context.ts,
     since: context.ts,
+    label: postedLabel(input.message),
   });
   return typeof request === 'string' ? `${tool} : ${request}` : request;
 }

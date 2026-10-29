@@ -195,7 +195,23 @@ export async function setSlackWatchDelivery(
   watchId: string,
   deliver: WatchDelivery[] | null,
 ): Promise<void> {
-  await api(apiPath`/api/slack/watches/${sessionId}/${watchId}`, { method: 'PATCH', body: JSON.stringify({ deliver }) });
+  await api(apiPath`/api/slack/watches/${sessionId}/${watchId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ deliver }),
+  });
+}
+
+// A Slack link (thread, message or channel), watched for the session; asked again, the watch is renewed.
+export async function addSlackWatch(sessionId: string, link: string, label?: string): Promise<void> {
+  await api(apiPath`/api/slack/watches/${sessionId}`, {
+    method: 'POST',
+    body: JSON.stringify({ link, ...(label === undefined ? {} : { label }) }),
+  });
+}
+
+// Empty label: the watch shows its channel and thread again.
+export async function setSlackWatchLabel(sessionId: string, watchId: string, label: string): Promise<void> {
+  await api(apiPath`/api/slack/watches/${sessionId}/${watchId}`, { method: 'PATCH', body: JSON.stringify({ label }) });
 }
 
 export async function removeSlackWatch(sessionId: string, watchId: string): Promise<void> {

@@ -23,6 +23,7 @@ const { PeerSync } = await import('../server/peers.ts');
 const { buildServer } = await import('../server/index.ts');
 const { DAY_MS } = await import('../server/slack-state.ts');
 const { parseSlackPermalink } = await import('../bin/slack-permalink.mjs');
+const { postedLabel } = await import('../server/slack-auto-watch.ts');
 mock.method(UpdateManager.prototype, 'start', () => {});
 mock.method(PeerSync.prototype, 'sync', async function () {
   this.markReady();
@@ -250,13 +251,18 @@ test('un post Slack de la session fait surveiller son fil', async () => {
   assert.equal(watch.channel, 'C0C7TN7UBKL');
   assert.equal(watch.threadTs, '1791814714.374869');
   assert.equal(watch.lastTs, '1792072444.259979');
+  // Libellée par le début du message posté.
+  assert.equal(watch.label, 'TYPE: status');
 
-  // Second post dans le même fil : renouvelée, pas dupliquée.
+  // Second post dans le même fil : renouvelée, pas dupliquée, et son libellé reste celui du premier post.
   await sendMessage(
     { channel_id: 'C0C7TN7UBKL', thread_ts: '1791814714.374869', message: 'suite' },
     connectorResponse('C0C7TN7UBKL', '1792072959.696299', '1791814714.374869'),
   );
-  assert.equal((await watchesNow()).length, 1);
+  assert.deepEqual(
+    (await watchesNow()).map(({ label }) => label),
+    ['TYPE: status'],
+  );
 
   // Message de niveau haut adressé à un utilisateur : le ts retourné devient le fil, dans le DM réel (D…).
   await sendMessage(
@@ -266,6 +272,7 @@ test('un post Slack de la session fait surveiller son fil', async () => {
   watch = (await watchesNow()).find((candidate) => candidate.channel === 'D08S6E8KHQA');
   assert.equal(watch?.threadTs, '1792062453.744629');
   assert.equal(watch.lastTs, '1792062453.744629');
+  assert.equal(watch.label, 'test de notification');
 
   // Message programmé dans un fil : le fil est surveillé ; programmé au niveau haut : rien à surveiller encore.
   await postHook({
@@ -299,6 +306,58 @@ test('un post Slack de la session fait surveiller son fil', async () => {
   });
   assert.equal((await watchesNow()).length, 3);
   assert.equal(savedWatches()[session.id].length, 3);
+});
+
+test('le libellé automatique garde le texte de la première ligne du message', () => {
+  assert.equal(
+    postedLabel('\n  *PMO* : voir <https://x.test/a|la MR !320> pour <@U08RYK1E6UX>, `gated_by`\nsuite'),
+    'PMO : voir la MR !320 pour @U08RYK1E6UX, gated_by',
+  );
+  assert.equal(postedLabel(`${'a'.repeat(80)}`), `${'a'.repeat(59)}…`);
+  assert.equal(postedLabel(' \n* *'), undefined);
+  assert.equal(postedLabel(undefined), undefined);
+});
+
+test('un post dans un fil déjà libellé par cerebro-slack-watch garde ce libellé', async () => {
+  for (const watch of await watchesNow()) await send('DELETE', `/${watch.id}`);
+  await send('POST', '', { channel: 'C0C7TN7UBKL', threadTs: '1791814714.374869', label: 'Statut PMO' });
+  await sendMessage(
+    { channel_id: 'C0C7TN7UBKL', thread_ts: '1791814714.374869', message: 'TYPE: status' },
+    connectorResponse('C0C7TN7UBKL', '1792072444.259979', '1791814714.374869'),
+  );
+  assert.deepEqual(
+    (await watchesNow()).map(({ label }) => label),
+    ['Statut PMO'],
+  );
+});
+
+test("l'interface web ajoute une surveillance à partir d'un lien Slack", async () => {
+  for (const watch of await watchesNow()) await send('DELETE', `/${watch.id}`);
+  const add = (payload, id = session.id) => app.inject({ method: 'POST', url: `/api/slack/watches/${id}`, payload });
+  const link = 'https://acme.slack.com/archives/C0C7TN7UBKL/p1791814714374869';
+
+  const created = await add({ link: ` ${link} `, label: ' Statut PMO ' });
+  assert.equal(created.statusCode, 201);
+  assert.equal(created.json().watch.channel, 'C0C7TN7UBKL');
+  assert.equal(created.json().watch.threadTs, '1791814714.374869');
+  assert.equal(created.json().watch.label, 'Statut PMO');
+  // Le même lien renouvelle la surveillance ; un lien de canal surveille son niveau principal.
+  assert.equal((await add({ link })).statusCode, 200);
+  const channel = await add({ link: 'https://acme.slack.com/archives/C0C7TN7UBKL' });
+  assert.equal(channel.statusCode, 201);
+  assert.equal(channel.json().watch.threadTs, null);
+  assert.deepEqual(
+    (await watchesNow()).map(({ threadTs, label }) => [threadTs, label]),
+    [
+      ['1791814714.374869', 'Statut PMO'],
+      [null, undefined],
+    ],
+  );
+
+  for (const payload of [{}, { link: 'C0C7TN7UBKL' }, { link: 'https://example.com/archives/C1/p1700000000000100' }])
+    assert.equal((await add(payload)).statusCode, 400);
+  assert.equal((await add({ link, label: 'x'.repeat(201) })).statusCode, 400);
+  assert.equal((await add({ link }, randomUUID())).statusCode, 404);
 });
 
 test('watchAutoOnPost désactivé : un post Slack ne surveille rien', async () => {
@@ -374,6 +433,28 @@ test("l'interface web règle la surveillance, liste toutes les surveillances et 
   assert.deepEqual(savedWatches()[session.id][0].deliver, ['inject', 'notify']);
   for (const payload of [{ deliver: [] }, { deliver: ['post'] }, {}])
     assert.equal((await deliver(payload)).statusCode, 400);
+  // Libellé renommé, puis retiré (vide) ; la remise n'en est pas touchée.
+  const renamed = await deliver({ label: '  Statut PMO ' });
+  assert.equal(renamed.statusCode, 200);
+  assert.equal(renamed.json().watch.label, 'Statut PMO');
+  assert.deepEqual(renamed.json().watch.deliver, ['inject', 'notify']);
+  assert.equal(savedWatches()[session.id][0].label, 'Statut PMO');
+  for (const payload of [{ label: 'x'.repeat(201) }, { label: 3 }, { label: null }])
+    assert.equal((await deliver(payload)).statusCode, 400);
+  assert.equal((await deliver({ label: '' })).json().watch.label, undefined);
+  assert.equal(savedWatches()[session.id][0].label, undefined);
+  const both = await deliver({ deliver: ['dm'], label: 'Les deux' });
+  assert.deepEqual([both.json().watch.deliver, both.json().watch.label], [['dm'], 'Les deux']);
+  assert.equal(
+    (
+      await app.inject({
+        method: 'PATCH',
+        url: `/api/slack/watches/${session.id}/inconnue`,
+        payload: { label: 'x' },
+      })
+    ).statusCode,
+    404,
+  );
   const reset = await deliver({ deliver: null });
   assert.equal(reset.statusCode, 200);
   assert.equal(reset.json().watch.deliver, undefined);

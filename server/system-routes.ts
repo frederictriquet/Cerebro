@@ -9,7 +9,8 @@ import { asRecord } from './util.ts';
 import { error, routeErrors, statusCodeOf } from './routes-util.ts';
 import { orError, type RouteContext } from './route-context.ts';
 import { WatchError } from './slack.ts';
-import { deliveryModes } from './slack-state.ts';
+import { deliveryModes, WATCH_LABEL_MAX, watchRequestFrom } from './slack-state.ts';
+import { parseSlackPermalink } from '../bin/slack-permalink.mjs';
 import { WATCH_DELIVERIES } from '../shared/machine.ts';
 
 const { orError: watchOrError } = routeErrors(statusCodeOf(WatchError, 500));
@@ -99,6 +100,24 @@ export function registerSystemRoutes(ctx: RouteContext): void {
   // Watched threads and channels of every session; the web UI filters them by project or session.
   app.get('/api/slack/watches', async () => notifier.allWatches());
 
+  // Watch added from the web UI: a Slack link (thread, message or channel) and an optional label.
+  app.post<{ Params: { sessionId: string } }>('/api/slack/watches/:sessionId', async (request, reply) => {
+    if (db.getSession(request.params.sessionId) === null) return error(reply, 404, 'Session introuvable');
+    const body = asRecord(request.body);
+    const link = typeof body?.link === 'string' ? parseSlackPermalink(body.link.trim()) : null;
+    const asked =
+      link === null
+        ? 'Lien Slack attendu (« Copier le lien » d’un message ou d’un canal)'
+        : watchRequestFrom({ ...link, ...(body?.label === undefined ? {} : { label: body.label }) });
+    const result = await watchOrError(reply, () => {
+      notifier.requireWatches();
+      if (typeof asked === 'string') throw new WatchError(400, asked);
+      return notifier.addWatch(request.params.sessionId, asked);
+    });
+    if (!result.ok) return result.reply;
+    return reply.code(result.value.renewed ? 200 : 201).send(result.value);
+  });
+
   app.delete<{ Params: { sessionId: string; watchId: string } }>(
     '/api/slack/watches/:sessionId/:watchId',
     async (request, reply) => {
@@ -111,17 +130,29 @@ export function registerSystemRoutes(ctx: RouteContext): void {
     },
   );
 
-  // Delivery of one watch: a non-empty list of modes, or null to follow the settings again.
+  // Delivery of one watch (a non-empty list of modes, or null to follow the settings again) and/or its label
+  // (empty to remove it).
   app.patch<{ Params: { sessionId: string; watchId: string } }>(
     '/api/slack/watches/:sessionId/:watchId',
     async (request, reply) => {
-      const asked = asRecord(request.body)?.deliver;
+      const body = asRecord(request.body) ?? {};
+      const { sessionId, watchId } = request.params;
+      const asked = body.deliver;
       const deliver = asked === null ? null : deliveryModes(asked, WATCH_DELIVERIES, false);
+      const label = typeof body.label === 'string' ? body.label.trim() : null;
       const result = await watchOrError(reply, () => {
         notifier.requireWatches();
-        if (asked !== null && deliver === null)
-          throw new WatchError(400, `deliver attendu : null ou un ou plusieurs modes parmi ${WATCH_DELIVERIES.join(', ')}`);
-        return notifier.setWatchDelivery(request.params.sessionId, request.params.watchId, deliver);
+        if (asked === undefined && body.label === undefined) throw new WatchError(400, 'deliver ou label attendu');
+        if (asked !== undefined && asked !== null && deliver === null)
+          throw new WatchError(
+            400,
+            `deliver attendu : null ou un ou plusieurs modes parmi ${WATCH_DELIVERIES.join(', ')}`,
+          );
+        if (body.label !== undefined && (label === null || label.length > WATCH_LABEL_MAX))
+          throw new WatchError(400, `Libellé invalide : ${WATCH_LABEL_MAX} caractères au plus`);
+        let watch = asked === undefined ? undefined : notifier.setWatchDelivery(sessionId, watchId, deliver);
+        if (label !== null && watch !== null) watch = notifier.setWatchLabel(sessionId, watchId, label);
+        return watch ?? null;
       });
       if (!result.ok) return result.reply;
       if (result.value === null) return error(reply, 404, 'Surveillance introuvable');

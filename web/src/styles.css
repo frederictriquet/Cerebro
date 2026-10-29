@@ -3140,20 +3140,102 @@ a.btn:hover {
   margin: 0;
 }
 
-.slack-watch-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.slack-watches h2 {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
 }
 
-.slack-watch {
+.slack-watches h2 .slack-watch-btn {
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.slack-watch-add {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 16px;
-  padding: 8px 0;
+  gap: 4px 8px;
+  margin: 4px 0 2px;
+  font-size: 12px;
+}
+
+.slack-watch-add input,
+.slack-watch-add select {
+  width: auto;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+.slack-watch-add select {
+  flex: 0 1 auto;
+  max-width: 220px;
+}
+
+.slack-watch-add-link {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.slack-watch-add-label {
+  flex: 0 1 200px;
+  min-width: 0;
+}
+
+.slack-watch-add .form-error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.slack-watches:not(.compact) {
+  padding: 8px 14px;
+}
+
+.slack-watches-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.slack-watches-toggle:hover,
+.slack-watches-toggle:focus-visible {
+  color: var(--text);
+}
+
+/* Une ligne par fil, colonnes alignées d'un fil à l'autre ; seul le titre se tronque. */
+.slack-watch-list {
+  list-style: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(4, auto);
+  column-gap: 14px;
+  margin: 4px 0 0;
+  padding: 0;
+  font-size: 12px;
+}
+
+.slack-watches:not(.compact) .slack-watch-list {
+  grid-template-columns: minmax(0, 1fr) repeat(5, auto);
+}
+
+.slack-watch-list[hidden] {
+  display: none;
+}
+
+.slack-watch {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  padding: 1px 0;
   border-top: 1px solid var(--line);
 }
 
@@ -3161,34 +3243,83 @@ a.btn:hover {
   border-top: 0;
 }
 
-.slack-watch-main {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1 1 220px;
-  min-width: 0;
-  overflow-wrap: anywhere;
+.slack-watch > * {
+  white-space: nowrap;
 }
 
-.slack-watch-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 12px;
+.slack-watch-main {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slack-watch .meta {
+  font-size: 11px;
+}
+
+.slack-watch-label {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: text;
+}
+
+.slack-watch-label:hover:not(:disabled) {
+  text-decoration: underline dotted;
+}
+
+.slack-watch-label-input {
+  width: 260px;
+  max-width: 60%;
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.slack-watch-session {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .slack-watch-deliver {
+  display: flex;
   align-items: center;
-  flex: 1 1 100%;
-}
-
-.slack-watch-deliver legend {
-  float: left;
-  width: auto;
+  gap: 0 8px;
   margin: 0;
+  padding: 0;
+  border: 0;
 }
 
-.slack-watch-deliver .meta {
-  width: auto;
+.slack-watch-deliver .slack-toggle {
+  gap: 3px;
+}
+
+.slack-watch-btn {
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+/* Écran étroit : les éléments d'un fil passent à la ligne au lieu de déborder. */
+@media (max-width: 760px) {
+  .slack-watch-list,
+  .slack-watches:not(.compact) .slack-watch-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .slack-watch {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 12px;
+  }
+
+  .slack-watch-main {
+    flex: 1 1 100%;
+  }
 }
 
 .slack-watches.compact {
@@ -3196,18 +3327,13 @@ a.btn:hover {
   max-height: 30vh;
   overflow: auto;
   margin: 0;
-  padding: 6px 14px;
+  padding: 4px 14px;
   border-width: 0 0 1px;
   border-radius: 0;
 }
 
 .slack-watches.compact h2 {
-  font-size: 13px;
-  margin: 0 0 2px;
-}
-
-.slack-watches.compact .slack-watch {
-  padding: 4px 0;
+  font-size: 11px;
 }
 
 .peer-conflict {

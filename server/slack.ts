@@ -279,9 +279,21 @@ export class SlackNotifier {
     return watch;
   }
 
+  /** Renames one watch, or (empty label) removes its label; null when there is no such watch. */
+  setWatchLabel(sessionId: string, watchId: string, label: string): SlackWatch | null {
+    this.requireWatches();
+    const watch = this.state.watches.get(sessionId)?.find((candidate) => candidate.id === watchId);
+    if (watch === undefined) return null;
+    if (label === '') delete watch.label;
+    else watch.label = label;
+    this.state.changed();
+    this.reportWatches();
+    return watch;
+  }
+
   /**
    * After the session posted through the Slack connector (PostToolUse), watches that thread so replies reach it
-   * without a polling loop (`watchAutoOnPost`). A payload of an unexpected shape is only logged.
+   * without a polling loop (`watchAutoOnPost`), labelled with the start of the message. A payload of an unexpected shape is only logged.
    */
   watchAfterPost(sessionId: string, payload: Record<string, unknown>): void {
     if (!SLACK_WATCH_ENABLED || !this.settings.watchAutoOnPost) return;
@@ -291,8 +303,13 @@ export class SlackNotifier {
       console.warn(`[slack] surveillance automatique ignorée : ${request}`);
       return;
     }
+    // A thread already watched keeps its label: the one given by cerebro-slack-watch, or the first post's.
+    const { label, ...fields } = request;
+    const known = this.state.watches
+      .get(sessionId)
+      ?.some((watch) => watch.channel === fields.channel && watch.threadTs === fields.threadTs);
     try {
-      this.addWatch(sessionId, request);
+      this.addWatch(sessionId, known === true || label === undefined ? fields : { ...fields, label });
     } catch (error) {
       console.warn('[slack] surveillance automatique refusée :', error instanceof Error ? error.message : error);
     }
