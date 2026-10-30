@@ -11,6 +11,7 @@ import { UsageGauges } from './UsageGauges.tsx';
 import { WorktreeLabel } from './WorktreeLabel.tsx';
 import { SessionEpicBadge } from './SessionEpicBadge.tsx';
 import { NumberSetting, SLACK_ALERT_TOGGLES, SlackWatchSettings } from './SlackWatchSettings.tsx';
+import { projectSlackLabel } from './ProjectSlackDialog.tsx';
 import type { Session } from '../../shared/types.ts';
 import type { GeneralSlackStatus, SlackSettings, SlackStatus } from '../../shared/machine.ts';
 import { useSessionPreview } from './ScreenPreview.tsx';
@@ -93,7 +94,7 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
           Notif
         </button>
       </header>
-      {showSlack && slack !== null ? <SlackPanel status={slack} onChange={setSlack} /> : null}
+      {showSlack && slack !== null ? <SlackPanel status={slack} onChange={setSlack} onNavigate={onNavigate} /> : null}
 
       <section className="side-section side-attention">
         <h2>
@@ -123,7 +124,15 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
   );
 }
 
-function SlackPanel({ status, onChange }: { status: SlackStatus; onChange: (status: SlackStatus) => void }) {
+function SlackPanel({
+  status,
+  onChange,
+  onNavigate,
+}: {
+  status: SlackStatus;
+  onChange: (status: SlackStatus) => void;
+  onNavigate: () => void;
+}) {
   const [error, setError] = useState<string | null>(null);
 
   const save = async (patch: Partial<SlackSettings>): Promise<void> => {
@@ -143,6 +152,7 @@ function SlackPanel({ status, onChange }: { status: SlackStatus; onChange: (stat
       {status.enabled ? null : (
         <p className="empty-hint">Slack n'est pas configuré : ces réglages s'appliqueront une fois le jeton défini.</p>
       )}
+      <ProjectSlackOverrides onNavigate={onNavigate} />
       {SLACK_ALERT_TOGGLES.map((toggle) => (
         <label key={toggle.key} className="slack-toggle" title={toggle.hint}>
           <input
@@ -170,6 +180,35 @@ function SlackPanel({ status, onChange }: { status: SlackStatus; onChange: (stat
       <SlackWatchSettings status={status} save={(patch) => void save(patch)} onError={setError} />
       {error ? <p className="form-error">{error}</p> : null}
     </div>
+  );
+}
+
+// Ces réglages ne valent pas pour les projets qui ont les leurs : on les nomme pour éviter de chercher ici leur effet.
+function ProjectSlackOverrides({ onNavigate }: { onNavigate: () => void }) {
+  const { projects } = useStore();
+  const overrides = projects.flatMap((project) => {
+    const label = projectSlackLabel(project);
+    return label === null ? [] : [{ project, label }];
+  });
+  if (overrides.length === 0) return null;
+  return (
+    <p className="meta">
+      Remplacés par leurs propres réglages :{' '}
+      {overrides.map(({ project, label }, index) => (
+        <span key={project.id}>
+          {index > 0 ? ', ' : null}
+          <a
+            href={href(`#/p/${encodeURIComponent(project.id)}`)}
+            title="Ce projet a ses propres réglages Slack : bouton Slack de son en-tête"
+            onClick={onNavigate}
+          >
+            {project.name}
+          </a>{' '}
+          ({label})
+        </span>
+      ))}
+      .
+    </p>
   );
 }
 
