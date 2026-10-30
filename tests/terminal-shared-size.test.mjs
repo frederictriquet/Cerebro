@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -24,7 +24,7 @@ after(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-// Stand-in for server/holder.ts: announces a 100x30 PTY and ignores what it is sent.
+// Stand-in for server/holder.ts: announces a 100x30 PTY and records what it is sent next to its config.
 const FAKE_HOLDER = `
 const net = require('node:net');
 const fs = require('node:fs');
@@ -32,6 +32,7 @@ const socketPath = process.argv[1].replace(/\\.config\\.json$/, '.sock');
 try { fs.unlinkSync(socketPath); } catch {}
 net.createServer((socket) => {
   socket.on('error', () => {});
+  socket.on('data', (chunk) => fs.appendFileSync(process.argv[1] + '.received', chunk));
   socket.write(JSON.stringify({ type: 'hello', cols: 100, rows: 30 }) + '\\n');
   socket.write(JSON.stringify({ type: 'snapshot', data: '' }) + '\\n');
 }).listen(socketPath);
@@ -98,6 +99,26 @@ test('a resize from one viewer is broadcast so every viewer renders at the PTY s
     // Same size again: nothing to tell the viewers.
     manager.resize(id, 180, 50);
     assert.equal(pc.length, 1);
+
+    // A forced refresh reaches the holder even at the same size, so the application redraws.
+    assert.equal(manager.resize(id, 180, 50, true), true);
+    assert.equal(pc.length, 1);
+    const received = () =>
+      existsSync(`${configPath}.received`)
+        ? readFileSync(`${configPath}.received`, 'utf8')
+            .split('\n')
+            .filter(Boolean)
+            .map((line) => JSON.parse(line))
+        : [];
+    await until(() => received().some((msg) => msg.force === true), 3_000, 'forced resize never reached the holder');
+    assert.deepEqual(
+      received().filter((msg) => msg.type === 'resize'),
+      [
+        { type: 'resize', cols: 180, rows: 50 },
+        { type: 'resize', cols: 180, rows: 50 },
+        { type: 'resize', cols: 180, rows: 50, force: true },
+      ],
+    );
   } finally {
     await manager.shutdown();
     db.close();

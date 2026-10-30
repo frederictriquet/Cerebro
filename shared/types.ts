@@ -170,6 +170,8 @@ export interface CouncilRun {
   // Images jointes, transmises à chaque appel (réponses, relectures, synthèse).
   images: CouncilImage[];
   readProject: boolean;
+  // Les conseillers peuvent chercher sur le web et lire des pages pour répondre.
+  webAccess: boolean;
   // Copies figées au lancement.
   settings: CouncilSettings;
   advisors: Advisor[];
@@ -362,7 +364,10 @@ export type EventsMessage =
   | { type: 'epic-run'; run: EpicRun }
   | { type: 'command-run'; run: Omit<CommandRun, 'output'> };
 
-export type TermClientMessage = { type: 'input'; data: string } | { type: 'resize'; cols: number; rows: number };
+export type TermClientMessage =
+  | { type: 'input'; data: string }
+  // force : l'application est prévenue du redimensionnement même si la taille ne change pas, et se redessine.
+  | { type: 'resize'; cols: number; rows: number; force?: boolean };
 
 export type TermServerMessage =
   | { type: 'snapshot'; data: string }
@@ -542,6 +547,7 @@ export function parseCouncilRun(v: unknown): CouncilRun | null {
     context: asString(v.context) ?? '',
     images: parseItems(v.images, parseCouncilImage),
     readProject: v.readProject === true,
+    webAccess: v.webAccess === true,
     settings,
     advisors: parseItems(v.advisors, parseAdvisor),
     status,

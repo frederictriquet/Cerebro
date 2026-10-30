@@ -411,7 +411,7 @@ export function registerSessionRoutes(ctx: RouteContext): void {
         if (record?.type === 'input' && typeof record.data === 'string') {
           sessions.writeInput(id, record.data);
         } else if (record?.type === 'resize' && typeof record.cols === 'number' && typeof record.rows === 'number') {
-          sessions.resize(id, record.cols, record.rows);
+          sessions.resize(id, record.cols, record.rows, record.force === true);
         }
       } catch {
         // Ignore malformed websocket messages.

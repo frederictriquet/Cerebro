@@ -25,6 +25,8 @@ export interface HeadlessOptions {
   /** Working directory of the agent. Defaults to an empty private directory, removed afterwards. */
   cwd?: string;
   access: HeadlessAccess;
+  /** Lets the agent search the web and fetch pages, whatever its file access. */
+  web?: boolean;
   timeoutMs: number;
   signal: AbortSignal;
   /** Absolute paths of images attached to the prompt itself, so the agent sees them without any tool. */
@@ -33,6 +35,11 @@ export interface HeadlessOptions {
 }
 
 const READ_TOOLS = ['Read', 'Glob', 'Grep'];
+const WEB_TOOLS = ['WebSearch', 'WebFetch'];
+
+function toolNames(access: HeadlessAccess, web: boolean): string[] {
+  return [...(access === 'none' ? [] : READ_TOOLS), ...(web ? WEB_TOOLS : [])];
+}
 
 /** Image formats accepted as attachments, by file extension (lower case, without the dot). */
 export const IMAGE_MEDIA_TYPES: Readonly<Record<string, string>> = {
@@ -136,6 +143,7 @@ const CODEX_USER_SETTINGS = [
 
 function codexArgs(
   access: HeadlessAccess,
+  web: boolean,
   schema: string,
   output: string,
   model: string | null,
@@ -162,7 +170,7 @@ function codexArgs(
     '-c',
     'approval_policy="never"',
     '-c',
-    'web_search="disabled"',
+    `web_search="${web ? 'live' : 'disabled'}"`,
     ...images.flatMap((image) => ['--image', image]),
     '--output-schema',
     schema,
@@ -179,10 +187,12 @@ function codexArgs(
   return [...args, ...tuningArgs('codex', { model, effort })];
 }
 
-function claudeArgs(access: HeadlessAccess, schema: string, withImages: boolean): string[] {
+function claudeArgs(access: HeadlessAccess, web: boolean, schema: string, withImages: boolean): string[] {
+  // `dontAsk` refuses web tools unless an allow rule names them, while file reads need no rule.
   // Tool permissions do not constrain hooks or commands from project/local settings.
   // Keep user settings for authentication, and explicitly disable customization hooks.
   // Images can only travel inside a stream-json user message, which requires stream-json output (and `--verbose`).
+  const tools = toolNames(access, web);
   const format = withImages
     ? ['--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json']
     : ['--output-format', 'json'];
@@ -192,7 +202,8 @@ function claudeArgs(access: HeadlessAccess, schema: string, withImages: boolean)
     '--json-schema',
     schema,
     '--tools',
-    access === 'none' ? '' : READ_TOOLS.join(','),
+    tools.join(','),
+    ...(web ? ['--allowedTools', WEB_TOOLS.join(',')] : []),
     '--strict-mcp-config',
     '--mcp-config',
     '{"mcpServers":{}}',
@@ -204,7 +215,7 @@ function claudeArgs(access: HeadlessAccess, schema: string, withImages: boolean)
     'dontAsk',
     '--no-session-persistence',
     '--disable-slash-commands',
-    ...(access === 'none' ? [] : ['--max-turns', '30']),
+    ...(tools.length === 0 ? [] : ['--max-turns', '30']),
   ];
 }
 
@@ -222,14 +233,16 @@ async function claudeImageMessage(prompt: string, images: readonly string[]): Pr
   return `${JSON.stringify({ type: 'user', message: { role: 'user', content: blocks } })}\n`;
 }
 
-function grokArgs(access: HeadlessAccess, schema: string, input: string): string[] {
-  // Grok 1.0.67 accepts Claude's tool names: `--tools Read,Glob,Grep` (an unknown name only warns and leaves every tool on).
+function grokArgs(access: HeadlessAccess, web: boolean, schema: string, input: string): string[] {
+  // Grok 1.0.67 accepts Claude's tool names: `--tools Read,Glob,Grep,WebSearch,WebFetch` (an unknown name only warns
+  // and leaves every tool on).
   // Plan mode is not used: it targets an interactive plan approval, while the tool allow-list plus `dontAsk`
   // already leaves no write or shell tool, and the explicit `--allow` rules keep reads from being refused.
+  const names = toolNames(access, web);
   const tools =
-    access === 'none'
+    names.length === 0
       ? ['--tools', '', '--deny', '*']
-      : ['--tools', READ_TOOLS.join(','), ...READ_TOOLS.flatMap((tool) => ['--allow', tool])];
+      : ['--tools', names.join(','), ...names.flatMap((tool) => ['--allow', tool])];
   return [
     '--prompt-file',
     input,
@@ -239,9 +252,9 @@ function grokArgs(access: HeadlessAccess, schema: string, input: string): string
     schema,
     ...tools,
     '--no-subagents',
-    '--disable-web-search',
+    ...(web ? [] : ['--disable-web-search']),
     '--max-turns',
-    access === 'none' ? '2' : '30',
+    names.length === 0 ? '2' : '30',
     '--permission-mode',
     'dontAsk',
   ];
@@ -250,6 +263,7 @@ function grokArgs(access: HeadlessAccess, schema: string, input: string): string
 /** Runs one non-interactive claude/codex/grok inference and returns its structured output, validated against `schema`. */
 export async function runHeadless(options: HeadlessOptions): Promise<unknown> {
   const { agent, model, effort, prompt, access, timeoutMs, signal } = options;
+  const web = options.web === true;
   const images = options.images ?? [];
   const messages: HeadlessMessages = {
     timeout: `L’agent a dépassé le délai de ${Math.round(timeoutMs / 1000)} s.`,
@@ -272,10 +286,12 @@ export async function runHeadless(options: HeadlessOptions): Promise<unknown> {
     // What the CLI reads on stdin: the prompt, or for Claude with images the stream-json turn that embeds them.
     let stdin: string | undefined = prompt;
     if (agent === 'codex') {
-      args = [...codexArgs(access, schema, output, model, effort, images), '-'];
+      args = [...codexArgs(access, web, schema, output, model, effort, images), '-'];
     } else {
       args =
-        agent === 'claude' ? claudeArgs(access, schemaText, images.length > 0) : grokArgs(access, schemaText, input);
+        agent === 'claude'
+          ? claudeArgs(access, web, schemaText, images.length > 0)
+          : grokArgs(access, web, schemaText, input);
       if (agent === 'claude' && images.length > 0) stdin = await claudeImageMessage(prompt, images);
       if (agent === 'grok') stdin = undefined;
       args.push(...tuningArgs(agent, { model, effort }));

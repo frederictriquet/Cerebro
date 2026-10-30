@@ -26,7 +26,9 @@ export interface ExitRecord {
 
 /** Server → holder, one JSON object per line. */
 export type ClientMessage =
-  { type: 'input'; data: string } | { type: 'resize'; cols: number; rows: number } | { type: 'kill'; signal: string };
+  | { type: 'input'; data: string }
+  | { type: 'resize'; cols: number; rows: number; force?: boolean }
+  | { type: 'kill'; signal: string };
 
 /** Holder → server, one JSON object per line. */
 export type HolderMessage =

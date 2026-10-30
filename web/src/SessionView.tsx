@@ -584,6 +584,18 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           <div className="row-actions">
             <SessionCouncilButton session={session} onError={setError} />
             <SessionGitActions sessionId={session.id} />
+            {live ? (
+              <button
+                type="button"
+                className="btn"
+                title="Réajuster le terminal à cette fenêtre et forcer la session à se redessiner"
+                onClick={() => {
+                  if (!termApi.current?.refreshSize()) setError('Terminal non connecté : dimensions non rafraîchies');
+                }}
+              >
+                Redimensionner
+              </button>
+            ) : null}
             <SessionActions
               session={session}
               emphasizeResume

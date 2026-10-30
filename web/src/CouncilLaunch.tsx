@@ -163,6 +163,7 @@ function CouncilLaunchForm({ projectId, draftKey: ownDraftKey, initialContext, e
   // Agent, modèle et effort choisis pour ce lancement seulement.
   const [overrides, setOverrides] = useState<Record<string, Llm>>({});
   const [readProject, setReadProject] = useState<boolean | null>(null);
+  const [webAccess, setWebAccess] = useState(false);
   const [runs, setRuns] = useState<CouncilRun[] | null>(null);
   const [runsError, setRunsError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -294,6 +295,7 @@ function CouncilLaunchForm({ projectId, draftKey: ownDraftKey, initialContext, e
         question: draft.question.trim(),
         context: draft.context.trim() || undefined,
         readProject: scope !== null && readProject === true,
+        webAccess,
         participants,
         ...(uploadedImages.length === 0
           ? {}
@@ -381,8 +383,19 @@ function CouncilLaunchForm({ projectId, draftKey: ownDraftKey, initialContext, e
             </span>
           </label>
         ) : (
-          <p className="hint">Hors projet : les conseillers répondent sans outils ni accès aux fichiers.</p>
+          <p className="hint">Hors projet : les conseillers répondent sans accès aux fichiers.</p>
         )}
+        <label className="council-read-project">
+          <input
+            type="checkbox"
+            checked={webAccess}
+            disabled={busy}
+            onChange={(event) => setWebAccess(event.target.checked)}
+          />
+          <span>
+            Donner accès au web<span className="hint"> : recherche et lecture de pages pendant les réponses.</span>
+          </span>
+        </label>
 
         <section className="council-settings-section">
           <div className="council-settings-head">

@@ -943,7 +943,7 @@ export class SessionManager {
     return session ? (this.db.getProject(session.projectId)?.path ?? null) : null;
   }
 
-  resize(id: string, cols: number, rows: number): boolean {
+  resize(id: string, cols: number, rows: number, force = false): boolean {
     const runtime = this.runtimes.get(id);
     if (runtime === undefined) return false;
     if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return false;
@@ -951,7 +951,7 @@ export class SessionManager {
     runtime.cols = cols;
     runtime.rows = rows;
     runtime.terminal.resize(cols, rows);
-    const sent = this.sendHolder(runtime, { type: 'resize', cols, rows });
+    const sent = this.sendHolder(runtime, force ? { type: 'resize', cols, rows, force } : { type: 'resize', cols, rows });
     if (changed) this.broadcastSize(runtime);
     return sent;
   }

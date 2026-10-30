@@ -52,6 +52,8 @@ export interface CouncilStart {
   context?: string;
   // Ignoré hors projet ; absent : valeur par défaut des réglages effectifs.
   readProject?: boolean;
+  // Absent : sans accès web.
+  webAccess?: boolean;
   // Absent : participants par défaut des réglages effectifs.
   participants?: unknown;
   // Images jointes `[{n, path}]`, enregistrées au préalable sous le dossier des pièces jointes.
@@ -231,6 +233,8 @@ export class CouncilRuns {
       throw new CouncilError(`Contexte invalide (${MAX_CONTEXT_LENGTH} caractères au plus).`);
     if (input.readProject !== undefined && typeof input.readProject !== 'boolean')
       throw new CouncilError('Option de lecture du projet invalide.');
+    if (input.webAccess !== undefined && typeof input.webAccess !== 'boolean')
+      throw new CouncilError('Option d’accès web invalide.');
     const previous = this.reuse(requestId, input.projectId, question);
     if (previous !== null) return previous;
     let project = this.projectForStart(input.projectId);
@@ -265,6 +269,7 @@ export class CouncilRuns {
       context,
       images: ownImages(images, imagesDir),
       readProject: project !== null && (input.readProject ?? settings.readProject),
+      webAccess: input.webAccess ?? false,
       settings,
       advisors,
       status: 'running',
@@ -405,7 +410,7 @@ export class CouncilRuns {
       run.phase = value;
       this.persist(run);
     };
-    // Seuls les conseillers lisent le dépôt ; relectures et synthèse portent sur les réponses.
+    // Seuls les conseillers lisent le dépôt et le web ; relectures et synthèse portent sur les réponses.
     const reading = readsProject(run);
     const cwd = reading ? project?.path : undefined;
     const images = imagePaths(run);
@@ -415,6 +420,7 @@ export class CouncilRuns {
       schema: JsonSchema,
       timeoutMs: number,
       access: HeadlessOptions['access'] = 'none',
+      web = false,
     ): Promise<unknown> =>
       this.invoke({
         agent: advisor.agent,
@@ -424,6 +430,7 @@ export class CouncilRuns {
         schema,
         ...(access === 'none' ? {} : { cwd }),
         access,
+        ...(web ? { web } : {}),
         timeoutMs,
         signal,
         ...(images.length === 0 ? {} : { images }),
@@ -442,6 +449,7 @@ export class CouncilRuns {
                 ANSWER_SCHEMA,
                 ANSWER_TIMEOUT_MS,
                 reading ? 'read-only' : 'none',
+                run.webAccess,
               ),
             );
           } catch (cause) {

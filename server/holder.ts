@@ -145,6 +145,8 @@ function run(configPath: string): void {
     ) {
       cols = message.cols;
       rows = message.rows;
+      // Le noyau ne signale (SIGWINCH) qu'un vrai changement : un détour d'une ligne force l'application à se redessiner.
+      if (message.force === true) child.resize(cols, rows > 1 ? rows - 1 : rows + 1);
       child.resize(cols, rows);
       terminal.resize(cols, rows);
       return;

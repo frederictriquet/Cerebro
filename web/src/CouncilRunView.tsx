@@ -660,6 +660,7 @@ export function CouncilRunView({ councilId }: { councilId: string }) {
               'Projet supprimé'
             )}
             {run.projectId !== null ? ` · ${run.readProject ? 'lecture du dépôt' : 'sans lecture du dépôt'}` : ''}
+            {run.webAccess ? ' · accès web' : ''}
             {run.origin === 'slack' ? ' · lancé depuis Slack' : ''}
             {' · '}
             {new Date(run.startedAt).toLocaleString()}

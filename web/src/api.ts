@@ -327,6 +327,8 @@ export interface CouncilStartInput {
   question: string;
   context?: string;
   readProject?: boolean;
+  // Recherche web et lecture de pages par les conseillers.
+  webAccess?: boolean;
   // Absent : participants par défaut des réglages effectifs.
   participants?: Participant[];
   // Images jointes, désignées par « [Image #n] » dans la question ou le contexte.

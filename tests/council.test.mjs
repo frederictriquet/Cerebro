@@ -235,7 +235,16 @@ test('prompt de réponse : persona, question, contexte, langue et accès au proj
     const closed = answerPrompt(variant, contrarian, '/srv/depot');
     assert.ok(!closed.includes('/srv/depot'));
     assert.match(closed, /aucun fichier ni outil/);
+    assert.ok(!closed.includes('chercher sur le web'));
   }
+  // Accès web : annoncé avec ou sans lecture du projet.
+  const browsing = answerPrompt({ ...full, projectId: null, webAccess: true }, contrarian);
+  assert.match(browsing, /aucun fichier\./);
+  assert.match(browsing, /chercher sur le web/);
+  assert.match(
+    answerPrompt({ ...full, webAccess: true }, contrarian, '/srv/depot'),
+    /lecture seule[\s\S]*chercher sur le web/,
+  );
   assert.ok(!answerPrompt({ ...full, context: '  ' }, contrarian).includes('<contexte>'));
   assert.deepEqual(ANSWER_SCHEMA.required, ['answer']);
   assert.equal(parseAnswer({ answer: '  Texte  ' }), 'Texte');
@@ -1196,6 +1205,32 @@ test('council : succès complet avec participants explicites et lecture du proje
     await assert.rejects(runs.start({ ...input, participants: [{ personaId: 'contrarian' }] }, uuid(3)), /2 à 8/);
     await assert.rejects(runs.start({ ...input, projectId: 'absent' }, uuid(4)), (error) => error.statusCode === 404);
     assert.throws(() => runs.cancel(uuid(1)), /déjà terminé/);
+  } finally {
+    db.close();
+  }
+});
+
+test('council : l’accès web ne sert qu’aux réponses des conseillers', async () => {
+  const db = new CerebroDatabase(':memory:');
+  try {
+    db.putSetting('council', settings);
+    const calls = [];
+    const { runs } = councilRuns(db, calls);
+    const input = { projectId: null, origin: 'web', question: 'Q ?' };
+    await assert.rejects(runs.start({ ...input, webAccess: 'oui' }, uuid(30)), /accès web invalide/);
+    await runs.start({ ...input, webAccess: true }, uuid(31));
+    const run = await runs.finished(uuid(31));
+    assert.equal(run.status, 'succeeded', run.error);
+    assert.equal(run.webAccess, true);
+    assert.equal(db.getCouncilRun(uuid(31)).webAccess, true);
+    const answers = calls.filter((c) => c.kind === 'answer');
+    assert.ok(answers.length >= 2);
+    assert.ok(answers.every((c) => c.web === true && c.access === 'none' && c.cwd === undefined));
+    assert.ok(calls.filter((c) => c.kind !== 'answer').every((c) => c.web === undefined));
+    calls.length = 0;
+    await runs.start(input, uuid(32));
+    assert.equal((await runs.finished(uuid(32))).webAccess, false);
+    assert.ok(calls.every((c) => c.web === undefined));
   } finally {
     db.close();
   }

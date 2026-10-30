@@ -25,6 +25,8 @@ export interface TermApi {
   sendArrow: (direction: 'up' | 'down') => boolean;
   focus: () => void;
   getSelection: () => string;
+  /** Réajuste le PTY à cette fenêtre et force l'application à se redessiner. */
+  refreshSize: () => boolean;
 }
 
 // Texte sélectionné à l'écran : sans espaces de fin de ligne, lignes vides de bord,
@@ -107,7 +109,7 @@ export function Term({
     term.attachCustomKeyEventHandler((event) => {
       // xterm traduit Ctrl+V en ^V et annule l'événement : le navigateur ne colle alors jamais.
       // On le lui laisse, pour que l'événement paste (texte ou image) ait lieu.
-      if (event.type === 'keydown') claim();
+      if (event.type === 'keydown') claimNow();
       if (event.ctrlKey && !event.altKey && !event.metaKey && event.code === 'KeyV') return false;
       // Échap seul est réservé à Cerebro (retour au projet) ; Maj+Échap et le bouton rapide l'envoient à la session.
       const escape = onEscapeRef.current;
@@ -191,6 +193,11 @@ export function Term({
       getSelection(): string {
         return cleanSelection(term.getSelection());
       },
+      refreshSize(): boolean {
+        const done = claim(true);
+        term.focus();
+        return done;
+      },
     };
     onApiRef.current?.(api);
 
@@ -218,10 +225,12 @@ export function Term({
     };
 
     // Ce poste prend la main : le PTY adopte la taille de sa fenêtre, les autres postes s'y alignent.
-    const claim = (): void => {
-      if (!measure()) return;
-      if (fitCols !== ptyCols || fitRows !== ptyRows) {
-        if (!send(current(), { type: 'resize', cols: fitCols, rows: fitRows })) return;
+    // force : renvoie la taille même inchangée, pour que l'application se redessine.
+    const claim = (force = false): boolean => {
+      if (!measure()) return false;
+      if (force || fitCols !== ptyCols || fitRows !== ptyRows) {
+        const msg: TermClientMessage = { type: 'resize', cols: fitCols, rows: fitRows };
+        if (!send(current(), force ? { ...msg, force } : msg)) return false;
         ptyCols = fitCols;
         ptyRows = fitRows;
       }
@@ -229,6 +238,10 @@ export function Term({
       claimedRows = fitRows;
       owner = true;
       applySize();
+      return true;
+    };
+    const claimNow = (): void => {
+      claim();
     };
     claimRef.current = () => {
       claim();
@@ -289,8 +302,8 @@ export function Term({
     };
     host.addEventListener('paste', onPaste, true);
     // Un clic ou le retour du focus dans ce terminal (fenêtre réactivée) : ce poste reprend la main.
-    host.addEventListener('pointerdown', claim, true);
-    host.addEventListener('focusin', claim);
+    host.addEventListener('pointerdown', claimNow, true);
+    host.addEventListener('focusin', claimNow);
 
     const ro = new ResizeObserver(() => {
       onHostResize();
@@ -349,8 +362,8 @@ export function Term({
       // eslint-disable-next-line react-hooks/exhaustive-deps
       onSelectionRef.current?.(false);
       host.removeEventListener('paste', onPaste, true);
-      host.removeEventListener('pointerdown', claim, true);
-      host.removeEventListener('focusin', claim);
+      host.removeEventListener('pointerdown', claimNow, true);
+      host.removeEventListener('focusin', claimNow);
       claimRef.current = () => undefined;
       ro.disconnect();
       link?.close();
