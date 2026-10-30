@@ -1,6 +1,7 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, apiParsed, apiPath } from './api.ts';
+import { useAsyncAction } from './async-action.ts';
 import { LaunchDialog, Modal, usePrepared } from './Dialog.tsx';
 import { useStore } from './store.tsx';
 import { pushBlockedReason, type GitInfo } from '../../shared/types.ts';
@@ -28,10 +29,12 @@ export function GitActions({
   git: GitInfo;
   pendingCommits: ReactNode;
 }) {
+  const { projects } = useStore();
   const [open, setOpen] = useState<'review' | 'single' | 'atomic' | 'push' | null>(null);
   const close = (): void => setOpen(null);
   const hasChanges = git.dirty > 0;
   const pushBlocked = pushBlockedReason(git);
+  const autoPush = projects.find((project) => project.id === projectId)?.autoPush === true;
 
   return (
     <>
@@ -56,7 +59,7 @@ export function GitActions({
             disabled={!hasChanges}
             title={
               hasChanges
-                ? `${strategy === 'single' ? 'Créer un seul commit' : 'Créer un commit par intention'}, sans pousser`
+                ? `${strategy === 'single' ? 'Créer un seul commit' : 'Créer un commit par intention'}, ${autoPush ? 'puis pousser (push auto)' : 'sans pousser'}`
                 : 'Rien à commiter'
             }
           >
@@ -76,13 +79,38 @@ export function GitActions({
         >
           Push
         </button>
+        <AutoPushToggle projectId={projectId} checked={autoPush} />
       </span>
       {open === 'review' ? <RepoReviewDialog projectId={projectId} onClose={close} /> : null}
       {open === 'single' || open === 'atomic' ? (
-        <AutomaticCommitDialog projectId={projectId} push={false} strategy={open} onClose={close} />
+        <AutomaticCommitDialog projectId={projectId} push={autoPush} strategy={open} onClose={close} />
       ) : null}
       {open === 'push' ? <PushDialog projectId={projectId} onClose={close} /> : null}
     </>
+  );
+}
+
+function AutoPushToggle({ projectId, checked }: { projectId: string; checked: boolean }) {
+  const { updateProject } = useStore();
+  const { run, busy, error } = useAsyncAction((autoPush: boolean) => updateProject(projectId, { autoPush }), {
+    fallback: 'Modification impossible',
+  });
+  return (
+    <label
+      className="git-auto-push"
+      title={
+        error ??
+        'Pousse la branche du dossier du projet dès qu’un nouveau commit y apparaît, qu’il vienne de Cerebro, d’un agent ou d’un merge'
+      }
+    >
+      <input type="checkbox" checked={checked} disabled={busy} onChange={(e) => void run(e.target.checked)} />
+      Push auto
+      {error ? (
+        <span className="form-error" role="alert">
+          {error}
+        </span>
+      ) : null}
+    </label>
   );
 }
 

@@ -6,6 +6,7 @@ import fastifyWebsocket from '@fastify/websocket';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type WebSocket from 'ws';
+import { AutoPush } from './auto-push.ts';
 import { EpicRunner } from './epic-runner.ts';
 import { CommandExecutor } from './commands.ts';
 import { registerWorktreeRoutes } from './worktree-routes.ts';
@@ -166,6 +167,7 @@ export async function buildServer(
     peers.stop();
     notifier.stop();
     unsubscribePush();
+    autoPush.stop();
     await vscode.stop();
     await automaticCommits.shutdown();
     await councils.shutdown();
@@ -258,6 +260,10 @@ export async function buildServer(
       finishedAt: operation.finishedAt ?? Date.now(),
     });
   });
+  const autoPush = new AutoPush(db, pushes, (path) =>
+    automaticCommits.list().some((commit) => commit.status === 'running' && resolve(commit.path) === resolve(path)),
+  );
+  autoPush.start();
   epicRunner.initialize();
   sessions.onSessionReleased = (id, root) => {
     void worktrees.releaseSession(id, root);

@@ -160,6 +160,7 @@ export function registerProjectRoutes(ctx: RouteContext): void {
         | 'councilSettings'
         | 'slackSettings'
         | 'workspaceMode'
+        | 'autoPush'
         | 'regenerablePaths'
       >
     > = {};
@@ -167,6 +168,10 @@ export function registerProjectRoutes(ctx: RouteContext): void {
       if (body.workspaceMode !== 'isolated' && body.workspaceMode !== 'shared')
         return error(reply, 400, 'Mode de travail invalide');
       changes.workspaceMode = body.workspaceMode;
+    }
+    if ('autoPush' in body) {
+      if (typeof body.autoPush !== 'boolean') return error(reply, 400, 'Option autoPush invalide');
+      changes.autoPush = body.autoPush;
     }
     if ('regenerablePaths' in body) {
       const raw = body.regenerablePaths;

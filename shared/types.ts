@@ -229,6 +229,8 @@ export interface Project {
   slackSettings: ProjectSlackSettings | null;
   resolutionSettings: ResolutionSettings;
   workspaceMode: WorkspaceMode;
+  /** Pushes the project folder's branch as soon as a new commit lands on it. */
+  autoPush: boolean;
   /**
    * Ignored paths of a copy, relative to its root, that a build or an install recreates (e.g. `web/dist`): removing
    * the copy deletes them like the regenerable folders at its root.
@@ -609,6 +611,8 @@ export function parseProject(v: unknown): Project | null {
     councilSettings,
     slackSettings,
     workspaceMode,
+    // Absent des serveurs antérieurs au push automatique.
+    autoPush: v.autoPush === true,
     regenerablePaths,
     createdAt,
   };

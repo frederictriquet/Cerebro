@@ -118,6 +118,7 @@ export interface ProjectPatch {
   commitSettings?: Partial<import('../../shared/types.ts').CommitSettings>;
   resolutionSettings?: Partial<import('../../shared/types.ts').ResolutionSettings>;
   workspaceMode?: import('../../shared/types.ts').WorkspaceMode;
+  autoPush?: boolean;
   regenerablePaths?: string[];
   // null : le projet revient aux réglages globaux du council.
   councilSettings?: import('../../shared/types.ts').CouncilSettings | null;

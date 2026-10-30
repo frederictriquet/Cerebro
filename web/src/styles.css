@@ -1810,6 +1810,22 @@ label.block {
   padding-left: 12px;
 }
 
+.git-auto-push {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.git-auto-push input {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+}
+
 .git-ahead-toggle {
   padding: 2px 0;
   border: 0;

@@ -57,6 +57,7 @@ interface ProjectRow {
   slack_settings: string | null;
   resolution_settings: string | null;
   workspace_mode: WorkspaceMode;
+  auto_push: number;
   regenerable_paths: string | null;
   created_at: number;
 }
@@ -174,6 +175,7 @@ function projectFromRow(row: ProjectRow): Project {
       ? JSON.parse(row.resolution_settings)
       : { ...DEFAULT_RESOLUTION_SETTINGS },
     workspaceMode: row.workspace_mode ?? 'isolated',
+    autoPush: row.auto_push === 1,
     regenerablePaths: row.regenerable_paths ? JSON.parse(row.regenerable_paths) : [],
   };
 }
@@ -394,6 +396,7 @@ export class CerebroDatabase {
       "TEXT NOT NULL DEFAULT 'isolated' CHECK (workspace_mode IN ('isolated','shared'))",
     );
     this.addColumnIfMissing('projects', 'color', 'TEXT');
+    this.addColumnIfMissing('projects', 'auto_push', 'INTEGER NOT NULL DEFAULT 0');
     if (this.addColumnIfMissing('projects', 'session_defaults', 'TEXT')) {
       // Reprendre les derniers choix à l'installation, sans confondre activité récente et création.
       this.connection.exec(`
@@ -610,6 +613,7 @@ export class CerebroDatabase {
       slackSettings: null,
       resolutionSettings: { ...DEFAULT_RESOLUTION_SETTINGS },
       workspaceMode,
+      autoPush: false,
       regenerablePaths: [],
       createdAt: Date.now(),
     };
@@ -636,6 +640,7 @@ export class CerebroDatabase {
         | 'councilSettings'
         | 'slackSettings'
         | 'workspaceMode'
+        | 'autoPush'
         | 'regenerablePaths'
       >
     >,
@@ -645,7 +650,7 @@ export class CerebroDatabase {
     const next = { ...current, ...changes };
     this.connection
       .prepare(
-        'UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, resolution_settings = ?, council_settings = ?, slack_settings = ?, workspace_mode = ?, regenerable_paths = ? WHERE id = ?',
+        'UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, resolution_settings = ?, council_settings = ?, slack_settings = ?, workspace_mode = ?, auto_push = ?, regenerable_paths = ? WHERE id = ?',
       )
       .run(
         next.name,
@@ -657,6 +662,7 @@ export class CerebroDatabase {
         next.councilSettings === null ? null : JSON.stringify(next.councilSettings),
         next.slackSettings === null ? null : JSON.stringify(next.slackSettings),
         next.workspaceMode,
+        next.autoPush ? 1 : 0,
         JSON.stringify(next.regenerablePaths),
         id,
       );
