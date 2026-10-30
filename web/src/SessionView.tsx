@@ -29,7 +29,7 @@ import { SessionTasksPanel, useSessionTasks, sessionTasksState } from './Session
 import { useStore } from './store.tsx';
 import { ErrorBoundary } from './ErrorBoundary.tsx';
 import { Term, type TermApi } from './Term.tsx';
-import { resumeBlockedReason } from './WorktreeLabel.tsx';
+import { removedCopyNotice } from './WorktreeLabel.tsx';
 import { SessionEpicBadge } from './SessionEpicBadge.tsx';
 import { parseSavedReports, type SavedReport } from '../../shared/backlog.ts';
 import { parseProvenance, type Provenance } from '../../shared/git.ts';
@@ -503,7 +503,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   }
 
   const shown = displayStatus(session, now);
-  const resumeBlocked = resumeBlockedReason(session.worktree);
+  const copyNotice = removedCopyNotice(session.worktree);
 
   return (
     <div className="pane session-pane">
@@ -596,9 +596,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         </div>
       </header>
       {error ? <p className="form-error session-error">{error}</p> : null}
-      {session.status === 'exited' && resumeBlocked !== null ? (
+      {session.status === 'exited' && copyNotice !== null ? (
         <p className="session-notice" role="status">
-          {resumeBlocked}
+          {copyNotice}
         </p>
       ) : null}
       <ErrorBoundary zone="Findings" resetKey={session.id}>

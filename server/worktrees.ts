@@ -10,7 +10,7 @@ import { mergeCommitReflog } from './git-reflog.ts';
 import type { Services } from './services.ts';
 import { canonicalWorktreePath, pathWithin } from './worktree-gate.ts';
 import { repositoryActivity, sessionBusy, type RepositoryActivity } from './repository-activity.ts';
-import { sessionWorkspaces, workspaceFor } from './provenance.ts';
+import { copyIgnoredContext, sessionWorkspaces, workspaceFor } from './provenance.ts';
 import { regularFileSignature, workspaceFileSignature } from './workspace-files.ts';
 import { branchLabel, git, GitError, gitEnv, parseStatusZ, repositoryRoot, splitZ } from './git.ts';
 import type {
@@ -205,6 +205,54 @@ export async function archiveSessionWorktree(db: CerebroDatabase, id: string): P
     }
     store(db, record);
   }
+}
+
+/**
+ * Resuming a conversation whose copy was removed (automatically or not) recreates that copy at its original
+ * place, on the branch the removal kept: same folder, so the agent finds its conversation again. Every
+ * conversation sharing the copy (epic steps) and its inventory record see it live again: returns those conversations.
+ */
+export async function restoreSessionWorktree(db: CerebroDatabase, id: string): Promise<string[]> {
+  const workspace = workspaceFor(db, id);
+  if (!workspace?.removedAt || workspace.mode !== 'isolated') return [];
+  const branch = workspace.branch;
+  const known =
+    branch !== null &&
+    (await git(workspace.source, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`]).then(
+      () => true,
+      () => false,
+    ));
+  if (!known)
+    throw new Error(
+      `La branche ${branch ?? 'de la copie'} n’existe plus : la copie de travail de cette conversation ne peut pas être recréée pour la reprendre.`,
+    );
+  if (await lstat(workspace.root).catch(() => null))
+    throw new Error(`${workspace.root} existe déjà : copie de travail non recréée, rien n’a été modifié.`);
+  await git(workspace.source, ['worktree', 'add', '--', workspace.root, branch]);
+  let sharedIgnored: string[];
+  try {
+    sharedIgnored = await copyIgnoredContext(workspace.source, workspace.root);
+  } catch (cause) {
+    await git(workspace.source, ['worktree', 'remove', '--force', '--', workspace.root]).catch(() => '');
+    throw cause;
+  }
+  const root = canonicalWorktreePath(workspace.root);
+  const restored: string[] = [];
+  for (const [sessionId, shared] of sessionWorkspaces(db)) {
+    if (sessionId !== id && (shared.mode !== 'isolated' || canonicalWorktreePath(shared.root) !== root)) continue;
+    // The content copied from the project at creation went with the removal.
+    const { removedAt, removedAutomatically, startingCopy, startingSnapshot, ...live } = shared;
+    db.connection
+      .prepare('UPDATE session_workspaces SET data=? WHERE session_id=?')
+      .run(JSON.stringify({ ...live, sharedIgnored }), sessionId);
+    restored.push(sessionId);
+  }
+  const record = records(db).find((r) => r.managed && (r.sessionId === id || r.path === root));
+  if (record) {
+    const { autoCleanup, ...live } = record;
+    store(db, { ...live, removedAt: null, sharedIgnored });
+  } else await rememberWorktree(db, workspaceFor(db, id)!);
+  return restored;
 }
 
 // Git 2.34 has no `worktree list -z`. Decode its quoted porcelain paths without shell parsing.

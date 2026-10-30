@@ -11,7 +11,7 @@ import { buildAgentCommand, type Tuning } from './agents.ts';
 import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
 import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError } from './db.ts';
 import type { AgentQuestion } from './questions.ts';
-import { archiveSessionWorktree } from './worktrees.ts';
+import { archiveSessionWorktree, restoreSessionWorktree } from './worktrees.ts';
 import { createWorkspace, createWorkspaceInContext, joinWorkspace, workspaceAt, workspaceFor } from './provenance.ts';
 import type { Services } from './services.ts';
 import { isDormant } from '../shared/sessions.ts';
@@ -347,13 +347,8 @@ export class SessionManager {
     const project = this.db.getProject(oldSession.projectId);
     if (project === null) throw new Error('Projet introuvable');
     const workspace = workspaceFor(this.db, id);
-    if (workspace?.removedAt)
-      throw new Error(
-        workspace.removedAutomatically
-          ? 'La copie de travail de cette conversation a été nettoyée automatiquement à sa fin, car elle ne contenait rien à conserver. La conversation reste consultable mais ne peut plus être reprise : Cerebro ne la reprend pas dans le dossier du projet.'
-          : 'Le worktree a été supprimé ; la conversation reste consultable mais ne peut plus être reprise dans cet espace.',
-      );
-    this.services.gate.assertAvailable(workspace?.path ?? project.path);
+    // A removed copy is recreated from its branch once the session is starting, out of reach of the automatic cleanup.
+    if (!workspace?.removedAt) this.services.gate.assertAvailable(workspace?.path ?? project.path);
     const tuning = { model: oldSession.model, effort: oldSession.effort };
     return this.launch(project, {
       agent: oldSession.agent,
@@ -506,6 +501,11 @@ export class SessionManager {
     epicId: string | null,
     validate?: () => Promise<void>,
   ): Promise<string> {
+    if (existingId !== null)
+      for (const restored of await restoreSessionWorktree(this.db, id)) {
+        const session = restored === id ? null : this.db.getSession(restored);
+        if (session) this.emit({ type: 'session', session });
+      }
     const workspace =
       existingId !== null
         ? workspaceFor(this.db, id)

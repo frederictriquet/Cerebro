@@ -1,7 +1,7 @@
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { SESSION_PROTECTED_HINT } from './SessionProtection.tsx';
 import type { Session } from '../../shared/types.ts';
-import { RELEASE_HINT, resumeBlockedReason } from './WorktreeLabel.tsx';
+import { RELEASE_HINT, removedCopyNotice } from './WorktreeLabel.tsx';
 
 /** Arrêter, Reprendre et Supprimer une session : mêmes conditions dans la liste et dans la vue session. */
 export function SessionActions({
@@ -21,7 +21,6 @@ export function SessionActions({
   onDelete: () => void;
 }) {
   const isolated = session.worktree !== null && !session.worktree.removed;
-  const resumeBlocked = resumeBlockedReason(session.worktree);
   const deleteHint = !explainDelete
     ? undefined
     : isolated
@@ -43,8 +42,7 @@ export function SessionActions({
         <button
           type="button"
           className={emphasizeResume ? 'btn primary' : 'btn'}
-          disabled={resumeBlocked !== null}
-          title={resumeBlocked ?? undefined}
+          title={removedCopyNotice(session.worktree) ?? undefined}
           onClick={onResume}
         >
           Reprendre

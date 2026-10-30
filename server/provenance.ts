@@ -93,7 +93,8 @@ async function copyEntry(sourceRoot: string, targetRoot: string, name: string): 
   }
 }
 
-async function copyIgnoredContext(sourceRoot: string, targetRoot: string): Promise<string[]> {
+/** Brings the project's ignored files into a copy and links its dependency directories: returns the linked ones. */
+export async function copyIgnoredContext(sourceRoot: string, targetRoot: string): Promise<string[]> {
   const ignored = splitZ(
     await git(sourceRoot, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z']),
   );

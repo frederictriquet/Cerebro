@@ -337,8 +337,12 @@ test('removal requires integration, no local/ignored files and no live session; 
     const result = (await f.manager.list()).worktrees;
     assert.ok(!result.some((w) => w.id === own.id));
     assert.equal(f.db.getSession(f.id).title, 'Conversation');
+    // Without its branch, the copy cannot be recreated: the conversation stays as it was.
+    git(f.repo, 'branch', '-D', f.workspace.branch);
     const sessions = new SessionManager(f.db, f.services);
-    await assert.rejects(sessions.resume(f.id), /supprimé/);
+    await assert.rejects(sessions.resume(f.id), /n’existe plus/);
+    assert.equal(existsSync(own.path), false);
+    assert.ok(workspaceFor(f.db, f.id).removedAt);
   }));
 
 test('an integrated orphan can remove its shared dependency link without touching source dependencies', async () =>
@@ -931,7 +935,42 @@ test('a question-only conversation is cleaned automatically once its process sto
       inventory.cleaned.map((c) => [c.id, c.session.id, c.branch]),
       [[own.id, f.id, `refs/heads/${f.workspace.branch}`]],
     );
-    await assert.rejects(sessions.resume(f.id), /nettoyée automatiquement.*ne peut plus être reprise/s);
+  }));
+
+test('resuming a conversation whose copy was cleaned recreates it in place from its branch (fake CLI)', async () =>
+  fixture(async (f) => {
+    const own = await f.view();
+    const branch = git(f.repo, 'rev-parse', f.workspace.branch);
+    f.db.updateSession(f.id, { status: 'running' });
+    const { sessions, settled } = wire(f);
+    sessions.finishSession(f.id, 0);
+    await settled();
+    assert.equal(existsSync(own.path), false);
+    const bin = mkdtempSync(join(root, 'bin-'));
+    const capture = join(bin, 'cwd');
+    writeFileSync(join(bin, 'codex'), `#!/bin/sh\npwd > '${capture}'\nexec /bin/sleep 2\n`, { mode: 0o755 });
+    const previous = process.env.PATH;
+    process.env.PATH = `${bin}:${previous}`;
+    try {
+      await sessions.resume(f.id);
+      assert.equal(readFileSync(capture, 'utf8').trim(), f.workspace.path);
+      assert.equal(git(own.path, 'branch', '--show-current'), f.workspace.branch);
+      assert.equal(git(own.path, 'rev-parse', 'HEAD'), branch);
+      assert.equal(lstatSync(join(own.path, 'node_modules')).isSymbolicLink(), true);
+      const workspace = workspaceFor(f.db, f.id);
+      assert.equal(workspace.removedAt, undefined);
+      assert.equal(workspace.removedAutomatically, undefined);
+      assert.deepEqual(workspace.sharedIgnored, ['node_modules']);
+      assert.equal(f.db.getSession(f.id).worktree.removed, false);
+      assert.equal(record(f, own.id).removedAt, null);
+      assert.equal(record(f, own.id).autoCleanup, undefined);
+      assert.ok((await f.manager.list(f.project.id)).worktrees.some((w) => w.id === own.id));
+    } finally {
+      process.env.PATH = previous;
+      await sessions.terminate(f.id);
+      await sessions.shutdown();
+      await settled();
+    }
   }));
 
 test('deleting an unused conversation cleans its copy automatically, but an idle conversation keeps it', async () =>

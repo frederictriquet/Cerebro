@@ -1199,8 +1199,10 @@ préparation annule le retrait.
 Les worktrees principal, externes, verrouillés ou dont l'identité a
 changé restent protégés. Une confirmation devient invalide si Git a changé entre
 sa préparation et son exécution. La suppression passe par Git sans `--force` et
-conserve la branche, les commits et la conversation. La conversation reste lisible,
-mais sa reprise est refusée lorsque son worktree a été supprimé.
+conserve la branche, les commits et la conversation. La conversation reste lisible ;
+**Reprendre** recrée la copie au même emplacement depuis sa branche (dépendances
+partagées et fichiers ignorés du projet compris), puis relance la conversation.
+Si la branche a été supprimée entre-temps, la reprise est refusée.
 
 ## Council
 
