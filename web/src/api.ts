@@ -31,6 +31,7 @@ import {
   parseSession,
   type Agent,
   type CouncilImage,
+  type CouncilOutcome,
   type CouncilRun,
   type CouncilSettings,
   type Participant,
@@ -352,6 +353,17 @@ export async function listCouncils(projectId?: string | null): Promise<CouncilRu
 
 export function cancelCouncil(id: string): Promise<CouncilRun> {
   return apiParsed(`/api/councils/${encodeURIComponent(id)}/cancel`, parseCouncilRun, { method: 'POST' });
+}
+
+// Issue observée d'un council terminé ; texte vide et verdict null l'effacent.
+export function recordCouncilOutcome(
+  id: string,
+  outcome: Pick<CouncilOutcome, 'text' | 'verdict'>,
+): Promise<CouncilRun> {
+  return apiParsed(apiPath`/api/councils/${id}/outcome`, parseCouncilRun, {
+    method: 'PUT',
+    body: JSON.stringify(outcome),
+  });
 }
 
 export async function deleteCouncil(id: string): Promise<void> {

@@ -7,7 +7,15 @@ import { assertNoGitOperation } from './git-plan.ts';
 import { gitSummary } from './git-summary.ts';
 import { reviewInstructions } from './review.ts';
 import { projectSlackSettingsFrom } from './slack-state.ts';
-import { AGENTS, isAgent, isMode, normalizeMode, type Agent, type Project } from '../shared/types.ts';
+import {
+  AGENTS,
+  isAgent,
+  isMode,
+  normalizeMode,
+  type Agent,
+  type CouncilSettings,
+  type Project,
+} from '../shared/types.ts';
 import { asRecord } from './util.ts';
 import { error } from './routes-util.ts';
 import { orError, parseSessionDefaults, type RouteContext } from './route-context.ts';
@@ -223,7 +231,9 @@ export function registerProjectRoutes(ctx: RouteContext): void {
       // null : le projet revient aux réglages globaux.
       if (body.councilSettings === null) changes.councilSettings = null;
       else {
-        const result = validateCouncilSettings(catalog, body.councilSettings, db.listPersonas(), AGENTS);
+        // Compositions gardées si absentes : celles de la surcharge, à défaut celles des réglages globaux.
+        const stored = project.councilSettings ?? db.getSetting<CouncilSettings>('council');
+        const result = validateCouncilSettings(catalog, body.councilSettings, db.listPersonas(), AGENTS, stored);
         if ('error' in result) return error(reply, 400, result.error);
         changes.councilSettings = result.settings;
       }

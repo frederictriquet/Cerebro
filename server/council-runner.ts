@@ -25,6 +25,8 @@ import {
 import type { CerebroDatabase } from './db.ts';
 import { imageMediaType, runHeadless, supportsImages, type HeadlessOptions, type JsonSchema } from './headless.ts';
 import {
+  COUNCIL_VERDICTS,
+  MAX_COUNCIL_OUTCOME_LENGTH,
   MIN_ADVISORS,
   type Advisor,
   type Agent,
@@ -34,7 +36,7 @@ import {
   type CouncilSettings,
   type Project,
 } from '../shared/types.ts';
-import { errorMessage } from './util.ts';
+import { errorMessage, isRecord } from './util.ts';
 
 export const ANSWER_TIMEOUT_MS = 10 * 60_000;
 export const REVIEW_TIMEOUT_MS = 5 * 60_000;
@@ -287,6 +289,7 @@ export class CouncilRuns {
       error: null,
       startedAt: now,
       finishedAt: null,
+      outcome: null,
     };
     if (!this.save(run)) {
       rmSync(imagesDir, { recursive: true, force: true });
@@ -316,6 +319,34 @@ export class CouncilRuns {
     }
     active.abort.abort();
     return active.run;
+  }
+
+  // Issue observée d'un run terminé, renseignée ou modifiée après coup : `{text, verdict?}`, texte vide et verdict
+  // null l'effacent. Une saisie identique garde sa date.
+  recordOutcome(id: string, raw: unknown): CouncilRun {
+    const run = this.get(id);
+    if (run === null) throw new CouncilError('Council introuvable.', 404);
+    if (this.active.has(id))
+      throw new CouncilError('Ce council est en cours : son issue se renseigne une fois terminé.', 409);
+    const body = isRecord(raw) ? raw : {};
+    const text = typeof body.text === 'string' ? body.text.trim() : null;
+    if (text === null || text.length > MAX_COUNCIL_OUTCOME_LENGTH)
+      throw new CouncilError(`Texte de l’issue invalide (${MAX_COUNCIL_OUTCOME_LENGTH} caractères au plus).`);
+    const verdict =
+      body.verdict === undefined || body.verdict === null
+        ? null
+        : COUNCIL_VERDICTS.find((value) => value === body.verdict);
+    if (verdict === undefined) throw new CouncilError(`Verdict invalide (${COUNCIL_VERDICTS.join(', ')} ou null).`);
+    const previous = run.outcome;
+    if (text === '' && verdict === null) {
+      if (previous === null) return run;
+      run.outcome = null;
+    } else {
+      if (previous?.text === text && previous.verdict === verdict) return run;
+      run.outcome = { text, verdict, recordedAt: Date.now() };
+    }
+    if (!this.save(run)) throw new CouncilError('Council introuvable.', 404);
+    return run;
   }
 
   // Les images du run disparaissent avec lui ; celles d'un run antérieur à leur dossier propre

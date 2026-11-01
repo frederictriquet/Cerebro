@@ -3,10 +3,13 @@
 // prefixed output, and both stopped together on Ctrl+C or when either one dies.
 // The server is restarted by this script rather than `node --watch`: Node's watcher loses track
 // of a file once it is saved by rename (atomic write) or recreated by Git, whereas a directory watch survives it.
+// Each start runs the migrations and seeds against the real database, even with code saved half-written: the database
+// is copied first (scripts/db-backup.mjs) when the code that writes it may have changed.
 import { spawn } from 'node:child_process';
 import { readdirSync, statSync, watch } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { backupDatabase, dataDirectory, describeBackup } from './db-backup.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const procs = {
@@ -19,6 +22,10 @@ const procs = {
 };
 const WATCH_DIRS = ['server', 'shared', 'bin'];
 const WATCH_EXT = /\.(ts|mts|js|mjs|cjs|json)$/;
+// The migrations and seeds live in server/ and shared/; bin/ holds the agents' CLIs.
+const DATABASE_CODE = /^(server|shared)[\\/]/;
+// Resolved like the server, which runs with `root` as its working directory.
+const dataDir = resolve(root, dataDirectory());
 
 let stopping = false;
 const children = {};
@@ -64,9 +71,29 @@ function kill(child) {
   });
 }
 
+// The first start may run database code changed while dev was stopped (pull, checkout): it is preceded by a copy too.
+let backupDue = true;
+
+// Called once the previous server has exited, so the copy holds exactly the state the new code starts from.
+function startServer() {
+  if (backupDue) {
+    backupDue = false;
+    try {
+      const copy = backupDatabase(dataDir);
+      if (copy) log('server', describeBackup(copy));
+    } catch (error) {
+      // The copy is a safety net: the server starts anyway, and the failure stays visible.
+      log('server', `\x1b[31msauvegarde de la base en échec, démarrage sans copie : ${error.message}\x1b[0m`);
+    }
+  }
+  start('server');
+}
+
 let restartTimer = null;
 let restarting = Promise.resolve();
 function scheduleRestart(file) {
+  // Any change of the burst counts, not only the last file named in the restart line.
+  if (DATABASE_CODE.test(file)) backupDue = true;
   clearTimeout(restartTimer);
   restartTimer = setTimeout(() => {
     restarting = restarting.then(async () => {
@@ -75,7 +102,7 @@ function scheduleRestart(file) {
       const child = children.server;
       child.restarting = true;
       await kill(child);
-      if (!stopping) start('server');
+      if (!stopping) startServer();
     });
   }, 150);
 }
@@ -111,7 +138,7 @@ function watchTree(dir) {
 }
 for (const dir of WATCH_DIRS) watchTree(join(root, dir));
 
-start('server');
+startServer();
 start('web');
 
 async function stop(code = 0) {

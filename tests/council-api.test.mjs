@@ -13,11 +13,12 @@ delete process.env.CEREBRO_SLACK_TOKEN;
 delete process.env.CEREBRO_SLACK_USER;
 const { CouncilRuns, UPLOAD_RETENTION_MS } = await import('../server/council-runner.ts');
 const { Catalog } = await import('../server/catalog.ts');
-const { ANSWER_SCHEMA, REVIEW_SCHEMA } = await import('../server/council.ts');
+const { ANSWER_SCHEMA, DEFAULT_COMPOSITIONS, REVIEW_SCHEMA } = await import('../server/council.ts');
 const { UpdateManager } = await import('../server/updates.ts');
 const { PeerSync } = await import('../server/peers.ts');
 const { buildServer } = await import('../server/index.ts');
 const { getAgentAvailability } = await import('../server/agents.ts');
+const { MAX_COUNCIL_OUTCOME_LENGTH } = await import('../shared/types.ts');
 mock.method(UpdateManager.prototype, 'start', () => {});
 mock.method(PeerSync.prototype, 'sync', async function () {
   this.markReady();
@@ -74,7 +75,8 @@ test('council API: settings, project override, runs, cancel, export and persiste
   let app = await buildServer();
   const send = (method, url, payload) => app.inject({ method, url, ...(payload === undefined ? {} : { payload }) });
   try {
-    // Réglages globaux calculés : toutes les personas, agents disponibles en tourniquet, chairman claude.
+    // Réglages globaux calculés : toutes les personas assignées en tourniquet sur les agents disponibles, cochées
+    // sauf l'Empiriste, l'Économiste, le Mainteneur et les personas spécialisées, chairman claude.
     let response = await send('GET', '/api/council/settings');
     assert.equal(response.statusCode, 200);
     const defaults = response.json();
@@ -84,12 +86,30 @@ test('council API: settings, project override, runs, cancel, export and persiste
       personas.map((persona) => persona.id),
     );
     assert.deepEqual(defaults.assignments[personas[1].id], { agent: 'codex', model: null, effort: 'high' });
-    assert.deepEqual(
-      defaults.defaultPersonaIds,
-      personas.map((persona) => persona.id),
-    );
+    assert.deepEqual(personas.map((persona) => persona.id).slice(5), [
+      'empiricist',
+      'economist',
+      'maintainer',
+      'end-user',
+      'incentives',
+      'transposer',
+      'failure-historian',
+    ]);
+    assert.deepEqual(defaults.defaultPersonaIds, [
+      'contrarian',
+      'first-principles',
+      'expansionist',
+      'outsider',
+      'executor',
+    ]);
     assert.deepEqual(defaults.chairman, { agent: 'claude', model: 'opus', effort: 'high' });
     assert.equal(defaults.readProject, true);
+    // Compositions par type de question : proposées au lancement, aucune n'est cochée par défaut.
+    assert.deepEqual(defaults.compositions, DEFAULT_COMPOSITIONS);
+    assert.deepEqual(
+      defaults.compositions.map((composition) => composition.name),
+      ['Technique', 'Produit', 'Décision'],
+    );
     const global = {
       assignments: {
         contrarian: { agent: 'codex', model: null, effort: 'high' },
@@ -98,6 +118,7 @@ test('council API: settings, project override, runs, cancel, export and persiste
       defaultPersonaIds: ['contrarian', 'outsider'],
       chairman: { agent: 'claude', model: 'sonnet', effort: 'low' },
       readProject: false,
+      compositions: [{ name: 'Revue', personaIds: ['contrarian', 'outsider'] }],
     };
     response = await send('PUT', '/api/council/settings', global);
     assert.equal(response.statusCode, 200, response.body);
@@ -109,12 +130,24 @@ test('council API: settings, project override, runs, cancel, export and persiste
       { ...global, assignments: { unknown: { agent: 'claude' } } },
       { ...global, chairman: { agent: 'unknown' } },
       { ...global, readProject: 'yes' },
+      { ...global, compositions: 'Technique' },
+      { ...global, compositions: [{ name: 'Seule', personaIds: ['contrarian'] }] },
+      { ...global, compositions: [{ name: ' ', personaIds: ['contrarian', 'outsider'] }] },
     ]) {
       response = await send('PUT', '/api/council/settings', invalid);
       assert.equal(response.statusCode, 400);
       assert.equal(typeof response.json().error, 'string');
     }
     assert.deepEqual((await send('GET', '/api/council/settings')).json(), global);
+    // Client antérieur aux compositions (onglet resté sur l'ancien bundle, machine passerelle plus ancienne par
+    // /m/<id>/api/council/settings) : un PUT sans `compositions` garde celles enregistrées, pas celles par défaut.
+    const { compositions: _stored, ...legacyGlobal } = global;
+    const chairman = { agent: 'codex', model: null, effort: 'high' };
+    response = await send('PUT', '/api/council/settings', { ...legacyGlobal, chairman });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.deepEqual(response.json(), { ...global, chairman });
+    assert.deepEqual((await send('GET', '/api/council/settings')).json(), { ...global, chairman });
+    assert.equal((await send('PUT', '/api/council/settings', global)).statusCode, 200);
 
     // Surcharge projet puis retour aux réglages globaux.
     const project = (await send('POST', '/api/projects', { name: 'Council', path: repo })).json();
@@ -123,6 +156,7 @@ test('council API: settings, project override, runs, cancel, export and persiste
       ...global,
       defaultPersonaIds: ['executor', 'first-principles', 'contrarian'],
       readProject: true,
+      compositions: [{ name: 'Chantier', personaIds: ['executor', 'first-principles'] }],
     };
     response = await send('PATCH', `/api/projects/${project.id}`, { councilSettings: override });
     assert.equal(response.statusCode, 200);
@@ -139,9 +173,20 @@ test('council API: settings, project override, runs, cancel, export and persiste
       ).statusCode,
       400,
     );
+    // Réglages envoyés sans compositions (client antérieur) : celles de la surcharge sont gardées.
+    const { compositions: _absent, ...withoutCompositions } = override;
+    response = await send('PATCH', `/api/projects/${project.id}`, {
+      councilSettings: { ...withoutCompositions, readProject: false },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.deepEqual(response.json().councilSettings, { ...override, readProject: false });
     response = await send('PATCH', `/api/projects/${project.id}`, { councilSettings: null });
     assert.equal(response.json().councilSettings, null);
     assert.deepEqual((await send('GET', `/api/council/settings/effective?projectId=${project.id}`)).json(), global);
+    // Sans surcharge, celles des réglages globaux, en vigueur pour le projet.
+    response = await send('PATCH', `/api/projects/${project.id}`, { councilSettings: withoutCompositions });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.deepEqual(response.json().councilSettings, { ...override, compositions: global.compositions });
     assert.equal((await send('PATCH', `/api/projects/${project.id}`, { councilSettings: override })).statusCode, 200);
 
     // Run projet avec participants explicites et lecture du dépôt.
@@ -297,6 +342,116 @@ test('council API: settings, project override, runs, cancel, export and persiste
       new Set(operations.map((operation) => operation.id)),
       new Set([`council:${projectRequest}`, `council:${homeRequest}`, `council:${cancelRequest}`]),
     );
+  } finally {
+    hold = false;
+    await app.close();
+  }
+});
+
+test('council API: the observed outcome is recorded on a finished run, edited, exported, persisted and cleared', async () => {
+  let app = await buildServer();
+  const send = (method, url, payload) => app.inject({ method, url, ...(payload === undefined ? {} : { payload }) });
+  const put = (id, payload) => send('PUT', `/api/councils/${id}/outcome`, payload);
+  const pause = () => new Promise((resolve) => setTimeout(resolve, 5));
+  const participants = [
+    { personaId: 'contrarian', agent: 'claude' },
+    { personaId: 'outsider', agent: 'codex' },
+  ];
+  try {
+    // Refusée tant que le council tourne, acceptée une fois annulé.
+    hold = true;
+    const cancelledId = randomUUID();
+    let response = await send('POST', '/api/councils', {
+      requestId: cancelledId,
+      question: 'En cours ?',
+      participants,
+    });
+    assert.equal(response.statusCode, 202, response.body);
+    assert.equal(response.json().outcome, null);
+    response = await put(cancelledId, { text: 'Trop tôt.', verdict: 'good' });
+    assert.equal(response.statusCode, 409);
+    assert.match(response.json().error, /en cours/);
+    assert.equal((await send('POST', `/api/councils/${cancelledId}/cancel`)).statusCode, 200);
+    let run = await settled(send, cancelledId);
+    hold = false;
+    assert.equal(run.status, 'cancelled');
+    assert.equal(run.outcome, null);
+    response = await put(cancelledId, { text: 'Décidé sans le council.' });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().outcome.verdict, null);
+
+    const id = randomUUID();
+    assert.equal(
+      (await send('POST', '/api/councils', { requestId: id, question: 'Faut-il migrer la base ?', participants }))
+        .statusCode,
+      202,
+    );
+    run = await settled(send, id);
+    assert.equal(run.status, 'succeeded', run.error);
+    assert.equal(run.outcome, null);
+    assert.equal((await put(randomUUID(), { text: 'Inconnu.' })).statusCode, 404);
+    for (const [payload, message] of [
+      [[], /Texte de l’issue invalide/],
+      [{ verdict: 'good' }, /Texte de l’issue invalide/],
+      [{ text: 42 }, /Texte de l’issue invalide/],
+      [{ text: 'x'.repeat(MAX_COUNCIL_OUTCOME_LENGTH + 1) }, /10000 caractères au plus/],
+      [{ text: 'Migration faite.', verdict: 'great' }, /Verdict invalide \(good, mixed, bad ou null\)/],
+    ]) {
+      response = await put(id, payload);
+      assert.equal(response.statusCode, 400, JSON.stringify(payload).slice(0, 80));
+      assert.match(response.json().error, message);
+    }
+    assert.equal((await send('GET', `/api/councils/${id}`)).json().outcome, null);
+
+    // Renseignée : texte trimé, verdict et date de saisie, relus par le run, la liste et l'export.
+    const before = Date.now();
+    response = await put(id, { text: '  Migration faite, deux jours de retard.  ', verdict: 'mixed' });
+    assert.equal(response.statusCode, 200, response.body);
+    const recorded = response.json().outcome;
+    assert.equal(recorded.text, 'Migration faite, deux jours de retard.');
+    assert.equal(recorded.verdict, 'mixed');
+    assert.ok(recorded.recordedAt >= before && recorded.recordedAt <= Date.now());
+    assert.deepEqual((await send('GET', `/api/councils/${id}`)).json().outcome, recorded);
+    assert.deepEqual((await send('GET', '/api/councils')).json().find((item) => item.id === id).outcome, recorded);
+
+    // Une saisie identique garde sa date ; une modification la renouvelle.
+    await pause();
+    response = await put(id, { text: 'Migration faite, deux jours de retard.', verdict: 'mixed' });
+    assert.deepEqual(response.json().outcome, recorded);
+    await pause();
+    response = await put(id, { text: 'Migration annulée après un mois.', verdict: 'bad' });
+    assert.equal(response.statusCode, 200, response.body);
+    const edited = response.json().outcome;
+    assert.equal(edited.text, 'Migration annulée après un mois.');
+    assert.equal(edited.verdict, 'bad');
+    assert.ok(edited.recordedAt > recorded.recordedAt);
+    // Verdict seul, puis retour au texte ; la date envoyée par le client est ignorée.
+    response = await put(id, { text: '', verdict: 'bad' });
+    assert.equal(response.json().outcome.text, '');
+    response = await put(id, { ...edited, recordedAt: 1 });
+    assert.equal(response.statusCode, 200, response.body);
+    const saved = response.json().outcome;
+
+    response = await send('GET', `/api/councils/${id}/export`);
+    assert.equal(response.statusCode, 200);
+    const section = response.body.indexOf(
+      `## Issue observée\n\nVerdict : mauvaise issue · renseignée le ${new Date(saved.recordedAt).toISOString()}\n\nMigration annulée après un mois.\n\n## Avis`,
+    );
+    assert.ok(section > response.body.indexOf('Recommandation finale.'), response.body);
+
+    // Persistance après reconstruction du serveur.
+    await app.close();
+    app = await buildServer();
+    assert.deepEqual((await send('GET', `/api/councils/${id}`)).json().outcome, saved);
+
+    // Texte vide et verdict null effacent l'issue, sans erreur si elle l'est déjà.
+    for (let i = 0; i < 2; i++) {
+      response = await put(id, { text: '   ', verdict: null });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.equal(response.json().outcome, null);
+    }
+    assert.equal((await send('GET', `/api/councils/${id}`)).json().outcome, null);
+    assert.ok(!(await send('GET', `/api/councils/${id}/export`)).body.includes('## Issue observée'));
   } finally {
     hold = false;
     await app.close();

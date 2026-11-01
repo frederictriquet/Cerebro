@@ -2,6 +2,12 @@
 // serveur avec le jeton de la session qui les a lancées.
 
 const { CEREBRO_SESSION_ID, CEREBRO_TOKEN, CEREBRO_URL } = process.env;
+// Délai de réponse du serveur ; CEREBRO_CLIENT_TIMEOUT_MS le remplace (tests).
+const TIMEOUT_MS =
+  Number(process.env.CEREBRO_CLIENT_TIMEOUT_MS) > 0 ? Number(process.env.CEREBRO_CLIENT_TIMEOUT_MS) : 10_000;
+
+/** Le serveur n'a pas répondu à temps : il a pu recevoir la requête et la traiter malgré tout. */
+export class ServerTimeoutError extends Error {}
 
 export function inSession() {
   return Boolean(CEREBRO_SESSION_ID && CEREBRO_TOKEN && CEREBRO_URL);
@@ -19,20 +25,29 @@ export function sessionPath(resource) {
 
 // `init.body` est encodé en JSON. Une réponse en erreur lève une Error portant le message `error` du
 // serveur (sinon le statut HTTP, ou `tooLarge` pour un 413) ; une réponse 204 renvoie null. Un proxy
-// peut répondre en HTML : une réponse illisible lève une erreur qui garde le statut HTTP.
+// peut répondre en HTML : une réponse illisible lève une erreur qui garde le statut HTTP. Sans réponse
+// dans le délai : ServerTimeoutError.
 export async function request(path, { method = 'GET', body, tooLarge } = {}) {
   requireSession();
-  const response = await fetch(`${CEREBRO_URL.replace(/\/+$/, '')}${path}`, {
-    method,
-    headers: {
-      ...(body === undefined ? {} : { 'content-type': 'application/json; charset=utf-8' }),
-      'x-cerebro-token': CEREBRO_TOKEN,
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(10_000),
-  });
+  let response;
+  let text = '';
+  try {
+    response = await fetch(`${CEREBRO_URL.replace(/\/+$/, '')}${path}`, {
+      method,
+      headers: {
+        ...(body === undefined ? {} : { 'content-type': 'application/json; charset=utf-8' }),
+        'x-cerebro-token': CEREBRO_TOKEN,
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (response.status !== 204) text = await response.text();
+  } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError')
+      throw new ServerTimeoutError(`le serveur Cerebro n'a pas répondu en ${TIMEOUT_MS / 1_000} s`, { cause: error });
+    throw error;
+  }
   if (response.status === 204) return null;
-  const text = await response.text();
   let payload;
   try {
     payload = JSON.parse(text);

@@ -5,18 +5,26 @@ import { useAsyncAction } from './async-action.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { Modal } from './Dialog.tsx';
 import { errorMessage } from './format.ts';
+import { needsText } from '../../shared/council.ts';
 import {
   MAX_PERSONA_DESCRIPTION_LENGTH,
   MAX_PERSONA_NAME_LENGTH,
   MAX_PERSONA_PROMPT_LENGTH,
   MIN_PERSONAS,
+  PERSONA_NEEDS,
   type Persona,
+  type PersonaNeed,
 } from '../../shared/types.ts';
 import './council.css';
 import type { PersonaInput } from '../../shared/types.ts';
 
 // id null : nouvelle persona.
-type Draft = PersonaInput & { id: string | null };
+type Draft = PersonaInput & { id: string | null; needs: PersonaNeed[] };
+
+const NEED_CHOICES: Record<PersonaNeed, string> = {
+  project: 'Le dépôt du projet, en lecture seule',
+  web: 'Le web : recherche et lecture de pages',
+};
 
 function Counter({ value, max }: { value: string; max: number }) {
   // Le serveur compte les caractères sans les espaces de début et de fin.
@@ -89,6 +97,29 @@ function PersonaForm({
           onChange={(event) => onChange({ ...draft, prompt: event.target.value })}
         />
       </label>
+      <fieldset className="persona-needs">
+        <legend>
+          Accès nécessaires<span className="hint"> : signalés au lancement d’un council qui ne les donne pas.</span>
+        </legend>
+        {PERSONA_NEEDS.map((need) => (
+          <label key={need} className="persona-need">
+            <input
+              type="checkbox"
+              checked={draft.needs.includes(need)}
+              disabled={busy}
+              onChange={(event) =>
+                onChange({
+                  ...draft,
+                  needs: PERSONA_NEEDS.filter((item) =>
+                    item === need ? event.target.checked : draft.needs.includes(item),
+                  ),
+                })
+              }
+            />
+            {NEED_CHOICES[need]}
+          </label>
+        ))}
+      </fieldset>
       {error ? (
         <p className="form-error" role="alert">
           {error}
@@ -123,6 +154,7 @@ export function PersonasDialog({ onClose, onChange }: { onClose: () => void; onC
       name: current.name.trim(),
       description: current.description.trim(),
       prompt: current.prompt.trim(),
+      needs: current.needs,
     };
     const saved = current.id === null ? await createPersona(input) : await updatePersona(current.id, input);
     setPersonas((list) => {
@@ -225,6 +257,9 @@ export function PersonasDialog({ onClose, onChange }: { onClose: () => void; onC
                         ) : null}
                       </div>
                       {persona.description ? <p className="persona-description">{persona.description}</p> : null}
+                      {persona.needs.length > 0 ? (
+                        <p className="persona-needs-summary">A besoin {needsText(persona.needs)}</p>
+                      ) : null}
                     </div>
                     <div className="row-actions">
                       <button
@@ -237,6 +272,7 @@ export function PersonasDialog({ onClose, onChange }: { onClose: () => void; onC
                             name: persona.name,
                             description: persona.description,
                             prompt: persona.prompt,
+                            needs: persona.needs,
                           })
                         }
                       >
@@ -267,7 +303,7 @@ export function PersonasDialog({ onClose, onChange }: { onClose: () => void; onC
               type="button"
               className="btn primary"
               disabled={busy || personas === null}
-              onClick={() => edit({ id: null, name: '', description: '', prompt: '' })}
+              onClick={() => edit({ id: null, name: '', description: '', prompt: '', needs: [] })}
             >
               Nouvelle persona
             </button>

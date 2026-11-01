@@ -239,3 +239,38 @@ test('Slack project council: unknown project, other owner and failed runs', asyn
   notifier.councils = councils;
   assert.match(replies(missing), /^:x: Council impossible : council indisponible/);
 });
+
+test('Slack council: les personas privées d’un accès dont elles ont besoin sont signalées dès le lancement', async () => {
+  const projectSettings = db.getProject(project.id).councilSettings;
+  const defaults = await councils.settingsFor(null);
+  db.putSetting('council', { ...defaults, defaultPersonaIds: ['empiricist', 'failure-historian', 'contrarian'] });
+  db.updateProject(project.id, { councilSettings: null });
+  // Premier message du fil : l'avertissement, avant la synthèse.
+  const posts = async (ts, text) =>
+    (await handled(ts, text)).filter((call) => call.method === 'chat.postMessage').map((call) => call.body);
+  try {
+    let sent = await posts('13.1', 'council: Faut-il migrer la base ?');
+    assert.equal(sent.length, 2);
+    assert.ok(sent.every((body) => body.thread_ts === '13.1'));
+    assert.equal(
+      sent[0].text,
+      ':warning: Empiriste a besoin du dépôt et du web, Historien des échecs a besoin du web : ce council n’y donne pas accès, leurs preuves risquent d’être inventées.',
+    );
+    assert.match(sent[1].text, /^:busts_in_silhouette: Council hors projet/);
+    // Le projet est lu selon ses réglages : seul le web manque.
+    sent = await posts('13.2', 'acme/council: Faut-il découper le serveur ?');
+    assert.equal(councils.list(project.id)[0].readProject, true);
+    assert.equal(
+      sent[0].text,
+      ':warning: Empiriste a besoin du web, Historien des échecs a besoin du web : ce council n’y donne pas accès, leurs preuves risquent d’être inventées.',
+    );
+    // Aucune persona cochée n'a besoin d'accès : seule la synthèse est postée.
+    db.putSetting('council', { ...defaults, defaultPersonaIds: ['contrarian', 'outsider'] });
+    sent = await posts('13.3', 'council: Et sans eux ?');
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].text, /^:busts_in_silhouette: Council hors projet/);
+  } finally {
+    db.putSetting('council', defaults);
+    db.updateProject(project.id, { councilSettings: projectSettings });
+  }
+});

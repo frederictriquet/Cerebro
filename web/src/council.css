@@ -74,6 +74,34 @@
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+.persona-needs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1.25rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.persona-needs legend {
+  width: 100%;
+  padding: 0;
+  margin-bottom: 0.3rem;
+}
+.persona-form .persona-need {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+.persona-need input {
+  width: auto;
+  margin: 0;
+}
+.persona-needs-summary {
+  margin: 0;
+  color: var(--faint);
+  font-size: 12px;
+}
 @media (max-width: 560px) {
   .persona-item {
     flex-direction: column;
@@ -202,6 +230,9 @@
   flex: none;
   margin-top: 0.2rem;
 }
+.council-access-warning {
+  color: var(--waiting);
+}
 .council-advisor-head {
   display: flex;
   align-items: flex-start;
@@ -235,6 +266,74 @@
   cursor: default;
 }
 .council-advisor-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.45);
+}
+/* Sélecteur de composition du lancement : libellé et liste sur une ligne. */
+.council-composition {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.6rem;
+}
+.council-composition select {
+  width: auto;
+  max-width: 100%;
+  color: var(--text);
+}
+.council-compositions {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.council-composition-item {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+.council-composition-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.council-composition-head input {
+  flex: 1;
+  min-width: 0;
+}
+.council-composition-personas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+/* Pastilles comme les onglets des conseillers : pleine pour une persona retenue, en tirets sinon. */
+.council-composition-persona {
+  padding: 2px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.council-composition-persona:hover:not(:disabled) {
+  color: var(--muted);
+}
+.council-composition-persona.on {
+  border-style: solid;
+  border-color: var(--accent);
+  background: rgba(122, 162, 247, 0.16);
+  color: var(--accent);
+}
+.council-composition-persona:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.council-composition-persona:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.45);
 }
@@ -522,6 +621,60 @@
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+.council-observed > p,
+.council-observed > .md {
+  margin: 0 0 0.75rem;
+}
+.council-observed-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3rem 0.75rem;
+}
+.council-verdict {
+  font-weight: 600;
+}
+.council-verdict.good {
+  color: var(--running);
+}
+.council-verdict.mixed {
+  color: var(--waiting);
+}
+.council-verdict.bad {
+  color: var(--danger);
+}
+.council-verdict.none {
+  color: var(--faint);
+}
+.council-observed-form {
+  display: grid;
+  gap: 0.75rem;
+}
+.council-verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1.25rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.council-verdicts legend {
+  width: 100%;
+  padding: 0;
+  margin-bottom: 0.3rem;
+  color: var(--muted);
+  font-size: 12px;
+}
+.council-verdicts label {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+.council-verdicts input {
+  width: auto;
+  margin: 0;
 }
 .council-answer,
 .council-review {

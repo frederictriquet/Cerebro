@@ -5,7 +5,7 @@ import type { PeerSync } from './peers.ts';
 import { formatQuestions } from './questions.ts';
 import type { AgentQuestion } from './questions.ts';
 import type { SessionEvent, SessionManager } from './sessions.ts';
-import { SlackRateLimitError, type SlackClient, type SlackTransport } from './slack-api.ts';
+import { SlackRateLimitError, SlackTransientError, type SlackClient, type SlackTransport } from './slack-api.ts';
 import {
   cerebroLink,
   escapeMrkdwn,
@@ -16,9 +16,16 @@ import {
   splitMessage,
 } from './slack-format.ts';
 import { newThread, type MessageKind, type SlackSettings, type SlackState } from './slack-state.ts';
+import { errorMessage } from './util.ts';
 
 /** What alerts need to know of Slack's rate limit: whether a window is active and when a retry may run. */
 export type SlackRateLimits = Pick<SlackTransport, 'rateLimited' | 'rateLimitWait'>;
+
+/**
+ * Waits before each new attempt of an agent or watch message after a transient Slack failure (timeout, network,
+ * Slack 5xx): 5 attempts over about a minute, each call itself abandoned after 10 s.
+ */
+export const TRANSIENT_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 15_000, 30_000];
 
 interface NotificationTurn {
   started_at: number;
@@ -49,6 +56,8 @@ export class SlackAlerts {
   readonly waitingAgentMessages = new Map<string, Set<() => void>>();
   // Chunks of an operation message already posted: a retry after a failed chunk resumes at the next one.
   private readonly operationChunks = new Map<string, { message: string; sent: number }>();
+  // Replaceable by tests.
+  transientRetryDelays: readonly number[] = TRANSIENT_RETRY_DELAYS_MS;
 
   constructor(
     client: SlackClient,
@@ -110,6 +119,33 @@ export class SlackAlerts {
 
   // 'queued': Slack is rate limited, the message is posted as soon as the window is over.
   async agentMessage(sessionId: string, kind: 'notify' | 'ask', text: string): Promise<'sent' | 'queued'> {
+    const { delivery, deferred } = this.enqueueAgentMessage(sessionId, kind, text);
+    const outcome = await Promise.race([delivery.then(() => 'sent' as const), deferred]);
+    if (outcome === 'queued') void delivery.catch((error: unknown) => this.client.logError(error));
+    return outcome;
+  }
+
+  /**
+   * Queues an agent message without waiting for Slack (`POST /api/notify`): true when a 429 window already delays it.
+   * A message given up (permanent error, or transient errors past the retries) is logged.
+   */
+  queueAgentMessage(sessionId: string, kind: 'notify' | 'ask', text: string): boolean {
+    const { delivery, rateLimited } = this.enqueueAgentMessage(sessionId, kind, text);
+    void delivery.catch((error: unknown) =>
+      this.client.logError(`Envoi abandonné (${kind}, session ${sessionId}) : ${errorMessage(error)}`),
+    );
+    return rateLimited;
+  }
+
+  /**
+   * Puts an agent message behind the session's other sends: `delivery` settles once Slack took it or it is given
+   * up; `deferred` resolves as soon as a 429 window delays it; `rateLimited`: a window already delays it.
+   */
+  private enqueueAgentMessage(
+    sessionId: string,
+    kind: 'notify' | 'ask',
+    text: string,
+  ): { delivery: Promise<void>; deferred: Promise<'queued'>; rateLimited: boolean } {
     const session = this.db.getSession(sessionId);
     if (session === null) throw new Error('Session introuvable');
     this.markTurn(sessionId, 'custom_at');
@@ -135,7 +171,7 @@ export class SlackAlerts {
     };
     const delivery = this.client.serial(session.id, () => {
       started();
-      return this.retryRateLimited(
+      return this.retrySlack(
         session.id,
         async () => {
           if (this.client.stopped) return;
@@ -152,10 +188,9 @@ export class SlackAlerts {
       );
     });
     void delivery.finally(started).catch(() => {});
-    if (this.limits.rateLimited() || this.deferredDeliveries.has(session.id)) queued();
-    const outcome = await Promise.race([delivery.then(() => 'sent' as const), deferred]);
-    if (outcome === 'queued') void delivery.catch((error: unknown) => this.client.logError(error));
-    return outcome;
+    const rateLimited = this.limits.rateLimited() || this.deferredDeliveries.has(session.id);
+    if (rateLimited) queued();
+    return { delivery, deferred, rateLimited };
   }
 
   /**
@@ -171,7 +206,7 @@ export class SlackAlerts {
     const ended = session.status === 'exited' ? ' · _session terminée_' : '';
     const message = `${icon} ${sessionHeader(this.db, session)}${ended}\n${text}\n${sessionLink(session.id)}`;
     await this.client.serial(session.id, () =>
-      this.retryRateLimited(
+      this.retrySlack(
         session.id,
         async () => {
           if (this.client.stopped) return;
@@ -190,14 +225,29 @@ export class SlackAlerts {
     );
   }
 
-  /** Runs `send` again after each Slack 429 window; `onDeferred` is told as soon as it has to wait. */
-  private async retryRateLimited(id: string, send: () => Promise<void>, onDeferred: () => void): Promise<void> {
+  /**
+   * Runs `send` again after each Slack 429 window, and after a transient failure (timeout, network, Slack 5xx) once
+   * per `transientRetryDelays` entry; `onDeferred` is told as soon as it has to wait for a 429 window.
+   */
+  private async retrySlack(id: string, send: () => Promise<void>, onDeferred: () => void): Promise<void> {
+    let failures = 0;
     for (;;) {
       try {
         await send();
         return;
       } catch (error) {
-        if (!(error instanceof SlackRateLimitError) || this.client.stopped) throw error;
+        if (this.client.stopped) throw error;
+        if (error instanceof SlackTransientError) {
+          const wait = this.transientRetryDelays[failures];
+          if (wait === undefined) throw error;
+          failures += 1;
+          this.client.logError(
+            `${error.message} ; nouvelle tentative dans ${wait / 1_000} s (${failures}/${this.transientRetryDelays.length})`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, wait).unref());
+          continue;
+        }
+        if (!(error instanceof SlackRateLimitError)) throw error;
         onDeferred();
         for (const waiter of this.waitingAgentMessages.get(id) ?? []) waiter();
         this.deferredDeliveries.set(id, (this.deferredDeliveries.get(id) ?? 0) + 1);

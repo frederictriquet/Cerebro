@@ -21,6 +21,7 @@ import { PersonasDialog } from './PersonasDialog.tsx';
 import { usePolling, useNow } from './polling.tsx';
 import { go, href } from './route.ts';
 import { readJson, writeJson } from './storage.ts';
+import { accessWarning } from '../../shared/council.ts';
 import {
   MAX_ADVISORS,
   MIN_ADVISORS,
@@ -78,6 +79,10 @@ function writeCouncilDraft(key: string, draft: CouncilDraft): void {
 
 // Les images sont attachées au message de chaque appel : conseillers et chairman doivent les accepter.
 const IMAGE_AGENTS: readonly string[] = ['claude', 'codex'];
+
+// Choix du sélecteur de composition autres que l'index d'une composition des réglages.
+const DEFAULT_PARTICIPANTS = 'defaults';
+const CUSTOM_PARTICIPANTS = 'custom';
 
 const QUESTION_PREVIEW = 120;
 
@@ -238,6 +243,23 @@ function CouncilLaunchForm({ projectId, draftKey: ownDraftKey, initialContext, e
 
   const known = new Set(personas?.map((persona) => persona.id) ?? []);
   const checkedIds = (draft.personaIds ?? settings?.defaultPersonaIds ?? []).filter((id) => known.has(id));
+  // Une persona supprimée du catalogue est ignorée : la composition coche les autres.
+  const compositions = (settings?.compositions ?? []).map((composition) => ({
+    ...composition,
+    personaIds: composition.personaIds.filter((id) => known.has(id)),
+  }));
+  const checksExactly = (ids: readonly string[]): boolean =>
+    ids.length === checkedIds.length && ids.every((id) => checkedIds.includes(id));
+  // Le sélecteur montre la composition qui coche exactement la sélection ; une retouche la rend personnalisée.
+  const matching = compositions.findIndex((composition) => checksExactly(composition.personaIds));
+  const compositionChoice =
+    draft.personaIds === null
+      ? DEFAULT_PARTICIPANTS
+      : matching !== -1
+        ? String(matching)
+        : checksExactly((settings?.defaultPersonaIds ?? []).filter((id) => known.has(id)))
+          ? DEFAULT_PARTICIPANTS
+          : CUSTOM_PARTICIPANTS;
   const llmOf = (loaded: CouncilSettings, personaId: string): Llm =>
     overrides[personaId] ?? assignmentOf(loaded, personaId);
   const count = checkedIds.length;
@@ -266,10 +288,25 @@ function CouncilLaunchForm({ projectId, draftKey: ownDraftKey, initialContext, e
       : `Images jointes : ${unableNames.join(', ')} ne ${unableNames.length > 1 ? 'prennent' : 'prend'} pas en charge les images. Choisissez claude ou codex.`;
   const canLaunch =
     ready && !busy && !images.pending && countError === null && imageError === null && draft.question.trim() !== '';
+  // Personas cochées privées d'un accès dont elles ont besoin : signalées sans bloquer le lancement.
+  const needsWarning = ready
+    ? accessWarning(
+        personas.filter((persona) => checkedIds.includes(persona.id)),
+        { project: scope !== null && readProject === true, web: webAccess },
+      )
+    : null;
 
   const toggle = (personaId: string, checked: boolean): void => {
     const others = checkedIds.filter((id) => id !== personaId);
     setDraft({ ...draft, personaIds: checked ? [...others, personaId] : others });
+  };
+  // Coche les personas d'une composition, ou revient aux participants par défaut des réglages.
+  const applyComposition = (choice: string): void => {
+    if (choice === DEFAULT_PARTICIPANTS) setDraft({ ...draft, personaIds: null });
+    else {
+      const composition = compositions[Number(choice)];
+      if (composition !== undefined) setDraft({ ...draft, personaIds: composition.personaIds });
+    }
   };
 
   const launch = async (): Promise<void> => {
@@ -396,6 +433,11 @@ function CouncilLaunchForm({ projectId, draftKey: ownDraftKey, initialContext, e
             Donner accès au web<span className="hint"> : recherche et lecture de pages pendant les réponses.</span>
           </span>
         </label>
+        {needsWarning ? (
+          <p className="council-access-warning" role="status">
+            {needsWarning}
+          </p>
+        ) : null}
 
         <section className="council-settings-section">
           <div className="council-settings-head">
@@ -421,6 +463,29 @@ function CouncilLaunchForm({ projectId, draftKey: ownDraftKey, initialContext, e
             </p>
           ) : null}
           {!ready && loadError === null ? <ActivityStatus>Chargement…</ActivityStatus> : null}
+          {ready && compositions.length > 0 ? (
+            <label className="council-composition">
+              <span>Composition</span>
+              <select
+                value={compositionChoice}
+                disabled={busy}
+                title="Coche les personas d’une composition des réglages ; la sélection reste modifiable"
+                onChange={(event) => applyComposition(event.target.value)}
+              >
+                {compositionChoice === CUSTOM_PARTICIPANTS ? (
+                  <option value={CUSTOM_PARTICIPANTS} disabled>
+                    Sélection personnalisée
+                  </option>
+                ) : null}
+                <option value={DEFAULT_PARTICIPANTS}>Participants par défaut</option>
+                {compositions.map((composition, index) => (
+                  <option key={composition.name} value={String(index)}>
+                    {composition.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           {ready ? (
             <CouncilAdvisorList
               personas={personas}

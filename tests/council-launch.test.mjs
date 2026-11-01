@@ -7,6 +7,7 @@ import { moduleRunnerTransform, transformWithOxc } from 'vite';
 import * as format from '../web/src/format.ts';
 import * as localStore from '../web/src/storage.ts';
 import * as types from '../shared/types.ts';
+import * as council from '../shared/council.ts';
 import { withoutPersona } from '../server/council.ts';
 
 // Exécute les vrais composants et leurs handlers en mémoire, avec le transformateur
@@ -31,14 +32,16 @@ async function compile(name, extension = 'tsx') {
   };
 }
 
-const [loadLaunch, loadSettings, loadAdvisorList, loadAttachments, loadUseLatest, loadAsyncAction] = await Promise.all([
-  compile('CouncilLaunch'),
-  compile('CouncilSettingsDialog'),
-  compile('CouncilAdvisorList'),
-  compile('attachments'),
-  compile('use-latest', 'ts'),
-  compile('async-action', 'ts'),
-]);
+const [loadLaunch, loadSettings, loadAdvisorList, loadAttachments, loadUseLatest, loadAsyncAction, loadPersonas] =
+  await Promise.all([
+    compile('CouncilLaunch'),
+    compile('CouncilSettingsDialog'),
+    compile('CouncilAdvisorList'),
+    compile('attachments'),
+    compile('use-latest', 'ts'),
+    compile('async-action', 'ts'),
+    compile('PersonasDialog'),
+  ]);
 // Composants dont le rendu est déplié dans l'arbre, pour inspecter leurs éléments.
 const inlined = new Map();
 const CLAUDE = { agent: 'claude', model: null, effort: null };
@@ -51,6 +54,7 @@ const defaults = () => ({
   defaultPersonaIds: [...ids],
   chairman: { ...CLAUDE },
   readProject: true,
+  compositions: [],
 });
 
 function nodes(tree) {
@@ -87,6 +91,7 @@ async function fixture(t, projectId, setup = () => {}) {
       name: id,
       description: '',
       prompt: id,
+      needs: [],
       builtin: false,
       createdAt: 0,
       updatedAt: 0,
@@ -96,6 +101,8 @@ async function fixture(t, projectId, setup = () => {}) {
     settingsReads: 0,
     writes: [],
     launches: [],
+    // Personas créées ou modifiées par le dialogue des personas.
+    saved: [],
     // Councils créés côté serveur, idempotents sur requestId comme CouncilRuns.start.
     created: new Map(),
     navigations: [],
@@ -203,6 +210,7 @@ async function fixture(t, projectId, setup = () => {}) {
     react: hooks,
     'react/jsx-runtime': jsx,
     '../../shared/types.ts': types,
+    '../../shared/council.ts': council,
     './council.css': {},
     './ActivityStatus.tsx': { ActivityStatus() {} },
     './AgentLabel.tsx': { AgentLogo() {} },
@@ -240,6 +248,21 @@ async function fixture(t, projectId, setup = () => {}) {
       async listPersonas() {
         return structuredClone(f.personas);
       },
+      async createPersona(input) {
+        f.saved.push(['create', structuredClone(input)]);
+        const created = { id: 'new', ...input, builtin: false, createdAt: 0, updatedAt: 0 };
+        f.personas.push(created);
+        return structuredClone(created);
+      },
+      async updatePersona(id, patch) {
+        f.saved.push(['update', id, structuredClone(patch)]);
+        const persona = Object.assign(
+          f.personas.find((candidate) => candidate.id === id),
+          patch,
+        );
+        return structuredClone(persona);
+      },
+      async deletePersona() {},
       async getCouncilSettings() {
         f.settingsReads++;
         return structuredClone(f.globalSettings);
@@ -287,6 +310,8 @@ async function fixture(t, projectId, setup = () => {}) {
     }
   });
   modules['./CouncilSettingsDialog.tsx'] = await loadSettings(modules);
+  f.mount = mount;
+  f.modules = modules;
   const { CouncilLaunch } = await loadLaunch(modules);
   const form = CouncilLaunch({ projectId });
   f.launch = mount(form.type, form.props);
@@ -581,6 +606,167 @@ test('supprimer une persona depuis les réglages rafraîchit aussi le formulaire
   assert.deepEqual(f.checked(), ['two', 'three']);
 });
 
+// Deux compositions en plus des quatre personas ; « gone » n'est plus au catalogue.
+const withCompositions = (f) => {
+  fourPersonas(f);
+  for (const settings of [f.globalSettings, f.projectSettings])
+    settings.compositions = [
+      { name: 'Technique', personaIds: ['four', 'gone', 'one', 'three'] },
+      { name: 'Produit', personaIds: ['two', 'four'] },
+    ];
+};
+// Sélecteur de composition du lancement : valeur, libellés des choix et choix d'une valeur.
+const compositionSelect = (view) => find(view, (node) => node.type === 'select');
+const compositionChoices = (view) =>
+  nodes(compositionSelect(view).props.children)
+    .filter((node) => node.type === 'option')
+    .map((option) => option.props.children);
+const chooseComposition = (f, value) => {
+  compositionSelect(f.launch).props.onChange({ target: { value } });
+  f.launch.render();
+};
+const callsHint = (view) =>
+  nodes(view.tree).find((node) => typeof node.props.children === 'string' && / appels LLM$/.test(node.props.children))
+    ?.props.children;
+
+for (const projectId of [undefined, 'project']) {
+  test(`une composition coche ses personas, ajustables avant de convoquer (${projectId ?? 'accueil'})`, async (t) => {
+    const f = await fixture(t, projectId, withCompositions);
+    assert.deepEqual(f.checked(), ['one', 'two']);
+    assert.equal(compositionSelect(f.launch).props.value, 'defaults');
+    assert.deepEqual(compositionChoices(f.launch), ['Participants par défaut', 'Technique', 'Produit']);
+
+    // La persona absente du catalogue est ignorée sans erreur.
+    chooseComposition(f, '0');
+    assert.deepEqual(f.checked(), ['one', 'three', 'four']);
+    assert.equal(compositionSelect(f.launch).props.value, '0');
+    assert.equal(callsHint(f.launch), '3 conseillers · 7 appels LLM');
+    // Une retouche rend la sélection personnalisée ; la défaire retrouve la composition.
+    f.toggle('two').props.onClick();
+    f.launch.render();
+    assert.equal(compositionSelect(f.launch).props.value, 'custom');
+    assert.deepEqual(compositionChoices(f.launch), [
+      'Sélection personnalisée',
+      'Participants par défaut',
+      'Technique',
+      'Produit',
+    ]);
+    f.toggle('two').props.onClick();
+    f.launch.render();
+    assert.equal(compositionSelect(f.launch).props.value, '0');
+    // L'agent choisi pour ce lancement s'ajoute à la composition.
+    f.choose('four', CODEX);
+    assert.deepEqual(await f.convoke(), [
+      { personaId: 'one', ...CLAUDE },
+      { personaId: 'three', ...CLAUDE },
+      { personaId: 'four', ...CODEX },
+    ]);
+  });
+}
+
+test('« Participants par défaut » rend la sélection aux réglages, qu’elle suit de nouveau', async (t) => {
+  const f = await fixture(t, undefined, withCompositions);
+  chooseComposition(f, '1');
+  assert.deepEqual(f.checked(), ['two', 'four']);
+  chooseComposition(f, 'defaults');
+  assert.deepEqual(f.checked(), ['one', 'two']);
+  // Les participants par défaut enregistrés ensuite s'appliquent.
+  const dialog = await f.openSettings();
+  find(
+    { tree: find(dialog, (node) => node.props.role === 'tabpanel' && node.key === 'three') },
+    (node) => node.type === 'button' && node.props.className?.startsWith('council-advisor-toggle'),
+  ).props.onClick();
+  dialog.render();
+  submit(dialog);
+  await f.launch.settle();
+  assert.deepEqual(f.checked(), ['one', 'two', 'three']);
+  assert.equal(compositionSelect(f.launch).props.value, 'defaults');
+});
+
+test('une persona supprimée du catalogue quitte les compositions sans erreur', async (t) => {
+  const f = await fixture(t, undefined, withCompositions);
+  chooseComposition(f, '0');
+  f.deletePersona('one');
+  await f.refreshPersonas();
+  assert.deepEqual(f.checked(), ['three', 'four']);
+  assert.equal(compositionSelect(f.launch).props.value, '0');
+  assert.deepEqual(
+    (await f.convoke()).map((participant) => participant.personaId),
+    ['three', 'four'],
+  );
+});
+
+test('sans composition, le lancement n’affiche pas de sélecteur', async (t) => {
+  const f = await fixture(t);
+  assert.equal(
+    nodes(f.launch.tree).some((node) => node.type === 'select'),
+    false,
+  );
+});
+
+test('les réglages créent, renomment, modifient et suppriment des compositions', async (t) => {
+  const f = await fixture(t, undefined, withCompositions);
+  const dialog = await f.openSettings();
+  // Sans état propre : son rendu est déplié dans l'arbre du dialogue.
+  const editor = find(dialog, (node) => node.type?.name === 'CouncilCompositions');
+  inlined.set(editor.type, editor.type);
+  const items = () =>
+    nodes(dialog.tree).filter((node) => node.type === 'li' && node.props.className === 'council-composition-item');
+  const within = (index, predicate) => find({ tree: items()[index] }, predicate);
+  const names = () => items().map((_, index) => within(index, (node) => node.type === 'input').props.value);
+  const pressed = (index) =>
+    nodes(items()[index])
+      .filter((node) => node.props['aria-pressed'] === true)
+      .map((node) => node.key);
+  const message = (index) => within(index, (node) => node.type === 'p').props.children;
+  const rename = (index, value) => {
+    within(index, (node) => node.type === 'input').props.onChange({ target: { value } });
+    dialog.render();
+  };
+  const press = (index, id) => {
+    within(index, (node) => node.type === 'button' && node.key === id).props.onClick();
+    dialog.render();
+  };
+  const blocked = () => find(dialog, (node) => node.type === 'button' && node.props.type === 'submit').props.disabled;
+
+  // La persona absente du catalogue n'est ni proposée ni comptée.
+  assert.deepEqual(names(), ['Technique', 'Produit']);
+  assert.deepEqual(pressed(0), ['one', 'three', 'four']);
+  assert.equal(message(0), '3 personas · 7 appels LLM');
+  assert.equal(blocked(), false);
+
+  // Une nouvelle composition part des participants cochés par défaut et doit être nommée.
+  button(dialog, 'Nouvelle composition').props.onClick();
+  dialog.render();
+  assert.deepEqual(pressed(2), ['one', 'two']);
+  assert.equal(message(2), 'Nommez la composition.');
+  assert.equal(blocked(), true);
+  rename(2, ' produit ');
+  assert.equal(message(2), 'Une autre composition porte déjà ce nom.');
+  rename(2, 'Décision');
+  press(2, 'one');
+  assert.equal(message(2), 'Choisissez au moins 2 personas.');
+  assert.equal(blocked(), true);
+  press(2, 'three');
+  assert.equal(message(2), '2 personas · 5 appels LLM');
+  assert.equal(blocked(), false);
+
+  within(1, (node) => node.type === 'button' && node.props.children === 'Supprimer').props.onClick();
+  dialog.render();
+  assert.deepEqual(names(), ['Technique', 'Décision']);
+  submit(dialog);
+  await f.launch.settle();
+  assert.deepEqual(f.writes, ['global']);
+  assert.deepEqual(f.globalSettings.compositions, [
+    { name: 'Technique', personaIds: ['four', 'one', 'three'] },
+    { name: 'Décision', personaIds: ['two', 'three'] },
+  ]);
+  // Le lancement propose aussitôt les compositions enregistrées.
+  assert.deepEqual(compositionChoices(f.launch), ['Participants par défaut', 'Technique', 'Décision']);
+  chooseComposition(f, '1');
+  assert.deepEqual(f.checked(), ['two', 'three']);
+});
+
 test('les onglets distinguent les conseillers qui ne participent pas', async (t) => {
   const f = await fixture(t, undefined);
   const tab = (id) => find(f.launch, (node) => node.props.role === 'tab' && node.key === id);
@@ -604,4 +790,147 @@ test('les onglets distinguent les conseillers qui ne participent pas', async (t)
     panels.filter((panel) => !panel.props.hidden).map((panel) => panel.key),
     ['one'],
   );
+});
+
+// L'Empiriste a besoin du dépôt et du web, l'Historien du web seulement ; la troisième persona d'aucun accès.
+const needingPersonas = (f) => {
+  Object.assign(f.personas[0], { name: 'Empiriste', needs: ['project', 'web'] });
+  Object.assign(f.personas[1], { name: 'Historien', needs: ['web'] });
+};
+const accessWarning = (view) =>
+  nodes(view.tree).find((node) => node.props.className === 'council-access-warning')?.props.children ?? null;
+// Cases d'accès dans l'ordre du formulaire : lecture du projet (dans un projet seulement), puis web.
+const accessBoxes = (view) =>
+  nodes(view.tree)
+    .filter((node) => node.type === 'label' && node.props.className === 'council-read-project')
+    .map((label) => find({ tree: label }, (node) => node.type === 'input'));
+const check = (f, box, checked) => {
+  box.props.onChange({ target: { checked } });
+  f.launch.render();
+};
+
+test('hors projet, une persona cochée sans l’accès dont elle a besoin est nommée, sans bloquer le lancement', async (t) => {
+  const f = await fixture(t, undefined, needingPersonas);
+  assert.equal(
+    accessWarning(f.launch),
+    'Empiriste a besoin du dépôt et du web, Historien a besoin du web : ce council n’y donne pas accès, leurs preuves risquent d’être inventées.',
+  );
+  check(f, accessBoxes(f.launch).at(-1), true);
+  // Le web ne donne pas le dépôt : seul l'Empiriste reste signalé, pour ce seul accès.
+  assert.equal(
+    accessWarning(f.launch),
+    'Empiriste a besoin du dépôt : ce council n’y donne pas accès, ses preuves risquent d’être inventées.',
+  );
+  f.toggle('one').props.onClick();
+  f.launch.render();
+  assert.equal(accessWarning(f.launch), null);
+  f.toggle('one').props.onClick();
+  f.launch.render();
+  assert.ok(accessWarning(f.launch));
+  assert.equal(find(f.launch, (node) => node.type === 'button' && node.props.type === 'submit').props.disabled, false);
+  assert.deepEqual(
+    (await f.convoke()).map((participant) => participant.personaId),
+    ids,
+  );
+  assert.equal(f.launches[0].webAccess, true);
+});
+
+test('dans un projet, l’avertissement suit la lecture du dépôt et l’accès au web cochés pour ce lancement', async (t) => {
+  const f = await fixture(t, 'project', needingPersonas);
+  // Lecture du projet proposée par les réglages : seul le web manque.
+  assert.equal(
+    accessWarning(f.launch),
+    'Empiriste a besoin du web, Historien a besoin du web : ce council n’y donne pas accès, leurs preuves risquent d’être inventées.',
+  );
+  check(f, accessBoxes(f.launch)[1], true);
+  assert.equal(accessWarning(f.launch), null);
+  check(f, accessBoxes(f.launch)[0], false);
+  assert.equal(
+    accessWarning(f.launch),
+    'Empiriste a besoin du dépôt : ce council n’y donne pas accès, ses preuves risquent d’être inventées.',
+  );
+  // Une persona décochée n'est plus signalée.
+  f.toggle('one').props.onClick();
+  f.launch.render();
+  assert.equal(accessWarning(f.launch), null);
+  await f.convoke();
+  assert.equal(f.launches[0].readProject, false);
+  assert.equal(f.launches[0].webAccess, true);
+});
+
+test('le dialogue des personas modifie les besoins d’accès et les rappelle dans la liste', async (t) => {
+  const f = await fixture(t, undefined, needingPersonas);
+  const { PersonasDialog } = await loadPersonas(f.modules);
+  const dialog = await f.mount(PersonasDialog, { onClose() {} }).settle();
+  const item = (id) => find(dialog, (node) => node.type === 'li' && node.key === id);
+  const summary = (id) =>
+    nodes(item(id).props.children).find((node) => node.props.className === 'persona-needs-summary')?.props.children ??
+    null;
+  const edit = (id) => {
+    find({ tree: item(id) }, (node) => node.type === 'button' && node.props.children === 'Modifier').props.onClick();
+    dialog.render();
+  };
+  // Formulaire déplié : ses cases d'accès dans l'ordre (dépôt, web) et sa soumission.
+  const form = () => {
+    const element = find(dialog, (node) => node.type?.name === 'PersonaForm');
+    return { tree: element.type(element.props) };
+  };
+  const needBoxes = () => nodes(form().tree).filter((node) => node.type === 'input' && node.props.type === 'checkbox');
+  const toggleNeed = (index, checked) => {
+    needBoxes()[index].props.onChange({ target: { checked } });
+    dialog.render();
+  };
+  const save = async () => {
+    find(form(), (node) => node.type === 'form').props.onSubmit({ preventDefault() {} });
+    await dialog.settle();
+  };
+
+  assert.deepEqual(summary('one'), ['A besoin ', 'du dépôt et du web']);
+  assert.deepEqual(summary('two'), ['A besoin ', 'du web']);
+  assert.equal(summary('three'), null);
+
+  edit('three');
+  assert.deepEqual(
+    needBoxes().map((box) => box.props.checked),
+    [false, false],
+  );
+  // Cochés dans le désordre, envoyés dans l'ordre canonique.
+  toggleNeed(1, true);
+  toggleNeed(0, true);
+  assert.deepEqual(
+    needBoxes().map((box) => box.props.checked),
+    [true, true],
+  );
+  await save();
+  assert.deepEqual(f.saved.at(-1), [
+    'update',
+    'three',
+    { name: 'three', description: '', prompt: 'three', needs: ['project', 'web'] },
+  ]);
+  assert.deepEqual(summary('three'), ['A besoin ', 'du dépôt et du web']);
+
+  edit('one');
+  assert.deepEqual(
+    needBoxes().map((box) => box.props.checked),
+    [true, true],
+  );
+  toggleNeed(0, false);
+  await save();
+  assert.deepEqual(f.saved.at(-1)[2].needs, ['web']);
+  assert.deepEqual(summary('one'), ['A besoin ', 'du web']);
+
+  button(dialog, 'Nouvelle persona').props.onClick();
+  dialog.render();
+  for (const [field, value] of [
+    ['input', 'Juriste'],
+    ['textarea', 'Tu es le juriste.'],
+  ]) {
+    find(form(), (node) => node.type === field && node.props.required).props.onChange({ target: { value } });
+    dialog.render();
+  }
+  await save();
+  assert.deepEqual(f.saved.at(-1), [
+    'create',
+    { name: 'Juriste', description: '', prompt: 'Tu es le juriste.', needs: [] },
+  ]);
 });

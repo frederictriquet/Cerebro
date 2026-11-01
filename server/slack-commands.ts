@@ -8,6 +8,7 @@ import { normalizeProjectName, type PeerSync } from './peers.ts';
 import type { SessionManager } from './sessions.ts';
 import type { SlackClient, SlackMessage } from './slack-api.ts';
 import {
+  councilAccessSlackText,
   councilSlackText,
   decodeSlackText,
   escapeMrkdwn,
@@ -253,6 +254,11 @@ export class SlackDmCommands {
       if (councils === null) throw new Error('council indisponible sur cette machine.');
       // readProject absent : valeur des réglages effectifs du projet.
       const run = await councils.start({ projectId: project?.id ?? null, origin: 'slack', question }, randomUUID());
+      const warning = councilAccessSlackText(run);
+      if (warning !== null)
+        await this.client
+          .postThreadReply(channel, threadTs, warning)
+          .catch((error: unknown) => this.client.logError(error));
       return councilSlackText((await councils.finished(run.id)) ?? run, project?.name ?? null);
     });
   }

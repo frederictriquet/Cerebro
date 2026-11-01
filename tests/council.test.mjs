@@ -20,7 +20,12 @@ const {
   validateCouncilSettings,
   resolveParticipants,
   convertLegacyCouncilSettings,
+  validatePersonaInput,
+  withoutPersona,
+  DEFAULT_COMPOSITIONS,
   DEFAULT_PERSONAS,
+  LEGACY_PERSONA_FINGERPRINTS,
+  personaFingerprint,
   assignLetters,
   answerPrompt,
   parseAnswer,
@@ -47,7 +52,16 @@ const { createServices } = await import('../server/services.ts');
 const { UpdateManager } = await import('../server/updates.ts');
 const { PeerSync } = await import('../server/peers.ts');
 const { buildServer } = await import('../server/index.ts');
-const { parseProject, parsePersona, MAX_ADVISORS, MAX_COUNCIL_IMAGES } = await import('../shared/types.ts');
+const {
+  parseCouncilRun,
+  parseCouncilSettings,
+  parseProject,
+  parsePersona,
+  MAX_ADVISORS,
+  MAX_COMPOSITION_NAME_LENGTH,
+  MAX_COUNCIL_COMPOSITIONS,
+  MAX_COUNCIL_IMAGES,
+} = await import('../shared/types.ts');
 
 mock.method(UpdateManager.prototype, 'start', () => {});
 mock.method(PeerSync.prototype, 'sync', async function () {
@@ -69,12 +83,60 @@ const settings = {
   defaultPersonaIds: ['contrarian', 'outsider'],
   chairman: { agent: 'claude', model: 'opus', effort: 'high' },
   readProject: false,
+  compositions: [{ name: 'Revue', personaIds: ['contrarian', 'outsider', 'executor'] }],
 };
-const BUILTIN_IDS = ['contrarian', 'first-principles', 'expansionist', 'outsider', 'executor'];
+// Personas fournies : cochées dans les défauts calculés, puis laissées en option (décochées), personas spécialisées
+// comprises.
+const CHECKED_IDS = ['contrarian', 'first-principles', 'expansionist', 'outsider', 'executor'];
+const SPECIALIZED_IDS = ['end-user', 'incentives', 'transposer', 'failure-historian'];
+const OPT_IN_IDS = ['empiricist', 'economist', 'maintainer', ...SPECIALIZED_IDS];
+const BUILTIN_IDS = [...CHECKED_IDS, ...OPT_IN_IDS];
 
 function persona(id, name = id) {
-  return { id, name, description: '', prompt: `Prompt ${name}`, builtin: false, createdAt: 1, updatedAt: 1 };
+  return { id, name, description: '', prompt: `Prompt ${name}`, needs: [], builtin: false, createdAt: 1, updatedAt: 1 };
 }
+
+// Valeur de `personas_seeded` quand chaque persona par défaut porte son texte actuel.
+function seededFingerprints() {
+  return Object.fromEntries(DEFAULT_PERSONAS.map((p) => [p.id, personaFingerprint(p)]));
+}
+
+// Texte des personas par défaut semé jusqu'au 2026-10-22 (ancien marqueur `personas_seeded: true`), figé :
+// ses empreintes doivent rester LEGACY_PERSONA_FINGERPRINTS.
+const STANCE_2026_10_22 =
+  'Réponds en 150 à 300 mots. Assume pleinement cet angle, sans précautions oratoires ni tentative d’équilibrer : les autres conseillers couvrent les autres points de vue.';
+const PERSONAS_2026_10_22 = [
+  {
+    id: 'contrarian',
+    name: 'Contrarien',
+    description: 'Cherche la faille fatale : hypothèses fragiles, risques et coûts cachés.',
+    prompt: `Tu es le Contrarien du conseil. Tu pars du principe que l’idée a une faille fatale et tu la cherches : hypothèses non vérifiées, risques sous-estimés, coûts cachés, effets de second ordre, raisons pour lesquelles cela a déjà échoué ailleurs. Tu n’es pas pessimiste par posture : tu es celui qui empêche le groupe de se mentir. Dis clairement ce qui va casser, pourquoi, et à quel signal on le verrait venir. ${STANCE_2026_10_22}`,
+  },
+  {
+    id: 'first-principles',
+    name: 'Premiers principes',
+    description: 'Repart du vrai problème et des contraintes réelles, quitte à contredire la question.',
+    prompt: `Tu raisonnes à partir des premiers principes. Ignore la façon dont la question est posée et les solutions habituelles : demande-toi quel est le vrai problème, quelles contraintes sont réelles et lesquelles sont héritées ou supposées. Décompose jusqu’aux faits élémentaires, puis reconstruis la réponse la plus simple qui en découle, même si elle contredit la question. ${STANCE_2026_10_22}`,
+  },
+  {
+    id: 'expansionist',
+    name: 'Expansionniste',
+    description: 'Cherche le potentiel inexploité, l’effet de levier et les opportunités adjacentes.',
+    prompt: `Tu es l’Expansionniste du conseil. Tu cherches ce qui pourrait être beaucoup plus grand que prévu : le potentiel inexploité, les opportunités adjacentes, l’effet de levier, ce que cette décision rend possible ensuite. Demande-toi ce qui se passerait si l’on visait dix fois plus haut et ce que l’on laisse sur la table en restant prudent. ${STANCE_2026_10_22}`,
+  },
+  {
+    id: 'outsider',
+    name: 'Outsider',
+    description: 'Regard naïf d’un nouveau venu : jargon, évidences oubliées, questions que personne ne pose.',
+    prompt: `Tu es l’Outsider : tu n’as aucune expertise du domaine et aucun attachement à l’existant. Tu regardes la question comme un nouveau venu intelligent : ce qui paraît confus, le jargon qui cache un flou, les évidences que les initiés ne voient plus, ce qu’un utilisateur ou un client ordinaire penserait. Pose les questions naïves que personne n’ose poser et réponds-y. ${STANCE_2026_10_22}`,
+  },
+  {
+    id: 'executor',
+    name: 'Exécutant',
+    description: 'Ne s’intéresse qu’à la mise en œuvre : plan concret, ordre, ressources, premier résultat.',
+    prompt: `Tu es l’Exécutant du conseil. Seule la mise en œuvre t’intéresse : qu’est-ce qu’on fait concrètement dès demain, dans quel ordre, avec quelles ressources, et quel est le chemin le plus court vers un premier résultat vérifiable. Signale ce qui est irréaliste en pratique (délais, dépendances, compétences) et propose un plan d’action précis. ${STANCE_2026_10_22}`,
+  },
+];
 
 function columns(db, table) {
   return db.connection
@@ -487,13 +549,67 @@ test('export Markdown : synthèse, avis, relectures puis classement', () => {
   assert.ok(failed.includes('| 1 | A | Outsider | — | 0 |'));
 });
 
-test('réglages par défaut : toutes les personas cochées, agents en tourniquet', () => {
+test('export Markdown : issue observée entre la synthèse et les avis, seulement quand elle est renseignée', () => {
+  const recordedAt = Date.UTC(2026, 10, 15, 8);
+  const at = 'renseignée le 2026-11-15T08:00:00.000Z';
+  const markdown = exportMarkdown(
+    finishedRun({
+      outcome: {
+        text: '  Seul le module critique a été réécrit : latence divisée par deux.  ',
+        verdict: 'good',
+        recordedAt,
+      },
+    }),
+  );
+  const section = markdown.indexOf(
+    `## Issue observée\n\nVerdict : bonne issue · ${at}\n\nSeul le module critique a été réécrit : latence divisée par deux.\n\n## Avis`,
+  );
+  assert.ok(section > markdown.indexOf('Mesurer les performances.'), markdown);
+  assert.ok(
+    exportMarkdown(finishedRun({ outcome: { text: 'Pas encore de recul.', verdict: null, recordedAt } })).includes(
+      `## Issue observée\n\nVerdict : non tranché · ${at}\n\nPas encore de recul.\n\n## Avis`,
+    ),
+  );
+  // Verdict sans texte : la ligne du verdict seule.
+  assert.ok(
+    exportMarkdown(finishedRun({ outcome: { text: '', verdict: 'bad', recordedAt } })).includes(
+      `## Issue observée\n\nVerdict : mauvaise issue · ${at}\n\n## Avis`,
+    ),
+  );
+  // Run sans synthèse : l'issue suit le motif de l'échec.
+  assert.ok(
+    exportMarkdown(
+      finishedRun({
+        synthesis: null,
+        error: 'Le chairman a échoué.',
+        outcome: { text: '', verdict: 'mixed', recordedAt },
+      }),
+    ).includes(`_Aucune synthèse : Le chairman a échoué._\n\n## Issue observée\n\nVerdict : issue mitigée · ${at}`),
+  );
+  // Absente des runs antérieurs, ou effacée : aucune section.
+  for (const outcome of [undefined, null])
+    assert.ok(!exportMarkdown(finishedRun({ outcome })).includes('Issue observée'), String(outcome));
+});
+
+test('réglages par défaut : personas cochées sauf celles en option, agents en tourniquet', () => {
   const personas = BUILTIN_IDS.map((id) => persona(id));
   const defaults = defaultCouncilSettings(catalog, personas, ['codex', 'grok']);
-  assert.deepEqual(defaults.defaultPersonaIds, BUILTIN_IDS);
+  assert.deepEqual(defaults.defaultPersonaIds, CHECKED_IDS);
+  // Les personas en option ont une assignation : on peut les cocher au lancement.
   assert.deepEqual(
     BUILTIN_IDS.map((id) => defaults.assignments[id].agent),
-    ['codex', 'grok', 'codex', 'grok', 'codex'],
+    BUILTIN_IDS.map((_, index) => ['codex', 'grok'][index % 2]),
+  );
+  // Une persona créée par l'utilisateur reste cochée, même après les personas en option.
+  assert.deepEqual(defaultCouncilSettings(catalog, [...personas, persona('mine')], AGENTS).defaultPersonaIds, [
+    ...CHECKED_IDS,
+    'mine',
+  ]);
+  // Sans assez d'autres personas, les premières du catalogue complètent le minimum de deux participants.
+  assert.deepEqual(
+    defaultCouncilSettings(catalog, [persona('first-principles'), ...OPT_IN_IDS.map((id) => persona(id))], AGENTS)
+      .defaultPersonaIds,
+    ['first-principles', 'empiricist'],
   );
   // Défauts calculés : effort explicite (high), modèle sans défaut catalogué pour codex et grok.
   assert.ok(Object.values(defaults.assignments).every((llm) => llm.model === null && llm.effort === 'high'));
@@ -528,15 +644,53 @@ test('personas par défaut semées une seule fois, jamais réinsérées après s
     );
     assert.deepEqual(
       personas.map((p) => p.name),
-      ['Contrarien', 'Premiers principes', 'Expansionniste', 'Outsider', 'Exécutant'],
+      [
+        'Contrarien',
+        'Premiers principes',
+        'Expansionniste',
+        'Outsider',
+        'Exécutant',
+        'Empiriste',
+        'Économiste',
+        'Mainteneur',
+        'Utilisateur final',
+        'Analyste des incitations',
+        'Transposeur',
+        'Historien des échecs',
+      ],
     );
     for (const p of personas) {
       assert.equal(p.builtin, true);
-      assert.ok(p.description.length > 0 && p.description.length <= 300);
+      assert.ok(p.description.length > 0);
+      // Le texte fourni passe tel quel la validation de l'API : longueurs maximales, valeurs trimées.
+      const text = { name: p.name, description: p.description, prompt: p.prompt };
+      assert.deepEqual(validatePersonaInput(text), { persona: text });
       assert.match(p.prompt, /150 à 300 mots/);
+      assert.match(
+        p.prompt,
+        /Termine ta réponse par ce qui te ferait changer d’avis : un fait, une mesure ou un signal précis et vérifiable\.$/,
+      );
       assert.deepEqual(parsePersona(JSON.parse(JSON.stringify(p))), p);
     }
-    assert.equal(db.getSetting('personas_seeded'), true);
+    const prompt = (id) => personas.find((p) => p.id === id).prompt;
+    assert.match(prompt('contrarian'), /pré-mortem : imagine que, dans un an, c’est un échec/);
+    assert.match(prompt('first-principles'), /deux options : ne rien faire, et retirer quelque chose/);
+    assert.match(prompt('empiricist'), /observé, ce qui est supposé et ce qui est inconnu/);
+    assert.match(prompt('empiricist'), /tu écris « non vérifié »/);
+    assert.match(prompt('empiricist'), /livrable : l’hypothèse décisive, le test et le seuil d’abandon/);
+    assert.match(prompt('economist'), /l’option zéro .* et à une version deux fois moins chère/);
+    assert.match(prompt('economist'), /livrable : l’arbitrage et l’hypothèse qui le ferait basculer/);
+    assert.match(prompt('maintainer'), /dans deux ans, c’est toi qui hériteras de cette décision/);
+    assert.match(prompt('maintainer'), /livrable : le coût de possession et la porte de sortie/);
+    // Seuls l'Empiriste et l'Historien des échecs ont besoin d'accès pour fonder leurs preuves.
+    assert.deepEqual(
+      personas.filter((p) => p.needs.length > 0).map((p) => [p.id, p.needs]),
+      [
+        ['empiricist', ['project', 'web']],
+        ['failure-historian', ['web']],
+      ],
+    );
+    assert.deepEqual(db.getSetting('personas_seeded'), seededFingerprints());
     assert.equal(db.deletePersona('outsider'), true);
   } finally {
     db.close();
@@ -545,11 +699,305 @@ test('personas par défaut semées une seule fois, jamais réinsérées après s
   try {
     assert.deepEqual(
       db.listPersonas().map((p) => p.id),
-      ['contrarian', 'first-principles', 'expansionist', 'executor'],
+      BUILTIN_IDS.filter((id) => id !== 'outsider'),
     );
+    assert.deepEqual(db.getSetting('personas_seeded'), seededFingerprints());
   } finally {
     db.close();
   }
+});
+
+test('catalogue : les personas spécialisées sont fournies, décochées dans les défauts calculés', () => {
+  const db = new CerebroDatabase(join(root, 'seed-specialized.db'));
+  try {
+    const personas = db.listPersonas();
+    assert.deepEqual(
+      SPECIALIZED_IDS.map((id) => personas.find((p) => p.id === id)).map((p) => [p?.name, p?.builtin]),
+      [
+        ['Utilisateur final', true],
+        ['Analyste des incitations', true],
+        ['Transposeur', true],
+        ['Historien des échecs', true],
+      ],
+    );
+    const prompt = (id) => personas.find((p) => p.id === id).prompt;
+    assert.match(prompt('end-user'), /tu parles pour celui qui paie ou subit la décision/);
+    assert.match(
+      prompt('end-user'),
+      /« Est-ce que je le remarquerais \? Est-ce que ça change ma vie ou seulement la vôtre \? »/,
+    );
+    assert.match(prompt('end-user'), /tu ne remplaces pas des données d’usage/);
+    assert.match(prompt('end-user'), /vérifier auprès de vrais utilisateurs/);
+    assert.match(
+      prompt('incentives'),
+      /qui gagne, qui paie, qui peut bloquer, et comment chacun contournera les règles/,
+    );
+    assert.match(prompt('incentives'), /livrable : un scénario précis de détournement ou de non-adoption/);
+    assert.match(prompt('transposer'), /quel autre domaine a déjà résolu un problème analogue/);
+    assert.match(prompt('transposer'), /transpose-le avec précision/);
+    assert.match(prompt('failure-historian'), /précédents comparables/);
+    assert.match(prompt('failure-historian'), /Tu n’inventes aucune référence/);
+    assert.match(
+      prompt('failure-historian'),
+      /Si tu n’as pas accès au web, dis-le d’emblée et tiens-t’en aux précédents que tu peux citer/,
+    );
+    assert.deepEqual(defaultCouncilSettings(catalog, personas, AGENTS).defaultPersonaIds, CHECKED_IDS);
+  } finally {
+    db.close();
+  }
+});
+
+test('base existante : les personas ajoutées aux personas par défaut sont semées à l’ouverture suivante, décochées', () => {
+  const path = join(root, 'seed-added.db');
+  let db = new CerebroDatabase(path);
+  // Base semée avant l'arrivée des personas en option : ni leurs lignes ni leurs empreintes.
+  const seeded = db.getSetting('personas_seeded');
+  for (const id of OPT_IN_IDS) {
+    db.connection.prepare('DELETE FROM personas WHERE id = ?').run(id);
+    delete seeded[id];
+  }
+  db.putSetting('personas_seeded', seeded);
+  const existing = db.listPersonas();
+  db.putSetting('council', defaultCouncilSettings(catalog, existing, AGENTS));
+  db.close();
+
+  db = new CerebroDatabase(path);
+  try {
+    const personas = db.listPersonas();
+    assert.deepEqual(personas.slice(0, existing.length), existing);
+    const added = personas.slice(existing.length);
+    assert.deepEqual(
+      added.map((p) => p.id),
+      OPT_IN_IDS,
+    );
+    for (const p of added) {
+      const { id, ...text } = DEFAULT_PERSONAS.find((d) => d.id === p.id);
+      assert.deepEqual(p, { ...p, id, ...text, builtin: true });
+    }
+    assert.deepEqual(db.getSetting('personas_seeded'), seededFingerprints());
+    // Ni les réglages enregistrés ni les défauts calculés ne les cochent.
+    assert.deepEqual(db.getSetting('council').defaultPersonaIds, CHECKED_IDS);
+    assert.deepEqual(defaultCouncilSettings(catalog, personas, AGENTS).defaultPersonaIds, CHECKED_IDS);
+  } finally {
+    db.close();
+  }
+});
+
+test('texte par défaut révisé : remplacé dans une persona intacte, jamais dans une persona modifiée ou supprimée', () => {
+  const path = join(root, 'seed-revised.db');
+  let db = new CerebroDatabase(path);
+  // Base semée avec un texte antérieur de quatre personas ; l'utilisateur en a ensuite modifié deux et supprimé une.
+  const previous = (id) => ({ ...DEFAULT_PERSONAS.find((p) => p.id === id), prompt: `Ancien prompt ${id}` });
+  const seeded = db.getSetting('personas_seeded');
+  for (const id of ['contrarian', 'outsider', 'expansionist', 'executor']) {
+    db.connection.prepare('UPDATE personas SET prompt = ? WHERE id = ?').run(previous(id).prompt, id);
+    seeded[id] = personaFingerprint(previous(id));
+  }
+  db.putSetting('personas_seeded', seeded);
+  db.updatePersona('outsider', { prompt: 'Mon outsider.' });
+  // Une autre modification que le prompt protège aussi la persona entière.
+  db.updatePersona('expansionist', { name: 'Visionnaire' });
+  assert.equal(db.deletePersona('executor'), true);
+  const modified = ['outsider', 'expansionist'].map((id) => db.getPersona(id));
+  db.close();
+
+  db = new CerebroDatabase(path);
+  try {
+    const { id, ...text } = DEFAULT_PERSONAS.find((p) => p.id === 'contrarian');
+    const contrarian = db.getPersona(id);
+    assert.deepEqual(contrarian, { ...contrarian, ...text, builtin: true });
+    assert.deepEqual(
+      ['outsider', 'expansionist'].map((id) => db.getPersona(id)),
+      modified,
+    );
+    assert.equal(db.getPersona('executor'), null);
+    // Les personas modifiées ou supprimées gardent l'empreinte du texte semé : les révisions suivantes les épargnent.
+    assert.deepEqual(db.getSetting('personas_seeded'), {
+      ...seededFingerprints(),
+      outsider: personaFingerprint(previous('outsider')),
+      expansionist: personaFingerprint(previous('expansionist')),
+      executor: personaFingerprint(previous('executor')),
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test('ancien marqueur `personas_seeded: true` : le texte d’origine est révisé dans les personas restées intactes', () => {
+  assert.deepEqual(
+    Object.fromEntries(PERSONAS_2026_10_22.map(({ id, ...text }) => [id, personaFingerprint(text)])),
+    LEGACY_PERSONA_FINGERPRINTS,
+  );
+  const path = join(root, 'seed-legacy.db');
+  let db = new CerebroDatabase(path);
+  // Base semée avant les empreintes : les cinq personas d'origine avec leur texte d'alors, sous l'ancien marqueur.
+  db.connection.prepare('DELETE FROM personas').run();
+  const insert = db.connection.prepare(
+    'INSERT INTO personas (id, name, description, prompt, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 1, 1)',
+  );
+  for (const { id, name, description, prompt } of PERSONAS_2026_10_22) insert.run(id, name, description, prompt);
+  db.putSetting('personas_seeded', true);
+  assert.equal(db.deletePersona('outsider'), true);
+  db.updatePersona('executor', { prompt: 'Mon exécutant.' });
+  db.close();
+
+  db = new CerebroDatabase(path);
+  try {
+    assert.equal(db.getPersona('outsider'), null);
+    assert.equal(db.getPersona('executor').prompt, 'Mon exécutant.');
+    // Les personas restées intactes portent le texte actuel : révisé pour celles d'origine, semé pour celles
+    // ajoutées depuis.
+    for (const { id, ...text } of DEFAULT_PERSONAS.filter((p) => p.id !== 'outsider' && p.id !== 'executor')) {
+      const persona = db.getPersona(id);
+      assert.deepEqual(persona, { ...persona, ...text, builtin: true });
+    }
+    // La persona supprimée et la persona modifiée gardent l'empreinte figée du texte d'origine.
+    assert.deepEqual(db.getSetting('personas_seeded'), {
+      ...seededFingerprints(),
+      outsider: LEGACY_PERSONA_FINGERPRINTS.outsider,
+      executor: LEGACY_PERSONA_FINGERPRINTS.executor,
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test('besoins d’accès arrivés après le semis : posés sur les personas intactes, jamais sur une persona modifiée', () => {
+  const path = join(root, 'seed-needs.db');
+  let db = new CerebroDatabase(path);
+  // Base semée avant les besoins d'accès : ni colonne `needs`, empreintes du seul texte.
+  db.connection.exec('ALTER TABLE personas DROP COLUMN needs');
+  const seeded = db.getSetting('personas_seeded');
+  for (const id of ['empiricist', 'failure-historian']) {
+    const { name, description, prompt } = DEFAULT_PERSONAS.find((p) => p.id === id);
+    seeded[id] = personaFingerprint({ name, description, prompt });
+  }
+  db.putSetting('personas_seeded', seeded);
+  db.connection.prepare("UPDATE personas SET prompt = 'Mon historien.' WHERE id = 'failure-historian'").run();
+  db.close();
+
+  db = new CerebroDatabase(path);
+  try {
+    const { id, ...text } = DEFAULT_PERSONAS.find((p) => p.id === 'empiricist');
+    const empiricist = db.getPersona(id);
+    assert.deepEqual(empiricist, { ...empiricist, ...text, needs: ['project', 'web'], builtin: true });
+    assert.deepEqual(
+      ['failure-historian', 'contrarian'].map((id) => [db.getPersona(id).prompt.slice(0, 14), db.getPersona(id).needs]),
+      [
+        ['Mon historien.', []],
+        ['Tu es le Contr', []],
+      ],
+    );
+    assert.deepEqual(db.getSetting('personas_seeded'), {
+      ...seededFingerprints(),
+      'failure-historian': seeded['failure-historian'],
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test('écriture incomplète pendant le semis : l’empreinte est celle de la ligne relue, l’ouverture suivante répare', () => {
+  const path = join(root, 'seed-partial.db');
+  const ids = ['empiricist', 'failure-historian'];
+  let db = new CerebroDatabase(path);
+  // L'Empiriste reste à insérer, l'Historien des échecs à réviser depuis un texte antérieur. Des déclencheurs
+  // remettent `needs` à '[]' après chaque écriture : une version qui écrit le texte sans persister les besoins.
+  const seeded = db.getSetting('personas_seeded');
+  db.connection.prepare("DELETE FROM personas WHERE id = 'empiricist'").run();
+  delete seeded.empiricist;
+  db.connection.prepare("UPDATE personas SET prompt = 'Ancien prompt', needs = '[]' WHERE id = ?").run(ids[1]);
+  seeded[ids[1]] = personaFingerprint(db.getPersona(ids[1]));
+  db.putSetting('personas_seeded', seeded);
+  db.connection.exec(`
+    CREATE TRIGGER lose_inserted_needs AFTER INSERT ON personas
+      BEGIN UPDATE personas SET needs = '[]' WHERE id = NEW.id; END;
+    CREATE TRIGGER lose_updated_needs AFTER UPDATE OF needs ON personas WHEN NEW.needs <> '[]'
+      BEGIN UPDATE personas SET needs = '[]' WHERE id = NEW.id; END;`);
+  db.close();
+
+  db = new CerebroDatabase(path);
+  try {
+    // Texte écrit, besoins perdus : l'empreinte enregistrée est celle du seul texte, pas celle du texte visé.
+    for (const id of ids) {
+      const { name, description, prompt } = DEFAULT_PERSONAS.find((p) => p.id === id);
+      const persona = db.getPersona(id);
+      assert.deepEqual(persona, { ...persona, name, description, prompt, needs: [] });
+      assert.equal(db.getSetting('personas_seeded')[id], personaFingerprint({ name, description, prompt }));
+    }
+    db.connection.exec('DROP TRIGGER lose_inserted_needs; DROP TRIGGER lose_updated_needs;');
+  } finally {
+    db.close();
+  }
+
+  // Une version qui persiste les besoins reprend les deux personas : elles ne passent pas pour modifiées.
+  db = new CerebroDatabase(path);
+  try {
+    assert.deepEqual(
+      ids.map((id) => db.getPersona(id).needs),
+      [['project', 'web'], ['web']],
+    );
+    assert.deepEqual(db.getSetting('personas_seeded'), seededFingerprints());
+  } finally {
+    db.close();
+  }
+});
+
+test('besoins effacés alors que l’empreinte les compte : le semis n’y touche pas, la correction à la main suffit', () => {
+  const path = join(root, 'seed-lost-needs.db');
+  const ids = ['empiricist', 'failure-historian'];
+  let db = new CerebroDatabase(path);
+  // Lignes sans besoins sous des empreintes qui les comptent : état laissé sur une base par une version intermédiaire.
+  db.connection.prepare("UPDATE personas SET needs = '[]' WHERE id IN (?, ?)").run(...ids);
+  db.close();
+
+  db = new CerebroDatabase(path);
+  try {
+    // Indiscernable de besoins décochés par l'utilisateur : la ligne n'est pas réécrite, l'empreinte pas réalignée.
+    assert.deepEqual(
+      ids.map((id) => db.getPersona(id).needs),
+      [[], []],
+    );
+    assert.deepEqual(db.getSetting('personas_seeded'), seededFingerprints());
+    // Correction dans le dialogue des personas : chaque persona fournie retrouve son empreinte, donc ses révisions.
+    db.updatePersona('empiricist', { needs: ['project', 'web'] });
+    db.updatePersona('failure-historian', { needs: ['web'] });
+    const fingerprints = db.getSetting('personas_seeded');
+    for (const { id } of DEFAULT_PERSONAS) assert.equal(personaFingerprint(db.getPersona(id)), fingerprints[id], id);
+  } finally {
+    db.close();
+  }
+});
+
+test('persona fournie déjà présente sans empreinte : l’insertion ignorée ne marque rien', () => {
+  const path = join(root, 'seed-unmarked.db');
+  let db = new CerebroDatabase(path);
+  // Empreinte perdue d'une persona modifiée : rien ne dit que la ligne porte le texte fourni.
+  const seeded = db.getSetting('personas_seeded');
+  delete seeded.economist;
+  db.putSetting('personas_seeded', seeded);
+  db.updatePersona('economist', { prompt: 'Mon économiste.' });
+  db.close();
+
+  db = new CerebroDatabase(path);
+  try {
+    assert.equal(db.getPersona('economist').prompt, 'Mon économiste.');
+    assert.deepEqual(db.getSetting('personas_seeded'), seeded);
+  } finally {
+    db.close();
+  }
+});
+
+test('empreinte d’une persona : besoins d’accès compris, inchangée sans besoin', () => {
+  const text = { name: 'Juriste', description: 'Risques.', prompt: 'Tu es le juriste.' };
+  assert.equal(personaFingerprint({ ...text, needs: [] }), personaFingerprint(text));
+  assert.notEqual(personaFingerprint({ ...text, needs: ['web'] }), personaFingerprint(text));
+  assert.notEqual(personaFingerprint({ ...text, needs: ['web'] }), personaFingerprint({ ...text, needs: ['project'] }));
+  // Ordre canonique : l'ordre de saisie ne compte pas.
+  assert.equal(
+    personaFingerprint({ ...text, needs: ['web', 'project'] }),
+    personaFingerprint({ ...text, needs: ['project', 'web'] }),
+  );
 });
 
 test('migration sur base vide puis réouverture idempotente', () => {
@@ -565,6 +1013,7 @@ test('migration sur base vide puis réouverture idempotente', () => {
     'builtin',
     'created_at',
     'updated_at',
+    'needs',
   ]);
   assert.ok(columns(db, 'projects').includes('council_settings'));
   assert.equal(db.createProject('Neuf', root).councilSettings, null);
@@ -663,6 +1112,7 @@ test('conversion des réglages au format advisors[] (global et projet)', () => {
       defaultPersonaIds: ['contrarian', jurist.id],
       chairman: { agent: 'codex', model: null, effort: 'high' },
       readProject: false,
+      compositions: DEFAULT_COMPOSITIONS,
     });
     assert.deepEqual(db.getProject(project.id).councilSettings, {
       assignments: {
@@ -672,6 +1122,7 @@ test('conversion des réglages au format advisors[] (global et projet)', () => {
       defaultPersonaIds: [jurist.id, unknown.id],
       chairman: { agent: 'claude', model: 'opus', effort: 'high' },
       readProject: true,
+      compositions: DEFAULT_COMPOSITIONS,
     });
     assert.equal(db.getProject(untouched.id).councilSettings, null);
     // Les réglages convertis sont valides.
@@ -742,7 +1193,17 @@ test('CRUD des personas : la suppression nettoie les réglages globaux et projet
       prompt: 'Tu es le juriste.',
     });
     assert.equal(created.builtin, false);
+    assert.deepEqual(created.needs, []);
     assert.deepEqual(db.getPersona(created.id), created);
+    const sourced = db.createPersona({ name: 'Documentaliste', description: '', prompt: 'Tu cites.', needs: ['web'] });
+    assert.deepEqual(db.getPersona(sourced.id).needs, ['web']);
+    assert.deepEqual(db.updatePersona(sourced.id, { needs: ['project', 'web'] }).needs, ['project', 'web']);
+    // Une modification du texte garde les besoins.
+    db.updatePersona(sourced.id, { prompt: 'Tu cites tes sources.' });
+    assert.deepEqual(db.getPersona(sourced.id).needs, ['project', 'web']);
+    assert.deepEqual(db.updatePersona(sourced.id, { needs: [] }).needs, []);
+    assert.deepEqual(db.getPersona(sourced.id).needs, []);
+    assert.equal(db.deletePersona(sourced.id), true);
     assert.equal(db.listPersonas().at(-1).id, created.id);
     await new Promise((resolve) => setTimeout(resolve, 2));
     const updated = db.updatePersona(created.id, { prompt: 'Tu es la juriste.' });
@@ -760,18 +1221,29 @@ test('CRUD des personas : la suppression nettoie les réglages globaux et projet
       ...settings,
       assignments: { ...settings.assignments, [created.id]: { agent: 'grok', model: null, effort: null } },
       defaultPersonaIds: ['outsider', created.id],
+      compositions: [
+        { name: 'Juridique', personaIds: ['outsider', created.id, 'contrarian'] },
+        { name: 'Duo', personaIds: [created.id, 'executor'] },
+      ],
     });
     db.updateProject(project.id, { councilSettings: settings });
     assert.equal(db.deletePersona(created.id), true);
     assert.equal(db.deletePersona(created.id), false);
     assert.equal(db.getPersona(created.id), null);
-    // Le minimum de deux participants est rétabli avec la première persona du catalogue.
-    assert.deepEqual(db.getSetting('council'), { ...settings, defaultPersonaIds: ['outsider', 'contrarian'] });
+    // Le minimum de deux participants est rétabli avec la première persona du catalogue ; les compositions perdent la
+    // persona, et celle réduite à une seule persona disparaît.
+    assert.deepEqual(db.getSetting('council'), {
+      ...settings,
+      defaultPersonaIds: ['outsider', 'contrarian'],
+      compositions: [{ name: 'Juridique', personaIds: ['outsider', 'contrarian'] }],
+    });
     assert.equal(db.deletePersona('outsider'), true);
+    assert.deepEqual(db.getSetting('council').compositions, []);
     assert.deepEqual(db.getProject(project.id).councilSettings, {
       ...settings,
       assignments: { contrarian: settings.assignments.contrarian },
       defaultPersonaIds: ['contrarian', 'first-principles'],
+      compositions: [{ name: 'Revue', personaIds: ['contrarian', 'executor'] }],
     });
     assert.equal(db.getProject(other.id).councilSettings, null);
   } finally {
@@ -813,6 +1285,37 @@ test('runs du council : upsert, filtres par projet et suppression avec le projet
   }
 });
 
+test('runs du council : issue observée enregistrée, lue comme null dans les runs antérieurs à ce champ', () => {
+  const outcome = { text: 'Adopté, puis abandonné.', verdict: 'mixed', recordedAt: 7 };
+  const db = new CerebroDatabase(':memory:');
+  try {
+    // `run()` n'a pas de champ outcome, comme les runs enregistrés avant lui.
+    db.saveCouncilRun(run('legacy', null, 1));
+    assert.ok(!db.connection.prepare('SELECT data FROM council_runs').get().data.includes('outcome'));
+    assert.equal(db.getCouncilRun('legacy').outcome, null);
+    assert.equal(db.listCouncilRuns()[0].outcome, null);
+    db.saveCouncilRun({ ...run('legacy', null, 1), status: 'succeeded', phase: 'finished', finishedAt: 5, outcome });
+    assert.deepEqual(db.getCouncilRun('legacy').outcome, outcome);
+    assert.deepEqual(db.listCouncilRuns(null)[0].outcome, outcome);
+  } finally {
+    db.close();
+  }
+  // Côté client (autre machine ou version) : absente ou invalide, null ; verdict inconnu, null.
+  const legacy = run('legacy', null, 1);
+  assert.equal(parseCouncilRun(legacy).outcome, null);
+  assert.equal(parseCouncilRun({ ...legacy, outcome: { verdict: 'good', recordedAt: 3 } }).outcome, null);
+  assert.equal(parseCouncilRun({ ...legacy, outcome: { text: 'Fait.' } }).outcome, null);
+  assert.deepEqual(
+    parseCouncilRun({ ...legacy, outcome: { text: 'Fait.', verdict: 'great', recordedAt: 3 } }).outcome,
+    {
+      text: 'Fait.',
+      verdict: null,
+      recordedAt: 3,
+    },
+  );
+  assert.deepEqual(parseCouncilRun({ ...legacy, outcome }).outcome, outcome);
+});
+
 test('runs du council : une sauvegarde tardive ne recrée pas de rapport pour un projet supprimé', () => {
   const db = new CerebroDatabase(':memory:');
   try {
@@ -838,7 +1341,8 @@ test('validation des réglages du council', () => {
   const personas = BUILTIN_IDS.map((id) => persona(id));
   const error = (raw, agents = AGENTS) => validateCouncilSettings(catalog, raw, personas, agents).error;
 
-  // Normalisation : champs inconnus ignorés, model/effort absents = null, readProject absent = true.
+  // Normalisation : champs inconnus ignorés, model/effort absents = null, readProject absent = true, compositions
+  // absentes sans réglages enregistrés = celles par défaut.
   assert.deepEqual(
     validateCouncilSettings(
       catalog,
@@ -856,6 +1360,7 @@ test('validation des réglages du council', () => {
         defaultPersonaIds: ['contrarian', 'executor'],
         chairman: { agent: 'codex', model: null, effort: 'high' },
         readProject: true,
+        compositions: DEFAULT_COMPOSITIONS,
       },
     },
   );
@@ -905,9 +1410,197 @@ test('validation des réglages du council', () => {
   assert.match(error({ ...settings, chairman: { agent: 'grok' } }, ['claude', 'codex']), /Chairman : agent/);
 });
 
+test('validation des compositions : noms, personas et bornes d’un council, persona supprimée ignorée', () => {
+  const personas = BUILTIN_IDS.map((id) => persona(id));
+  const validate = (compositions, known = personas) =>
+    validateCouncilSettings(catalog, { ...settings, compositions }, known, AGENTS);
+  const error = (compositions) => validate(compositions).error;
+  const pair = ['contrarian', 'outsider'];
+
+  // Nom trimé, champs inconnus ignorés ; une persona inconnue, supprimée depuis le chargement du formulaire, est
+  // ignorée sans erreur.
+  assert.deepEqual(
+    validate([
+      { name: '  Juridique ', personaIds: ['contrarian', 'supprimee', 'outsider'], extra: true },
+      { name: 'Huit', personaIds: BUILTIN_IDS.slice(0, MAX_ADVISORS) },
+    ]).settings.compositions,
+    [
+      { name: 'Juridique', personaIds: pair },
+      { name: 'Huit', personaIds: BUILTIN_IDS.slice(0, MAX_ADVISORS) },
+    ],
+  );
+  // Toutes supprimées par l'utilisateur : rien n'est réinséré.
+  assert.deepEqual(validate([]).settings.compositions, []);
+  // Absentes (client antérieur aux compositions) : celles enregistrées pour la portée, réduites au catalogue ; une
+  // liste vidée par l'utilisateur reste vide. Celles par défaut seulement quand rien n'est enregistré.
+  const { compositions: _absent, ...before } = settings;
+  const withoutEmpiricist = personas.filter((p) => p.id !== 'empiricist');
+  const absent = (stored) =>
+    validateCouncilSettings(catalog, before, withoutEmpiricist, AGENTS, stored).settings.compositions;
+  const custom = [
+    { name: 'Juridique', personaIds: ['contrarian', 'empiricist', 'outsider'] },
+    { name: 'Duo', personaIds: ['empiricist', 'executor'] },
+  ];
+  assert.deepEqual(absent({ ...settings, compositions: custom }), [{ name: 'Juridique', personaIds: pair }]);
+  assert.deepEqual(absent({ ...settings, compositions: [] }), []);
+  assert.deepEqual(
+    absent(null),
+    DEFAULT_COMPOSITIONS.map(({ name, personaIds }) => ({
+      name,
+      personaIds: personaIds.filter((id) => id !== 'empiricist'),
+    })),
+  );
+  // Envoyées par le client : elles remplacent celles enregistrées.
+  assert.deepEqual(
+    validateCouncilSettings(catalog, settings, personas, AGENTS, { compositions: custom }).settings.compositions,
+    settings.compositions,
+  );
+
+  for (const raw of [
+    null,
+    'x',
+    {},
+    ['x'],
+    [null],
+    [{ name: 'Sans personas' }],
+    [{ personaIds: pair }],
+    [{ name: 3, personaIds: pair }],
+  ]) {
+    assert.ok(error(raw), JSON.stringify(raw));
+  }
+  assert.match(error([{ name: '   ', personaIds: pair }]), /Nom de composition requis/);
+  const long = 'x'.repeat(MAX_COMPOSITION_NAME_LENGTH);
+  assert.ok(validate([{ name: long, personaIds: pair }]).settings);
+  assert.match(error([{ name: `${long}x`, personaIds: pair }]), /Nom de composition requis \(1 à 60 caractères\)/);
+  assert.match(
+    error([
+      { name: 'Revue', personaIds: pair },
+      { name: ' revue ', personaIds: pair },
+    ]),
+    /Composition en double : « revue »/,
+  );
+  assert.match(error([{ name: 'Revue', personaIds: ['contrarian', 42] }]), /Composition « Revue » : persona invalide/);
+  assert.match(
+    error([{ name: 'Revue', personaIds: [...pair, 'contrarian'] }]),
+    /Composition « Revue » : persona en double/,
+  );
+  // Mêmes bornes qu'un council, comptées sans les personas inconnues.
+  assert.match(error([{ name: 'Seule', personaIds: ['contrarian'] }]), /Composition « Seule » : de 2 à 8 personas/);
+  assert.match(error([{ name: 'Seule', personaIds: ['contrarian', 'supprimee'] }]), /de 2 à 8 personas/);
+  assert.match(error([{ name: 'Neuf', personaIds: BUILTIN_IDS.slice(0, MAX_ADVISORS + 1) }]), /de 2 à 8 personas/);
+  const many = Array.from({ length: MAX_COUNCIL_COMPOSITIONS + 1 }, (_, i) => ({ name: `C${i}`, personaIds: pair }));
+  assert.match(error(many), /20 compositions au plus/);
+  assert.equal(validate(many.slice(1)).settings.compositions.length, MAX_COUNCIL_COMPOSITIONS);
+
+  // Lecture côté client : absentes (serveur ou run antérieurs) = aucune, entrées invalides écartées.
+  assert.deepEqual(parseCouncilSettings(before).compositions, []);
+  assert.deepEqual(
+    parseCouncilSettings({
+      ...settings,
+      compositions: [null, { name: 'Sans personas' }, { name: 'Revue', personaIds: ['contrarian', 3, 'outsider'] }],
+    }).compositions,
+    [{ name: 'Revue', personaIds: pair }],
+  );
+});
+
+test('compositions par défaut : Technique, Produit et Décision à cinq sièges, réduites au catalogue', () => {
+  assert.deepEqual(DEFAULT_COMPOSITIONS, [
+    { name: 'Technique', personaIds: ['first-principles', 'contrarian', 'empiricist', 'maintainer', 'executor'] },
+    { name: 'Produit', personaIds: ['outsider', 'end-user', 'expansionist', 'empiricist', 'economist'] },
+    // Parties prenantes, angle mort dominant du relevé du 2026-10-30 : l'Analyste des incitations y remplace
+    // l'Économiste.
+    { name: 'Décision', personaIds: ['first-principles', 'contrarian', 'incentives', 'maintainer', 'empiricist'] },
+  ]);
+  // Personas fournies, et même budget que le conseil par défaut : 5 conseillers, 11 appels.
+  const builtin = DEFAULT_PERSONAS.map((p) => p.id);
+  for (const { personaIds } of DEFAULT_COMPOSITIONS) {
+    assert.equal(personaIds.length, CHECKED_IDS.length);
+    assert.ok(personaIds.every((id) => builtin.includes(id)));
+  }
+  const personas = BUILTIN_IDS.map((id) => persona(id));
+  assert.deepEqual(defaultCouncilSettings(catalog, personas, AGENTS).compositions, DEFAULT_COMPOSITIONS);
+  // Une persona fournie supprimée sort des compositions sans erreur ; une composition sous deux personas disparaît.
+  const removed = ['empiricist', 'end-user', 'outsider', 'expansionist'];
+  assert.deepEqual(
+    defaultCouncilSettings(
+      catalog,
+      personas.filter((p) => !removed.includes(p.id)),
+      AGENTS,
+    ).compositions,
+    [
+      { name: 'Technique', personaIds: ['first-principles', 'contrarian', 'maintainer', 'executor'] },
+      { name: 'Décision', personaIds: ['first-principles', 'contrarian', 'incentives', 'maintainer'] },
+    ],
+  );
+  assert.deepEqual(defaultCouncilSettings(catalog, [persona('contrarian'), persona('mine')], AGENTS).compositions, []);
+});
+
+test('suppression d’une persona : retirée des compositions, celle réduite à une persona disparaît, réglages valides', () => {
+  const remaining = BUILTIN_IDS.filter((id) => id !== 'outsider').map((id) => persona(id));
+  const repaired = withoutPersona(
+    {
+      ...settings,
+      compositions: [
+        { name: 'Revue', personaIds: ['contrarian', 'outsider', 'executor'] },
+        { name: 'Duo', personaIds: ['outsider', 'executor'] },
+      ],
+    },
+    'outsider',
+    remaining,
+  );
+  assert.deepEqual(repaired.compositions, [{ name: 'Revue', personaIds: ['contrarian', 'executor'] }]);
+  assert.deepEqual(validateCouncilSettings(catalog, repaired, remaining, AGENTS), { settings: repaired });
+});
+
+test('réglages enregistrés avant les compositions : celles par défaut à l’ouverture, une seule fois', () => {
+  const path = join(root, 'compositions.db');
+  let db = new CerebroDatabase(path);
+  const project = db.createProject('Projet', root);
+  const emptied = db.createProject('Sans composition', root);
+  const { compositions: _absent, ...before } = settings;
+  db.putSetting('council', before);
+  db.updateProject(project.id, { councilSettings: before });
+  db.updateProject(emptied.id, { councilSettings: { ...settings, compositions: [] } });
+  // Persona fournie supprimée avant l'arrivée des compositions.
+  db.connection.prepare('DELETE FROM personas WHERE id = ?').run('end-user');
+  db.close();
+
+  const seeded = DEFAULT_COMPOSITIONS.map(({ name, personaIds }) => ({
+    name,
+    personaIds: personaIds.filter((id) => id !== 'end-user'),
+  }));
+  const revue = [{ name: 'Revue', personaIds: ['contrarian', 'outsider'] }];
+  db = new CerebroDatabase(path);
+  try {
+    assert.deepEqual(db.getSetting('council'), { ...before, compositions: seeded });
+    assert.deepEqual(db.getProject(project.id).councilSettings, { ...before, compositions: seeded });
+    // Des compositions toutes supprimées ne reviennent pas.
+    assert.deepEqual(db.getProject(emptied.id).councilSettings.compositions, []);
+    db.putSetting('council', { ...before, compositions: revue });
+  } finally {
+    db.close();
+  }
+  db = new CerebroDatabase(path);
+  try {
+    assert.deepEqual(db.getSetting('council').compositions, revue);
+    assert.deepEqual(db.getProject(project.id).councilSettings.compositions, seeded);
+  } finally {
+    db.close();
+  }
+});
+
 test('résolution des participants d’un run', () => {
   const personas = BUILTIN_IDS.map((id) => persona(id));
-  const advisor = (id, llm) => ({ personaId: id, ...llm, name: id, description: '', prompt: `Prompt ${id}` });
+  personas.find((p) => p.id === 'outsider').needs = ['web'];
+  // Copie figée de la persona, besoins d'accès compris.
+  const advisor = (id, llm) => ({
+    personaId: id,
+    ...llm,
+    name: id,
+    description: '',
+    prompt: `Prompt ${id}`,
+    needs: id === 'outsider' ? ['web'] : [],
+  });
   const resolve = (requested, agents) => resolveParticipants(catalog, settings, personas, requested, agents);
 
   // Sans demande : participants par défaut avec leurs assignations.
@@ -988,6 +1681,7 @@ test('API : catalogue des personas', async () => {
         name: 'Juriste',
         description: '',
         prompt: 'Tu es le juriste.',
+        needs: [],
         builtin: false,
         createdAt: 0,
         updatedAt: 0,
@@ -1003,6 +1697,10 @@ test('API : catalogue des personas', async () => {
       [{ name: 'n', prompt: 'p', description: 'x'.repeat(301) }, /Description/],
       [{ name: 'n', prompt: 'p', description: 3 }, /Description/],
       [['texte'], /Persona invalide/],
+      [{ name: 'n', prompt: 'p', needs: 'web' }, /Besoins d’accès invalides \(project, web\)/],
+      [{ name: 'n', prompt: 'p', needs: null }, /Besoins d’accès/],
+      [{ name: 'n', prompt: 'p', needs: ['web', 'mail'] }, /Besoins d’accès/],
+      [{ name: 'n', prompt: 'p', needs: [1] }, /Besoins d’accès/],
     ]) {
       response = await send('POST', '/api/personas', payload);
       assert.equal(response.statusCode, 400, JSON.stringify(payload));
@@ -1014,6 +1712,40 @@ test('API : catalogue des personas', async () => {
       prompt: 'p'.repeat(4000),
     });
     assert.equal(response.statusCode, 201);
+
+    // Besoins d'accès : validés, dédoublonnés dans l'ordre canonique, persistés et modifiables seuls.
+    response = await send('POST', '/api/personas', {
+      name: 'Documentaliste',
+      prompt: 'p',
+      needs: ['web', 'project', 'web'],
+    });
+    assert.equal(response.statusCode, 201);
+    const sourced = response.json();
+    assert.deepEqual(sourced.needs, ['project', 'web']);
+    const stored = () => send('GET', '/api/personas').then((r) => r.json().find((p) => p.id === sourced.id));
+    assert.deepEqual((await stored()).needs, ['project', 'web']);
+    response = await send('PATCH', `/api/personas/${sourced.id}`, { needs: ['web'] });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), { ...sourced, needs: ['web'], updatedAt: response.json().updatedAt });
+    assert.deepEqual((await stored()).needs, ['web']);
+    response = await send('PATCH', `/api/personas/${sourced.id}`, { needs: ['ftp'] });
+    assert.equal(response.statusCode, 400);
+    assert.match(response.json().error, /Besoins d’accès/);
+    assert.deepEqual((await stored()).needs, ['web']);
+    response = await send('PATCH', `/api/personas/${sourced.id}`, { needs: [] });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual((await stored()).needs, []);
+    // Les personas fournies arrivent avec leurs besoins.
+    assert.deepEqual(
+      (await send('GET', '/api/personas'))
+        .json()
+        .filter((p) => p.builtin && p.needs.length > 0)
+        .map((p) => [p.id, p.needs]),
+      [
+        ['empiricist', ['project', 'web']],
+        ['failure-historian', ['web']],
+      ],
+    );
 
     response = await send('PATCH', `/api/personas/${created.id}`, { description: ' Risques juridiques. ' });
     assert.equal(response.statusCode, 200);
@@ -1052,6 +1784,7 @@ test('API : surcharge projet validée, retour au global et lecture côté client
       ...settings,
       assignments: { [personaIds[0]]: { agent: 'claude', model: 'opus', effort: 'high' } },
       defaultPersonaIds: personaIds.slice(0, 2),
+      compositions: [{ name: 'Revue', personaIds: personaIds.slice(0, 2) }],
     };
     let response = await send('POST', '/api/projects', { name: 'Council', path: root });
     const created = response.json();
@@ -1287,13 +2020,13 @@ test('council : participants par défaut, surcharge projet et run hors projet sa
       [uuid(11)],
     );
 
-    // Sans réglages enregistrés : défauts calculés sur les personas du catalogue.
+    // Sans réglages enregistrés : défauts calculés sur les personas du catalogue, sans celles en option.
     db.connection.prepare("DELETE FROM settings WHERE key = 'council'").run();
     await runs.start({ projectId: null, origin: 'web', question: 'Q ?' }, uuid(12));
     run = await runs.finished(uuid(12));
     assert.deepEqual(
       run.advisors.map((a) => [a.personaId, a.agent]),
-      BUILTIN_IDS.map((id, index) => [id, AGENTS[index % AGENTS.length]]),
+      CHECKED_IDS.map((id, index) => [id, AGENTS[index % AGENTS.length]]),
     );
     assert.equal(run.status, 'succeeded', run.error);
   } finally {

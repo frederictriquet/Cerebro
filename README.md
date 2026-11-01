@@ -29,6 +29,44 @@ Pour le développement, lancez le serveur et Vite avec rechargement automatique 
 npm run dev
 ```
 
+### Sauvegardes de la base pendant le développement
+
+`npm run dev` relance le serveur à chaque enregistrement dans `server/`, `shared/`
+ou `bin/`, et chaque démarrage applique les migrations et les semis à la base,
+même avec un code à moitié écrit. Le lanceur copie donc `cerebro.db` dans
+`$CEREBRO_DATA_DIR/backups/` avant le premier démarrage, puis avant chaque
+redémarrage dû à un fichier de `server/` ou `shared/`, où se trouve le code qui
+écrit dans la base. Un redémarrage dû à `bin/` seul n'en fait pas. La copie est
+prise une fois l'ancien serveur arrêté, par `VACUUM INTO` sur la base ouverte en
+lecture seule, et prend moins d'une seconde.
+
+Chaque copie porte sa date UTC dans son nom (`cerebro-2026-11-01T14-04-05-123Z.db`).
+Après chaque copie, Cerebro garde les 5 plus récentes et, sur les dernières
+24 heures, la plus ancienne de chaque heure ; il supprime les autres. Cela fait une
+trentaine de copies au plus, d'environ 17 Mo chacune en novembre 2026. Une copie
+interrompue garde le suffixe `.partial` et ne peut pas être prise pour une
+sauvegarde. Si la copie échoue, le terminal l'affiche en rouge et le serveur
+démarre quand même. `npm start` et le service systemd ne copient rien : lancez
+`npm run db:backup` avant de les relancer sur un code mis à jour.
+
+Pour revenir à une copie, arrêtez `npm run dev` (les sessions continuent de
+tourner), écartez la base actuelle et ses fichiers de journal, puis remplacez-la :
+
+```sh
+cd ~/.cerebro   # ou $CEREBRO_DATA_DIR
+for f in cerebro.db cerebro.db-journal cerebro.db-wal cerebro.db-shm; do
+  [ -e "$f" ] && mv "$f" "$f.avant-restauration"
+done
+cp backups/cerebro-<date>.db cerebro.db
+```
+
+Tout ce qui a été écrit depuis la copie est alors perdu : sessions, tâches,
+réglages. Pour une erreur limitée à quelques lignes, lisez plutôt la copie sans la
+modifier (`sqlite3 -readonly backups/cerebro-<date>.db`), puis corrigez par
+l'interface ou l'API. Les copies ne remplacent pas les tests : une migration se
+développe sur un `CEREBRO_DATA_DIR` isolé, et la copie sert à réparer la base
+réelle si une version intermédiaire l'a abîmée.
+
 ### Qualité du code
 
 Le code est formaté par Prettier et vérifié par ESLint (typescript-eslint et
@@ -74,7 +112,7 @@ dont le journal global peut être purgé indépendamment des sessions.
 |---|---:|---|
 | `CEREBRO_HOST` | `127.0.0.1` | Adresse d'écoute du serveur. |
 | `CEREBRO_PORT` | `4317` | Port HTTP et WebSocket (entier entre 1 et 65535 ; une valeur invalide arrête le démarrage). |
-| `CEREBRO_DATA_DIR` | `~/.cerebro` | Base SQLite, sockets des holders, journaux de terminal et `hooks.jsonl`. |
+| `CEREBRO_DATA_DIR` | `~/.cerebro` | Base SQLite et ses copies (`backups/`), sockets des holders, journaux de terminal et `hooks.jsonl`. |
 | `CEREBRO_BIND_TOKEN` | non défini | Protège les API et WebSockets lorsqu'un accès réseau est nécessaire. |
 | `CEREBRO_KILL_ON_EXIT` | non défini | Avec la valeur `1`, tue les agents lorsque le serveur s'arrête (ancien comportement). |
 | `CEREBRO_GIT_TIMEOUT_READ` | `60` | Secondes avant l'arrêt d'une lecture Git (status, diff, log…), hooks et processus enfants compris. |
@@ -138,7 +176,10 @@ effectifs de ce projet (participants par défaut et lecture du dépôt comprise)
 mot-clé `council` prime sur un projet qui porterait ce nom. Un sablier marque le
 message pendant les quelques minutes d'exécution, puis la recommandation, la
 première action, les accords et les désaccords sont publiés dans le fil avec le
-lien du rapport, sans notification séparée.
+lien du rapport, sans notification séparée. Si un conseiller a besoin d'un accès
+que ce council ne donne pas (voir [Personas](#personas)), un avertissement qui le
+nomme est d'abord posté dans le fil, dès le lancement : depuis Slack, le web n'est
+jamais accessible.
 
 Écrivez `? question` pour interroger Cerebro en langage libre, par exemple
 `? où en sont les tâches du projet ACME ?`. Claude (CLI `claude` locale, via le SDK)
@@ -193,12 +234,30 @@ cerebro-notify --ask "Quel environnement dois-je déployer ?"
 ```
 
 La commande est automatiquement disponible dans le `PATH` des sessions
-Cerebro ; sans argument, elle lit le texte sur l'entrée standard. Répondez dans
+Cerebro ; sans texte en argument, elle lit l'entrée standard telle quelle.
+`cerebro-notify --help` (ou `-h`) affiche son aide. Les options se placent
+avant le texte ; tout autre mot en forme d'option (`-x`, `--mot`), même au
+milieu du texte, fait échouer la commande sans rien envoyer ; après `--`, tout
+est du texte. Répondez dans
 le fil du message Slack pour transmettre la réponse au terminal. Les réponses
 `1`, `y` ou `n` sélectionnent directement une option lorsqu'une confirmation
 est affichée ; `entrée`/`enter` et `échap`/`esc` envoient respectivement les
 touches Entrée et Échap. Les fils restent actifs pendant 24 heures ou jusqu'à
 la fin de la session.
+
+`cerebro-notify` rend la main dès que Cerebro a mis le message en file, sans
+attendre Slack. Avec `--ask`, la question est déjà enregistrée : la fin du tour
+s'affiche comme une question dans Cerebro, même si Slack tarde ou refuse le
+message. L'envoi se fait en arrière-plan, dans l'ordre des messages de la
+session. Une panne passagère est retentée quatre fois, après 2 s, 5 s, 15 s
+puis 30 s : pas de réponse de Slack en 10 s (résolution DNS comprise), erreur
+réseau ou erreur serveur de Slack. Un message repris après un délai dépassé
+peut, rarement, arriver deux fois, si Slack l'avait reçu sans répondre à temps.
+Une limite de débit (429) retarde l'envoi jusqu'à la fin de sa fenêtre. Un
+message abandonné est signalé par une ligne `[slack] Envoi abandonné` dans la
+sortie du serveur. Si le serveur Cerebro lui-même ne répond pas en 10 s, la
+commande l'indique : le message est probablement déjà en file, ne le renvoyez
+pas sans vérifier le fil Slack de la session.
 
 Quand Claude pose des questions à choix (outil AskUserQuestion, avec un ou
 plusieurs onglets), l'alerte Slack les reprend en entier : chaque question,
@@ -718,7 +777,7 @@ installé), puis supprimez ce hook et, si vous ne conservez rien, les données :
 systemctl --user disable --now cerebro.service   # si le service est installé
 rm -f ~/.config/systemd/user/cerebro.service
 rm -f ~/.grok/hooks/cerebro.json
-rm -rf ~/.cerebro                                # $CEREBRO_DATA_DIR : données, logs, worktrees (irréversible)
+rm -rf ~/.cerebro                                # $CEREBRO_DATA_DIR : données, sauvegardes, logs, worktrees (irréversible)
 ```
 
 Après suppression des worktrees, `git worktree prune` nettoie leurs références
@@ -1234,13 +1293,69 @@ la synthèse. Les réponses, relectures et la synthèse sont conservées avec le
 ### Personas
 
 Les personas forment un catalogue propre à la machine : nom, description brève
-(300 caractères au plus) et prompt (4 000 caractères au plus). Cinq personas sont
-fournies à la première ouverture de la base : **Contrarien** (cherche la faille
-fatale), **Premiers principes** (repart du vrai problème), **Expansionniste**
-(potentiel inexploité, effet de levier), **Outsider** (regard naïf d'un nouveau
-venu) et **Exécutant** (plan concret, premier résultat vérifiable). Elles portent
-le badge « fournie » mais se modifient et se suppriment comme les autres ; une
-persona fournie supprimée n'est jamais réinsérée.
+(300 caractères au plus), prompt (4 000 caractères au plus) et accès nécessaires
+(voir plus bas). Douze personas sont
+fournies. Cinq sont cochées par défaut : **Contrarien** (cherche la faille
+fatale, en commençant par un pré-mortem), **Premiers principes** (repart du vrai
+problème, compare toujours à ne rien faire et à retirer quelque chose),
+**Expansionniste** (potentiel inexploité, effet de levier), **Outsider** (regard
+naïf d'un nouveau venu) et **Exécutant** (plan concret, premier résultat
+vérifiable). Trois autres sont proposées sans être cochées :
+
+- **Empiriste** : sépare l'observé, appuyé sur une source vérifiable, du supposé et
+  de l'inconnu, et écrit « non vérifié » plutôt que d'inventer. Il livre
+  l'hypothèse décisive, le test le moins cher pour la réfuter et le seuil d'abandon.
+- **Économiste** : chiffre le coût total (argent, temps, attention) et le coût
+  d'opportunité, et compare toujours à l'option zéro et à une version deux fois
+  moins chère. Il livre l'arbitrage et l'hypothèse qui le ferait basculer.
+- **Mainteneur** : hérite de la décision dans deux ans et examine la charge
+  récurrente, les incidents, les dépendances et ce qui devient irréversible. Il
+  livre le coût de possession et la porte de sortie.
+
+Elles resteront décochées tant qu'une évaluation à budget constant, sur des
+décisions dont l'issue est connue, n'aura pas montré qu'elles améliorent le
+conseil.
+
+Les quatre dernières sont des personas spécialisées, décochées elles aussi : on
+les convoque selon le type de question, pas dans chaque conseil (voir les
+[compositions](#compositions-par-type-de-question)).
+
+- **Utilisateur final** : parle pour celui qui paie ou subit la décision (« Est-ce
+  que je le remarquerais ? Est-ce que ça change ma vie ou seulement la vôtre ? »). Il
+  signale ce qu'il faudrait vérifier auprès de vrais utilisateurs, car il ne
+  remplace pas des données d'usage.
+- **Analyste des incitations** : établit qui gagne, qui paie, qui peut bloquer et
+  comment chacun contournera les règles. Il livre un scénario de détournement ou de
+  non-adoption.
+- **Transposeur** : cherche quel autre domaine a déjà résolu un problème analogue,
+  en transpose le mécanisme avec précision et dit où l'analogie cesse de tenir.
+- **Historien des échecs** : cherche les précédents comparables, leur issue et ce
+  qui diffère ici. Il n'invente aucune référence : sans accès au web, il le dit et
+  s'en tient à ce qu'il peut citer. Cochez **Donner accès au web** au lancement
+  pour qu'il puisse vérifier ses précédents.
+
+Pour convoquer l'une de ces sept personas, cochez-la au lancement ou dans les
+réglages, ou choisissez au lancement une composition qui la contient : chaque
+conseiller ajouté coûte deux appels de plus, et un council compte au plus 8
+conseillers.
+
+Une persona peut déclarer les **accès nécessaires** pour fonder ses preuves : le
+dépôt du projet (lecture seule) et le web. L'Empiriste a besoin des deux,
+l'Historien des échecs a besoin du web ; les autres personas fournies n'en déclarent
+aucun. Quand une persona cochée a besoin d'un accès que le council ne donne pas, le
+formulaire de lancement la nomme dans un avertissement, sans bloquer le lancement :
+cochez **Laisser les conseillers lire le projet** ou **Donner accès au web**, ou
+lancez le council depuis un projet pour le dépôt. Ces accès se modifient avec le
+reste de la persona, dans le catalogue, qui les rappelle sous sa description.
+
+Les douze prompts demandent 150 à 300 mots et une fin commune : ce qui ferait
+changer d'avis le conseiller, sous la forme d'un fait, d'une mesure ou d'un
+signal vérifiable. Les personas fournies portent le badge « fournie » mais se
+modifient et se suppriment comme les autres ; une persona fournie supprimée n'est
+jamais réinsérée. Une persona fournie ajoutée par une mise à jour de Cerebro apparaît au
+redémarrage suivant. Un texte ou des accès nécessaires révisés remplacent ceux d'une
+persona fournie que vous n'avez pas modifiée ; une persona que vous avez modifiée
+garde votre version.
 
 **Gérer les personas** (dans les réglages du council) ou **Nouvelle persona** (dans le
 formulaire de lancement) ouvre le catalogue : créer, modifier, supprimer. Le
@@ -1256,9 +1371,39 @@ l'effort qui la jouent par défaut, les personas cochées par défaut au lanceme
 depuis l'accueil, ils s'appliquent à toute la machine : councils hors projet,
 commandes Slack et projets sans réglages propres. Ouverts depuis un projet, ils
 créent une surcharge propre à ce projet ; **Revenir aux réglages globaux** la
-supprime. Tant qu'aucun réglage n'est enregistré, toutes les personas sont cochées,
-réparties en tourniquet sur les agents disponibles, avec `claude` comme chairman
-et la lecture du projet activée.
+supprime. Tant qu'aucun réglage n'est enregistré, toutes les personas sont
+réparties en tourniquet sur les agents disponibles et cochées, sauf l'Empiriste,
+l'Économiste, le Mainteneur et les quatre personas spécialisées (8 au plus), avec
+`claude` comme chairman et la lecture du projet activée.
+
+### Compositions par type de question
+
+Plutôt que d'agrandir le conseil par défaut, les réglages proposent des
+**compositions** : des jeux de personas nommés selon le type de question, que le
+formulaire de lancement coche d'un coup. Trois sont fournies, à cinq conseillers
+comme le conseil par défaut, soit 11 appels chacune :
+
+- **Technique** : Premiers principes, Contrarien, Empiriste, Mainteneur, Exécutant ;
+- **Produit** : Outsider, Utilisateur final, Expansionniste, Empiriste, Économiste ;
+- **Décision** : Premiers principes, Contrarien, Analyste des incitations,
+  Mainteneur, Empiriste.
+
+« Décision » donne à l'Analyste des incitations le siège de l'Économiste : le
+relevé des angles morts du 2026-10-30 ([`docs/council-angles-morts.md`](docs/council-angles-morts.md))
+place les parties prenantes en tête et ne relève presque jamais le coût, et l'option
+zéro reste portée par Premiers principes.
+
+Dans les **Réglages**, **Nouvelle composition** part des participants cochés par
+défaut ; chaque composition se renomme, gagne ou perd une persona d'un clic sur sa
+pastille, ou se supprime. Une composition compte de 2 à 8 personas, porte un nom
+unique (60 caractères au plus), et les réglages en gardent 20 au plus. Les
+compositions suivent la portée des réglages : une surcharge de projet a les
+siennes. Supprimer une persona la retire des compositions, et une composition
+réduite à une seule persona disparaît. Des réglages enregistrés avant les
+compositions reçoivent les trois fournies au démarrage suivant, une seule fois :
+des compositions supprimées ne reviennent pas. Enregistrer les réglages depuis un
+client antérieur aux compositions (onglet resté sur l'ancienne version, machine
+passerelle pas encore mise à jour) garde les compositions de la portée.
 
 ### Lancer un council
 
@@ -1272,7 +1417,12 @@ et la lecture du projet activée.
 Le formulaire demande la question, un contexte facultatif (contraintes, options
 envisagées…) et les participants : les personas cochées par défaut sont
 proposées, et l'agent, le modèle et l'effort de chacune peuvent être changés pour
-ce lancement seulement, sans modifier les réglages. **Convoquer** lance le council
+ce lancement seulement, sans modifier les réglages. Le sélecteur **Composition**
+coche les personas d'une composition des réglages ; la sélection reste modifiable
+et devient alors « Sélection personnalisée », et **Participants par défaut** revient
+aux personas cochées par défaut. Une persona supprimée du catalogue est ignorée. Le
+pied du formulaire rappelle le nombre de conseillers et d'appels LLM (2N + 1).
+**Convoquer** lance le council
 et ouvre son rapport ; la liste des councils précédents du projet (ou de l'accueil)
 figure sous le formulaire, avec suppression des runs terminés.
 
@@ -1337,10 +1487,19 @@ Le panneau **Suites** d'un council terminé propose :
   message ne garde que la question, la synthèse et ce chemin, que l'agent est invité
   à lire. La session se lance en arrière-plan, titrée `Council · <question>` ; un lien
   permet de l'ouvrir ;
-- **Exporter en Markdown** : question, contexte, synthèse, avis, relectures et
-  classement agrégé dans un fichier `council-<id>.md`.
+- **Exporter en Markdown** : question, contexte, synthèse, issue observée, avis,
+  relectures et classement agrégé dans un fichier `council-<id>.md`.
 
 Pour un council hors projet, les deux premières suites demandent le projet cible.
+
+Sous les suites, le bloc **Issue observée** garde la trace de ce qui s'est
+réellement passé une fois la décision prise : un texte libre (Markdown) et un
+verdict, **Bonne issue**, **Issue mitigée**, **Mauvaise issue** ou **Non tranché**.
+Il se renseigne après coup sur tout council terminé, se modifie ou s'efface
+(**Effacer**, avec 5 s pour se rétracter), et apparaît dans l'export Markdown
+entre la synthèse et les avis, avec sa date de saisie. C'est cette issue qui
+permet de juger si une composition de conseillers décide mieux qu'une autre :
+une décision différente n'est pas forcément meilleure.
 
 ### Soumettre une session à un council
 

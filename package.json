@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Pilote des sessions Claude / Codex / Grok par projet, depuis une UI web locale.",
   "scripts": {
-    "dev": "node scripts/dev.mjs",
+    "dev": "node --disable-warning=ExperimentalWarning scripts/dev.mjs",
+    "db:backup": "node --disable-warning=ExperimentalWarning scripts/db-backup.mjs",
     "build": "vite build --config web/vite.config.ts",
     "start": "node --disable-warning=ExperimentalWarning server/index.ts",
     "start:prod": "npm run build && npm start",

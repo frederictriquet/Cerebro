@@ -67,9 +67,37 @@ export function messageFrom(value: unknown): SlackMessage | null {
 
 // Slack 429 window: deferred sends retry once it is over, plus this margin.
 const RATE_LIMIT_MARGIN_MS = 500;
+// Each call, DNS resolution and connection included, is abandoned after this delay.
+const CALL_TIMEOUT_MS = 10_000;
+// Errors Slack documents for every method as passing: the call may succeed later.
+const TRANSIENT_SLACK_ERRORS: ReadonlySet<string> = new Set([
+  'internal_error',
+  'fatal_error',
+  'service_unavailable',
+  'request_timeout',
+]);
 
 /** Thrown while Slack asks to slow down: the caller may retry once `SlackTransport.rateLimitWait()` is over. */
 export class SlackRateLimitError extends Error {}
+
+/**
+ * Thrown when a call failed for a reason that may pass: no answer in time, a network error (DNS, cut connection) or
+ * a Slack server error (HTTP 5xx, `internal_error`…). The caller may retry a few times; Slack may have taken a call
+ * that timed out, so a retried post can, rarely, arrive twice.
+ */
+export class SlackTransientError extends Error {}
+
+// fetch rejects with the AbortSignal's TimeoutError, or with TypeError('fetch failed') on a network error.
+function transientFailure(method: string, error: unknown): SlackTransientError | null {
+  if (!(error instanceof Error)) return null;
+  if (error.name === 'TimeoutError')
+    return new SlackTransientError(`Slack ${method} : pas de réponse en ${CALL_TIMEOUT_MS / 1_000} s`, {
+      cause: error,
+    });
+  if (error.name !== 'TypeError' || error.message !== 'fetch failed') return null;
+  const cause = error.cause instanceof Error ? error.cause.message : 'connexion impossible';
+  return new SlackTransientError(`Slack ${method} : erreur réseau (${cause})`, { cause: error });
+}
 
 /** Methods the user token may call: it reads what the user sees and never acts on their behalf. */
 export const SLACK_USER_READ_METHODS: ReadonlySet<string> = new Set([
@@ -118,16 +146,21 @@ export class SlackTransport {
       throw new Error(`Méthode Slack non autorisée pour ce jeton : ${method}`);
     }
     if (this.rateLimited()) throw new SlackRateLimitError('Limite de débit Slack active');
-    const response = await fetch(`${SLACK_API_URL}/${method}`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${this.token}`,
-        // Form encoding: read methods such as conversations.replies ignore JSON bodies.
-        'content-type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams(Object.entries(body).map(([key, value]) => [key, String(value)])),
-      signal: AbortSignal.timeout(10_000),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${SLACK_API_URL}/${method}`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${this.token}`,
+          // Form encoding: read methods such as conversations.replies ignore JSON bodies.
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams(Object.entries(body).map(([key, value]) => [key, String(value)])),
+        signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+      });
+    } catch (error) {
+      throw transientFailure(method, error) ?? error;
+    }
     if (response.status === 429) {
       const seconds = Number(response.headers.get('retry-after') ?? 1);
       this.rateLimitedUntil = Date.now() + (Number.isFinite(seconds) && seconds > 0 ? seconds : 1) * 1_000;
@@ -136,13 +169,21 @@ export class SlackTransport {
     let value: unknown;
     try {
       value = await response.json();
-    } catch {
-      throw new Error(`Réponse Slack invalide (HTTP ${response.status})`);
+    } catch (error) {
+      const transient = transientFailure(method, error);
+      if (transient !== null) throw transient;
+      // A proxy in front of Slack answers its 5xx in HTML.
+      if (response.status >= 500)
+        throw new SlackTransientError(`Slack ${method} : HTTP ${response.status}`, { cause: error });
+      throw new Error(`Réponse Slack invalide (HTTP ${response.status})`, { cause: error });
     }
     if (!isRecord(value)) throw new Error('Réponse Slack invalide');
     const result = value as SlackResponse;
     if (!response.ok || result.ok !== true) {
-      throw new Error(typeof result.error === 'string' ? result.error : `Erreur Slack HTTP ${response.status}`);
+      const message = typeof result.error === 'string' ? result.error : `Erreur Slack HTTP ${response.status}`;
+      if (response.status >= 500 || TRANSIENT_SLACK_ERRORS.has(message))
+        throw new SlackTransientError(`Slack ${method} : ${message}`);
+      throw new Error(message);
     }
     return result;
   }

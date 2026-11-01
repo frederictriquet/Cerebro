@@ -6,7 +6,9 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -26,9 +28,52 @@ const { WorktreeManager, rememberWorktree } = await import('../server/worktrees.
 const { SessionManager } = await import('../server/sessions.ts');
 const { createServices } = await import('../server/services.ts');
 const { normalizeRegenerablePath } = await import('../shared/worktrees.ts');
+const { isAlive, processTree, signalProcesses } = await import('../server/proc.ts');
 const git = (path, ...args) =>
   execFileSync('git', ['-C', path, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-after(() => rmSync(root, { recursive: true, force: true }));
+// A session resumed here runs in a detached holder (server/holder.ts) that outlives this file unless stopped: init
+// adopts it, with its agent, in a copy deleted below, and a socket still open to it keeps this file from returning.
+// Any process naming a path under `root` (a holder's config) or working inside it (an agent) is a leftover.
+function leftoverProcesses() {
+  let entries = [];
+  try {
+    entries = readdirSync('/proc');
+  } catch {
+    // No /proc (not Linux): nothing to find, like server/proc.ts.
+  }
+  const found = new Map();
+  for (const entry of entries) {
+    const pid = Number(entry);
+    if (!Number.isInteger(pid) || pid === process.pid) continue;
+    try {
+      const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0');
+      if (command.some((arg) => arg.startsWith(`${root}/`)) || readlinkSync(`/proc/${pid}/cwd`).startsWith(`${root}/`))
+        for (const info of processTree(pid)) found.set(info.pid, info);
+    } catch {
+      // Exited meanwhile, or not ours.
+    }
+  }
+  return [...found.values()];
+}
+const commandLine = (pid) => {
+  try {
+    return `${pid} ${readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ').trim()}`;
+  } catch {
+    return `${pid}`;
+  }
+};
+after(async () => {
+  const leftovers = leftoverProcesses();
+  const commands = leftovers.map(({ pid }) => commandLine(pid));
+  try {
+    signalProcesses(leftovers, 'SIGTERM');
+    for (let i = 0; i < 30 && leftovers.some(isAlive); i++) await new Promise((r) => setTimeout(r, 100));
+    signalProcesses(leftovers, 'SIGKILL');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+  assert.deepEqual(commands, [], 'processes left running by these tests, now stopped');
+});
 async function fixture(run, initialDirty = false) {
   const directory = mkdtempSync(join(root, 'case-'));
   const repo = join(directory, 'source');
@@ -828,7 +873,16 @@ test('the principal repository has no integration target or invented conversatio
     assert.equal(view.changesSinceCreation, null);
     assert.equal(view.session, null);
   }));
-test('an epic copy shared by several steps stays one entry and its removal reaches every step', async () =>
+// The fake CLI writes its working directory as it starts, possibly just after the holder first answers.
+async function capturedCwd(capture) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const text = existsSync(capture) ? readFileSync(capture, 'utf8') : '';
+    if (text.endsWith('\n')) return text.trim();
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`Nothing written to ${capture} within 2 s`);
+}
+test('an epic copy shared by several steps stays one entry, its removal reaches every step and resuming one step recreates it for all (fake CLI)', async () =>
   fixture(async (f) => {
     const step = randomUUID();
     f.db.createSession(
@@ -859,7 +913,34 @@ test('an epic copy shared by several steps stays one entry and its removal reach
     assert.equal(existsSync(own.path), false);
     assert.ok(workspaceFor(f.db, f.id).removedAt);
     assert.ok(workspaceFor(f.db, step).removedAt);
-    await assert.rejects(new SessionManager(f.db, f.services).resume(step), /supprimé/);
+    // Resuming a step recreates the shared copy in place from its kept branch, live again for every step (SPEC.md).
+    const branch = git(f.repo, 'rev-parse', f.workspace.branch);
+    const bin = mkdtempSync(join(root, 'bin-'));
+    const capture = join(bin, 'cwd');
+    writeFileSync(join(bin, 'codex'), `#!/bin/sh\npwd > '${capture}'\nexec /bin/sleep 2\n`, { mode: 0o755 });
+    const previous = process.env.PATH;
+    process.env.PATH = `${bin}:${previous}`;
+    const sessions = new SessionManager(f.db, f.services);
+    try {
+      assert.equal((await sessions.resume(step)).status, 'running');
+      assert.equal(await capturedCwd(capture), f.workspace.path);
+      assert.equal(git(own.path, 'branch', '--show-current'), f.workspace.branch);
+      assert.equal(git(own.path, 'rev-parse', 'HEAD'), branch);
+      for (const id of [f.id, step]) {
+        assert.equal(workspaceFor(f.db, id).removedAt, undefined);
+        assert.equal(f.db.getSession(id).worktree.removed, false);
+      }
+      assert.equal(record(f, own.id).removedAt, null);
+      const live = (await f.manager.list(f.project.id)).worktrees.filter((w) => w.managed && !w.primary);
+      assert.deepEqual(
+        live.map((w) => [w.id, w.sessionId]),
+        [[own.id, f.id]],
+      );
+    } finally {
+      process.env.PATH = previous;
+      await sessions.terminate(step);
+      await sessions.shutdown();
+    }
   }));
 test('discarding the inherited content restores only files untouched since the copy, then integration proceeds', async () =>
   fixture(async (f) => {

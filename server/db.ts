@@ -3,12 +3,21 @@ import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Catalog } from './catalog.ts';
 import { DATA_DIR } from './config.ts';
-import { convertLegacyCouncilSettings, DEFAULT_PERSONAS, isLegacyCouncilSettings, withoutPersona } from './council.ts';
+import {
+  convertLegacyCouncilSettings,
+  DEFAULT_PERSONAS,
+  defaultCompositions,
+  isLegacyCouncilSettings,
+  LEGACY_PERSONA_FINGERPRINTS,
+  personaFingerprint,
+  withoutPersona,
+} from './council.ts';
 import {
   DEFAULT_COMMIT_SETTINGS,
   DEFAULT_RESOLUTION_SETTINGS,
   DEFAULT_SESSION_DEFAULTS,
   normalizeMode,
+  parsePersonaNeeds,
   type Agent,
   type CouncilRun,
   type CouncilSettings,
@@ -27,6 +36,7 @@ import {
   type TaskStatus,
   type WorkspaceMode,
 } from '../shared/types.ts';
+import { isRecord } from './util.ts';
 
 export class SessionProtectionError extends Error {}
 
@@ -143,6 +153,8 @@ interface PersonaRow {
   name: string;
   description: string;
   prompt: string;
+  // Tableau JSON de PersonaNeed.
+  needs: string;
   builtin: number;
   created_at: number | null;
   updated_at: number | null;
@@ -154,6 +166,7 @@ function personaFromRow(row: PersonaRow): Persona {
     name: row.name,
     description: row.description,
     prompt: row.prompt,
+    needs: parsePersonaNeeds(JSON.parse(row.needs)),
     builtin: row.builtin === 1,
     createdAt: row.created_at ?? 0,
     updatedAt: row.updated_at ?? row.created_at ?? 0,
@@ -425,8 +438,10 @@ export class CerebroDatabase {
     this.connection
       .exec(`CREATE TABLE IF NOT EXISTS personas (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
       prompt TEXT NOT NULL, builtin INTEGER NOT NULL DEFAULT 0, created_at INTEGER, updated_at INTEGER)`);
+    this.addColumnIfMissing('personas', 'needs', "TEXT NOT NULL DEFAULT '[]'");
     this.seedPersonas();
     this.convertLegacyCouncilSettings();
+    this.seedCouncilCompositions();
     this.allowAutoMode();
   }
 
@@ -443,22 +458,69 @@ export class CerebroDatabase {
     return true;
   }
 
-  // Une seule fois par base : une persona par défaut supprimée n'est jamais réinsérée.
+  // Chaque persona par défaut est semée une seule fois par base : supprimée, elle n'est jamais réinsérée.
+  // `personas_seeded` associe chaque persona semée à l'empreinte de sa ligne, relue après l'écriture : une révision de
+  // DEFAULT_PERSONAS ne remplace que les personas encore identiques à cette empreinte, jamais celles que l'utilisateur
+  // a modifiées.
   private seedPersonas(): void {
-    if (this.getSetting('personas_seeded') !== null) return;
-    const now = Date.now();
-    const insert = this.connection.prepare(
-      'INSERT OR IGNORE INTO personas (id, name, description, prompt, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)',
-    );
-    for (const persona of DEFAULT_PERSONAS)
-      insert.run(persona.id, persona.name, persona.description, persona.prompt, now, now);
-    this.putSetting('personas_seeded', true);
+    this.transaction(() => {
+      const stored = this.getSetting<Record<string, string> | true>('personas_seeded');
+      // Ancien marqueur booléen : les cinq personas d'origine ont été semées.
+      const seeded = stored === true ? { ...LEGACY_PERSONA_FINGERPRINTS } : (stored ?? {});
+      let changed = stored === true;
+      const now = Date.now();
+      const insert = this.connection.prepare(
+        'INSERT OR IGNORE INTO personas (id, name, description, prompt, needs, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)',
+      );
+      for (const { id, needs = [], ...rest } of DEFAULT_PERSONAS) {
+        // Besoins toujours explicites : une révision qui les retire tous doit aussi les effacer.
+        const text = { ...rest, needs };
+        const fingerprint = personaFingerprint(text);
+        const previous = seeded[id];
+        if (previous === fingerprint) continue;
+        if (previous === undefined) {
+          const inserted = insert.run(id, text.name, text.description, text.prompt, JSON.stringify(needs), now, now);
+          // Ligne de même id déjà là sans empreinte : rien ne dit qu'elle porte ce texte, elle reste non marquée.
+          if (Number(inserted.changes) === 0) continue;
+        } else {
+          // Texte révisé : la persona doit exister encore telle qu'elle a été semée.
+          const current = this.getPersona(id);
+          if (current === null || personaFingerprint(current) !== previous) continue;
+          this.updatePersona(id, text);
+        }
+        // Empreinte de la ligne relue, pas du texte visé : après une écriture incomplète, elle diffère de celle du
+        // texte, et l'ouverture suivante reprend la persona au lieu de la croire modifiée par l'utilisateur.
+        const written = this.getPersona(id);
+        if (written === null) continue;
+        seeded[id] = personaFingerprint(written);
+        changed = true;
+      }
+      if (changed) this.putSetting('personas_seeded', seeded);
+    });
+  }
+
+  // Réécrit d'un bloc le réglage global `council` puis chaque surcharge projet. `transform` ne reçoit que les réglages
+  // enregistrés, le global d'abord ; seuls ceux pour lesquels il renvoie un objet sont réécrits.
+  private rewriteCouncilSettings(transform: (raw: unknown) => object | null): void {
+    this.transaction(() => {
+      const stored = this.getSetting<unknown>('council');
+      const global = stored === null ? null : transform(stored);
+      if (global !== null) this.putSetting('council', global);
+      const rows = this.connection
+        .prepare('SELECT id, council_settings FROM projects WHERE council_settings IS NOT NULL')
+        .all() as { id: string; council_settings: string }[];
+      const update = this.connection.prepare('UPDATE projects SET council_settings = ? WHERE id = ?');
+      for (const row of rows) {
+        const settings = transform(JSON.parse(row.council_settings));
+        if (settings !== null) update.run(JSON.stringify(settings), row.id);
+      }
+    });
   }
 
   // Réglages enregistrés au format `advisors[]` (conseillers embarqués) : passage au catalogue de personas.
   // Runs when the database opens, before any discovery: models resolve against the fallback lists.
   private convertLegacyCouncilSettings(): void {
-    const convert = (raw: unknown): CouncilSettings | null => {
+    this.rewriteCouncilSettings((raw) => {
       if (!isLegacyCouncilSettings(raw)) return null;
       const { settings, created } = convertLegacyCouncilSettings(new Catalog(), raw, this.listPersonas());
       const insert = this.connection.prepare(
@@ -467,19 +529,17 @@ export class CerebroDatabase {
       for (const persona of created)
         insert.run(persona.id, persona.name, persona.description, persona.prompt, persona.createdAt, persona.updatedAt);
       return settings;
-    };
-    const global = convert(this.getSetting('council'));
-    if (global !== null) this.putSetting('council', global);
-    const rows = this.connection
-      .prepare('SELECT id, council_settings FROM projects WHERE council_settings IS NOT NULL')
-      .all() as { id: string; council_settings: string }[];
-    for (const row of rows) {
-      const settings = convert(JSON.parse(row.council_settings));
-      if (settings !== null)
-        this.connection
-          .prepare('UPDATE projects SET council_settings = ? WHERE id = ?')
-          .run(JSON.stringify(settings), row.id);
-    }
+    });
+  }
+
+  // Réglages enregistrés avant les compositions : ils reçoivent celles par défaut, réduites au catalogue. Une liste
+  // vide reste vide : des compositions supprimées ne reviennent pas.
+  private seedCouncilCompositions(): void {
+    this.rewriteCouncilSettings((raw) =>
+      isRecord(raw) && raw.compositions === undefined
+        ? { ...raw, compositions: defaultCompositions(this.listPersonas()) }
+        : null,
+    );
   }
 
   private backfillSessionEpics(): void {
@@ -695,12 +755,19 @@ export class CerebroDatabase {
 
   createPersona(input: PersonaInput): Persona {
     const now = Date.now();
-    const persona: Persona = { id: randomUUID(), ...input, builtin: false, createdAt: now, updatedAt: now };
+    const persona: Persona = {
+      id: randomUUID(),
+      ...input,
+      needs: input.needs ?? [],
+      builtin: false,
+      createdAt: now,
+      updatedAt: now,
+    };
     this.connection
       .prepare(
-        'INSERT INTO personas (id, name, description, prompt, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
+        'INSERT INTO personas (id, name, description, prompt, needs, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)',
       )
-      .run(persona.id, persona.name, persona.description, persona.prompt, now, now);
+      .run(persona.id, persona.name, persona.description, persona.prompt, JSON.stringify(persona.needs), now, now);
     return persona;
   }
 
@@ -709,8 +776,8 @@ export class CerebroDatabase {
     if (current === null) return null;
     const next = { ...current, ...changes, updatedAt: Date.now() };
     this.connection
-      .prepare('UPDATE personas SET name = ?, description = ?, prompt = ?, updated_at = ? WHERE id = ?')
-      .run(next.name, next.description, next.prompt, next.updatedAt, id);
+      .prepare('UPDATE personas SET name = ?, description = ?, prompt = ?, needs = ?, updated_at = ? WHERE id = ?')
+      .run(next.name, next.description, next.prompt, JSON.stringify(next.needs), next.updatedAt, id);
     return next;
   }
 
@@ -720,14 +787,7 @@ export class CerebroDatabase {
       const deleted = Number(this.connection.prepare('DELETE FROM personas WHERE id = ?').run(id).changes) > 0;
       if (deleted) {
         const remaining = this.listPersonas();
-        const global = this.getSetting<CouncilSettings>('council');
-        if (global !== null) this.putSetting('council', withoutPersona(global, id, remaining));
-        const rows = this.connection
-          .prepare('SELECT id, council_settings FROM projects WHERE council_settings IS NOT NULL')
-          .all() as { id: string; council_settings: string }[];
-        const update = this.connection.prepare('UPDATE projects SET council_settings = ? WHERE id = ?');
-        for (const row of rows)
-          update.run(JSON.stringify(withoutPersona(JSON.parse(row.council_settings), id, remaining)), row.id);
+        this.rewriteCouncilSettings((raw) => withoutPersona(raw as CouncilSettings, id, remaining));
       }
       return deleted;
     });
@@ -748,10 +808,11 @@ export class CerebroDatabase {
     );
   }
 
-  // Les runs enregistrés avant les images jointes n'en ont pas.
+  // Les runs enregistrés avant les images jointes n'en ont pas, ni d'issue observée ceux d'avant ce champ.
   private readCouncilRun(data: string): CouncilRun {
     const run = JSON.parse(data) as CouncilRun;
     run.images ??= [];
+    run.outcome ??= null;
     return run;
   }
 
@@ -949,7 +1010,9 @@ export class CerebroDatabase {
   }
 
   listTasks(): Task[] {
-    const edges = this.connection.prepare('SELECT task_id, depends_on_id FROM task_dependencies ORDER BY rowid').all() as unknown as {
+    const edges = this.connection
+      .prepare('SELECT task_id, depends_on_id FROM task_dependencies ORDER BY rowid')
+      .all() as unknown as {
       task_id: string;
       depends_on_id: string;
     }[];
@@ -967,7 +1030,9 @@ export class CerebroDatabase {
 
   private taskDependencies(id: string): string[] {
     return (
-      this.connection.prepare('SELECT depends_on_id FROM task_dependencies WHERE task_id = ? ORDER BY rowid').all(id) as unknown as {
+      this.connection
+        .prepare('SELECT depends_on_id FROM task_dependencies WHERE task_id = ? ORDER BY rowid')
+        .all(id) as unknown as {
         depends_on_id: string;
       }[]
     ).map((row) => row.depends_on_id);

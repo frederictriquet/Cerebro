@@ -8,24 +8,30 @@ import {
   councilImageUrl,
   getCouncil,
   markOperationSeen,
+  recordCouncilOutcome,
   startCouncilSession,
 } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
+import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { Markdown } from './Markdown.tsx';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { usePolling } from './polling.tsx';
 import { go, href } from './route.ts';
 import { useStore } from './store.tsx';
-import type {
-  Advisor,
-  AggregatedRank,
-  CouncilAnswer,
-  CouncilPhase,
-  CouncilReview,
-  CouncilRun,
-  CouncilSynthesis,
-  Llm,
-  Session,
+import { verdictLabel } from '../../shared/council.ts';
+import {
+  COUNCIL_VERDICTS,
+  MAX_COUNCIL_OUTCOME_LENGTH,
+  type Advisor,
+  type AggregatedRank,
+  type CouncilAnswer,
+  type CouncilOutcome,
+  type CouncilPhase,
+  type CouncilReview,
+  type CouncilRun,
+  type CouncilSynthesis,
+  type Llm,
+  type Session,
 } from '../../shared/types.ts';
 import { COUNCIL_STATUS_LABEL, errorMessage, formatDuration, truncate } from './format.ts';
 import './council.css';
@@ -544,7 +550,7 @@ function Reviews({ run }: { run: CouncilRun }) {
   );
 }
 
-function Outcome({ run }: { run: CouncilRun }) {
+function StatusNotice({ run }: { run: CouncilRun }) {
   if (run.status === 'succeeded') return null;
   const explanation =
     run.status === 'interrupted'
@@ -562,7 +568,124 @@ function Outcome({ run }: { run: CouncilRun }) {
   );
 }
 
-// Suivi et rapport d'un council (#/c/<id>) : avancement par phase, puis synthèse, avis, relectures et suites.
+type OutcomeDraft = Pick<CouncilOutcome, 'text' | 'verdict'>;
+
+// Issue observée, notée après coup : ce qui s'est réellement passé et son verdict. Sans cette trace, on ne peut pas
+// juger si une composition décide mieux.
+function ObservedOutcome({ run, onChange }: { run: CouncilRun; onChange: (run: CouncilRun) => void }) {
+  const outcome = run.outcome;
+  // null : lecture ; sinon la saisie en cours.
+  const [draft, setDraft] = useState<OutcomeDraft | null>(null);
+  const {
+    run: save,
+    busy,
+    error,
+    setError,
+  } = useAsyncAction(async (next: OutcomeDraft) => {
+    onChange(await recordCouncilOutcome(run.id, next));
+    setDraft(null);
+  });
+
+  const edit = (): void => {
+    setError(null);
+    setDraft({ text: outcome?.text ?? '', verdict: outcome?.verdict ?? null });
+  };
+  const submit = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    if (draft !== null && !busy) void save({ text: draft.text.trim(), verdict: draft.verdict });
+  };
+  const failure = error ? (
+    <p className="form-error" role="alert">
+      {error}
+    </p>
+  ) : null;
+
+  if (draft !== null) {
+    return (
+      <section className="card council-observed" aria-label="Issue observée">
+        <h2>Issue observée</h2>
+        <form className="council-observed-form" onSubmit={submit}>
+          <label className="council-field">
+            Ce qui s’est réellement passé
+            <textarea
+              rows={5}
+              value={draft.text}
+              maxLength={MAX_COUNCIL_OUTCOME_LENGTH}
+              placeholder="Décision prise, résultat constaté, ce que le council avait vu ou manqué…"
+              autoFocus
+              onChange={(event) => setDraft({ ...draft, text: event.target.value })}
+            />
+          </label>
+          <fieldset className="council-verdicts">
+            <legend>Verdict</legend>
+            {[...COUNCIL_VERDICTS, null].map((verdict) => (
+              <label key={verdict ?? 'none'}>
+                <input
+                  type="radio"
+                  name={`council-verdict-${run.id}`}
+                  checked={draft.verdict === verdict}
+                  disabled={busy}
+                  onChange={() => setDraft({ ...draft, verdict })}
+                />
+                {verdictLabel(verdict)}
+              </label>
+            ))}
+          </fieldset>
+          {failure}
+          <div className="council-follow-up-foot">
+            <button type="button" className="btn" disabled={busy} onClick={() => setDraft(null)}>
+              Annuler
+            </button>
+            <button
+              type="submit"
+              className="btn primary"
+              disabled={busy || (draft.text.trim() === '' && draft.verdict === null)}
+            >
+              {busy ? 'Enregistrement…' : 'Enregistrer'}
+            </button>
+          </div>
+        </form>
+      </section>
+    );
+  }
+  return (
+    <section className="card council-observed" aria-label="Issue observée">
+      <h2>Issue observée</h2>
+      {outcome === null ? (
+        <p className="meta">
+          Une fois la décision prise et ses effets connus, notez ce qui s’est réellement passé : c’est la trace qui
+          permet de juger si une composition de conseillers décide mieux.
+        </p>
+      ) : (
+        <>
+          <p className="council-observed-meta">
+            <span className={`council-verdict ${outcome.verdict ?? 'none'}`}>{verdictLabel(outcome.verdict)}</span>
+            <span className="meta">renseignée le {new Date(outcome.recordedAt).toLocaleString()}</span>
+          </p>
+          {outcome.text.trim() !== '' ? <Markdown text={outcome.text} /> : null}
+        </>
+      )}
+      {failure}
+      <div className="council-actions-row">
+        <button type="button" className="btn" disabled={busy} onClick={edit}>
+          {outcome === null ? 'Renseigner l’issue' : 'Modifier'}
+        </button>
+        {outcome !== null ? (
+          <DelayedActionButton
+            disabled={busy}
+            title="Efface l’issue observée de ce council"
+            onAction={() => void save({ text: '', verdict: null })}
+          >
+            Effacer
+          </DelayedActionButton>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+// Suivi et rapport d'un council (#/c/<id>) : avancement par phase, puis synthèse, suites, issue observée, avis et
+// relectures.
 export function CouncilRunView({ councilId }: { councilId: string }) {
   const { projects } = useStore();
   const [run, setRun] = useState<CouncilRun | null>(null);
@@ -707,7 +830,7 @@ export function CouncilRunView({ councilId }: { councilId: string }) {
         <Progress run={run} now={now} cancelling={cancelling} onCancel={() => void cancel()} />
       ) : (
         <>
-          <Outcome run={run} />
+          <StatusNotice run={run} />
           {run.synthesis !== null ? <Synthesis synthesis={run.synthesis} /> : null}
           <FollowUps run={run} />
           {run.status !== 'succeeded' ? (
@@ -719,6 +842,7 @@ export function CouncilRunView({ councilId }: { councilId: string }) {
               </p>
             </section>
           ) : null}
+          <ObservedOutcome run={run} onChange={setRun} />
         </>
       )}
       <Answers run={run} />

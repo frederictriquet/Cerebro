@@ -1,3 +1,4 @@
+import { accessWarning } from '../shared/council.ts';
 import type { Agent, CouncilRun, Session } from '../shared/types.ts';
 import { PUBLIC_URL } from './config.ts';
 import type { CerebroDatabase } from './db.ts';
@@ -52,6 +53,12 @@ const COUNCIL_FAILURES: Record<CouncilRun['status'], string> = {
 
 export function cerebroLink(path: string, label: string): string {
   return `<${PUBLIC_URL.replace(/\/+$/, '')}/${path}|${label}>`;
+}
+
+// Posté dès le lancement, comme l'avertissement du formulaire de Cerebro : null si chaque conseiller a ses accès.
+export function councilAccessSlackText(run: CouncilRun): string | null {
+  const warning = accessWarning(run.advisors, { project: run.readProject, web: run.webAccess });
+  return warning === null ? null : `:warning: ${escapeMrkdwn(warning)}`;
 }
 
 // Réponse du fil Slack : l'essentiel de la synthèse, le détail reste sur la page du run.

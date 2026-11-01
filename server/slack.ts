@@ -203,6 +203,12 @@ export class SlackNotifier {
     return this.alerts.agentMessage(sessionId, kind, text);
   }
 
+  /** Queues an agent message without waiting for Slack (`POST /api/notify`): true when a 429 window delays it. */
+  queueAgentMessage(sessionId: string, kind: 'notify' | 'ask', text: string): boolean {
+    if (!SLACK_ENABLED) throw new Error("Slack n'est pas configuré");
+    return this.alerts.queueAgentMessage(sessionId, kind, text);
+  }
+
   /** Watches of every session, for the web UI: an empty list without the user token. */
   allWatches(): SlackWatchList {
     return {

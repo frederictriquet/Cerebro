@@ -1,18 +1,24 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Catalog } from './catalog.ts';
 import type { JsonSchema } from './headless.ts';
 import {
   AGENTS,
   MAX_ADVISORS,
+  MAX_COMPOSITION_NAME_LENGTH,
+  MAX_COUNCIL_COMPOSITIONS,
   MAX_COUNCIL_IMAGES,
   MAX_PERSONA_DESCRIPTION_LENGTH,
   MAX_PERSONA_NAME_LENGTH,
   MAX_PERSONA_PROMPT_LENGTH,
   MIN_ADVISORS,
+  PERSONA_NEEDS,
+  parsePersonaNeeds,
   type Advisor,
   type Agent,
   type AggregatedRank,
+  type CouncilComposition,
   type CouncilImage,
+  type CouncilOutcome,
   type CouncilRanking,
   type CouncilReview,
   type CouncilRun,
@@ -22,24 +28,27 @@ import {
   type Persona,
   type PersonaInput,
 } from '../shared/types.ts';
+import { verdictLabel } from '../shared/council.ts';
 import { isRecord } from './util.ts';
 
 const STANCE =
-  'Réponds en 150 à 300 mots. Assume pleinement cet angle, sans précautions oratoires ni tentative d’équilibrer : les autres conseillers couvrent les autres points de vue.';
+  'Réponds en 150 à 300 mots. Assume pleinement cet angle, sans précautions oratoires ni tentative d’équilibrer : les autres conseillers couvrent les autres points de vue. Termine ta réponse par ce qui te ferait changer d’avis : un fait, une mesure ou un signal précis et vérifiable.';
 
-// Personas insérées une seule fois dans le catalogue (marqueur `personas_seeded`).
+// Personas fournies, semées une fois par base (`personas_seeded`) : une persona ajoutée ici arrive dans les bases
+// existantes, un texte ou des besoins d'accès révisés remplacent ceux d'une persona que l'utilisateur n'a pas
+// modifiée.
 export const DEFAULT_PERSONAS: readonly (PersonaInput & { id: string })[] = [
   {
     id: 'contrarian',
     name: 'Contrarien',
     description: 'Cherche la faille fatale : hypothèses fragiles, risques et coûts cachés.',
-    prompt: `Tu es le Contrarien du conseil. Tu pars du principe que l’idée a une faille fatale et tu la cherches : hypothèses non vérifiées, risques sous-estimés, coûts cachés, effets de second ordre, raisons pour lesquelles cela a déjà échoué ailleurs. Tu n’es pas pessimiste par posture : tu es celui qui empêche le groupe de se mentir. Dis clairement ce qui va casser, pourquoi, et à quel signal on le verrait venir. ${STANCE}`,
+    prompt: `Tu es le Contrarien du conseil. Tu pars du principe que l’idée a une faille fatale et tu la cherches : hypothèses non vérifiées, risques sous-estimés, coûts cachés, effets de second ordre, raisons pour lesquelles cela a déjà échoué ailleurs. Tu n’es pas pessimiste par posture : tu es celui qui empêche le groupe de se mentir. Commence par un pré-mortem : imagine que, dans un an, c’est un échec, et raconte pourquoi. Dis ensuite clairement ce qui va casser et à quel signal on le verrait venir. ${STANCE}`,
   },
   {
     id: 'first-principles',
     name: 'Premiers principes',
     description: 'Repart du vrai problème et des contraintes réelles, quitte à contredire la question.',
-    prompt: `Tu raisonnes à partir des premiers principes. Ignore la façon dont la question est posée et les solutions habituelles : demande-toi quel est le vrai problème, quelles contraintes sont réelles et lesquelles sont héritées ou supposées. Décompose jusqu’aux faits élémentaires, puis reconstruis la réponse la plus simple qui en découle, même si elle contredit la question. ${STANCE}`,
+    prompt: `Tu raisonnes à partir des premiers principes. Ignore la façon dont la question est posée et les solutions habituelles : demande-toi quel est le vrai problème, quelles contraintes sont réelles et lesquelles sont héritées ou supposées. Décompose jusqu’aux faits élémentaires, puis reconstruis la réponse la plus simple qui en découle, même si elle contredit la question. Compare-la toujours à deux options : ne rien faire, et retirer quelque chose plutôt que d’en ajouter. Si l’une d’elles suffit, c’est elle que tu recommandes. ${STANCE}`,
   },
   {
     id: 'expansionist',
@@ -59,7 +68,102 @@ export const DEFAULT_PERSONAS: readonly (PersonaInput & { id: string })[] = [
     description: 'Ne s’intéresse qu’à la mise en œuvre : plan concret, ordre, ressources, premier résultat.',
     prompt: `Tu es l’Exécutant du conseil. Seule la mise en œuvre t’intéresse : qu’est-ce qu’on fait concrètement dès demain, dans quel ordre, avec quelles ressources, et quel est le chemin le plus court vers un premier résultat vérifiable. Signale ce qui est irréaliste en pratique (délais, dépendances, compétences) et propose un plan d’action précis. ${STANCE}`,
   },
+  {
+    id: 'empiricist',
+    name: 'Empiriste',
+    description:
+      'Sépare l’observé du supposé et de l’inconnu, désigne l’hypothèse décisive et le test le moins cher pour la réfuter.',
+    needs: ['project', 'web'],
+    prompt: `Tu es l’Empiriste du conseil. Tu sépares ce qui est observé, ce qui est supposé et ce qui est inconnu. Un fait observé s’appuie sur une source vérifiable (fichier:ligne, URL) ; sans source, c’est une supposition. Tu n’inventes ni chiffre ni référence : quand tu ne sais pas, tu écris « non vérifié ». Désigne l’hypothèse dont dépend la décision, puis l’expérience la moins chère qui pourrait la réfuter. Ton livrable : l’hypothèse décisive, le test et le seuil d’abandon. ${STANCE}`,
+  },
+  {
+    id: 'economist',
+    name: 'Économiste',
+    description:
+      'Chiffre le coût total et le coût d’opportunité, compare toujours à l’option zéro et à une version deux fois moins chère.',
+    prompt: `Tu es l’Économiste du conseil. Tu chiffres le coût total de la proposition, en argent, en temps et en attention, ainsi que son coût d’opportunité : ce qu’on renonce à faire à la place. Distingue les montants connus des estimations. Compare-la toujours à l’option zéro (ne rien faire, ou retirer quelque chose plutôt que d’en ajouter) et à une version deux fois moins chère ; si l’une d’elles apporte l’essentiel du bénéfice, c’est elle que tu recommandes. Ton livrable : l’arbitrage et l’hypothèse qui le ferait basculer. ${STANCE}`,
+  },
+  {
+    id: 'maintainer',
+    name: 'Mainteneur',
+    description:
+      'Hérite de la décision dans deux ans : charge récurrente, incidents, dépendances, irréversibilité et prix de sortie.',
+    prompt: `Tu es le Mainteneur du conseil : dans deux ans, c’est toi qui hériteras de cette décision. Tu prends le relais là où la mise en œuvre s’arrête, au premier résultat. Examine la charge récurrente (mises à jour, support, surveillance), les incidents probables, les dépendances et leur durée de vie, ce qui deviendra irréversible et le prix de sortie si l’on veut revenir en arrière. Ton livrable : le coût de possession et la porte de sortie. ${STANCE}`,
+  },
+  // Personas spécialisées : elles servent aux compositions par type de question, pas au conseil par défaut.
+  {
+    id: 'end-user',
+    name: 'Utilisateur final',
+    description:
+      'Parle pour celui qui paie ou subit la décision : le remarquerait-il, et cela change-t-il sa vie ou seulement la vôtre ?',
+    prompt: `Tu es l’Utilisateur final du conseil : tu parles pour celui qui paie ou subit la décision, pas pour ceux qui la prennent. Pose-toi ses questions : « Est-ce que je le remarquerais ? Est-ce que ça change ma vie ou seulement la vôtre ? » Dis ce qu’il y gagne, ce qu’il y perd et ce qu’il devra apprendre ou supporter. Tu n’es pas un vrai utilisateur et tu ne remplaces pas des données d’usage : ce que tu avances reste une intuition. Signale ce qu’il faudrait vérifier auprès de vrais utilisateurs (observation, entretien, mesure d’usage) avant de décider. Ton livrable : ce que l’utilisateur remarquerait et la vérification à mener auprès de vrais utilisateurs. ${STANCE}`,
+  },
+  {
+    id: 'incentives',
+    name: 'Analyste des incitations',
+    description:
+      'Qui gagne, qui paie, qui peut bloquer et comment chacun contournera les règles : un scénario de détournement ou de non-adoption.',
+    prompt: `Tu es l’Analyste des incitations du conseil. Tu ne juges pas l’idée sur ses intentions mais sur les comportements qu’elle provoquera. Pour chaque acteur concerné, établis qui gagne, qui paie, qui peut bloquer, et comment chacun contournera les règles pour servir son intérêt plutôt que l’objectif affiché. Pars du principe que chacun suit ses incitations réelles, pas les consignes. Tes hypothèses sur les intérêts de chacun restent des hypothèses : dis lesquelles il faudrait vérifier auprès des personnes concernées. Ton livrable : un scénario précis de détournement ou de non-adoption, l’acteur qui le porte et ce qui l’en dissuaderait. ${STANCE}`,
+  },
+  {
+    id: 'transposer',
+    name: 'Transposeur',
+    description:
+      'Cherche quel autre domaine a déjà résolu un problème analogue et en transpose le mécanisme avec précision.',
+    prompt: `Tu es le Transposeur du conseil. Tu cherches quel autre domaine a déjà résolu un problème analogue : une autre industrie, une science, une institution, un métier. Une métaphore ne suffit pas : identifie le mécanisme qui a fonctionné là-bas et pourquoi il fonctionne, puis transpose-le avec précision, en disant à quoi correspond ici chacune de ses pièces et où l’analogie cesse de tenir. Ton livrable : le mécanisme transposé, appliqué concrètement à la question, et la limite de l’analogie. ${STANCE}`,
+  },
+  {
+    id: 'failure-historian',
+    name: 'Historien des échecs',
+    description:
+      'Cherche les précédents comparables, ce qu’il en est advenu et ce qui diffère ici, sans jamais inventer de référence.',
+    needs: ['web'],
+    prompt: `Tu es l’Historien des échecs du conseil. Tu cherches les précédents comparables, à commencer par les échecs : des projets, produits ou décisions qui ont tenté quelque chose de proche, ce qu’il en est advenu et pourquoi. Pour chacun, dis ce qui diffère dans la situation présente et si cette différence change l’issue probable. Tu n’inventes aucune référence : chaque précédent doit pouvoir être retrouvé (nom, date, source). Si tu n’as pas accès au web, dis-le d’emblée et tiens-t’en aux précédents que tu peux citer avec certitude ; si tu n’en connais aucun, écris-le plutôt que d’en fabriquer un. Ton livrable : les précédents, leur issue et ce qui diffère ici. ${STANCE}`,
+  },
 ];
+
+// Personas fournies laissées décochées dans les défauts calculés (council du 2026-10-22). L'Empiriste, l'Économiste
+// et le Mainteneur n'entrent dans le conseil par défaut qu'après une évaluation à budget constant sur des décisions
+// dont l'issue est connue ; les personas spécialisées servent aux compositions par type de question.
+const OPT_IN_PERSONA_IDS = new Set([
+  'empiricist',
+  'economist',
+  'maintainer',
+  'end-user',
+  'incentives',
+  'transposer',
+  'failure-historian',
+]);
+
+// Compositions proposées par type de question (council du 2026-10-22), cinq sièges comme le conseil par défaut :
+// 11 appels chacune. Le relevé des angles morts du 2026-10-30 (docs/council-angles-morts.md) trouve les parties
+// prenantes en tête et le coût presque absent : « Décision » prend l'Analyste des incitations plutôt que
+// l'Économiste, dont l'option zéro reste portée par Premiers principes.
+export const DEFAULT_COMPOSITIONS: readonly CouncilComposition[] = [
+  { name: 'Technique', personaIds: ['first-principles', 'contrarian', 'empiricist', 'maintainer', 'executor'] },
+  { name: 'Produit', personaIds: ['outsider', 'end-user', 'expansionist', 'empiricist', 'economist'] },
+  { name: 'Décision', personaIds: ['first-principles', 'contrarian', 'incentives', 'maintainer', 'empiricist'] },
+];
+
+// Reconnaît une persona fournie restée telle qu'elle a été semée : nom, description, prompt et besoins d'accès.
+// Sans besoin, l'empreinte reste celle du seul texte : celles enregistrées avant `needs` restent valables.
+export function personaFingerprint(persona: PersonaInput): string {
+  const text = [persona.name, persona.description, persona.prompt];
+  const needs = parsePersonaNeeds(persona.needs);
+  return createHash('sha256')
+    .update(JSON.stringify(needs.length === 0 ? text : [...text, needs]))
+    .digest('hex');
+}
+
+// Empreintes des textes semés sous l'ancien marqueur `personas_seeded: true` (DEFAULT_PERSONAS du 2026-10-22).
+// Figées : une base de cette époque reconnaît ses personas intactes même si elle saute plusieurs révisions.
+export const LEGACY_PERSONA_FINGERPRINTS: Readonly<Record<string, string>> = {
+  contrarian: 'f9b0a6688c8afd8558db994bb3dc201820c223f8fe7b25a83ff34ac55c5977f3',
+  'first-principles': 'b4c8eda27ff10a31db0a3599677caa96cbf67defe92664df859bbd4b2b8949b2',
+  expansionist: 'ba70f05c3a28aab1ce64ea5a1f4403619c8f30f2701a8edc40448830b1ef5cb0',
+  outsider: '3754550f5b23f5074839d89031f5edde85aaac3d86663342609154389670b581',
+  executor: '92db7a7d21ffd3f1a47538836b71339954f5c11fbf5b7a90e6a92b2830be4252',
+};
 
 function parseLlm(
   catalog: Catalog,
@@ -95,30 +199,91 @@ function withMinimum(ids: string[], personas: readonly Persona[]): string[] {
   return result;
 }
 
-// Toutes les personas cochées, réparties en tourniquet sur les agents disponibles ; le chairman est claude.
+// Compositions réduites aux personas du catalogue : une persona supprimée en sort sans erreur, une composition qui
+// ne réunit plus assez de personas pour un council disparaît.
+function withinCatalog(
+  compositions: readonly CouncilComposition[],
+  personas: readonly Persona[],
+): CouncilComposition[] {
+  const known = new Set(personas.map((persona) => persona.id));
+  return compositions.flatMap(({ name, personaIds }) => {
+    const ids = personaIds.filter((id) => known.has(id));
+    return ids.length < MIN_ADVISORS ? [] : [{ name, personaIds: ids }];
+  });
+}
+
+export function defaultCompositions(personas: readonly Persona[]): CouncilComposition[] {
+  return withinCatalog(DEFAULT_COMPOSITIONS, personas);
+}
+
+// Personas cochées sauf OPT_IN_PERSONA_IDS, toutes réparties en tourniquet sur les agents disponibles ; le
+// chairman est claude.
 export function defaultCouncilSettings(
   catalog: Catalog,
   personas: readonly Persona[],
   availableAgents: readonly Agent[],
 ): CouncilSettings {
   const agents: readonly Agent[] = availableAgents.length > 0 ? availableAgents : ['claude'];
-  const selected = personas.slice(0, MAX_ADVISORS);
+  const selected = personas.filter((persona) => !OPT_IN_PERSONA_IDS.has(persona.id)).slice(0, MAX_ADVISORS);
   return {
     assignments: Object.fromEntries(
       personas.map((persona, index) => [persona.id, defaultLlm(catalog, agents[index % agents.length]!)]),
     ),
-    defaultPersonaIds: selected.map((persona) => persona.id),
+    defaultPersonaIds: withMinimum(
+      selected.map((persona) => persona.id),
+      personas,
+    ),
     chairman: defaultChairman(catalog, agents),
     readProject: true,
+    compositions: defaultCompositions(personas),
   };
 }
 
-// Valide et normalise des réglages reçus du client ; `agents` : agents acceptés (connus ou disponibles).
+// Compositions reçues du client ; absentes (client antérieur aux compositions) : `stored`, celles enregistrées pour
+// la portée, sinon celles par défaut, réduites au catalogue. Une persona inconnue, supprimée depuis le chargement du
+// formulaire, est ignorée sans erreur.
+function validateCompositions(
+  raw: unknown,
+  personas: readonly Persona[],
+  stored: readonly CouncilComposition[] | undefined,
+): { compositions: CouncilComposition[] } | { error: string } {
+  if (raw === undefined) return { compositions: withinCatalog(stored ?? DEFAULT_COMPOSITIONS, personas) };
+  if (!Array.isArray(raw)) return { error: 'Compositions invalides' };
+  if (raw.length > MAX_COUNCIL_COMPOSITIONS) return { error: `${MAX_COUNCIL_COMPOSITIONS} compositions au plus` };
+  const known = new Set(personas.map((persona) => persona.id));
+  const compositions: CouncilComposition[] = [];
+  for (const entry of raw) {
+    if (!isRecord(entry) || typeof entry.name !== 'string' || !Array.isArray(entry.personaIds))
+      return { error: 'Composition invalide' };
+    const name = entry.name.trim();
+    if (name === '' || name.length > MAX_COMPOSITION_NAME_LENGTH)
+      return { error: `Nom de composition requis (1 à ${MAX_COMPOSITION_NAME_LENGTH} caractères)` };
+    if (compositions.some((other) => other.name.toLocaleLowerCase() === name.toLocaleLowerCase()))
+      return { error: `Composition en double : « ${name} »` };
+    const label = `Composition « ${name} »`;
+    const personaIds: string[] = [];
+    for (const id of entry.personaIds) {
+      if (typeof id !== 'string') return { error: `${label} : persona invalide` };
+      if (!known.has(id)) continue;
+      if (personaIds.includes(id)) return { error: `${label} : persona en double` };
+      personaIds.push(id);
+    }
+    if (personaIds.length < MIN_ADVISORS || personaIds.length > MAX_ADVISORS)
+      return { error: `${label} : de ${MIN_ADVISORS} à ${MAX_ADVISORS} personas` };
+    compositions.push({ name, personaIds });
+  }
+  return { compositions };
+}
+
+// Valide et normalise des réglages reçus du client ; `agents` : agents acceptés (connus ou disponibles) ;
+// `stored` : réglages enregistrés pour la portée (null : aucun), dont les compositions restent quand le client,
+// antérieur aux compositions, n'en envoie pas.
 export function validateCouncilSettings(
   catalog: Catalog,
   raw: unknown,
   personas: readonly Persona[],
   agents: readonly Agent[],
+  stored: Pick<CouncilSettings, 'compositions'> | null,
 ): { settings: CouncilSettings } | { error: string } {
   if (!isRecord(raw) || !isRecord(raw.assignments) || !Array.isArray(raw.defaultPersonaIds) || !isRecord(raw.chairman))
     return { error: 'Réglages du council invalides' };
@@ -145,7 +310,17 @@ export function validateCouncilSettings(
   }
   const chairman = parseLlm(catalog, raw.chairman, agents, 'Chairman');
   if (typeof chairman === 'string') return { error: chairman };
-  return { settings: { assignments, defaultPersonaIds, chairman, readProject: raw.readProject !== false } };
+  const compositions = validateCompositions(raw.compositions, personas, stored?.compositions);
+  if ('error' in compositions) return compositions;
+  return {
+    settings: {
+      assignments,
+      defaultPersonaIds,
+      chairman,
+      readProject: raw.readProject !== false,
+      compositions: compositions.compositions,
+    },
+  };
 }
 
 // Participants d'un run : ceux demandés (agent/modèle/effort facultatifs), sinon les participants par
@@ -182,6 +357,7 @@ export function resolveParticipants(
       name: persona.name,
       description: persona.description,
       prompt: persona.prompt,
+      needs: persona.needs,
     });
   }
   return { advisors };
@@ -220,7 +396,8 @@ export function imagePaths(run: Pick<CouncilRun, 'images'>): string[] {
   return [...(run.images ?? [])].sort((a, b) => a.n - b.n).map((image) => image.path);
 }
 
-// Retire une persona supprimée des réglages, en gardant au moins deux participants par défaut.
+// Retire une persona supprimée des réglages : les participants par défaut gardent au moins deux personas, une
+// composition qui passe sous ce minimum disparaît.
 export function withoutPersona(
   settings: CouncilSettings,
   personaId: string,
@@ -234,6 +411,7 @@ export function withoutPersona(
       settings.defaultPersonaIds.filter((id) => id !== personaId),
       remaining,
     ),
+    compositions: withinCatalog(settings.compositions, remaining),
   };
 }
 
@@ -259,6 +437,11 @@ export function validatePersonaInput(
     if (value === null || value.length < min || value.length > max)
       return { error: `${label} (${min} à ${max} caractères)` };
     persona[field] = value;
+  }
+  if (raw.needs !== undefined) {
+    if (!Array.isArray(raw.needs) || raw.needs.some((need) => !(PERSONA_NEEDS as readonly unknown[]).includes(need)))
+      return { error: `Besoins d’accès invalides (${PERSONA_NEEDS.join(', ')})` };
+    persona.needs = parsePersonaNeeds(raw.needs);
   }
   if (partial && Object.keys(persona).length === 0) return { error: 'Aucune modification' };
   return { persona };
@@ -289,7 +472,16 @@ export function convertLegacyCouncilSettings(
         typeof entry.name === 'string' && entry.name.trim() !== ''
           ? entry.name.trim().slice(0, MAX_PERSONA_NAME_LENGTH)
           : 'Conseiller';
-      persona = { id: randomUUID(), name, description: '', prompt, builtin: false, createdAt: now, updatedAt: now };
+      persona = {
+        id: randomUUID(),
+        name,
+        description: '',
+        prompt,
+        needs: [],
+        builtin: false,
+        createdAt: now,
+        updatedAt: now,
+      };
       known.push(persona);
       created.push(persona);
     }
@@ -305,6 +497,7 @@ export function convertLegacyCouncilSettings(
       defaultPersonaIds: withMinimum(defaultPersonaIds, known),
       chairman: typeof chairman === 'string' ? defaultChairman(catalog, AGENTS) : chairman,
       readProject: raw.readProject !== false,
+      compositions: defaultCompositions(known),
     },
     created,
   };
@@ -596,7 +789,15 @@ export function parseSynthesis(raw: unknown): CouncilSynthesis {
   return synthesis;
 }
 
-// Rapport complet : synthèse, puis chaque avis, puis relectures et classement agrégé.
+function outcomeLines(outcome: CouncilOutcome): string[] {
+  const text = outcome.text.trim();
+  return [
+    `Verdict : ${verdictLabel(outcome.verdict).toLowerCase()} · renseignée le ${new Date(outcome.recordedAt).toISOString()}`,
+    ...(text === '' ? [] : [text]),
+  ];
+}
+
+// Rapport complet : synthèse et issue observée, puis chaque avis, puis relectures et classement agrégé.
 export function exportMarkdown(run: CouncilRun): string {
   const byId = new Map(run.advisors.map((advisor) => [advisor.personaId, advisor]));
   const ordered = [...run.advisors].sort((a, b) =>
@@ -622,6 +823,7 @@ export function exportMarkdown(run: CouncilRun): string {
   if (run.synthesis === null)
     sections.push(run.error === null ? '_Aucune synthèse._' : `_Aucune synthèse : ${run.error}_`);
   else for (const field of SYNTHESIS_FIELDS) sections.push(`### ${SYNTHESIS_TITLES[field]}`, run.synthesis[field]);
+  if (run.outcome) sections.push('## Issue observée', ...outcomeLines(run.outcome));
   sections.push('## Avis');
   for (const advisor of ordered) {
     const answer = run.answers.find((entry) => entry.advisorId === advisor.personaId);

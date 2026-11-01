@@ -38,9 +38,12 @@ export function registerHookRoutes(ctx: RouteContext): void {
     if (!SLACK_ENABLED) return error(reply, 503, "Slack n'est pas configuré");
     const refusal = notifier.agentMessagesRefusal(session.id);
     if (refusal !== null) return error(reply, 503, refusal);
+    // Answered once queued, without waiting for Slack: a slow call (DNS, network) outlasted the CLI's 10 s and the
+    // agent took its registered question for lost. `pending`: posted in the background, retried on transient errors.
+    // `queued`: a Slack 429 window delays it.
     try {
-      const outcome = await notifier.agentMessage(session.id, body.kind, text);
-      return reply.send({ ok: true, queued: outcome === 'queued' });
+      const queued = notifier.queueAgentMessage(session.id, body.kind, text);
+      return reply.send({ ok: true, queued, pending: true });
     } catch (caught) {
       console.error('[slack]', caught instanceof Error ? caught.message : caught);
       return error(reply, 502, "Impossible d'envoyer le message Slack");

@@ -76,23 +76,38 @@ export interface Llm {
   effort: Effort | null;
 }
 
+// Accès dont une persona peut avoir besoin pour être utile : le dépôt du projet (lecture seule) et le web.
+export const PERSONA_NEEDS = ['project', 'web'] as const;
+export type PersonaNeed = (typeof PERSONA_NEEDS)[number];
+
 // Une persona du catalogue de la machine : un angle de réflexion, indépendant de l'agent qui la joue.
 export interface Persona {
   id: string;
   name: string;
   description: string;
   prompt: string;
-  // Fournie par Cerebro : modifiable et supprimable comme les autres, jamais réinsérée.
+  // Accès sans lesquels elle invente ses preuves : le lancement d'un council qui ne les donne pas la signale.
+  needs: PersonaNeed[];
+  // Fournie par Cerebro : modifiable et supprimable comme les autres, jamais réinsérée ; suit les révisions
+  // de son texte tant que l'utilisateur ne l'a pas modifiée.
   builtin: boolean;
   createdAt: number;
   updatedAt: number;
 }
 
-export type PersonaInput = Pick<Persona, 'name' | 'description' | 'prompt'>;
+// `needs` absent : aucun besoin à la création, inchangé en modification.
+export type PersonaInput = Pick<Persona, 'name' | 'description' | 'prompt'> & Partial<Pick<Persona, 'needs'>>;
 
 // Un participant à un council : une persona jouée par un agent.
 export interface Participant extends Llm {
   personaId: string;
+}
+
+// Jeu de personas nommé selon un type de question (technique, produit, décision…) : le choisir au lancement coche
+// ses personas, que l'utilisateur ajuste ensuite.
+export interface CouncilComposition {
+  name: string;
+  personaIds: string[];
 }
 
 export interface CouncilSettings {
@@ -103,6 +118,8 @@ export interface CouncilSettings {
   chairman: Llm;
   // Valeur proposée par défaut pour « laisser les conseillers lire le projet ».
   readProject: boolean;
+  // Compositions proposées au lancement, dans l'ordre affiché.
+  compositions: CouncilComposition[];
 }
 
 // Limites de l'API des personas.
@@ -113,9 +130,14 @@ export const MIN_PERSONAS = 2;
 // Nombre de conseillers d'un council.
 export const MIN_ADVISORS = 2;
 export const MAX_ADVISORS = 8;
+// Compositions : chacune compte de MIN_ADVISORS à MAX_ADVISORS personas.
+export const MAX_COUNCIL_COMPOSITIONS = 20;
+export const MAX_COMPOSITION_NAME_LENGTH = 60;
 export const MAX_COUNCIL_IMAGES = 10;
+export const MAX_COUNCIL_OUTCOME_LENGTH = 10_000;
 
 // Copie figée dans un run : un rapport reste lisible si la persona est modifiée ou supprimée ensuite.
+// `needs` manque dans les runs enregistrés avant les besoins d'accès.
 export interface Advisor extends Participant, PersonaInput {}
 
 export type CouncilStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
@@ -160,6 +182,18 @@ export interface CouncilImage {
   path: string;
 }
 
+export const COUNCIL_VERDICTS = ['good', 'mixed', 'bad'] as const;
+export type CouncilVerdict = (typeof COUNCIL_VERDICTS)[number];
+
+// Ce qui s'est réellement passé après la décision, noté à la main une fois ses effets connus : sans cette trace, on
+// ne peut pas juger si une composition décide mieux. `verdict` null : issue décrite, pas encore jugée.
+export interface CouncilOutcome {
+  text: string;
+  verdict: CouncilVerdict | null;
+  // Dernière saisie.
+  recordedAt: number;
+}
+
 export interface CouncilRun {
   id: string;
   projectId: string | null;
@@ -185,6 +219,8 @@ export interface CouncilRun {
   error: string | null;
   startedAt: number;
   finishedAt: number | null;
+  // Renseignée après coup sur un run terminé ; null sinon, et dans les runs enregistrés avant ce champ.
+  outcome: CouncilOutcome | null;
 }
 
 export interface AggregatedRank {
@@ -406,6 +442,11 @@ function modesOf<T extends string>(v: unknown, allowed: readonly T[]): T[] {
   return Array.isArray(v) ? allowed.filter((mode) => v.includes(mode)) : [];
 }
 
+// Besoins d'accès connus de cette version, sans doublon, dans leur ordre canonique.
+export function parsePersonaNeeds(v: unknown): PersonaNeed[] {
+  return modesOf(v, PERSONA_NEEDS);
+}
+
 export function parseProjectSlackSettings(v: unknown): ProjectSlackSettings | null {
   if (!isRecord(v) || (v.mode !== 'off' && v.mode !== 'custom')) return null;
   const live = modesOf(v.watchDeliveryLive, WATCH_DELIVERIES);
@@ -419,6 +460,11 @@ export function parseProjectSlackSettings(v: unknown): ProjectSlackSettings | nu
   };
 }
 
+function parseCouncilComposition(v: unknown): CouncilComposition | null {
+  if (!isRecord(v) || typeof v.name !== 'string' || !Array.isArray(v.personaIds)) return null;
+  return { name: v.name, personaIds: v.personaIds.filter((id): id is string => typeof id === 'string') };
+}
+
 export function parseCouncilSettings(v: unknown): CouncilSettings | null {
   if (!isRecord(v) || !isRecord(v.assignments) || !Array.isArray(v.defaultPersonaIds)) return null;
   const chairman = parseLlm(v.chairman);
@@ -429,7 +475,14 @@ export function parseCouncilSettings(v: unknown): CouncilSettings | null {
     if (llm !== null) assignments[personaId] = llm;
   }
   const defaultPersonaIds = v.defaultPersonaIds.filter((id): id is string => typeof id === 'string');
-  return { assignments, defaultPersonaIds, chairman, readProject: v.readProject !== false };
+  return {
+    assignments,
+    defaultPersonaIds,
+    chairman,
+    readProject: v.readProject !== false,
+    // Absent des serveurs antérieurs aux compositions et des runs lancés avant elles.
+    compositions: parseItems(v.compositions, parseCouncilComposition),
+  };
 }
 
 export function parsePersona(v: unknown): Persona | null {
@@ -444,6 +497,7 @@ export function parsePersona(v: unknown): Persona | null {
     name,
     prompt,
     description: asString(v.description) ?? '',
+    needs: parsePersonaNeeds(v.needs),
     builtin: v.builtin === true,
     createdAt,
     updatedAt: asNumber(v.updatedAt) ?? createdAt,
@@ -463,7 +517,14 @@ function parseAdvisor(v: unknown): Advisor | null {
   const personaId = asString(v.personaId);
   const name = asString(v.name);
   if (llm === null || personaId === null || name === null) return null;
-  return { ...llm, personaId, name, description: asString(v.description) ?? '', prompt: asString(v.prompt) ?? '' };
+  return {
+    ...llm,
+    personaId,
+    name,
+    description: asString(v.description) ?? '',
+    prompt: asString(v.prompt) ?? '',
+    needs: parsePersonaNeeds(v.needs),
+  };
 }
 
 function parseCouncilAnswer(v: unknown): CouncilAnswer | null {
@@ -517,6 +578,14 @@ function parseCouncilSynthesis(v: unknown): CouncilSynthesis | null {
   };
 }
 
+function parseCouncilOutcome(v: unknown): CouncilOutcome | null {
+  if (!isRecord(v)) return null;
+  const text = asString(v.text);
+  const recordedAt = asNumber(v.recordedAt);
+  if (text === null || recordedAt === null) return null;
+  return { text, verdict: COUNCIL_VERDICTS.find((verdict) => verdict === v.verdict) ?? null, recordedAt };
+}
+
 export function parseCouncilRun(v: unknown): CouncilRun | null {
   if (!isRecord(v)) return null;
   const id = asString(v.id);
@@ -559,6 +628,7 @@ export function parseCouncilRun(v: unknown): CouncilRun | null {
     error: asString(v.error),
     startedAt,
     finishedAt: asNumber(v.finishedAt),
+    outcome: parseCouncilOutcome(v.outcome),
   };
 }
 

@@ -1,26 +1,91 @@
 #!/usr/bin/env node
 
-import { request, requireSession, run, sessionPath } from './cerebro-client.mjs';
+import { request, requireSession, run, ServerTimeoutError, sessionPath } from './cerebro-client.mjs';
+
+const HELP = `Usage : cerebro-notify [--ask] [--] "texte"
+
+Envoie un message privé Slack à l'utilisateur, avec l'en-tête et le lien de la
+session courante. Une réponse dans son fil est tapée dans la session comme
+prochain message.
+
+  cerebro-notify "texte"                contexte supplémentaire utile (les fins
+                                        de tour sont déjà notifiées)
+  cerebro-notify --ask "question"       question dont la réponse conditionne la
+                                        suite : terminez ensuite votre tour, la
+                                        réponse arrivera comme prochain message
+  cerebro-notify [--ask] < texte.txt    sans texte en argument, lit l'entrée
+                                        standard telle quelle
+  --                                    fin des options : la suite est du texte
+  --help, -h                            cette aide
+
+Les options se placent avant le texte ; --help et -h affichent cette aide où
+qu'ils soient. Tout autre argument en forme d'option (-x, --mot) fait échouer
+la commande sans rien envoyer : passez un tel texte après -- ou sur l'entrée
+standard.
+
+Les arguments sont joints par des espaces ; le texte compte de 1 à 3 000
+caractères. L'envoi échoue si Slack n'est pas configuré ou si les messages des
+agents sont désactivés (réglages généraux ou du projet) ; avec --ask, la fin du
+tour s'affiche malgré tout comme une question dans Cerebro. Uniquement dans une
+session Cerebro.
+`;
+
+// One shell word shaped like an option: -x, --word, --word=value or a typo like ---word ("---", "->", "-3" or
+// "- item" are text).
+const OPTION = /^-+[A-Za-z][\w-]*(=.*)?$/s;
 
 await run('cerebro-notify', async () => {
-  requireSession();
   const args = process.argv.slice(2);
-  const ask = args[0] === '--ask';
-  if (ask) args.shift();
+  // Options come before the text, up to an optional `--`; option-shaped words in the text are refused, not sent.
+  let start = 0;
+  while (start < args.length && OPTION.test(args[start])) start += 1;
+  const options = args.slice(0, start);
+  const literal = args[start] === '--';
+  const words = args.slice(literal ? start + 1 : start);
+  const stray = literal ? [] : words.filter((word) => OPTION.test(word));
+  if ([...options, ...stray].some((arg) => arg === '--help' || arg === '-h')) {
+    process.stdout.write(HELP);
+    return;
+  }
+  const unknown = [...options, ...stray].find((arg) => arg !== '--ask');
+  if (unknown !== undefined)
+    throw new Error(
+      `option inconnue : ${unknown}. Rien n'est envoyé ; un texte en forme d'option se passe après -- (voir cerebro-notify --help).`,
+    );
+  if (stray.length > 0)
+    throw new Error("--ask se place avant le texte. Rien n'est envoyé (voir cerebro-notify --help).");
+  const ask = options.includes('--ask');
+  requireSession();
 
-  let text = args.join(' ');
+  let text = words.join(' ');
   if (text === '') {
     process.stdin.setEncoding('utf8');
     for await (const chunk of process.stdin) text += chunk;
     text = text.trim();
   }
 
-  const result = await request(sessionPath('notify'), { method: 'POST', body: { kind: ask ? 'ask' : 'notify', text } });
-  // Older servers answer without `queued`.
+  let result;
+  try {
+    result = await request(sessionPath('notify'), { method: 'POST', body: { kind: ask ? 'ask' : 'notify', text } });
+  } catch (error) {
+    // The server got the request but did not answer in time: it most likely queued the message, a resend duplicates it.
+    if (error instanceof ServerTimeoutError)
+      throw new Error(
+        ask
+          ? `${error.message}. La question est probablement enregistrée (la fin du tour s'affichera comme une question) et son envoi Slack peut encore aboutir : ne la renvoie pas sans vérifier (fil Slack de la session, session dans Cerebro).`
+          : `${error.message}. Le message est probablement en cours d'envoi : ne le renvoie pas sans vérifier (fil Slack de la session).`,
+        { cause: error },
+      );
+    throw error;
+  }
+  // `pending`: queued, posted in the background. Servers answering once Slack took the message omit it, the oldest
+  // omit `queued` too.
   const delivery =
     result?.queued === true
       ? 'en file (limite de débit Slack), envoi automatique dès la fin de la fenêtre'
-      : 'envoyé sur Slack';
+      : result?.pending === true
+        ? "en cours d'envoi sur Slack, avec nouvelles tentatives automatiques en cas d'échec passager"
+        : 'envoyé sur Slack';
   process.stdout.write(
     ask
       ? `Question : ${delivery}. Termine ton tour maintenant : la réponse arrivera comme prochain message de l'utilisateur.\n`
