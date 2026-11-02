@@ -707,6 +707,18 @@ d'agents (`/api/hook`, `/api/notify`, `/api/backlog`, `/api/session-tasks`), `/a
 restent locales, et un chemin contenant un séparateur encodé ou un segment `..` est refusé. Un jeton refusé ou une
 machine injoignable renvoie une erreur 502 explicite.
 
+**Nom d'une machine distante.** Cerebro limite et garde en cache la résolution du nom des machines de
+`remotes.json` : une seule à la fois, toutes machines confondues. Un nom qui ne se résout plus (MagicDNS en panne,
+machine renommée) ne retarde donc pas les autres résolutions du serveur, celle de slack.com comprise. Un nom
+résolu est gardé 1 min. Un échec est gardé 1 min, puis 2, 4 et 5 min au plus après chaque nouvel échec : d'ici là,
+la pastille de la machine reste hors ligne et ses requêtes échouent aussitôt (502 dans l'interface, « indisponible
+(Nom … non résolu (EAI_AGAIN)) » dans les réponses Slack). Une fois le DNS réparé, la machine redevient joignable au
+plus tard à la fin de ce délai, sans redémarrage. Si MagicDNS ne répond plus
+(`dig @100.100.100.100 <machine>.<tailnet>.ts.net` sans réponse), redémarrez `tailscaled`
+(`sudo systemctl restart tailscaled`) ou ajoutez à `/etc/hosts` le nom de la machine avec son IP Tailscale
+(`tailscale status`). Gardez le nom dans l'URL de `remotes.json` : le certificat HTTPS de `tailscale serve` est émis
+pour ce nom, pas pour l'IP.
+
 **Slack partagé entre machines.** Si plusieurs machines utilisent le même bot Slack, elles
 lisent la même conversation. Pour qu'une commande `projet: …` ne soit pas exécutée deux
 fois, les instances échangent toutes les 15 s la liste de leurs projets via

@@ -1,6 +1,7 @@
 import type { OutgoingHttpHeaders } from 'node:http';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { loadRemotes, MACHINE_NAME, type RemoteMachine } from './config.ts';
+import { peerResolver, remoteUrl } from './peer-network.ts';
 import type { PeerSync } from './peers.ts';
 import {
   filteredHeaders,
@@ -17,11 +18,9 @@ const RESPONSE_TIMEOUT_MS = 10_000;
 const FIRST_SYNC_WAIT_MS = 3_000;
 
 function upstreamUrl(remote: RemoteMachine, path: string, search: string, websocket = false): URL {
-  const target = new URL(remote.url);
+  const target = remoteUrl(remote, path);
   if (websocket) target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:';
-  target.pathname = `${target.pathname.replace(/\/$/, '')}${path}`;
   target.search = search;
-  target.hash = '';
   return target;
 }
 
@@ -112,6 +111,7 @@ export function registerRemoteGateway(app: FastifyInstance, peers: PeerSync): vo
       relayHttp(request, reply, upstreamUrl(remote, `/vscode${vscode[2] ?? '/'}`, incomingUrl.search), headers, {
         unreachable: `Machine ${remote.name} injoignable`,
         unauthorized: `Jeton refusé par ${remote.name}`,
+        lookup: peerResolver.lookup,
       });
       return;
     }
@@ -133,6 +133,7 @@ export function registerRemoteGateway(app: FastifyInstance, peers: PeerSync): vo
       unauthorized: `Jeton refusé par ${remote.name}`,
       responseTimeoutMs: RESPONSE_TIMEOUT_MS,
       dropResponseHeaders: ['set-cookie'],
+      lookup: peerResolver.lookup,
     });
   });
 
@@ -155,6 +156,7 @@ export function registerRemoteGateway(app: FastifyInstance, peers: PeerSync): vo
       socket,
       upstreamUrl(remote, `/ws/${request.params['*']}`, incomingSearch(request), true),
       authorization(remote),
+      peerResolver.lookup,
     );
   });
 
@@ -170,6 +172,11 @@ export function registerRemoteGateway(app: FastifyInstance, peers: PeerSync): vo
       remote,
       websocketHeaders(request.headers, ['authorization', ...BROWSER_HEADERS]),
     );
-    relayWebSocket(socket, upstreamUrl(remote, `/vscode/${request.params['*']}`, search, true), headers);
+    relayWebSocket(
+      socket,
+      upstreamUrl(remote, `/vscode/${request.params['*']}`, search, true),
+      headers,
+      peerResolver.lookup,
+    );
   });
 }

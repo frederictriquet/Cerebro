@@ -67,7 +67,9 @@ export function messageFrom(value: unknown): SlackMessage | null {
 
 // Slack 429 window: deferred sends retry once it is over, plus this margin.
 const RATE_LIMIT_MARGIN_MS = 500;
-// Each call, DNS resolution and connection included, is abandoned after this delay.
+// Each call, DNS resolution and connection included, is abandoned after this delay. The resolution (getaddrinfo in
+// libuv's pool, which runs two at a time) never queues behind a peer's: peers hold at most one of the two slots, and an
+// unresolvable peer only briefly, once per failure delay (`PeerResolver`, server/peer-network.ts).
 const CALL_TIMEOUT_MS = 10_000;
 // Errors Slack documents for every method as passing: the call may succeed later.
 const TRANSIENT_SLACK_ERRORS: ReadonlySet<string> = new Set([

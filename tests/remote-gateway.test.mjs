@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, before, test } from 'node:test';
+import { after, before, mock, test } from 'node:test';
 
 const root = mkdtempSync(join(tmpdir(), 'cerebro-remote-gateway-'));
 process.env.CEREBRO_DATA_DIR = join(root, 'data');
 mkdirSync(process.env.CEREBRO_DATA_DIR);
 const { default: Fastify } = await import('fastify');
+const { default: fastifyWebsocket } = await import('@fastify/websocket');
+const { default: WebSocket, WebSocketServer } = await import('ws');
+const { peerResolver } = await import('../server/peer-network.ts');
 const { registerRemoteGateway, relayableApiPath } = await import('../server/remotes.ts');
 
 const received = [];
@@ -19,6 +23,14 @@ const remote = createServer((req, res) => {
   res.setHeader('content-type', 'application/json');
   res.end('{"ok":true}');
 });
+// WebSocket de la machine distante : salue, puis renvoie chaque message.
+new WebSocketServer({ server: remote }).on('connection', (socket) => {
+  socket.send('bonjour');
+  socket.on('message', (data) => socket.send(`écho ${data}`));
+});
+// Résolutions réelles, comptées : une machine déclarée par son nom passe par le résolveur des pairs.
+const lookups = mock.method(peerResolver, 'systemLookup');
+const resolves = mock.method(peerResolver, 'resolve');
 const app = Fastify();
 let port;
 
@@ -26,14 +38,20 @@ before(async () => {
   await new Promise((resolve) => remote.listen(0, '127.0.0.1', resolve));
   writeFileSync(
     join(process.env.CEREBRO_DATA_DIR, 'remotes.json'),
-    JSON.stringify([{ id: 'peer', name: 'Peer', url: `http://127.0.0.1:${remote.address().port}` }]),
+    JSON.stringify([
+      { id: 'peer', name: 'Peer', url: `http://127.0.0.1:${remote.address().port}` },
+      { id: 'named', name: 'Named', url: `http://localhost:${remote.address().port}` },
+    ]),
   );
+  await app.register(fastifyWebsocket);
   registerRemoteGateway(app, { synced: Promise.resolve(), remoteVersion: () => null });
   await app.listen({ port: 0, host: '127.0.0.1' });
   port = app.server.address().port;
 });
 after(async () => {
   await app.close();
+  mock.restoreAll();
+  remote.closeAllConnections();
   await new Promise((resolve) => remote.close(resolve));
   rmSync(root, { recursive: true, force: true });
 });
@@ -141,4 +159,28 @@ test('relayed browser requests reach a token-less remote without Origin or Refer
     assert.equal(headers.referer, undefined);
     assert.equal(headers.authorization, undefined);
   }
+});
+
+test('a remote declared by host name is relayed, HTTP and WebSocket, through the cached peer resolver', async () => {
+  received.length = 0;
+  assert.equal(await get('/m/named/api/sessions?y=2'), 200);
+  assert.deepEqual(received, ['/api/sessions?y=2']);
+  const httpResolves = resolves.mock.calls.length;
+  assert.ok(httpResolves > 0, 'relais HTTP : nom résolu par le résolveur des pairs');
+
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/m/named/ws/events`);
+  const [greeting] = await once(socket, 'message');
+  assert.equal(String(greeting), 'bonjour');
+  socket.send('ping');
+  const [echo] = await once(socket, 'message');
+  assert.equal(String(echo), 'écho ping');
+  socket.close();
+  await once(socket, 'close');
+  assert.ok(resolves.mock.calls.length > httpResolves, 'relais WebSocket : nom résolu par le résolveur des pairs');
+
+  // Une seule résolution de localhost : la connexion WebSocket a repris l'adresse en cache.
+  assert.deepEqual(
+    lookups.mock.calls.map((call) => call.arguments[0]),
+    ['localhost'],
+  );
 });

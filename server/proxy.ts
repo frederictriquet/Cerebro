@@ -1,6 +1,7 @@
 import { request as httpRequest } from 'node:http';
 import type { ClientRequest, IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeaders } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import type { LookupFunction } from 'node:net';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import WebSocket, { type RawData } from 'ws';
 
@@ -78,6 +79,8 @@ export interface RelayHttpOptions {
   dropResponseHeaders?: readonly string[];
   // Réponse amont 401 remplacée par un 502 portant ce message.
   unauthorized?: string;
+  // Résolution du nom de la cible (machines distantes : `peerResolver.lookup`) ; celle du système par défaut.
+  lookup?: LookupFunction;
 }
 
 export function relayHttp(
@@ -95,7 +98,7 @@ export function relayHttp(
   const transport = target.protocol === 'https:' ? httpsRequest : httpRequest;
   let upstreamRequest: ClientRequest;
   try {
-    upstreamRequest = transport(target, { method: request.method, headers }, (response) => {
+    upstreamRequest = transport(target, { method: request.method, headers, lookup: options.lookup }, (response) => {
       receivedResponse = true;
       upstreamResponse = response;
       clearTimeout(responseTimeout);
@@ -153,8 +156,14 @@ function closeSocket(socket: WebSocket, code: number, reason: Buffer | string, r
   else if (socket.readyState === WebSocket.CONNECTING) socket.terminate();
 }
 
-// La cible peut être en cours de résolution : les messages du client sont mis en file d'ici là.
-export function relayWebSocket(socket: WebSocket, target: URL | Promise<URL>, headers: OutgoingHttpHeaders): void {
+// La cible peut être en cours de résolution : les messages du client sont mis en file d'ici là. `lookup` résout le nom
+// de la cible (machines distantes : `peerResolver.lookup`) ; celle du système par défaut.
+export function relayWebSocket(
+  socket: WebSocket,
+  target: URL | Promise<URL>,
+  headers: OutgoingHttpHeaders,
+  lookup?: LookupFunction,
+): void {
   let upstream: WebSocket | null = null;
   const queued: { data: RawData; isBinary: boolean }[] = [];
   let ending = false;
@@ -190,7 +199,7 @@ export function relayWebSocket(socket: WebSocket, target: URL | Promise<URL>, he
     if (ending) return;
     let opened: WebSocket;
     try {
-      opened = new WebSocket(url, { headers });
+      opened = new WebSocket(url, { headers, lookup });
     } catch {
       fail();
       return;

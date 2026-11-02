@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { DATA_DIR, loadRemotes, MACHINE_NAME } from './config.ts';
 import type { CerebroDatabase } from './db.ts';
 import { git } from './git.ts';
+import { remoteRequest } from './peer-network.ts';
 import { compatibility, VERSION_INFO, versionInfoFrom, versionLabel } from './version.ts';
 import type { Project } from '../shared/types.ts';
 import type {
@@ -452,23 +453,20 @@ export class PeerSync {
     }
     for (const remote of remotes) {
       try {
-        const response = await fetch(`${remote.url}/api/peer/sync`, {
+        // Nom résolu par `peerResolver` : après un échec de résolution, ce pair échoue aussitôt pendant 1 à 5 min,
+        // sans nouvelle résolution à chaque tour.
+        const { status, body } = await remoteRequest(remote, '/api/peer/sync', {
           method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            ...(remote.token === undefined ? {} : { authorization: `Bearer ${remote.token}` }),
-          },
-          body: JSON.stringify(this.payload()),
-          signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
+          body: this.payload(),
+          timeoutMs: SYNC_TIMEOUT_MS,
         });
-        const body: unknown = await response.json().catch(() => null);
         // 409 : la machine distante a refusé l'échange, version majeure différente de la nôtre.
-        const refused = response.status === 409 ? versionInfoFrom(isRecord(body) ? body.version : null) : null;
+        const refused = status === 409 ? versionInfoFrom(isRecord(body) ? body.version : null) : null;
         if (refused !== null) {
           this.recordVersion(remote, refused, true, null);
           continue;
         }
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (status < 200 || status > 299) throw new Error(`HTTP ${status}`);
         const payload = syncPayloadFrom(body);
         if (payload === null) throw new Error('réponse invalide');
         this.recordVersion(remote, payload.version, true, null);

@@ -90,7 +90,7 @@ Au démarrage du serveur, les sessions non `exited` sont réconciliées avec leu
 | POST | /api/hook/:id | réservé aux hooks : en-tête `x-cerebro-token` doit égaler le token de la session ; corps `{agent, event, payload}` |
 | POST | /api/notify/:id | `cerebro-notify`, même jeton : `{kind: 'notify'\|'ask', text}` (1 à 3 000 caractères après `trim`) → 200 `{ok: true, queued, pending: true}` dès la mise en file, sans attendre Slack ; `queued` : une fenêtre 429 retarde déjà l'envoi. `ask` enregistre d'abord la question (`markAsked`), même si l'envoi est ensuite refusé. 400 si invalide, 503 si Slack n'est pas configuré ou si les messages des agents sont refusés (`agentMessagesRefusal`), 502 si la mise en file échoue |
 
-Envoi des messages d'agent (`SlackAlerts.queueAgentMessage`) : en arrière-plan, derrière les autres envois de la session (`SlackClient.serial`). `SlackTransport.call` abandonne chaque appel après 10 s, résolution DNS et connexion comprises, et lève `SlackTransientError` sur délai dépassé (`TimeoutError`), erreur réseau (`TypeError: fetch failed`), HTTP 5xx ou erreur Slack `internal_error`, `fatal_error`, `service_unavailable` ou `request_timeout`. `retrySlack` reprend alors l'envoi après chaque délai de `TRANSIENT_RETRY_DELAYS_MS` (2 s, 5 s, 15 s, 30 s ; compteur commun aux appels d'un même message, ouverture du DM comprise), puis l'abandonne : `[slack] Envoi abandonné (<kind>, session <id>) : <erreur>`. Une erreur définitive n'est pas reprise ; un 429 est repris à la fin de chaque fenêtre, sans limite. `watchMessage` suit les mêmes reprises. Un post repris après un délai dépassé peut, rarement, arriver deux fois. `agentMessage` (attente jusqu'à l'envoi ou la mise en file 429) ne sert plus qu'aux tests. Côté CLI, `bin/cerebro-client.mjs` attend 10 s (`CEREBRO_CLIENT_TIMEOUT_MS`), puis lève `ServerTimeoutError` ; `cerebro-notify` répond alors que le message est probablement en file et qu'il ne faut pas le renvoyer sans vérifier.
+Envoi des messages d'agent (`SlackAlerts.queueAgentMessage`) : en arrière-plan, derrière les autres envois de la session (`SlackClient.serial`). `SlackTransport.call` abandonne chaque appel après 10 s, résolution DNS et connexion comprises (résolution jamais bloquée derrière celles des pairs : voir « Connexions vers les machines de `remotes.json` »), et lève `SlackTransientError` sur délai dépassé (`TimeoutError`), erreur réseau (`TypeError: fetch failed`), HTTP 5xx ou erreur Slack `internal_error`, `fatal_error`, `service_unavailable` ou `request_timeout`. `retrySlack` reprend alors l'envoi après chaque délai de `TRANSIENT_RETRY_DELAYS_MS` (2 s, 5 s, 15 s, 30 s ; compteur commun aux appels d'un même message, ouverture du DM comprise), puis l'abandonne : `[slack] Envoi abandonné (<kind>, session <id>) : <erreur>`. Une erreur définitive n'est pas reprise ; un 429 est repris à la fin de chaque fenêtre, sans limite. `watchMessage` suit les mêmes reprises. Un post repris après un délai dépassé peut, rarement, arriver deux fois. `agentMessage` (attente jusqu'à l'envoi ou la mise en file 429) ne sert plus qu'aux tests. Côté CLI, `bin/cerebro-client.mjs` attend 10 s (`CEREBRO_CLIENT_TIMEOUT_MS`), puis lève `ServerTimeoutError` ; `cerebro-notify` répond alors que le message est probablement en file et qu'il ne faut pas le renvoyer sans vérifier.
 
 ## WebSockets
 
@@ -246,6 +246,22 @@ fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jso
   `DATA_DIR` (`server/config.ts`) ; `tests/db-backup.test.mjs` compare les deux et lance `scripts/dev.mjs`, copié dans un
   dossier temporaire avec un serveur et un Vite factices.
 - `npm run db:backup` : la même copie à la demande, par exemple avant de relancer `npm start` sur un code mis à jour.
+- Connexions vers les machines de `remotes.json` (`server/peer-network.ts`) : la synchronisation (`PeerSync`) et la
+  collecte (`collectMachines`) passent par `remoteRequest` (http/https.request, pas fetch, qui n'accepte pas de
+  `lookup` ; pas de redirection suivie), les relais HTTP et WebSocket de la passerelle (`/m/<id>/api|ws|vscode`) par
+  l'option `lookup`. Toutes résolvent le nom par `peerResolver` : getaddrinfo, que le pool libuv n'exécute que deux
+  à la fois pour tout le processus et n'annule jamais ; une seule résolution en cours, tous pairs confondus (file dans
+  l'ordre d'arrivée), une seule par nom ; nom résolu gardé 60 s, puis resservi pendant sa nouvelle résolution (5 min
+  au plus) ; échec gardé 1 min, doublé à chaque échec suivant jusqu'à 5 min : d'ici là, les connexions échouent
+  aussitôt (`PeerLookupError` « Nom <hôte> non résolu (<code>) »), et une tentative relancée après ce délai n'est pas
+  attendue ; une première résolution est attendue 4 s au plus (`ETIMEOUT`), puis continue et garde sa place jusqu'à
+  son terme. Un pair injoignable n'occupe ainsi qu'un des deux emplacements, une fois par délai d'échec : les autres
+  résolutions du serveur (slack.com, registre npm, API Anthropic) gardent l'autre. Écarté : dns.resolve* (c-ares,
+  hors pool), qui ignore le fichier hosts, mDNS et les domaines de recherche, et ne résout pas mieux un nom que le
+  serveur DNS ne sert plus ; une résolution propre à Slack, qui demanderait un dispatcher undici pour fetch. Tests :
+  `tests/peer-resolver.test.mjs`, `tests/peer-dns-starvation.test.mjs` (pool simulé à deux emplacements, deux pairs
+  non résolus, envoi Slack en moins d'une seconde), `tests/remote-gateway.test.mjs` (machine déclarée par son nom :
+  relais HTTP et WebSocket par le résolveur).
 
 ## Interface
 

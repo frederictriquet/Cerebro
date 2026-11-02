@@ -10,6 +10,7 @@ import {
   type Session,
   type Task,
 } from '../shared/types.ts';
+import { remoteRequest } from './peer-network.ts';
 import { errorMessage } from './util.ts';
 
 export interface MachineData {
@@ -21,16 +22,11 @@ export interface MachineData {
 }
 export type MachineState = { ok: true; data: MachineData } | { ok: false; machine: string; error: string };
 async function fetchRemote<T>(remote: RemoteMachine, path: string, parse: (data: unknown) => T[]): Promise<T[]> {
-  const url = new URL(remote.url);
-  url.pathname = `${url.pathname.replace(/\/$/, '')}${path}`;
-  const response = await fetch(url, {
-    headers: remote.token === undefined ? {} : { authorization: `Bearer ${remote.token}` },
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status} sur ${path}`);
-  const raw: unknown = await response.json();
-  const parsed = parse(raw);
-  if (!Array.isArray(raw) || raw.length !== parsed.length) throw new Error(`Données invalides sur ${path}`);
+  const { status, body } = await remoteRequest(remote, path, { timeoutMs: 5_000 });
+  if (status < 200 || status > 299) throw new Error(`HTTP ${status} sur ${path}`);
+  if (!Array.isArray(body)) throw new Error(`Données invalides sur ${path}`);
+  const parsed = parse(body);
+  if (body.length !== parsed.length) throw new Error(`Données invalides sur ${path}`);
   return parsed;
 }
 
