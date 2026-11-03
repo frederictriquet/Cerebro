@@ -625,6 +625,29 @@ body.sidebar-resizing .main {
   text-decoration: line-through;
 }
 
+/* Ligne du réglage global advisor, sous « À traiter » : la pastille partage le style de celle de Slack. */
+.side-advisor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.advisor-pill {
+  margin-left: 0;
+  color: var(--muted);
+}
+
+.advisor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.advisor-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .ws-pill {
   margin: 0 auto 0 0;
   font-size: 11px;

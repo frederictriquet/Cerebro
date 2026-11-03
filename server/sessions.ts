@@ -376,7 +376,8 @@ export class SessionManager {
     } = options;
     const id = existingId ?? randomUUID();
     if (this.deleting.has(id)) throw new Error('Suppression en cours pour cette session');
-    const command = buildAgentCommand(agent, mode, prompt, id, resumeSessionId, tuning);
+    const advisorModel = agent === 'claude' ? this.db.getAdvisorModel() : null;
+    const command = buildAgentCommand(agent, mode, prompt, id, resumeSessionId, tuning, advisorModel);
     const token = this.db.getHookToken(id) ?? randomBytes(32).toString('hex');
     let session: Session;
     if (existingId === null) {

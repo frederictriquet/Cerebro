@@ -100,6 +100,8 @@ export function buildAgentCommand(
   generatedSessionId: string,
   resumeSessionId: string | null = null,
   tuning: Tuning = { model: null, effort: null },
+  // Réglage global `advisor` : ne concerne que Claude (`claude --advisor <modèle>`).
+  advisorModel: string | null = null,
 ): AgentCommand {
   const args: string[] = [];
   let agentSessionId: string | null = null;
@@ -114,6 +116,7 @@ export function buildAgentCommand(
       ...modeArgs(agent, mode),
       ...tuningArgs(agent, tuning),
     );
+    if (advisorModel !== null) args.push('--advisor', advisorModel);
     args.push('--append-system-prompt', AGENT_INSTRUCTIONS);
     if (resumeSessionId === null && prompt !== '') args.push(prompt);
   } else if (agent === 'grok') {

@@ -87,6 +87,7 @@ Au démarrage du serveur, les sessions non `exited` sont réconciliées avec leu
 | POST | /api/sessions/:id/seen | `attention=false` |
 | DELETE | /api/sessions/:id | tue si vivante, supprime l'enregistrement et le log |
 | GET | /api/agents | `{agent, available: boolean}[]` (via `which`) |
+| GET, PUT | /api/advisor | réglage global (table `settings`, clé `claude_advisor`) : `{model: string \| null}`. `PUT {model}` : `null` ou texte vide désactive ; un nom commençant par un tiret, contenant un espace ou de plus de 100 caractères → 400. Une valeur définie ajoute `--advisor <modèle>` à chaque lancement ou reprise d'une session Claude (`buildAgentCommand`), jamais aux sessions déjà en cours ni à Codex/Grok. Interface : pastille « Advisor » de la barre latérale |
 | POST | /api/hook/:id | réservé aux hooks : en-tête `x-cerebro-token` doit égaler le token de la session ; corps `{agent, event, payload}` |
 | POST | /api/notify/:id | `cerebro-notify`, même jeton : `{kind: 'notify'\|'ask', text}` (1 à 3 000 caractères après `trim`) → 200 `{ok: true, queued, pending: true}` dès la mise en file, sans attendre Slack ; `queued` : une fenêtre 429 retarde déjà l'envoi. `ask` enregistre d'abord la question (`markAsked`), même si l'envoi est ensuite refusé. 400 si invalide, 503 si Slack n'est pas configuré ou si les messages des agents sont refusés (`agentMessagesRefusal`), 502 si la mise en file échoue |
 

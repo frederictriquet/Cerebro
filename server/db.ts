@@ -742,6 +742,15 @@ export class CerebroDatabase {
       .run(key, JSON.stringify(value));
   }
 
+  // Modèle d'advisor global (`claude --advisor`), appliqué à chaque lancement ou reprise d'une session Claude.
+  getAdvisorModel(): string | null {
+    return this.getSetting<string>('claude_advisor');
+  }
+
+  setAdvisorModel(model: string | null): void {
+    this.putSetting('claude_advisor', model);
+  }
+
   listPersonas(): Persona[] {
     return (
       this.connection.prepare('SELECT * FROM personas ORDER BY created_at, rowid').all() as unknown as PersonaRow[]

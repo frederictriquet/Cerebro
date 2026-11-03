@@ -266,6 +266,25 @@ export const parseSlackWatchList = parser(
     ),
   }),
 );
+/** Réglage global « advisor » : modèle passé à `claude --advisor` pour toutes les sessions Claude, null si désactivé. */
+export interface AdvisorSettings {
+  model: string | null;
+}
+
+// Nom de modèle valide : jamais une option (pas de tiret initial), ni espace ni caractère de contrôle.
+const ADVISOR_MODEL_PATTERN = /^[A-Za-z0-9][\w.:/[\]-]*$/;
+
+/** Modèle d'advisor normalisé : texte vide ou null = désactivé ; undefined si la valeur est invalide. */
+export function normalizeAdvisorModel(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  const model = value.trim();
+  if (model === '') return null;
+  return model.length <= 100 && ADVISOR_MODEL_PATTERN.test(model) ? model : undefined;
+}
+
+export const parseAdvisorSettings = parser(object<AdvisorSettings>({ model: nullable(string) }));
+
 export const parseGeneralSlackStatus = parser(
   object<GeneralSlackStatus>({
     shared: boolean,

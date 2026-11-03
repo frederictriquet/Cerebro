@@ -11,7 +11,7 @@ import { orError, type RouteContext } from './route-context.ts';
 import { WatchError } from './slack.ts';
 import { deliveryModes, WATCH_LABEL_MAX, watchRequestFrom } from './slack-state.ts';
 import { parseSlackPermalink } from '../bin/slack-permalink.mjs';
-import { WATCH_DELIVERIES } from '../shared/machine.ts';
+import { normalizeAdvisorModel, WATCH_DELIVERIES } from '../shared/machine.ts';
 
 const { orError: watchOrError } = routeErrors(statusCodeOf(WatchError, 500));
 
@@ -159,6 +159,15 @@ export function registerSystemRoutes(ctx: RouteContext): void {
       return reply.send({ watch: result.value });
     },
   );
+
+  // Advisor global : s'applique aux sessions Claude lancées ou reprises ensuite, jamais à celles déjà en cours.
+  app.get('/api/advisor', async () => ({ model: db.getAdvisorModel() }));
+  app.put('/api/advisor', async (request, reply) => {
+    const model = normalizeAdvisorModel(asRecord(request.body)?.model);
+    if (model === undefined) return error(reply, 400, 'Modèle d’advisor invalide');
+    db.setAdvisorModel(model);
+    return reply.send({ model });
+  });
 
   app.patch('/api/slack', async (request, reply) => {
     const body = asRecord(request.body);

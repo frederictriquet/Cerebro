@@ -1,3 +1,4 @@
+import { AdvisorPanel, useAdvisor } from './AdvisorSettings.tsx';
 import { AgentLabel } from './AgentLabel.tsx';
 import { useEffect, useRef, useState } from 'react';
 import { acquireGeneralSlack, getGeneralSlack, getSlackStatus, updateSlackSettings } from './api.ts';
@@ -22,6 +23,8 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
   const now = useNow();
   const [slack, setSlack] = useState<SlackStatus | null>(null);
   const [showSlack, setShowSlack] = useState(false);
+  const [showAdvisor, setShowAdvisor] = useState(false);
+  const advisor = useAdvisor();
 
   const attention = sessions.filter(needsAttention);
   const activeSessionId = route.kind === 'session' ? route.sessionId : null;
@@ -117,6 +120,22 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
           </ul>
         )}
       </section>
+
+      <section className="side-section side-advisor">
+        <button
+          type="button"
+          className={`slack-pill advisor-pill ${advisor.model ? 'on' : ''}`}
+          aria-expanded={showAdvisor}
+          title="Advisor Claude (expérimental) : modèle conseiller passé à claude --advisor, pour toutes les sessions"
+          onClick={() => setShowAdvisor(!showAdvisor)}
+        >
+          Advisor
+        </button>
+        <span className="meta">{advisor.model === undefined ? '…' : (advisor.model ?? 'désactivé')}</span>
+      </section>
+      {showAdvisor && advisor.model !== undefined ? (
+        <AdvisorPanel model={advisor.model} onChange={advisor.setModel} />
+      ) : null}
 
       <UsageGauges />
       <AppVersion />

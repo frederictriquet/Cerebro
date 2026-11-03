@@ -1,4 +1,5 @@
 import {
+  parseAdvisorSettings,
   parseAgentUpdate,
   parseAgentUpdates,
   parseAgentUsages,
@@ -9,6 +10,7 @@ import {
   parseSessionTokenUsages,
   parseSlackStatus,
   parseSlackWatchList,
+  type AdvisorSettings,
   type AgentUpdate,
   type AgentUsage,
   type GeneralSlackStatus,
@@ -176,6 +178,14 @@ export async function uploadProjectImage(projectId: string, image: Blob): Promis
 // Image collée dans un council : dossier du projet, ou dossier commun des councils hors projet.
 export async function uploadCouncilImage(projectId: string | null, image: Blob): Promise<string> {
   return projectId === null ? postImage('/api/council/attachments', image) : uploadProjectImage(projectId, image);
+}
+
+export function getAdvisor(): Promise<AdvisorSettings> {
+  return apiParsed('/api/advisor', parseAdvisorSettings);
+}
+
+export function setAdvisor(model: string | null): Promise<AdvisorSettings> {
+  return apiParsed('/api/advisor', parseAdvisorSettings, { method: 'PUT', body: JSON.stringify({ model }) });
 }
 
 export function getSlackStatus(): Promise<SlackStatus> {
