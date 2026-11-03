@@ -1014,6 +1014,15 @@ body.sidebar-resizing .main {
   flex-wrap: wrap;
 }
 
+/* Nom de pair de la session : un nom long est tronqué, l'infobulle le donne en entier. */
+.btn.peer-name {
+  font-family: var(--mono);
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .session-toggles {
   display: inline-flex;
   align-self: start;
@@ -1988,17 +1997,6 @@ label.block {
   padding: 8px 10px 10px;
   border-top: 1px solid var(--line);
   background: var(--bg-1);
-}
-
-.quick-keys {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.quick-keys .btn {
-  font-family: var(--mono);
-  min-width: 36px;
 }
 
 .quick-send {

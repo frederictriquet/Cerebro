@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useLatest } from './use-latest.ts';
 import { FindingsNotice, FindingsPanel } from './Findings.tsx';
-import { apiParsed, getPeerName, uploadImage } from './api.ts';
+import { apiParsed, uploadImage } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
 import { AttachmentStrip, useAttachedField } from './attachments.tsx';
 import { AddTaskDialog, LaunchSessionDialog } from './Dialog.tsx';
@@ -18,6 +18,7 @@ import { SessionActions } from './SessionActions.tsx';
 import { SessionCouncilButton } from './SessionCouncil.tsx';
 import { SlackWatches } from './SlackWatches.tsx';
 import { SessionMeta, attentionTone } from './SessionMeta.tsx';
+import { SessionPeerName } from './SessionPeerName.tsx';
 import { SessionPin } from './SessionPin.tsx';
 import { SessionProtection } from './SessionProtection.tsx';
 import { go, href, parseHash, replaceRoute } from './route.ts';
@@ -32,7 +33,6 @@ import { removedCopyNotice } from './WorktreeLabel.tsx';
 import { SessionEpicBadge } from './SessionEpicBadge.tsx';
 import { parseSavedReports, type SavedReport } from '../../shared/backlog.ts';
 import { parseProvenance, type Provenance } from '../../shared/git.ts';
-import type { Agent } from '../../shared/types.ts';
 
 type SessionDrawer = 'provenance' | 'findings' | 'tasks' | null;
 
@@ -264,19 +264,16 @@ function ImageIcon() {
 
 function QuickReply({
   sessionId,
-  agent,
   disabled,
   send,
 }: {
   sessionId: string;
-  agent: Agent;
   disabled: boolean;
   send: (data: string) => boolean;
 }) {
   const [text, setText] = useState('');
   const [note, setNote] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const [copied, setCopied] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const mounted = useRef(true);
@@ -302,20 +299,6 @@ function QuickReply({
     },
   });
 
-  // Nom lu à chaque clic : il change si la session est renommée ou reprise.
-  const copyPeerName = async (): Promise<void> => {
-    setNote(null);
-    setCopied(null);
-    try {
-      const name = await getPeerName(sessionId);
-      if (!navigator.clipboard) throw new Error('Copie impossible : le presse-papier exige une page en HTTPS ou localhost');
-      await navigator.clipboard.writeText(name);
-      if (mounted.current) setCopied(name);
-    } catch (cause) {
-      if (mounted.current) setNote(errorMessage(cause));
-    }
-  };
-
   const onSubmit = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
     if (disabled || sending || images.pending || text.trim().length === 0) return;
@@ -337,21 +320,6 @@ function QuickReply({
 
   return (
     <div className="quick-bar">
-      <div className="quick-keys">
-        <button
-          type="button"
-          className="btn"
-          disabled={disabled || agent !== 'claude'}
-          title={
-            agent === 'claude'
-              ? 'Copie le nom que les autres sessions Claude utilisent pour écrire à celle-ci'
-              : 'Réservé aux sessions Claude'
-          }
-          onClick={() => void copyPeerName()}
-        >
-          {copied === null ? 'Copier le nom' : `Copié : ${copied}`}
-        </button>
-      </div>
       <form className="quick-send" onSubmit={(e) => void onSubmit(e)}>
         <input
           ref={inputRef}
@@ -567,6 +535,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             </span>
           ) : null}
           <div className="row-actions">
+            <SessionPeerName key={session.id} session={session} onError={setError} />
             <SessionCouncilButton session={session} onError={setError} />
             <SessionGitActions sessionId={session.id} />
             {live ? (
@@ -683,7 +652,6 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       <QuickReply
         key={session.id}
         sessionId={session.id}
-        agent={session.agent}
         disabled={!live}
         send={send}
       />
