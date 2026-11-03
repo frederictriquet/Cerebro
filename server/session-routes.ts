@@ -10,7 +10,8 @@ import { startingResolutionPrompt } from './starting-resolution.ts';
 import { conflictResolutionPrompt } from './conflict-resolution.ts';
 import { councilSessionPrompt, exportMarkdown } from './council.ts';
 import { MAX_CONTEXT_LENGTH } from './council-runner.ts';
-import { readSessionTranscript, transcriptContext } from './transcripts.ts';
+import { findPeerName } from './peer-name.ts';
+import { defaultTranscriptRoots, readSessionTranscript, transcriptContext } from './transcripts.ts';
 import { WorktreeError } from './worktrees.ts';
 import { normalizeMode } from '../shared/types.ts';
 import { asRecord, errorMessage } from './util.ts';
@@ -110,6 +111,17 @@ export function registerSessionRoutes(ctx: RouteContext): void {
     const session = requireSession(request, reply);
     if (session === null) return reply;
     return transcriptContext(session, await readSessionTranscript(session), COUNCIL_CONTEXT_FROM_SESSION);
+  });
+
+  // Nom à donner à `SendMessage` pour écrire à cette session depuis une autre session Claude.
+  app.get<{ Params: { id: string } }>('/api/sessions/:id/peer-name', async (request, reply) => {
+    const session = requireSession(request, reply);
+    if (session === null) return reply;
+    if (session.agent !== 'claude' || session.agentSessionId === null) {
+      return error(reply, 404, 'Seules les sessions Claude peuvent recevoir un message d’une autre session.');
+    }
+    const name = await findPeerName(defaultTranscriptRoots().claude, session.agentSessionId);
+    return name === null ? error(reply, 404, 'Nom introuvable : la session n’est pas en cours d’exécution.') : { name };
   });
 
   app.post<{ Params: { id: string } }>('/api/sessions/:id/git/prepare-commit', async (request, reply) => {

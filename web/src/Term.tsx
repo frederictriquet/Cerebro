@@ -22,7 +22,6 @@ const LINK_OPEN: LinkState = { reconnecting: false, pending: 0, dropped: false }
 
 export interface TermApi {
   sendInput: (data: string) => boolean;
-  sendArrow: (direction: 'up' | 'down') => boolean;
   focus: () => void;
   getSelection: () => string;
   /** Réajuste le PTY à cette fenêtre et force l'application à se redessiner. */
@@ -176,15 +175,9 @@ export function Term({
     };
 
     const api: TermApi = {
-      // Saisie ou boutons rapides de ce poste : il reprend la main sur la taille.
+      // Saisie de ce poste : il reprend la main sur la taille.
       sendInput(data: string): boolean {
         claim();
-        return send(current(), { type: 'input', data });
-      },
-      sendArrow(direction: 'up' | 'down'): boolean {
-        claim();
-        const application = term.modes.applicationCursorKeysMode;
-        const data = direction === 'up' ? (application ? '\x1bOA' : '\x1b[A') : application ? '\x1bOB' : '\x1b[B';
         return send(current(), { type: 'input', data });
       },
       focus(): void {

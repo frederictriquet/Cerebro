@@ -746,6 +746,7 @@ dans `instance-id`. Le nom affiché pour chaque machine vient de `CEREBRO_MACHIN
 (validée au démarrage) s'incrémente en MAJEURE pour tout changement incompatible du contrat
 entre instances (échange `/api/peer/sync`, routes relayées par `/m/<id>/…`, formats lus par
 l'UI d'une autre machine), en MINEURE pour une fonctionnalité et en CORRECTIVE pour un correctif.
+`npm run release -- <major|minor|patch>` l'incrémente (dépôt propre exigé) et commite « Version : X.Y.Z » avec le tag `vX.Y.Z` ; le serveur lit la version au démarrage, il faut le relancer.
 `GET /api/version` la renvoie avec le commit git court (`CEREBRO_COMMIT` le remplace hors dépôt
 git), affiché en métadonnée de build (`1.0.0+54dea61`). Elle est transmise dans `/api/peer/sync`.
 Même version majeure = compatible (en `0.y.z`, même `0.y`). Le bas de la barre latérale affiche la

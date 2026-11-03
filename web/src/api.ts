@@ -288,6 +288,13 @@ export function setAutoUpdate(agent: Agent, auto: boolean): Promise<AgentUpdate>
 }
 
 const parseAttachment = parser(object<{ path: string }>({ path: string }));
+const parsePeerName = parser(object<{ name: string }>({ name: string }));
+
+/** Nom à donner à `SendMessage` pour qu'une autre session Claude écrive à celle-ci. */
+export async function getPeerName(sessionId: string): Promise<string> {
+  const { name } = await apiParsed(apiPath`/api/sessions/${sessionId}/peer-name`, parsePeerName);
+  return name;
+}
 
 async function postImage(url: string, image: Blob): Promise<string> {
   const { path } = await apiParsed(url, parseAttachment, {

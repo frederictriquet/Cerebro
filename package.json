@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node --disable-warning=ExperimentalWarning scripts/dev.mjs",
     "db:backup": "node --disable-warning=ExperimentalWarning scripts/db-backup.mjs",
+    "release": "npm version --message \"Version : %s\"",
     "build": "vite build --config web/vite.config.ts",
     "start": "node --disable-warning=ExperimentalWarning server/index.ts",
     "start:prod": "npm run build && npm start",

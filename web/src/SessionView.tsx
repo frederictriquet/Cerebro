@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useLatest } from './use-latest.ts';
 import { FindingsNotice, FindingsPanel } from './Findings.tsx';
-import { apiParsed, uploadImage } from './api.ts';
+import { apiParsed, getPeerName, uploadImage } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
 import { AttachmentStrip, useAttachedField } from './attachments.tsx';
-import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { AddTaskDialog, LaunchSessionDialog } from './Dialog.tsx';
 import {
   displayStatus,
@@ -33,6 +32,7 @@ import { removedCopyNotice } from './WorktreeLabel.tsx';
 import { SessionEpicBadge } from './SessionEpicBadge.tsx';
 import { parseSavedReports, type SavedReport } from '../../shared/backlog.ts';
 import { parseProvenance, type Provenance } from '../../shared/git.ts';
+import type { Agent } from '../../shared/types.ts';
 
 type SessionDrawer = 'provenance' | 'findings' | 'tasks' | null;
 
@@ -126,19 +126,6 @@ function delay(ms: number): Promise<void> {
     window.setTimeout(resolve, ms);
   });
 }
-
-const QUICK_KEYS: readonly { label: string; data: string; confirm: boolean; arrow?: 'up' | 'down' }[] = [
-  { label: 'Entrée', data: '\r', confirm: false },
-  { label: 'Échap', data: '\x1b', confirm: false },
-  { label: '↑', data: '', confirm: false, arrow: 'up' },
-  { label: '↓', data: '', confirm: false, arrow: 'down' },
-  { label: '1', data: '1', confirm: false },
-  { label: '2', data: '2', confirm: false },
-  { label: '3', data: '3', confirm: false },
-  { label: 'y', data: 'y', confirm: false },
-  { label: 'n', data: 'n', confirm: false },
-  { label: 'Ctrl+C', data: '\x03', confirm: true },
-];
 
 function PencilIcon() {
   return (
@@ -277,18 +264,19 @@ function ImageIcon() {
 
 function QuickReply({
   sessionId,
+  agent,
   disabled,
   send,
-  sendArrow,
 }: {
   sessionId: string;
+  agent: Agent;
   disabled: boolean;
   send: (data: string) => boolean;
-  sendArrow: (direction: 'up' | 'down') => boolean;
 }) {
   const [text, setText] = useState('');
   const [note, setNote] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const mounted = useRef(true);
@@ -300,15 +288,6 @@ function QuickReply({
       mounted.current = false;
     };
   }, []);
-
-  // Une touche confirmée part après le délai de DelayedActionButton : l'état courant est relu via les refs.
-  // Démontée (changement de session), elle est abandonnée : le terminal joint serait celui d'une autre session.
-  const press = (key: (typeof QUICK_KEYS)[number]): void => {
-    if (disabledRef.current || !mounted.current) return;
-    setNote(null);
-    const ok = key.arrow !== undefined ? sendArrow(key.arrow) : send(key.data);
-    if (!ok) setNote('Terminal non connecté');
-  };
 
   // « [Image #N] » est inséré au curseur ; le chemin réel est substitué à l'envoi.
   const { images, attach, fieldProps, stripProps } = useAttachedField({
@@ -322,6 +301,20 @@ function QuickReply({
       if (mounted.current) setNote(message);
     },
   });
+
+  // Nom lu à chaque clic : il change si la session est renommée ou reprise.
+  const copyPeerName = async (): Promise<void> => {
+    setNote(null);
+    setCopied(null);
+    try {
+      const name = await getPeerName(sessionId);
+      if (!navigator.clipboard) throw new Error('Copie impossible : le presse-papier exige une page en HTTPS ou localhost');
+      await navigator.clipboard.writeText(name);
+      if (mounted.current) setCopied(name);
+    } catch (cause) {
+      if (mounted.current) setNote(errorMessage(cause));
+    }
+  };
 
   const onSubmit = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
@@ -345,22 +338,19 @@ function QuickReply({
   return (
     <div className="quick-bar">
       <div className="quick-keys">
-        {QUICK_KEYS.map((key) =>
-          key.confirm ? (
-            <DelayedActionButton
-              key={key.label}
-              disabled={disabled}
-              title={`Envoie ${key.label} à cette session après 5 s (second clic ou Échap pour annuler)`}
-              onAction={() => press(key)}
-            >
-              {key.label}
-            </DelayedActionButton>
-          ) : (
-            <button key={key.label} type="button" className="btn" disabled={disabled} onClick={() => press(key)}>
-              {key.label}
-            </button>
-          ),
-        )}
+        <button
+          type="button"
+          className="btn"
+          disabled={disabled || agent !== 'claude'}
+          title={
+            agent === 'claude'
+              ? 'Copie le nom que les autres sessions Claude utilisent pour écrire à celle-ci'
+              : 'Réservé aux sessions Claude'
+          }
+          onClick={() => void copyPeerName()}
+        >
+          {copied === null ? 'Copier le nom' : `Copié : ${copied}`}
+        </button>
       </div>
       <form className="quick-send" onSubmit={(e) => void onSubmit(e)}>
         <input
@@ -429,11 +419,6 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     const api = termApi.current;
     if (!api) return false;
     return api.sendInput(data);
-  }, []);
-  const sendArrow = useCallback((direction: 'up' | 'down'): boolean => {
-    const api = termApi.current;
-    if (!api) return false;
-    return api.sendArrow(direction);
   }, []);
   const [hasSelection, setHasSelection] = useState(false);
   // Texte capturé au clic : la sélection xterm peut changer pendant que la modale est ouverte.
@@ -695,7 +680,13 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           onClose={() => setSelectionAction(null)}
         />
       ) : null}
-      <QuickReply key={session.id} sessionId={session.id} disabled={!live} send={send} sendArrow={sendArrow} />
+      <QuickReply
+        key={session.id}
+        sessionId={session.id}
+        agent={session.agent}
+        disabled={!live}
+        send={send}
+      />
     </div>
   );
 }
