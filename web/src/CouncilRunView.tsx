@@ -26,37 +26,21 @@ import {
   type AggregatedRank,
   type CouncilAnswer,
   type CouncilOutcome,
-  type CouncilPhase,
   type CouncilReview,
   type CouncilRun,
   type CouncilSynthesis,
   type Llm,
   type Session,
 } from '../../shared/types.ts';
-import { COUNCIL_STATUS_LABEL, errorMessage, formatDuration, truncate } from './format.ts';
+import {
+  COUNCIL_STATUS_LABEL,
+  COUNCIL_STEPS,
+  errorMessage,
+  formatDuration,
+  SYNTHESIS_SECTIONS,
+  truncate,
+} from './format.ts';
 import './council.css';
-
-const STEPS: { phase: Exclude<CouncilPhase, 'finished'>; label: string; detail: string }[] = [
-  { phase: 'answering', label: 'Réponses', detail: 'Chaque conseiller répond indépendamment à la question.' },
-  {
-    phase: 'reviewing',
-    label: 'Relecture',
-    detail: 'Chaque conseiller classe anonymement les réponses des autres et signale un angle mort.',
-  },
-  {
-    phase: 'synthesizing',
-    label: 'Synthèse',
-    detail: 'Le chairman rédige la synthèse à partir des réponses et des relectures.',
-  },
-];
-
-const SYNTHESIS_SECTIONS: { key: keyof CouncilSynthesis; label: string }[] = [
-  { key: 'agreements', label: 'Accords' },
-  { key: 'disagreements', label: 'Désaccords' },
-  { key: 'blindSpots', label: 'Angles morts' },
-  { key: 'recommendation', label: 'Recommandation' },
-  { key: 'firstAction', label: 'Première action' },
-];
 
 type CouncilStepState = 'waiting' | 'running' | 'done' | 'failed' | 'skipped';
 
@@ -349,13 +333,13 @@ function Progress({
   onCancel: () => void;
   cancelling: boolean;
 }) {
-  const current = STEPS.findIndex((step) => step.phase === run.phase);
+  const current = COUNCIL_STEPS.findIndex((step) => step.phase === run.phase);
   const leave = (): void => go(run.projectId === null ? '#/' : `#/p/${encodeURIComponent(run.projectId)}`);
   return (
     <section className="card council-progress" aria-label="Avancement du council">
       <h2>Avancement</h2>
       <ol className="council-steps" aria-label="Étapes du council">
-        {STEPS.map((step, index) => (
+        {COUNCIL_STEPS.map((step, index) => (
           <li
             key={step.phase}
             aria-current={index === current ? 'step' : undefined}
@@ -366,7 +350,7 @@ function Progress({
         ))}
       </ol>
       <p className="council-progress-status">
-        <ActivityStatus>{STEPS[current]?.detail ?? 'Démarrage…'}</ActivityStatus>
+        <ActivityStatus>{COUNCIL_STEPS[current]?.detail ?? 'Démarrage…'}</ActivityStatus>
         <span className="meta">{formatDuration(now - run.startedAt, 'seconds')} écoulées</span>
       </p>
       <AdvisorTable run={run} />

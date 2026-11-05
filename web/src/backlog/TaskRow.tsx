@@ -7,7 +7,7 @@ import { useStore } from '../store.tsx';
 import { CommandRunView } from './CommandRunView.tsx';
 import { useBacklog } from './context.ts';
 import { EpicSelect } from './EpicSelect.tsx';
-import { dependents, taskLabel, taskPill, taskTitle } from './tasks.ts';
+import { dependents, openBlockers, taskLabel, taskPill, taskTitle } from './tasks.ts';
 import { TaskSessionLink } from './TaskSessionLink.tsx';
 
 export function TaskRow({
@@ -29,7 +29,7 @@ export function TaskRow({
   const [draft, setDraft] = useState(task.text);
   const byId = new Map(projectTasks.map((t) => [t.id, t]));
   const dependencies = task.dependsOn.map((id) => byId.get(id)).filter((t): t is Task => t !== undefined);
-  const blockers = dependencies.filter((t) => t.status !== 'done');
+  const blockers = openBlockers(task, projectTasks);
   const pill = taskPill(task, session, blockers.length > 0);
   // Relancer pendant que la session tourne en démarrerait une seconde et détacherait la première.
   const sessionActive = task.status === 'started' && session !== undefined && session.status !== 'exited';

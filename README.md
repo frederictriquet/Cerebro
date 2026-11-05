@@ -689,6 +689,8 @@ sur le réseau local et à l'extérieur, aucun port n'est ouvert sur la box, et 
 téléphone avec Tailscale y accède aussi. Renseignez cette URL dans `CEREBRO_PUBLIC_URL`
 pour que les liens Slack fonctionnent partout.
 
+**Téléphone perdu.** Retirez l'appareil dans la console d'administration Tailscale (page Machines) : il ne joint plus le tailnet. Générez ensuite un nouveau secret (`openssl rand -hex 32`), remplacez `CEREBRO_BIND_TOKEN` dans `~/.cerebro/env` et redémarrez Cerebro. Le cookie `cerebro_token` contient le jeton lui-même : le changer invalide tous les cookies déjà émis, y compris celui de la WebView de l'app Android, et chaque navigateur affiche de nouveau l'écran « Token requis ». Reportez le nouveau jeton dans le `remotes.json` des autres machines qui déclarent celle-ci, sinon leur passerelle répond 502. Les sessions en cours continuent : leurs hooks ont leur propre jeton.
+
 **Déclarer les machines distantes** dans `$CEREBRO_DATA_DIR/remotes.json` (`chmod 600`,
 relu à chaque requête, sans redémarrage) :
 
@@ -760,6 +762,32 @@ coordination Slack avec elle est suspendue, et un bandeau rouge s'affiche quand 
 `launchctl load ~/Library/LaunchAgents/cerebro.plist`. Il démarre Cerebro sous
 `caffeinate -s`, qui empêche la veille sur secteur. Un MacBook capot fermé sans écran
 externe se met tout de même en veille et devient injoignable.
+
+## Android
+
+L'app de `android-app/` est une enveloppe Capacitor qui ouvre la vue mobile `/mobile` servie par Cerebro, à travers Tailscale (section précédente). Elle n'embarque pas la page : une évolution de la vue mobile arrive sans reconstruire l'APK. Seuls un changement d'URL ou du projet natif en demandent un nouveau.
+
+Prérequis de build : un JDK 21 (`sdk install java 21.0.12-tem`) et le SDK Android dans `~/Android/Sdk`. Décompressez les [command line tools](https://developer.android.com/studio#command-line-tools-only) dans `~/Android/Sdk/cmdline-tools/latest`, puis installez la plateforme ; Gradle télécharge lui-même les build-tools au premier build.
+
+```sh
+~/Android/Sdk/cmdline-tools/latest/bin/android --no-metrics --sdk="$HOME/Android/Sdk" sdk install platform-tools "platforms;android-36"
+```
+
+Construction de l'APK :
+
+```sh
+cd android-app
+npm install
+export JAVA_HOME=~/.sdkman/candidates/java/21.0.12-tem ANDROID_HOME=~/Android/Sdk
+export CEREBRO_MOBILE_URL=https://<machine>.<tailnet>.ts.net/mobile
+npm run apk
+```
+
+`npm run apk` écrit `www/index.html`, la page « Cerebro injoignable » affichée quand la vue mobile ne charge pas, puis lance `cap sync android` et `./gradlew assembleDebug`. Sans `CEREBRO_MOBILE_URL`, la commande échoue. L'APK sort dans `android/app/build/outputs/apk/debug/app-debug.apk`.
+
+Installation : Tailscale doit tourner sur le téléphone, avec le même compte. Envoyez l'APK par `tailscale file cp android/app/build/outputs/apk/debug/app-debug.apk <téléphone>:`, ouvrez le fichier reçu sur le téléphone et autorisez l'installation depuis cette source. Au premier lancement, saisissez `CEREBRO_BIND_TOKEN` ; le cookie le garde ensuite.
+
+Conservez `~/.android/debug.keystore`, créé au premier build : il signe l'APK, et Android refuse une mise à jour signée par une autre clé. Sans lui, il faut désinstaller l'app puis ressaisir le jeton.
 
 ## Service systemd utilisateur
 

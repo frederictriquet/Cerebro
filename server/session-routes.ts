@@ -25,6 +25,7 @@ const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
   'image/webp': 'webp',
 };
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_SCREEN_LINES = 200;
 // Sous la limite d'un argument de commande (128 Kio sous Linux), consignes de l'agent comprises.
 const MAX_INLINE_COUNCIL_REPORT_BYTES = 100 * 1024;
 // Contexte d'un council tiré d'une session : de la marge pour ce que l'utilisateur y ajoute.
@@ -388,10 +389,23 @@ export function registerSessionRoutes(ctx: RouteContext): void {
   // Images pasted into a council launched outside any project (a project council uses the project route).
   app.post('/api/council/attachments', async (request, reply) => saveImage('council', request, reply));
 
-  app.get<{ Params: { id: string } }>('/api/sessions/:id/screen', async (request, reply) => {
-    if (requireSession(request, reply) === null) return reply;
-    return reply.send({ lines: sessions.screenText(request.params.id) ?? [] });
-  });
+  // `?lines=N` : les N dernières lignes telles qu'affichées (indentation, lignes vides, scrollback).
+  app.get<{ Params: { id: string }; Querystring: { lines?: unknown } }>(
+    '/api/sessions/:id/screen',
+    async (request, reply) => {
+      const raw = request.query.lines;
+      const lines = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : null;
+      if (raw !== undefined && (lines === null || lines < 1 || lines > MAX_SCREEN_LINES)) {
+        return error(reply, 400, `Paramètre lines : entier de 1 à ${MAX_SCREEN_LINES} attendu`);
+      }
+      if (requireSession(request, reply) === null) return reply;
+      const screen =
+        lines === null
+          ? sessions.screenText(request.params.id)
+          : sessions.screenText(request.params.id, lines, { layout: true });
+      return reply.send({ lines: screen ?? [] });
+    },
+  );
 
   app.delete<{ Params: { id: string } }>('/api/sessions/:id', async (request, reply) => {
     const result = await orError(reply, () => sessions.delete(request.params.id));

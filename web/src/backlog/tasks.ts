@@ -15,6 +15,12 @@ export function taskLabel(task: Pick<Task, 'text'>, max: number): string {
   return taskTitle(task.text).slice(0, max);
 }
 
+// Dépendances de `task` encore ouvertes parmi `projectTasks` : tant qu'il en reste, la tâche ne se lance pas.
+export function openBlockers(task: Task, projectTasks: Task[]): Task[] {
+  const byId = new Map(projectTasks.map((t) => [t.id, t]));
+  return task.dependsOn.map((id) => byId.get(id)).filter((t): t is Task => t !== undefined && t.status !== 'done');
+}
+
 // Tâches de `tasks` dont `id` dépend, directement ou non : en dépendre créerait un cycle.
 export function dependents(id: string, tasks: Task[]): Set<string> {
   const found = new Set<string>();

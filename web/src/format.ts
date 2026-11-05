@@ -2,7 +2,9 @@ import { isDormant } from '../../shared/sessions.ts';
 import type { EpicRun, SessionTaskStatus } from '../../shared/backlog.ts';
 import type {
   Agent,
+  CouncilPhase,
   CouncilStatus,
+  CouncilSynthesis,
   Mode,
   ModeChoice,
   Session,
@@ -31,6 +33,29 @@ export const COUNCIL_STATUS_LABEL: Record<CouncilStatus, string> = {
   cancelled: 'Annulé',
   interrupted: 'Interrompu',
 };
+
+// Étapes d'un council en cours, dans l'ordre d'exécution.
+export const COUNCIL_STEPS: { phase: Exclude<CouncilPhase, 'finished'>; label: string; detail: string }[] = [
+  { phase: 'answering', label: 'Réponses', detail: 'Chaque conseiller répond indépendamment à la question.' },
+  {
+    phase: 'reviewing',
+    label: 'Relecture',
+    detail: 'Chaque conseiller classe anonymement les réponses des autres et signale un angle mort.',
+  },
+  {
+    phase: 'synthesizing',
+    label: 'Synthèse',
+    detail: 'Le chairman rédige la synthèse à partir des réponses et des relectures.',
+  },
+];
+
+export const SYNTHESIS_SECTIONS: { key: keyof CouncilSynthesis; label: string }[] = [
+  { key: 'agreements', label: 'Accords' },
+  { key: 'disagreements', label: 'Désaccords' },
+  { key: 'blindSpots', label: 'Angles morts' },
+  { key: 'recommendation', label: 'Recommandation' },
+  { key: 'firstAction', label: 'Première action' },
+];
 
 export const TASK_STATUS_LABEL: Record<Task['status'], string> = {
   todo: 'À faire',

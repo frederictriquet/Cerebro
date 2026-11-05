@@ -216,7 +216,7 @@ Thème sombre, sobre, dense. Routage par hash : `#/` accueil, `#/p/<projectId>`,
 Déjà fait (ne pas casser) : détection à l'écran des dialogues (`inspectScreen` dans sessions.ts : dialogues de
 confiance, menus numérotés, y/n → `waiting` avec la question comme raison ; en buffer normal, seules les 15 dernières lignes non vides sous la dernière ligne de saisie `❯`/`›` sont examinées), dédoublonnage des alertes, filtrage des
 fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jsonl` (rotation à 20 Mo, 3 archives `.1`…`.3`, `server/hook-log.ts`),
-`GET /api/sessions/:id/screen` → `{lines: string[]}` (dernières lignes texte de l'écran vivant, `[]` si la session est terminée).
+`GET /api/sessions/:id/screen` → `{lines: string[]}` (dernières lignes texte de l'écran vivant, `[]` si la session est terminée). Avec `?lines=N` (1 à 200) : les N dernières lignes du buffer, scrollback compris, mises en page comme à l'écran (indentation et lignes vides internes gardées) ; utilisé par l'écran de session de la vue mobile.
 
 ## Serveur
 
@@ -266,10 +266,8 @@ fils codex auxiliaires (title generation), journal des hooks `DATA_DIR/hooks.jso
 
 ## Interface
 
-- Vue session : **barre de réponse rapide** sous le terminal (utile sur mobile) : boutons `Entrée`, `Échap`, `↑`, `↓`,
-  `1`, `2`, `3`, `y`, `n`, `Ctrl+C` (envoie `\x03` après un délai de rétractation de 5 s : second clic ou Échap pour annuler ; abandonné si la vue change de session) + un champ texte « Envoyer un message » qui envoie
-  le texte puis `\r` (deux envois séparés de 150 ms, sinon certaines TUI ignorent l'Entrée collée au texte). Utilise le ws
-  du terminal ouvert (pas besoin de l'API input).
+- Vue session desktop : champ « Envoyer un message » sous le terminal, qui envoie le texte puis `\r` (deux envois séparés de 150 ms, sinon certaines TUI ignorent l'Entrée collée au texte) par le ws du terminal ouvert. Pas de boutons de touches rapides : retirés volontairement du desktop (inutilisés sur un laptop), ils n'existent que dans la vue mobile.
+- Vue mobile `/mobile`, écran de session `#/s/<id>` : ne monte jamais le terminal xterm, qui imposerait sa taille au PTY partagé avec le desktop. Lecture par `GET /api/sessions/:id/screen?lines=120` toutes les 2 s (en pause onglet caché, plus une relecture 250 ms après chaque envoi), défilement collé en bas sauf si l'utilisateur a remonté. Écriture par `POST /api/sessions/:id/input` : boutons `Entrée`, `Échap`, `↑` (`\x1b[A`), `↓` (`\x1b[B`), `1`, `2`, `3`, `y`, `n`, `Ctrl+C` (envoie `\x03` après un délai de rétractation de 5 s, abandonné si l'écran est quitté) et zone de consigne multiligne (texte puis `\r` 150 ms plus tard). Reprendre si la session est terminée, Arrêter (délai de 5 s) sinon. L'attention est acquittée à l'ouverture et à chaque nouvelle alerte, page visible. L'onglet « À traiter » de l'accueil liste les sessions `isAwaiting` de tous les projets, puis celles en cours ; les findings en attente n'y comptent pas.
 - Titre de session renommable (double-clic ou icône crayon → champ, Entrée valide, Échap annule) via `PATCH`.
 - Vue projet : afficher la branche git et le nombre de fichiers modifiés (`GET /api/projects/:id/git`, rafraîchi toutes
   les 10 s tant que la vue est ouverte) ; bouton éditer le projet (nom, chemin) via `PATCH`.

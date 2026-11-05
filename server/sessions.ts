@@ -766,10 +766,30 @@ export class SessionManager {
     return lines.slice(-count);
   }
 
-  /** Last non-empty lines of the live screen (text only), or null when the session has no live terminal. */
-  screenText(id: string, count = 20): string[] | null {
+  /**
+   * Up to `count` lines ending at the last non-empty line of the buffer, scrollback included: indentation
+   * and inner blank lines kept, trailing spaces dropped. Anchored on the last non-empty line rather than
+   * the bottom row, so that a screen whose content stops above the bottom still shows it.
+   */
+  private layoutLines(runtime: Runtime, count: number): string[] {
+    const buffer = runtime.terminal.buffer.active;
+    const text = (y: number): string => buffer.getLine(y)?.translateToString(true).trimEnd() ?? '';
+    let last = buffer.baseY + runtime.terminal.rows - 1;
+    while (last >= 0 && text(last) === '') last -= 1;
+    const lines: string[] = [];
+    for (let y = Math.max(0, last - count + 1); y <= last; y += 1) lines.push(text(y));
+    return lines;
+  }
+
+  /**
+   * Text of the live screen, or null when the session has no live terminal. By default, the last `count`
+   * non-empty lines of the viewport, trimmed. With `layout`, the last `count` lines of the buffer laid out
+   * as displayed (see layoutLines).
+   */
+  screenText(id: string, count = 20, options: { layout?: boolean } = {}): string[] | null {
     const runtime = this.runtimes.get(id);
-    return runtime === undefined ? null : this.visibleLines(runtime, count);
+    if (runtime === undefined) return null;
+    return options.layout === true ? this.layoutLines(runtime, count) : this.visibleLines(runtime, count);
   }
 
   /**
