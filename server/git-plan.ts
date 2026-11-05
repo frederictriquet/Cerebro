@@ -18,6 +18,7 @@ import { dirname, join, resolve } from 'node:path';
 import type { GitPushes } from './git-push.ts';
 import { git as runGit, GitError, repositoryRoot, splitZ, type GitOptions } from './git.ts';
 import {
+  BINARY_WARNING,
   SECRET_WARNING,
   type CommitResult,
   type GitCandidate,
@@ -188,7 +189,7 @@ function scan(file: string, diff: string): { warnings: string[]; secrets: GitSec
   if (/(^|\/)(node_modules|dist|build|coverage|\.cache|tmp)(\/|$)|\.(log|tmp|bak|min\.js|map)$/.test(file))
     warnings.push('Fichier généré ou temporaire présumé : vérification explicite requise.');
   // Anchored to Git's own header line: a text file that merely mentions it is not binary.
-  if (/^GIT binary patch$/m.test(diff)) warnings.push('Fichier binaire : contenu non inspecté par le scanner.');
+  if (/^GIT binary patch$/m.test(diff)) warnings.push(BINARY_WARNING);
   return { warnings, secrets: found, blocked };
 }
 

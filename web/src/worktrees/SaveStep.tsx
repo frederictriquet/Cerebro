@@ -138,12 +138,16 @@ export function SaveStep({
             <strong>{plural(plan.ownWork, 'fichier modifié', 'fichiers modifiés')} par la conversation.</strong> Le
             commit automatique ne prend que les fichiers dont l’origine est vérifiable.
           </p>
+          <p className="meta">
+            Il écarte aussi les fichiers qu’il ne peut pas inspecter (fichier binaire, fichier généré, secret possible)
+            : lisez leur diff dans « Voir les diffs » puis cochez-les pour les commiter.
+          </p>
           <button type="button" className="btn" disabled={commitBlocked} onClick={() => actions.commit(view)}>
             Créer le commit
           </button>
         </div>
       ) : null}
-      {!view.mergeInProgress && view.dirty && (manual.length || !changes) ? (
+      {!view.mergeInProgress && view.dirty && (manual.length || !changes || plan.ownWork) ? (
         <div className="worktree-group">
           {manual.length ? (
             <>
@@ -184,11 +188,11 @@ export function SaveStep({
                 Résoudre avec l’IA ou valider…
               </button>
             </>
-          ) : (
+          ) : !changes ? (
             <p className="meta">
               L’origine de ces changements ne peut pas être vérifiée : lisez leur diff puis cochez ceux à commiter.
             </p>
-          )}
+          ) : null}
           {showDetails ? (
             <WorktreeDiffs
               view={view}

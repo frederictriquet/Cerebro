@@ -226,10 +226,15 @@
 }
 .worktree-reviewed {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 0.4rem;
   margin: 0.4rem 0;
   cursor: pointer;
+}
+.worktree-reviewed input {
+  width: auto;
+  margin: 0;
 }
 .worktree-diffs > .btn + .btn,
 .worktree-diffs > details + .btn {

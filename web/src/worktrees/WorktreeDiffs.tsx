@@ -1,5 +1,11 @@
 import { useState } from 'react';
-import { parseGitSnapshot, SECRET_WARNING, type GitSecret, type GitSnapshot } from '../../../shared/git.ts';
+import {
+  BINARY_WARNING,
+  parseGitSnapshot,
+  SECRET_WARNING,
+  type GitSecret,
+  type GitSnapshot,
+} from '../../../shared/git.ts';
 import type { WorktreeView } from '../../../shared/worktrees.ts';
 import { ActivityStatus } from '../ActivityStatus.tsx';
 import { apiParsed } from '../api.ts';
@@ -91,7 +97,18 @@ export function WorktreeDiffs({
       ) : null}
       {files?.map((file) => {
         const others = file.warnings.filter((warning) => warning !== SECRET_WARNING);
-        const diff = <pre>{file.diff}</pre>;
+        // A Git binary patch is unreadable here: point to the file itself instead.
+        const diff = file.warnings.includes(BINARY_WARNING) ? (
+          <p className="meta">
+            Fichier binaire : son contenu ne s’affiche pas ici. Pour l’examiner, ouvrez{' '}
+            <code>
+              {view.path}/{file.path}
+            </code>
+            .
+          </p>
+        ) : (
+          <pre>{file.diff}</pre>
+        );
         return (
           <details key={file.path}>
             <summary>

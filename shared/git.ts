@@ -20,6 +20,8 @@ export interface GitHunk {
 }
 /** Warning of a candidate whose diff holds a recognized secret (`GitCandidate.blocked`). */
 export const SECRET_WARNING = 'Secret détecté : exclu.';
+/** Warning of a binary candidate: its diff is a Git binary patch, unreadable in the review panel. */
+export const BINARY_WARNING = 'Fichier binaire : contenu non inspecté par le scanner.';
 /** A pattern the secret scanner recognized on an added line; `excerpt` keeps only the first and last characters. */
 export interface GitSecret {
   line: number;

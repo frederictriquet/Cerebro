@@ -345,6 +345,23 @@ test('a reviewed diff lifts its warning only while unchanged, and never for a de
       /examinés invalide/,
     );
   }));
+test('a new binary file is set aside by default and committed byte for byte once reviewed', async () =>
+  fixture(async (f) => {
+    const icon = Buffer.concat([Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'), Buffer.alloc(64, 0)]);
+    writeFileSync(join(f.repo, 'icon.png'), icon);
+    const blocked = await f.finish(await f.manager.start(f.context, randomUUID(), false));
+    assert.equal(blocked.status, 'blocked');
+    assert.deepEqual(blocked.exclusions, [
+      { path: 'icon.png', reason: 'Fichier binaire : contenu non inspecté par le scanner.' },
+    ]);
+    const shown = await f.services.git.prepareCommit(f.repo);
+    const reviewed = { snapshotId: shown.id, paths: ['icon.png'] };
+    const result = await f.finish(await f.manager.start(f.context, randomUUID(), false, reviewed));
+    assert.equal(result.status, 'succeeded');
+    assert.deepEqual(result.files, ['icon.png']);
+    assert.deepEqual(execFileSync('git', ['-C', f.repo, 'cat-file', 'blob', 'HEAD:icon.png']), icon);
+    assert.equal(git(f.repo, 'status', '--porcelain'), '');
+  }));
 test('a detected secret is committed only on its own override of the exact diff shown', async () =>
   fixture(async (f) => {
     const token = `sk-proj-${'0123456789abcdefghijklmnopqrstuvwxyz'}`;
