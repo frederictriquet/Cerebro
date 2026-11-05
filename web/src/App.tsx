@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react';
 import { dismissPeerNotice, getPeerNotices, subscribeUnauthorized } from './api.ts';
 import { CouncilRunView } from './CouncilRunView.tsx';
 import { ErrorBoundary } from './ErrorBoundary.tsx';
@@ -15,6 +15,9 @@ import { useMachine, useRoute } from './route.ts';
 import { NowProvider, usePolling } from './polling.tsx';
 import { usePrefetchWorktreeInventory } from './worktrees/useWorktreeInventory.ts';
 import type { PeerNotice } from '../../shared/machine.ts';
+
+// Chargée à part : la vue mobile n'alourdit pas le desktop.
+const MobileShell = lazy(() => import('./mobile/MobileShell.tsx').then((module) => ({ default: module.MobileShell })));
 
 function TokenScreen() {
   const [error, setError] = useState<string | null>(null);
@@ -184,7 +187,13 @@ export function App() {
             ne peuvent plus mettre à jour l'interface (React ignore les setState après démontage). Inutile de
             comparer apiBase() à celle du montage ; seuls les caches de module doivent inclure la machine dans leur clé. */}
         <StoreProvider key={machine ?? 'local'}>
-          <Shell />
+          {window.location.pathname === '/mobile' ? (
+            <Suspense fallback={null}>
+              <MobileShell />
+            </Suspense>
+          ) : (
+            <Shell />
+          )}
         </StoreProvider>
       </MachineWatchProvider>
     </NowProvider>

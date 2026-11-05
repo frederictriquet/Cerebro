@@ -4,3 +4,5 @@ web/dist/
 package-lock.json
 # La documentation est rédigée à la main : seul le code est formaté.
 *.md
+# Projet Android généré par Capacitor : son style est celui du modèle.
+android-app/android/

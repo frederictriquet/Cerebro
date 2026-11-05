@@ -67,7 +67,8 @@ export interface Store {
   createProject: (name: string, path: string) => Promise<Project>;
   deleteProject: (id: string) => Promise<void>;
   reorderProjects: (ids: string[]) => Promise<void>;
-  createSession: (projectId: string, spec: SessionDefaults) => Promise<Session>;
+  // Champs omis : le serveur reprend les réglages par défaut du projet.
+  createSession: (projectId: string, spec: Partial<SessionDefaults>) => Promise<Session>;
   killSession: (id: string) => Promise<void>;
   resumeSession: (id: string) => Promise<Session>;
   deleteSession: (id: string) => Promise<void>;
@@ -370,7 +371,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => window.clearTimeout(timer);
   }, [watchingAgents, agentsAvailable, agentsRefreshing, refreshAgents]);
 
-  const createSession = useCallback(async (projectId: string, spec: SessionDefaults): Promise<Session> => {
+  const createSession = useCallback(async (projectId: string, spec: Partial<SessionDefaults>): Promise<Session> => {
     const session = await apiParsed(apiPath`/api/projects/${projectId}/sessions`, parseSession, {
       method: 'POST',
       body: JSON.stringify(spec),

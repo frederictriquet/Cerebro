@@ -1,0 +1,549 @@
+/* Vue mobile : tout sous .m-app, styles.css stylise déjà .mobile-bar et .mobile-title pour le desktop étroit. */
+
+.m-app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  font-size: 16px;
+  line-height: 1.4;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.m-topbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  min-height: 56px;
+  padding: 0 4px 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.m-back {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-left: -8px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.m-back:active {
+  background: var(--bg-hover);
+}
+
+.m-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 18px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-full-version {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 8px;
+  font-size: 14px;
+}
+
+.m-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.m-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.m-tab {
+  flex: 1 1 0;
+  min-height: 48px;
+  padding: 0 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.m-tab[aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.m-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.m-screen-title {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.m-error {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--danger);
+  font-size: 14px;
+}
+
+.m-hint {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.m-section {
+  margin-bottom: 28px;
+}
+
+.m-section-title {
+  margin: 0 0 10px;
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.m-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+/* Carte tapable : session ou projet. */
+.m-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.m-card:active {
+  background: var(--bg-hover);
+}
+
+.m-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.m-card-title {
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.m-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.m-card-reason {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.m-card-reason.waiting,
+.m-awaiting {
+  color: var(--waiting);
+}
+
+.m-card-reason.idle {
+  color: var(--idle);
+}
+
+.m-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.m-textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  color: var(--text);
+  /* 16 px : en dessous, les navigateurs mobiles zooment au focus. */
+  font: inherit;
+  font-size: 16px;
+  resize: vertical;
+}
+
+.m-app .choice-group .choice {
+  min-height: 44px;
+}
+
+.m-button {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.m-button.primary {
+  border-color: #2d4f8a;
+  background: #1e3a6b;
+  color: #d6e4ff;
+}
+
+.m-button:disabled {
+  opacity: 0.6;
+}
+
+.m-form-error {
+  margin: 0 0 10px;
+  color: var(--danger);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.m-epic {
+  margin-bottom: 16px;
+}
+
+.m-epic-title {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.m-task {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+}
+
+.m-task-title {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.m-task-title > span:last-child {
+  min-width: 0;
+  padding-top: 11px;
+}
+
+.m-task-caret {
+  flex: 0 0 auto;
+  padding-top: 11px;
+  color: var(--muted);
+}
+
+.m-task-blockers {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.m-task-text {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 10px;
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Councils : formulaire, cartes et écran d'un run. */
+.m-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.m-select {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+}
+
+.m-council-status {
+  font-weight: 600;
+}
+
+.m-council-status.running {
+  color: var(--running);
+}
+
+.m-council-status.succeeded {
+  color: var(--text);
+}
+
+.m-council-status.failed,
+.m-council-status.interrupted {
+  color: var(--danger);
+}
+
+.m-council-status.cancelled {
+  color: var(--waiting);
+}
+
+.m-council-meta {
+  margin: 0 0 16px;
+}
+
+.m-council-question {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.m-council-step {
+  margin: 0 0 6px;
+}
+
+.m-button.m-danger {
+  width: 100%;
+  border-color: #3a2429;
+  color: var(--danger);
+}
+
+.m-council-notice {
+  margin: 0 0 28px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  font-size: 14px;
+}
+
+.m-council-notice p {
+  margin: 0;
+}
+
+.m-council-notice .m-council-error {
+  margin-top: 6px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+.m-synthesis-part + .m-synthesis-part {
+  margin-top: 14px;
+}
+
+.m-synthesis-label {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.m-answer {
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+}
+
+.m-answer > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.m-answer-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.m-answer > .md,
+.m-answer > .m-form-error {
+  padding: 0 12px 12px;
+}
+
+/* Pendant le délai de rétractation, le libellé reste centré dans la hauteur tactile. */
+.m-button.delayed-btn {
+  align-items: center;
+}
+
+/* Cellules de tableau en mots entiers : à 390 px, le tableau défile dans sa boîte (.md-table) au lieu de couper « fai-ble ». */
+.m-app .md th,
+.m-app .md td {
+  overflow-wrap: normal;
+}
+
+/* Écran de session : seul le bloc écran défile, touches et consigne restent en bas. */
+.m-session {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 8px 12px 12px;
+}
+
+.m-session > * {
+  flex: 0 0 auto;
+}
+
+.m-session-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.m-session-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+}
+
+.m-session-actions {
+  margin-left: auto;
+}
+
+.m-button.m-session-kill {
+  border-color: #3a2429;
+  color: var(--danger);
+}
+
+.m-session-ended,
+.m-session .m-card-reason,
+.m-session .m-form-error,
+.m-session .m-hint {
+  margin: 0;
+}
+
+.m-session > .m-screen-wrap {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 96px;
+}
+
+.m-screen {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.m-keys {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+/* Cellules étroites : « Annuler (5 s) » de Ctrl+C passe sur deux lignes. */
+.m-button.m-key {
+  min-width: 0;
+  padding: 0 4px;
+  font-size: 14px;
+  line-height: 1.15;
+}
+
+.m-instruction {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.m-instruction .m-textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: 30dvh;
+}
