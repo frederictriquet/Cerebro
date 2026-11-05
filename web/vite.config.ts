@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import type { Socket } from 'node:net';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,9 +48,18 @@ const quietWsDisconnects: ProxyOptions['configure'] = (proxy) => {
 export default defineConfig(async ({ command }) => {
   // strictPort only covers 127.0.0.1: also refuse a port already taken on [::1].
   if (command === 'serve') await assertLoopbackPortFree(DEV_HOST, DEV_PORT, 'Vite (Cerebro)');
+  // Commit et heure du build, affichés par la vue mobile ; null sous Vite, dont le code suit les sauvegardes.
+  const build =
+    command === 'build'
+      ? {
+          sha: execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
+          at: Date.now(),
+        }
+      : null;
   return {
     root,
     plugins: [react()],
+    define: { __CEREBRO_BUILD__: JSON.stringify(build) },
     build: {
       outDir: 'dist',
       emptyOutDir: true,

@@ -8,7 +8,7 @@
  * par POST /api/sessions/:id/input, qui ne touchent pas à la taille.
  */
 import { useState } from 'react';
-import { sessionTitle } from '../format.ts';
+import { formatDateTime, sessionTitle } from '../format.ts';
 import { go, useRoute, type Route } from '../route.ts';
 import { useStore } from '../store.tsx';
 import { CouncilScreen } from './CouncilScreen.tsx';
@@ -19,6 +19,10 @@ import { openFullVersion } from './redirect.ts';
 import { SessionScreen } from './SessionScreen.tsx';
 import { TodoTab } from './TodoTab.tsx';
 import './mobile.css';
+
+// Version servie, pour vérifier depuis le téléphone que le dernier build est chargé.
+const BUILD_LABEL =
+  __CEREBRO_BUILD__ === null ? 'dev' : `${__CEREBRO_BUILD__.sha} · ${formatDateTime(__CEREBRO_BUILD__.at)}`;
 
 type HomeTab = 'todo' | 'projects' | 'councils';
 
@@ -89,6 +93,7 @@ export function MobileShell() {
           </button>
         )}
         <h1 className="m-title">{title}</h1>
+        {route.kind === 'home' ? <span className="m-build">{BUILD_LABEL}</span> : null}
         <a
           className="m-full-version"
           href="/"

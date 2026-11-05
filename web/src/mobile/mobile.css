@@ -54,6 +54,17 @@
   white-space: nowrap;
 }
 
+.m-build {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .m-full-version {
   display: inline-flex;
   flex: 0 0 auto;
