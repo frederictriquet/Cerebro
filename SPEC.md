@@ -195,6 +195,7 @@ Chaque octet de sortie PTY est ajouté à `LOG_DIR/<sessionId>.log` (stream en a
 
 Thème sombre, sobre, dense. Routage par hash : `#/` accueil, `#/p/<projectId>`, `#/s/<sessionId>`.
 - **Onglets de projets** : réordonnables à la souris par glisser-déposer, avec un repère avant/après l’onglet survolé. L’ordre est conservé côté serveur et partagé par les vues et les navigateurs connectés à cette machine ; les nouveaux projets sont ajoutés à la fin. Accueil et « + » restent fixes.
+- **Onglets de sessions** : dans une vue session dont le projet compte au moins deux sessions (terminées comprises), une rangée sous les onglets de projets liste ses sessions dans l’ordre de la liste du projet. Chaque onglet porte la pastille de statut de sa session ; une étape d’epic y est nommée « étape i/n : … », le titre complet restant en infobulle. La rangée tient sur une ligne qui défile horizontalement et ramène l’onglet actif dans la zone visible à chaque changement de session.
 - **Barre latérale** : en haut, la section « À traiter » qui liste les sessions `attention=true` (pastille orange pour waiting, bleue pour idle) ;
   puis les projets, chacun dépliable avec ses sessions (pastille de statut : running = vert animé, waiting = orange, idle = bleu, exited = gris) ;
   bouton « + Projet » (formulaire : nom, chemin absolu).

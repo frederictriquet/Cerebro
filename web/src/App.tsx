@@ -4,6 +4,7 @@ import { CouncilRunView } from './CouncilRunView.tsx';
 import { ErrorBoundary } from './ErrorBoundary.tsx';
 import { HomeView } from './HomeView.tsx';
 import { ProjectTabs } from './ProjectTabs.tsx';
+import { SessionTabs } from './SessionTabs.tsx';
 import { ProjectView } from './ProjectView.tsx';
 import { usePinnedSessionRedirect } from './pinned-redirect.ts';
 import { SessionView } from './SessionView.tsx';
@@ -155,6 +156,7 @@ function Shell() {
           <MachineCompatNotice />
           <PeerNotices />
           <ProjectTabs route={route} />
+          <SessionTabs route={route} />
         </ErrorBoundary>
         <ErrorBoundary zone="Vue principale" resetKey={routeKey}>
           {route.kind === 'project' ? (

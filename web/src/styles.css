@@ -1266,6 +1266,64 @@ textarea {
   animation: pulse 1.4s ease-in-out infinite;
 }
 
+/* Sessions du projet de la session ouverte : rangée secondaire sous les onglets de projets.
+   position: relative fait rogner par la rangée les textes .sr-only (absolus) des pastilles hors champ,
+   qui sinon élargissent la page. */
+.session-tabs {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  overflow-x: auto;
+  scroll-padding-inline: 10px;
+  scrollbar-width: thin;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.session-tab {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: min(220px, 100%);
+  padding: 3px 8px;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.session-tab:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+  text-decoration: none;
+}
+
+.session-tab.active {
+  color: var(--text);
+  background: #1e3a6b;
+  border-color: #3d5a8c;
+}
+
+.session-tab.alert.waiting {
+  border-color: var(--waiting);
+}
+
+.session-tab.alert.idle {
+  border-color: var(--idle);
+}
+
+.session-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .pane {
   flex: 1;
   min-height: 0;
