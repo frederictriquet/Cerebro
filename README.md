@@ -767,6 +767,8 @@ externe se met tout de même en veille et devient injoignable.
 
 L'app de `android-app/` est une enveloppe Capacitor qui ouvre la vue mobile `/mobile` servie par Cerebro, à travers Tailscale (section précédente). Elle n'embarque pas la page : une évolution de la vue mobile arrive sans reconstruire l'APK. Seuls un changement d'URL ou du projet natif en demandent un nouveau.
 
+Cerebro sert la vue mobile depuis `web/dist`, que `npm run dev` ne reconstruit pas. Le hook `scripts/pre-push` lance `npm run build` à chaque push de master vers origin, et refuse le push si le build échoue. Installez-le une fois par clone : `ln -s ../../scripts/pre-push .git/hooks/pre-push`.
+
 Prérequis de build : un JDK 21 (`sdk install java 21.0.12-tem`) et le SDK Android dans `~/Android/Sdk`. Décompressez les [command line tools](https://developer.android.com/studio#command-line-tools-only) dans `~/Android/Sdk/cmdline-tools/latest`, puis installez la plateforme ; Gradle télécharge lui-même les build-tools au premier build.
 
 ```sh

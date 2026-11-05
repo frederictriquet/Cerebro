@@ -1,0 +1,22 @@
+#!/bin/sh
+# Hook pre-push : reconstruit web/dist quand master part vers origin. Le téléphone charge le front servi par :4317,
+# donc web/dist, que `npm run dev` ne reconstruit jamais. Un build en échec refuse le push.
+# Installation, une fois par clone : ln -s ../../scripts/pre-push .git/hooks/pre-push
+
+[ "$1" = origin ] || exit 0
+
+# Les copies de travail des sessions partagent ce hook ; seule la copie principale sert web/dist.
+[ "$(git rev-parse --path-format=absolute --git-dir)" = "$(git rev-parse --path-format=absolute --git-common-dir)" ] || exit 0
+
+master=
+while read -r local_ref _local_sha remote_ref _remote_sha; do
+  [ "$remote_ref" = refs/heads/master ] && [ "$local_ref" != '(delete)' ] && master=1
+done
+[ -n "$master" ] || exit 0
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+echo 'pre-push : reconstruction de web/dist (npm run build)' >&2
+npm run build >&2 || {
+  echo 'pre-push : build du front en échec, push refusé' >&2
+  exit 1
+}
