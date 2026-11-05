@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Cerebro injoignable</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        padding: 24px;
+        box-sizing: border-box;
+        background: #0b0d11;
+        color: #e6e8ee;
+        font-family: system-ui, sans-serif;
+        text-align: center;
+      }
+      h1 {
+        margin: 0;
+        font-size: 22px;
+      }
+      p {
+        margin: 0;
+        color: #9aa3b5;
+        font-size: 16px;
+      }
+      button {
+        margin-top: 8px;
+        padding: 14px 32px;
+        border: 0;
+        border-radius: 10px;
+        background: #7ea6ff;
+        color: #0b0d11;
+        font-size: 17px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Cerebro injoignable</h1>
+    <p>Tailscale actif sur le téléphone&nbsp;? PC allumé&nbsp;?</p>
+    <button type="button" id="retry">Réessayer</button>
+    <script>
+      // Filled in by scripts/build-www.mjs. replace() keeps this page out of the history: the back button does not
+      // return to it once Cerebro answers again.
+      const MOBILE_URL = '__CEREBRO_MOBILE_URL__';
+      document.getElementById('retry').addEventListener('click', () => location.replace(MOBILE_URL));
+    </script>
+  </body>
+</html>

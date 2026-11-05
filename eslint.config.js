@@ -5,7 +5,7 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default defineConfig(
-  globalIgnores(['web/dist/', '.claude/']),
+  globalIgnores(['web/dist/', '.claude/', 'android-app/android/']),
   // Les scripts de bin/ n'ont pas d'extension : sans ce motif, ESLint les ignorerait.
   { files: ['**/*.{js,mjs,ts,tsx}', 'bin/cerebro-*'] },
   js.configs.recommended,
