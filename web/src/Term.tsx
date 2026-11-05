@@ -54,16 +54,20 @@ export function Term({
   onApi,
   onSelectionChange,
   onEscape,
+  onExit,
 }: {
   sessionId: string;
   onApi?: (api: TermApi | null) => void;
   onSelectionChange?: (hasSelection: boolean) => void;
   onEscape?: () => void;
+  // Le serveur signale la fin de la session sur ce flux, même quand /ws/events s'est tu.
+  onExit?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onApiRef = useLatest(onApi);
   const onSelectionRef = useLatest(onSelectionChange);
   const onEscapeRef = useLatest(onEscape);
+  const onExitRef = useLatest(onExit);
   const [link, setLink] = useState<LinkState>(LINK_OPEN);
   // Taille imposée par un autre poste qui affiche la même session, null quand c'est la nôtre.
   const [borrowed, setBorrowed] = useState<{ cols: number; rows: number } | null>(null);
@@ -332,6 +336,8 @@ export function Term({
           term.write(msg.data);
         } else if (msg.type === 'output') {
           term.write(msg.data);
+        } else if (msg.type === 'exit') {
+          onExitRef.current?.();
         }
       },
       onClose: () => {
@@ -362,7 +368,7 @@ export function Term({
       link?.close();
       term.dispose();
     };
-  }, [sessionId, onApiRef, onEscapeRef, onSelectionRef]);
+  }, [sessionId, onApiRef, onEscapeRef, onExitRef, onSelectionRef]);
 
   return (
     <>

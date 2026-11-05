@@ -70,6 +70,8 @@ export interface Store {
   // Champs omis : le serveur reprend les réglages par défaut du projet.
   createSession: (projectId: string, spec: Partial<SessionDefaults>) => Promise<Session>;
   killSession: (id: string) => Promise<void>;
+  /** Relit une session sur le serveur, quand le temps réel a pu manquer sa fin. */
+  refreshSession: (id: string) => Promise<void>;
   resumeSession: (id: string) => Promise<Session>;
   deleteSession: (id: string) => Promise<void>;
   setSessionProtected: (id: string, value: boolean) => Promise<void>;
@@ -380,9 +382,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return session;
   }, []);
 
-  const killSession = useCallback(async (id: string): Promise<void> => {
-    await api(apiPath`/api/sessions/${id}/kill`, { method: 'POST' });
+  // Seule cette session est remplacée : les autres gardent l'état, peut-être plus récent, du flux /ws/events.
+  const refreshSession = useCallback(async (id: string): Promise<void> => {
+    const fresh = parseSessionList(await api('/api/sessions')).find((s) => s.id === id);
+    if (fresh) setSessions((list) => upsertSession(list, fresh));
   }, []);
+
+  const killSession = useCallback(
+    async (id: string): Promise<void> => {
+      try {
+        await api(apiPath`/api/sessions/${id}/kill`, { method: 'POST' });
+      } catch (error) {
+        // Un refus vient souvent d'une session déjà terminée dont la page n'a pas reçu la fin : la relire fait
+        // apparaître « Reprendre ». L'erreur d'arrêt reste celle qu'on remonte.
+        await refreshSession(id).catch((cause: unknown) => {
+          console.warn('[store] relecture de la session impossible :', errorMessage(cause));
+        });
+        throw error;
+      }
+    },
+    [refreshSession],
+  );
 
   const resumeSession = useCallback(async (id: string): Promise<Session> => {
     const session = await apiParsed(apiPath`/api/sessions/${id}/resume`, parseSession, { method: 'POST' });
@@ -608,6 +628,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       reorderProjects,
       createSession,
       killSession,
+      refreshSession,
       resumeSession,
       deleteSession,
       setSessionProtected,
@@ -656,6 +677,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       reorderProjects,
       createSession,
       killSession,
+      refreshSession,
       resumeSession,
       deleteSession,
       setSessionProtected,

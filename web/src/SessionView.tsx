@@ -366,7 +366,17 @@ function QuickReply({
 }
 
 export function SessionView({ sessionId }: { sessionId: string }) {
-  const { sessions, projects, agents, killSession, resumeSession, deleteSession, markSeen, createSession } = useStore();
+  const {
+    sessions,
+    projects,
+    agents,
+    killSession,
+    refreshSession,
+    resumeSession,
+    deleteSession,
+    markSeen,
+    createSession,
+  } = useStore();
   const session = sessions.find((s) => s.id === sessionId);
   const project = session ? projects.find((p) => p.id === session.projectId) : undefined;
   const [error, setError] = useState<string | null>(null);
@@ -615,6 +625,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           onApi={onApi}
           onSelectionChange={setHasSelection}
           onEscape={() => go(project ? `#/p/${project.id}` : '#/')}
+          onExit={live ? () => void refreshSession(session.id) : undefined}
         />
         {hasSelection ? (
           // preventDefault au mousedown : le clic ne doit pas effacer la sélection du terminal.
