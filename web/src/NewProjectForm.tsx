@@ -48,7 +48,7 @@ export function NewProjectForm({
   };
 
   const submit = (
-    <button type="submit" className="btn primary" disabled={busy}>
+    <button type="submit" className="btn primary" disabled={busy || path.trim() === ''}>
       <ActivityStatus active={busy}>{busy ? 'Création…' : submitLabel}</ActivityStatus>
     </button>
   );

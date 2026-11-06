@@ -2482,18 +2482,6 @@ a.btn:hover {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
-.dir-picker-path {
-  display: block;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  text-align: left;
-}
-
 .dir-picker-tools {
   display: flex;
   align-items: center;
@@ -2503,10 +2491,17 @@ a.btn:hover {
 .dir-picker-hidden {
   margin-left: auto;
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 4px;
   font-size: 12px;
   color: var(--muted);
+}
+
+.dir-picker-hidden input {
+  width: auto;
+  margin: 0;
+  padding: 0;
 }
 
 .dir-picker-list {

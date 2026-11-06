@@ -26,17 +26,17 @@ export function PathInput({
   const [loading, setLoading] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(async (path: string, fallback = false): Promise<void> => {
+  const load = useCallback(async (path: string, fallback = false): Promise<DirListing | null> => {
     setLoading(true);
     setError(null);
     try {
-      setListing(await apiParsed(`/api/fs/dirs?path=${encodeURIComponent(path)}`, parseDirListing));
+      const next = await apiParsed(`/api/fs/dirs?path=${encodeURIComponent(path)}`, parseDirListing);
+      setListing(next);
+      return next;
     } catch (err) {
-      if (fallback) {
-        await load('', false);
-        return;
-      }
+      if (fallback) return await load('', false);
       setError(errorMessage(err, 'Lecture impossible'));
+      return null;
     } finally {
       setLoading(false);
     }
@@ -44,16 +44,18 @@ export function PathInput({
 
   useEffect(() => {
     if (!open) return;
-    const onDown = (e: MouseEvent): void => {
+    // Au clic et non à l'appui : fermer le sélecteur décale la mise en page, et un bouton qui bouge
+    // entre l'appui et le relâchement ne reçoit plus le clic (« Annuler » de la modale).
+    const onClickOutside = (e: MouseEvent): void => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') setOpen(false);
     };
-    document.addEventListener('mousedown', onDown);
+    document.addEventListener('click', onClickOutside);
     document.addEventListener('keydown', onKey);
     return () => {
-      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('click', onClickOutside);
       document.removeEventListener('keydown', onKey);
     };
   }, [open]);
@@ -67,13 +69,10 @@ export function PathInput({
     void load(value.trim(), true);
   };
 
-  const enter = (path: string): void => {
-    void load(path);
-  };
-
-  const choose = (): void => {
-    if (listing) onChange(listing.path);
-    setOpen(false);
+  // Le dossier affiché devient la valeur du champ dès qu'on y navigue.
+  const enter = async (path: string): Promise<void> => {
+    const next = await load(path);
+    if (next) onChange(next.path);
   };
 
   const dirs = listing ? listing.dirs.filter((d) => showHidden || !d.startsWith('.')) : [];
@@ -94,21 +93,21 @@ export function PathInput({
       </div>
       {open ? (
         <div className="dir-picker">
-          <div className="dir-picker-head">
-            <span className="dir-picker-path" title={listing?.path}>
-              {listing?.path ?? '…'}
-            </span>
-          </div>
           <div className="dir-picker-tools">
             <button
               type="button"
               className="btn"
               disabled={!listing?.parent || loading}
-              onClick={() => listing?.parent && enter(listing.parent)}
+              onClick={() => listing?.parent && void enter(listing.parent)}
             >
               ↑ Parent
             </button>
-            <button type="button" className="btn" disabled={loading} onClick={() => listing && enter(listing.home)}>
+            <button
+              type="button"
+              className="btn"
+              disabled={loading}
+              onClick={() => listing && void enter(listing.home)}
+            >
               ~
             </button>
             <label className="dir-picker-hidden">
@@ -127,21 +126,13 @@ export function PathInput({
             {listing
               ? dirs.map((d) => (
                   <li key={d}>
-                    <button type="button" disabled={loading} onClick={() => enter(joinPath(listing.path, d))}>
+                    <button type="button" disabled={loading} onClick={() => void enter(joinPath(listing.path, d))}>
                       📁 {d}
                     </button>
                   </li>
                 ))
               : null}
           </ul>
-          <div className="row-actions">
-            <button type="button" className="btn primary" disabled={!listing || loading} onClick={choose}>
-              Choisir ce dossier
-            </button>
-            <button type="button" className="btn" onClick={() => setOpen(false)}>
-              Annuler
-            </button>
-          </div>
         </div>
       ) : null}
     </div>
