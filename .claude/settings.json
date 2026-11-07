@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/ftriquet/.local/bin/graphify hook-guard search",
+            "command": "[ -x \"$HOME/.local/bin/graphify\" ] || exit 0; exec \"$HOME/.local/bin/graphify\" hook-guard search",
             "timeout": 10
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/ftriquet/.local/bin/graphify hook-guard read",
+            "command": "[ -x \"$HOME/.local/bin/graphify\" ] || exit 0; exec \"$HOME/.local/bin/graphify\" hook-guard read",
             "timeout": 10
           }
         ]
