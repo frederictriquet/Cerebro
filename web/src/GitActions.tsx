@@ -121,7 +121,7 @@ const REMOTE_STATUS: Record<PushRemoteResult['status'], string> = {
   failed: 'échec',
 };
 
-function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+export function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
   const [operation, setOperation] = useState<PushOperation | null>(null);
   const [error, setError] = useState<string | null>(null);
   const start = useRef<Promise<PushOperation> | null>(null);
@@ -341,12 +341,13 @@ export function SessionGitActions({ sessionId }: { sessionId: string }) {
   return <SessionGitActionsPanel key={sessionId} sessionId={sessionId} />;
 }
 
-function SessionGitActionsPanel({ sessionId }: { sessionId: string }) {
-  const { sessions } = useStore();
-  const session = sessions.find((s) => s.id === sessionId);
-  const [open, setOpen] = useState<'review' | 'commit' | null>(null);
+/** Dossier Git d'une session (partagé, copie isolée ou copie retirée), lu au montage : le composant appelant est remonté par session. */
+export function useSessionGitContext(sessionId: string): {
+  context: SessionGitContext | null;
+  error: string | null;
+} {
   const [context, setContext] = useState<SessionGitContext | null>(null);
-  const [contextError, setContextError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let disposed = false;
     void apiParsed(apiPath`/api/sessions/${sessionId}/git/context`, parseSessionGitContext)
@@ -354,12 +355,20 @@ function SessionGitActionsPanel({ sessionId }: { sessionId: string }) {
         if (!disposed) setContext(value);
       })
       .catch((cause) => {
-        if (!disposed) setContextError(errorMessage(cause));
+        if (!disposed) setError(errorMessage(cause));
       });
     return () => {
       disposed = true;
     };
   }, [sessionId]);
+  return { context, error };
+}
+
+function SessionGitActionsPanel({ sessionId }: { sessionId: string }) {
+  const { sessions } = useStore();
+  const session = sessions.find((s) => s.id === sessionId);
+  const [open, setOpen] = useState<'review' | 'commit' | null>(null);
+  const { context, error: contextError } = useSessionGitContext(sessionId);
   if (!session) return null;
   const close = (): void => setOpen(null);
   const shared = context?.mode === 'shared';

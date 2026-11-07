@@ -15,6 +15,7 @@ import { StatusDot } from '../StatusDot.tsx';
 import { useStore } from '../store.tsx';
 import { useLatest } from '../use-latest.ts';
 import { parseScreenLines, type Session } from '../../../shared/types.ts';
+import { SessionCommit } from './MobileGit.tsx';
 
 const SCREEN_LINES = 120;
 const SCREEN_POLL_MS = 2000;
@@ -196,6 +197,7 @@ function SessionDetail({ session }: { session: Session }) {
         {project === undefined ? null : <a href={href(`#/p/${project.id}`)}>{project.name}</a>}
         <AgentLabel agent={session.agent} />
         <span className="m-session-actions">
+          <SessionCommit key={id} session={session} />
           {exited ? (
             <button
               type="button"
@@ -277,7 +279,7 @@ function SessionDetail({ session }: { session: Session }) {
   );
 }
 
-/** Écran d'une session : état, dernières lignes du terminal, touches rapides et consigne. */
+/** Écran d'une session : état, commit / push, dernières lignes du terminal, touches rapides et consigne. */
 export function SessionScreen({ sessionId }: { sessionId: string }) {
   const { sessions, loaded } = useStore();
   const session = sessions.find((candidate) => candidate.id === sessionId);

@@ -361,6 +361,51 @@
   overflow-wrap: anywhere;
 }
 
+/* Section Git de la page projet. */
+.m-git-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.m-git-state .pill {
+  font-size: 13px;
+}
+
+.m-git-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.m-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.m-check input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+}
+
+/* Dialogues de commit et de push du desktop, ouverts depuis la vue mobile : boutons à la taille du doigt. */
+.m-app .modal .btn {
+  min-height: 44px;
+  padding: 0 14px;
+  font-size: 15px;
+}
+
 /* Councils : formulaire, cartes et écran d'un run. */
 .m-field {
   display: flex;
@@ -524,6 +569,11 @@
 }
 
 .m-session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
   margin-left: auto;
 }
 

@@ -6,6 +6,7 @@ import { useStore } from '../store.tsx';
 import type { Project, Session } from '../../../shared/types.ts';
 import { LaunchForm } from './LaunchForm.tsx';
 import { MobileBacklog } from './MobileBacklog.tsx';
+import { ProjectGit } from './MobileGit.tsx';
 import { SessionCard } from './SessionCard.tsx';
 
 function SessionCards({ sessions }: { sessions: Session[] }) {
@@ -47,7 +48,7 @@ function PinButton({ project }: { project: Project }) {
   );
 }
 
-/** Page projet `#/p/<id>` : épingle, sessions, lancement et backlog. */
+/** Page projet `#/p/<id>` : épingle, sessions, Git, lancement et backlog. */
 export function ProjectScreen({ projectId }: { projectId: string }) {
   const { projects, sessions, loaded } = useStore();
   const [showEnded, setShowEnded] = useState(false);
@@ -79,6 +80,7 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
         )}
         {showEnded ? <SessionCards sessions={ended} /> : null}
       </section>
+      <ProjectGit key={project.id} project={project} />
       <LaunchForm key={project.id} project={project} />
       <MobileBacklog project={project} />
     </div>
