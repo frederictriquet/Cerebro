@@ -38,7 +38,7 @@ globalThis.window = {
   },
 };
 
-const { FULL_VERSION_KEY, forgetFullVersion, isMobilePath, openFullVersion, redirectToMobile } =
+const { FULL_VERSION_KEY, forgetFullVersion, isMobilePath, openFullVersion, pinnedProjectHash, redirectToMobile } =
   await import('../web/src/mobile/redirect.ts');
 
 beforeEach(() => {
@@ -129,4 +129,21 @@ test('openFullVersion stays on the mobile view and reports the error when the ch
   assert.equal(typeof error, 'string');
   assert.ok(error.length > 0);
   assert.deepEqual(navigations, []);
+});
+
+test('the mobile view opened without a route goes to the pinned project of the machine', () => {
+  const projects = [
+    { id: 'other', pinned: false },
+    { id: 'pinned one', pinned: true },
+  ];
+  assert.equal(pinnedProjectHash('', projects), '#/p/pinned%20one');
+  assert.equal(pinnedProjectHash('', [{ id: 'other', pinned: false }]), null);
+  assert.equal(pinnedProjectHash('', []), null);
+});
+
+test('a route given at opening, or the home set by the back button, keeps the mobile view where it is', () => {
+  const projects = [{ id: 'pinned', pinned: true }];
+  for (const hash of ['#/', '#/s/abc', '#/p/other', '#/c/run', '#/m/mac/']) {
+    assert.equal(pinnedProjectHash(hash, projects), null, hash);
+  }
 });

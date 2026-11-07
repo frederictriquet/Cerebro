@@ -1,4 +1,6 @@
+import { machineHash } from '../route.ts';
 import { readStored, writeStored } from '../storage.ts';
+import type { Project } from '../../../shared/types.ts';
 
 /**
  * Choix « version complète » fait sur ce navigateur : la page d'accueil ne redirige plus vers /mobile, jusqu'à la
@@ -27,6 +29,16 @@ export function redirectToMobile(): boolean {
   if (readStored(FULL_VERSION_KEY) === '1') return false;
   window.location.replace(`/mobile${window.location.hash}`);
   return true;
+}
+
+/**
+ * Hash du projet épinglé de la machine quand la vue mobile n'a pas encore de route (l'APK charge `/mobile` sans
+ * hash), sinon null. Un lien d'alerte (`#/s/<id>`) ou un `#/` explicite, comme celui que pose ‹, gardent leur route.
+ */
+export function pinnedProjectHash(hash: string, projects: readonly Pick<Project, 'id' | 'pinned'>[]): string | null {
+  if (hash !== '') return null;
+  const target = machineHash(null, projects);
+  return target === '#/' ? null : target;
 }
 
 /**

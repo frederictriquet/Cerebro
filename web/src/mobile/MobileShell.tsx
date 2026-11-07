@@ -7,17 +7,17 @@
  * desktop prendrait la largeur du téléphone. La vue mobile lit l'écran par GET /api/sessions/:id/screen et écrit
  * par POST /api/sessions/:id/input, qui ne touchent pas à la taille.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { formatDateTime, sessionTitle } from '../format.ts';
 import { MachineSwitcher } from '../MachineSwitcher.tsx';
-import { useRoute, type Route } from '../route.ts';
+import { replaceRoute, useRoute, type Route } from '../route.ts';
 import { useStore } from '../store.tsx';
 import { mobileBack, trackMobileHistory } from './back.ts';
 import { CouncilScreen } from './CouncilScreen.tsx';
 import { CouncilsTab } from './CouncilsTab.tsx';
 import { ProjectList } from './ProjectList.tsx';
 import { ProjectScreen } from './ProjectScreen.tsx';
-import { forgetFullVersion, openFullVersion } from './redirect.ts';
+import { forgetFullVersion, openFullVersion, pinnedProjectHash } from './redirect.ts';
 import { SessionScreen } from './SessionScreen.tsx';
 import { TodoTab } from './TodoTab.tsx';
 import './mobile.css';
@@ -78,9 +78,28 @@ function HomeScreen({ tab, onTab }: { tab: HomeTab; onTab: (tab: HomeTab) => voi
   );
 }
 
+/**
+ * Ouvre le projet épinglé de la machine quand la vue mobile s'ouvre sans route. Décidé une fois, au premier
+ * snapshot : épingler depuis le desktop n'emmène pas un téléphone resté sur l'accueil. Le shell remonte à chaque
+ * changement de machine, mais le hash n'est vide qu'à l'ouverture. replaceRoute garde la marque `entry` de
+ * l'historique : ‹ mène ensuite à l'accueil (`#/`), qui ne redirige plus.
+ */
+function usePinnedProjectOnOpen(): void {
+  const { projects, loaded } = useStore();
+  const decided = useRef(false);
+  // Avant l'affichage : l'accueil rempli ne s'affiche pas avant la redirection.
+  useLayoutEffect(() => {
+    if (decided.current || !loaded) return;
+    decided.current = true;
+    const hash = pinnedProjectHash(window.location.hash, projects);
+    if (hash !== null) replaceRoute(hash);
+  }, [loaded, projects]);
+}
+
 export function MobileShell() {
   const route = useRoute();
   const title = useRouteTitle(route);
+  usePinnedProjectOnOpen();
   // Onglet de l'accueil : retrouvé en revenant d'une session ou d'un projet.
   const [homeTab, setHomeTab] = useState<HomeTab>('todo');
   const [fullVersionError, setFullVersionError] = useState<string | null>(null);

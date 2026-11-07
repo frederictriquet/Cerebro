@@ -93,19 +93,24 @@ export function replaceRoute(path: string): void {
 }
 
 function useHashState<T>(read: (hash: string) => T): T {
-  const [value, setValue] = useState<T>(() => read(window.location.hash));
+  const [state, setState] = useState(() => ({ hash: window.location.hash, value: read(window.location.hash) }));
   useEffect(() => {
     const sync = (): void => {
-      setValue(read(window.location.hash));
+      setState({ hash: window.location.hash, value: read(window.location.hash) });
     };
     window.addEventListener('hashchange', sync);
     window.addEventListener(ROUTE_REPLACED, sync);
+    // Rattrape un changement survenu entre le rendu et l'abonnement : la redirection de la vue mobile, montée
+    // après le premier snapshot, part d'un effet de layout, avant ces écouteurs.
+    setState((prev) =>
+      prev.hash === window.location.hash ? prev : { hash: window.location.hash, value: read(window.location.hash) },
+    );
     return () => {
       window.removeEventListener('hashchange', sync);
       window.removeEventListener(ROUTE_REPLACED, sync);
     };
   }, [read]);
-  return value;
+  return state.value;
 }
 
 export function useRoute(): Route {
