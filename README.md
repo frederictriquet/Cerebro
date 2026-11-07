@@ -701,7 +701,7 @@ relu à chaque requête, sans redémarrage) :
 ```
 
 L'`id` (`a-z`, `0-9`, `-`) apparaît dans l'URL (`#/m/mac/…`). Des pastilles en haut de
-la barre latérale basculent l'interface d'une machine à l'autre. Elles indiquent si
+la barre latérale, et sous la barre du haut de la vue mobile, basculent l'interface d'une machine à l'autre. Elles indiquent si
 chaque machine est en ligne et combien de sessions attendent une réponse. Les alertes
 des machines non affichées déclenchent aussi la notification du navigateur et le bip.
 Seules les routes de l'interface sont relayées, d'après une liste blanche (`server/remotes.ts`) : les routes
@@ -787,7 +787,7 @@ npm run apk
 
 `npm run apk` écrit `www/index.html`, la page « Cerebro injoignable » affichée quand la vue mobile ne charge pas, puis lance `cap sync android` et `./gradlew assembleDebug`. Sans `CEREBRO_MOBILE_URL`, la commande échoue. L'APK sort dans `android/app/build/outputs/apk/debug/app-debug.apk`.
 
-Installation : Tailscale doit tourner sur le téléphone, avec le même compte. Envoyez l'APK par `tailscale file cp android/app/build/outputs/apk/debug/app-debug.apk <téléphone>:`, ouvrez le fichier reçu sur le téléphone et autorisez l'installation depuis cette source. Au premier lancement, saisissez `CEREBRO_BIND_TOKEN` ; le cookie le garde ensuite.
+Installation : Tailscale doit tourner sur le téléphone, avec le même compte. Envoyez l'APK par `tailscale file cp android/app/build/outputs/apk/debug/app-debug.apk <téléphone>:`, ouvrez le fichier reçu sur le téléphone et autorisez l'installation depuis cette source. Au premier lancement, saisissez `CEREBRO_BIND_TOKEN` ; le cookie le garde ensuite. L'app exclut ses données de la sauvegarde Android et du transfert vers un nouveau téléphone : après une restauration ou un changement d'appareil, saisissez de nouveau le jeton.
 
 Conservez `~/.android/debug.keystore`, créé au premier build : il signe l'APK, et Android refuse une mise à jour signée par une autre clé. Sans lui, il faut désinstaller l'app puis ressaisir le jeton.
 

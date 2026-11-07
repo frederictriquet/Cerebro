@@ -38,7 +38,8 @@ globalThis.window = {
   },
 };
 
-const { FULL_VERSION_KEY, openFullVersion, redirectToMobile } = await import('../web/src/mobile/redirect.ts');
+const { FULL_VERSION_KEY, forgetFullVersion, isMobilePath, openFullVersion, redirectToMobile } =
+  await import('../web/src/mobile/redirect.ts');
 
 beforeEach(() => {
   phone = true;
@@ -73,11 +74,20 @@ test('a desktop screen is not redirected', () => {
 });
 
 test('only / is redirected', () => {
-  for (const pathname of ['/mobile', '/index.html', '/vscode/']) {
+  for (const pathname of ['/mobile', '/mobile/', '/index.html', '/vscode/']) {
     location.pathname = pathname;
     assert.equal(redirectToMobile(), false, pathname);
   }
   assert.deepEqual(navigations, []);
+});
+
+test('the mobile view is recognized with or without trailing slashes', () => {
+  for (const pathname of ['/mobile', '/mobile/', '/mobile//']) {
+    assert.equal(isMobilePath(pathname), true, pathname);
+  }
+  for (const pathname of ['/', '', '/mobiles', '/m/mobile', '/vscode/']) {
+    assert.equal(isMobilePath(pathname), false, pathname);
+  }
 });
 
 test('an unreadable localStorage still redirects the phone', () => {
@@ -96,6 +106,20 @@ test('openFullVersion records the choice and opens / on the same route', () => {
   navigations.length = 0;
   assert.equal(redirectToMobile(), false);
   assert.deepEqual(navigations, []);
+});
+
+test('opening the mobile view again forgets the full version choice', () => {
+  location.pathname = '/mobile';
+  openFullVersion();
+  assert.equal(stored.get(FULL_VERSION_KEY), '1');
+
+  assert.equal(forgetFullVersion(), null);
+  assert.equal(stored.has(FULL_VERSION_KEY), false);
+
+  location.pathname = '/';
+  navigations.length = 0;
+  assert.equal(redirectToMobile(), true);
+  assert.deepEqual(navigations, [['replace', '/mobile#/s/abc']]);
 });
 
 test('openFullVersion stays on the mobile view and reports the error when the choice cannot be recorded', () => {

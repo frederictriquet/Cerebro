@@ -269,6 +269,17 @@ export function registerProjectRoutes(ctx: RouteContext): void {
     return reply.send(updated);
   });
 
+  // L'épingle reste propre à cette machine : rien à synchroniser avec les pairs.
+  app.patch<{ Params: { id: string } }>('/api/projects/:id/pin', async (request, reply) => {
+    const body = asRecord(request.body);
+    if (body === null || typeof body.pinned !== 'boolean')
+      return error(reply, 400, 'Le champ pinned doit être un booléen');
+    const projects = db.setProjectPinned(request.params.id, body.pinned);
+    if (projects === null) return error(reply, 404, 'Projet introuvable');
+    broadcast({ type: 'projects', projects });
+    return reply.send(projects);
+  });
+
   app.post<{ Params: { id: string } }>('/api/projects/:id/git/prepare-review', async (request, reply) => {
     const project = requireProject(request, reply);
     if (project === null) return reply;

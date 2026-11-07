@@ -9,6 +9,7 @@ import { ProjectView } from './ProjectView.tsx';
 import { usePinnedSessionRedirect } from './pinned-redirect.ts';
 import { SessionView } from './SessionView.tsx';
 import { MachineCompatNotice, MachineWatchProvider } from './MachineSwitcher.tsx';
+import { isMobilePath } from './mobile/redirect.ts';
 import { Sidebar } from './Sidebar.tsx';
 import { SidebarRail, useSidebarLayout } from './SidebarRail.tsx';
 import { StoreProvider, useStore } from './store.tsx';
@@ -189,7 +190,7 @@ export function App() {
             ne peuvent plus mettre à jour l'interface (React ignore les setState après démontage). Inutile de
             comparer apiBase() à celle du montage ; seuls les caches de module doivent inclure la machine dans leur clé. */}
         <StoreProvider key={machine ?? 'local'}>
-          {window.location.pathname === '/mobile' ? (
+          {isMobilePath(window.location.pathname) ? (
             <Suspense fallback={null}>
               <MobileShell />
             </Suspense>

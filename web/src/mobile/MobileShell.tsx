@@ -7,15 +7,17 @@
  * desktop prendrait la largeur du téléphone. La vue mobile lit l'écran par GET /api/sessions/:id/screen et écrit
  * par POST /api/sessions/:id/input, qui ne touchent pas à la taille.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { formatDateTime, sessionTitle } from '../format.ts';
-import { go, useRoute, type Route } from '../route.ts';
+import { MachineSwitcher } from '../MachineSwitcher.tsx';
+import { useRoute, type Route } from '../route.ts';
 import { useStore } from '../store.tsx';
+import { mobileBack, trackMobileHistory } from './back.ts';
 import { CouncilScreen } from './CouncilScreen.tsx';
 import { CouncilsTab } from './CouncilsTab.tsx';
 import { ProjectList } from './ProjectList.tsx';
 import { ProjectScreen } from './ProjectScreen.tsx';
-import { openFullVersion } from './redirect.ts';
+import { forgetFullVersion, openFullVersion } from './redirect.ts';
 import { SessionScreen } from './SessionScreen.tsx';
 import { TodoTab } from './TodoTab.tsx';
 import './mobile.css';
@@ -83,12 +85,19 @@ export function MobileShell() {
   const [homeTab, setHomeTab] = useState<HomeTab>('todo');
   const [fullVersionError, setFullVersionError] = useState<string | null>(null);
 
+  // Ouvrir la vue mobile annule un choix antérieur de la version complète : `/` redirige de nouveau ce téléphone.
+  // Un échec d'effacement est journalisé par writeStored ; le stockage qui le cause empêche aussi de relire le choix.
+  useEffect(() => {
+    forgetFullVersion();
+  }, []);
+
+  useEffect(() => trackMobileHistory(), []);
+
   return (
     <div className="m-app">
       <header className="m-topbar">
         {route.kind === 'home' ? null : (
-          // Remonte à l'accueil plutôt que history.back() : un lien Slack ouvert à froid n'a pas d'historique.
-          <button type="button" className="m-back" aria-label="Retour à l'accueil" onClick={() => go('#/')}>
+          <button type="button" className="m-back" aria-label="Retour" onClick={mobileBack}>
             ‹
           </button>
         )}
@@ -105,6 +114,8 @@ export function MobileShell() {
           Version complète
         </a>
       </header>
+      {/* Choisir une machine ouvre son projet épinglé, sinon son accueil ; rien ne s'affiche sans machine distante. */}
+      <MachineSwitcher />
       {fullVersionError === null ? null : (
         <p className="m-error" role="alert">
           Version complète indisponible : le choix n'a pas pu être enregistré ({fullVersionError}).

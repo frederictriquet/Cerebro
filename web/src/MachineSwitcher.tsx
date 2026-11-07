@@ -15,8 +15,9 @@ import { attentionCounts, plural } from './format.ts';
 import { openReconnectingSocket } from './reconnectingSocket.ts';
 import { goMachine, useMachine } from './route.ts';
 import { usePolling } from './polling.tsx';
-import { upsertById, useStore } from './store.tsx';
-import { parseEventsMessage, type Session } from '../../shared/types.ts';
+import { applyEventsMessage, lastKnownData, rememberData, type MachineData } from './machine-data.ts';
+import { useStore } from './store.tsx';
+import { parseEventsMessage } from '../../shared/types.ts';
 import type { Compatibility, MachinesInfo, RemoteVersionStatus, VersionInfo } from '../../shared/machine.ts';
 
 interface WatchState {
@@ -84,11 +85,12 @@ function hiddenTargets(remoteIds: string[], current: string | null): WatchTarget
 
 function startWatcher(target: WatchTarget, setState: Dispatch<SetStateAction<Record<string, WatchState>>>): () => void {
   let stopped = false;
-  let sessions: Session[] = [];
+  // Listes de la machine, tenues à jour pour s'afficher dès qu'on y bascule.
+  let data: MachineData | null = null;
 
   const publish = (online: boolean): void => {
     if (stopped) return;
-    const { total, waiting } = attentionCounts(sessions);
+    const { total, waiting } = attentionCounts(data?.sessions ?? []);
     setState((prev) => {
       const currentState = prev[target.key];
       if (
@@ -109,33 +111,21 @@ function startWatcher(target: WatchTarget, setState: Dispatch<SetStateAction<Rec
     },
     onMessage: (raw) => {
       const msg = parseEventsMessage(raw);
-      if (!msg) return;
+      if (!msg || stopped) return;
+      const next = applyEventsMessage(data, msg);
+      if (next !== data) {
+        data = next;
+        if (next !== null) rememberData(target.key, next);
+        publish(true);
+      }
       switch (msg.type) {
-        case 'snapshot':
-          sessions = msg.sessions;
-          publish(true);
-          break;
-        case 'session':
-          sessions = upsertById(sessions, msg.session, 'start');
-          publish(true);
-          break;
-        case 'session-deleted':
-          sessions = sessions.filter((item) => item.id !== msg.id);
-          publish(true);
-          break;
         case 'alert':
-          sessions = upsertById(sessions, msg.session, 'start');
-          publish(true);
           showAlertNotification(msg.session, target.machineId);
           if (!readMuted()) playAlert(msg.session.status);
           break;
         case 'findings-available':
-          sessions = upsertById(sessions, msg.session, 'start');
-          publish(true);
           showFindingsNotification(msg.session, target.machineId);
           if (!readMuted()) playAlert('idle');
-          break;
-        case 'projects':
           break;
       }
     },
@@ -258,7 +248,8 @@ export function MachineSwitcher() {
             title={title}
             onClick={(event) => {
               event.preventDefault();
-              goMachine(pill.id);
+              // Basculer ouvre le projet épinglé de la machine, lu au clic dans les listes que tient sa surveillance.
+              goMachine(pill.id, active ? undefined : lastKnownData(pill.id ?? 'local')?.projects);
             }}
           >
             <span className={`machine-dot${online ? ' on' : ''}`} aria-hidden="true" />

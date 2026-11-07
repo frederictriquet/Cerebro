@@ -1,8 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- The WebView keeps the cerebro_token cookie, which holds CEREBRO_BIND_TOKEN itself: no Android backup or
+         device transfer may copy it. allowBackup covers Android 11 and lower; from Android 12 on it only stops the
+         cloud backup, and dataExtractionRules excludes everything from both cloud backup and device transfer.
+         Lint's DataExtractionRules asks for fullBackupContent on Android 11 and lower, where allowBackup="false"
+         already disables every backup. -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        tools:ignore="DataExtractionRules"
+        tools:targetApi="31"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"

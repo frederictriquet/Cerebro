@@ -23,8 +23,8 @@ function Section({ id, title, sessions }: { id: string; title: string; sessions:
 
 /** Onglet « À traiter » de l'accueil : sessions de tous les projets qui attendent, puis celles en cours. */
 export function TodoTab() {
-  const { sessions, loaded } = useStore();
-  if (!loaded) return <p className="m-hint">Chargement…</p>;
+  const { sessions, hasData } = useStore();
+  if (!hasData) return <p className="m-hint">Chargement…</p>;
   const { awaiting, running } = todoSessions(sessions);
   if (awaiting.length === 0 && running.length === 0) return <p className="m-hint">Rien à traiter.</p>;
   return (

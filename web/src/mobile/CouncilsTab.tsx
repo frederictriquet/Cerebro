@@ -125,11 +125,11 @@ export function CouncilsTab() {
   const now = useNow();
   const [runs, setRuns] = useState<CouncilRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Suit l'avancement des councils en cours, sans événement temps réel.
+  // Suit l'avancement des councils en cours, sans événement temps réel, et relance un premier chargement en échec.
   const running = runs?.some((run) => run.status === 'running') ?? false;
   const fetchRuns = useCallback(() => listCouncils(), []);
   const load = usePolling(fetchRuns, 5000, {
-    enabled: running,
+    enabled: running || runs === null,
     immediate: false,
     onData: (list) => {
       setRuns(list);

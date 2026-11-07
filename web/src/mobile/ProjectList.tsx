@@ -4,8 +4,8 @@ import { useStore } from '../store.tsx';
 
 /** Onglet « Projets » : un tap ouvre la page du projet (sessions, lancement, backlog). */
 export function ProjectList() {
-  const { projects, sessions, tasks, loaded } = useStore();
-  if (!loaded) return <p className="m-hint">Chargement…</p>;
+  const { projects, sessions, tasks, hasData } = useStore();
+  if (!hasData) return <p className="m-hint">Chargement…</p>;
   if (projects.length === 0) return <p className="m-hint">Aucun projet : créez-le depuis la version complète.</p>;
   return (
     <ul className="m-list">

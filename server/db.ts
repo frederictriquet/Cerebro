@@ -69,6 +69,7 @@ interface ProjectRow {
   workspace_mode: WorkspaceMode;
   auto_push: number;
   regenerable_paths: string | null;
+  pinned: number;
   created_at: number;
 }
 
@@ -190,6 +191,7 @@ function projectFromRow(row: ProjectRow): Project {
     workspaceMode: row.workspace_mode ?? 'isolated',
     autoPush: row.auto_push === 1,
     regenerablePaths: row.regenerable_paths ? JSON.parse(row.regenerable_paths) : [],
+    pinned: row.pinned === 1,
   };
 }
 
@@ -427,6 +429,9 @@ export class CerebroDatabase {
     }
     this.addColumnIfMissing('projects', 'resolution_settings', 'TEXT');
     this.addColumnIfMissing('projects', 'regenerable_paths', 'TEXT');
+    this.addColumnIfMissing('projects', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
+    // Un seul projet épinglé par machine.
+    this.connection.exec('CREATE UNIQUE INDEX IF NOT EXISTS projects_pinned ON projects(pinned) WHERE pinned = 1');
     this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commits (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
     this.connection.exec(
       'CREATE TABLE IF NOT EXISTS automatic_commit_requests (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, scope TEXT NOT NULL, push INTEGER NOT NULL)',
@@ -675,6 +680,7 @@ export class CerebroDatabase {
       workspaceMode,
       autoPush: false,
       regenerablePaths: [],
+      pinned: false,
       createdAt: Date.now(),
     };
     this.connection
@@ -727,6 +733,19 @@ export class CerebroDatabase {
         id,
       );
     return next;
+  }
+
+  /**
+   * Épingle (ou désépingle) un projet ; épingler retire l'épingle de l'autre projet de la machine.
+   * Retourne la liste des projets, ou null si le projet est introuvable.
+   */
+  setProjectPinned(id: string, value: boolean): Project[] | null {
+    return this.transaction(() => {
+      if (this.getProject(id) === null) return null;
+      if (value) this.connection.prepare('UPDATE projects SET pinned = 0 WHERE pinned = 1 AND id != ?').run(id);
+      this.connection.prepare('UPDATE projects SET pinned = ? WHERE id = ?').run(value ? 1 : 0, id);
+      return this.listProjects();
+    });
   }
 
   // Réglages globaux de la machine, stockés en JSON par clé.

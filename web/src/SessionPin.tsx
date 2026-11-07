@@ -1,4 +1,5 @@
 import { useAsyncAction } from './async-action.ts';
+import { PinIcon } from './PinIcon.tsx';
 import { useStore } from './store.tsx';
 import type { Session } from '../../shared/types.ts';
 
@@ -28,23 +29,7 @@ export function SessionPin({ session, onError }: { session: Session; onError: (m
         disabled={busy}
         onChange={(event) => void change(event.target.checked)}
       />
-      <svg
-        width="18"
-        height="18"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M12 17v5" />
-        <path
-          d="M5 17h14v-1.8a2 2 0 0 0-1.1-1.8l-1.8-.9a2 2 0 0 1-1.1-1.8V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.7a2 2 0 0 1-1.1 1.8l-1.8.9A2 2 0 0 0 5 15.2Z"
-          fill={session.pinned ? 'currentColor' : 'none'}
-        />
-      </svg>
+      <PinIcon filled={session.pinned} />
     </label>
   );
 }

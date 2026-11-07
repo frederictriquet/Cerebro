@@ -105,6 +105,57 @@ test('partial hunks across ordered commits preserve preexisting staged hunks in 
     assert.ok(git(repo, 'show', ':file').includes('staged 25'));
     assert.ok(git(repo, 'show', ':file').includes('selected 1'));
   }));
+test('a tracked file deleted only in the worktree is committed as a deletion, alongside edits and new files', async () =>
+  fixture(async (repo) => {
+    rmSync(join(repo, 'other'));
+    writeFileSync(join(repo, 'file'), 'changed\n');
+    writeFileSync(join(repo, 'new'), 'new\n');
+    assert.equal(git(repo, 'diff', '--cached', '--name-only'), '');
+    const s = await planner.prepareCommit(repo);
+    const r = await planner.executeCommitPlan(
+      repo,
+      plan(s, [
+        { message: 'edit', selection: [one('file')] },
+        { message: 'delete and add', selection: [one('other'), one('new')] },
+      ]),
+    );
+    assert.equal(r.error, null, JSON.stringify(r));
+    assert.equal(r.commits.length, 2);
+    assert.equal(git(repo, 'ls-tree', '--name-only', 'HEAD'), 'file\nnew');
+    assert.equal(git(repo, 'ls-files', '--', 'other'), '');
+    assert.equal(git(repo, 'status', '--porcelain'), '');
+  }));
+test('committing a worktree deletion keeps unrelated staged content in the index', async () =>
+  fixture(async (repo) => {
+    writeFileSync(join(repo, 'staged'), 'base\n');
+    git(repo, 'add', 'staged');
+    git(repo, 'commit', '-qm', 'staged file');
+    writeFileSync(join(repo, 'staged'), 'staged\n');
+    git(repo, 'add', 'staged');
+    rmSync(join(repo, 'other'));
+    const s = await planner.prepareCommit(repo);
+    const r = await planner.executeCommitPlan(repo, plan(s, [{ message: 'delete', selection: [one('other')] }]));
+    assert.equal(r.error, null, JSON.stringify(r));
+    assert.equal(git(repo, 'ls-tree', '--name-only', 'HEAD'), 'file\nstaged');
+    assert.equal(git(repo, 'show', 'HEAD:staged'), 'base');
+    assert.equal(git(repo, 'show', ':staged'), 'staged');
+    assert.equal(git(repo, 'ls-files', '--', 'other'), '');
+  }));
+test('a worktree deletion of a file whose staged version differs from HEAD is refused without touching anything', async () =>
+  fixture(async (repo) => {
+    writeFileSync(join(repo, 'other'), 'staged\n');
+    git(repo, 'add', 'other');
+    rmSync(join(repo, 'other'));
+    const index = readFileSync(join(repo, '.git/index'));
+    const before = git(repo, 'rev-parse', 'HEAD');
+    const s = await planner.prepareCommit(repo);
+    const r = await planner.executeCommitPlan(repo, plan(s, [{ message: 'delete', selection: [one('other')] }]));
+    assert.match(r.error, /Conflit avec l’index préexistant : other/);
+    assert.equal(r.commits.length, 0);
+    assert.equal(git(repo, 'rev-parse', 'HEAD'), before);
+    assert.deepEqual(readFileSync(join(repo, '.git/index')), index);
+    assert.equal(git(repo, 'show', ':other'), 'staged');
+  }));
 test('stale worktree, index, or HEAD cannot mutate anything', async () =>
   fixture(async (repo) => {
     writeFileSync(join(repo, 'file'), 'planned\n');

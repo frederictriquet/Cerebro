@@ -135,8 +135,13 @@ async function indexHash(path: string): Promise<string> {
     }),
   );
 }
-/** Reads and hashes every Git-visible file: the costliest check, kept to the points where the worktree may have moved. */
-const manifestHash = (manifest: Record<string, string>): string => hash(JSON.stringify(manifest));
+/**
+ * Reads and hashes every Git-visible file: the costliest check, kept to the points where the worktree may have moved.
+ * A tracked file missing from disk counts as absent, like an untracked one: committing its deletion untracks it
+ * without changing the worktree.
+ */
+const manifestHash = (manifest: Record<string, string>): string =>
+  hash(JSON.stringify(Object.entries(manifest).filter(([, signature]) => signature !== 'missing')));
 async function workHash(path: string): Promise<string> {
   return manifestHash(await workspaceManifest(path));
 }
@@ -275,7 +280,9 @@ export function parseCommitPlan(value: unknown): CommitPlan {
 }
 
 /** Merge selected commit tree into the preexisting index, preserving staged edits.
- * Text conflicts are refused before committing; no heuristic attribution is used. */
+ * Text conflicts are refused before committing. Beyond Git's own trivial rules, the only resolutions are the
+ * selection taking a new file whole and `--aggressive` removals: a file deleted on one side and unchanged on the
+ * other (a worktree deletion committed while the index still holds HEAD's version), or deleted on both sides. */
 async function mergedIndex(
   path: string,
   base: string,
@@ -284,7 +291,7 @@ async function mergedIndex(
   index: string,
   dir: string,
 ): Promise<void> {
-  await git(path, ['read-tree', '-m', base, selected, staged], { index });
+  await git(path, ['read-tree', '-m', '--aggressive', base, selected, staged], { index });
   const unmerged = splitZ(await git(path, ['ls-files', '-u', '-z'], { index }));
   const groups = new Map<string, { mode: string; oid: string; stage: string }[]>();
   for (const record of unmerged) {
@@ -307,11 +314,6 @@ async function mergedIndex(
       entries.every((e) => e.mode === '100644' || e.mode === '100755')
     ) {
       await git(path, ['update-index', '--add', '--cacheinfo', selectedEntry.mode, selectedEntry.oid, file], { index });
-      continue;
-    }
-    // Deleted on both sides (the other half of a staged rename).
-    if (entries.length === 1 && entries[0].stage === '1') {
-      await git(path, ['update-index', '--force-remove', '--', file], { index });
       continue;
     }
     if (

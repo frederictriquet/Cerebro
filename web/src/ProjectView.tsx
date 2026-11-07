@@ -18,6 +18,7 @@ import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href } from './route.ts';
 import { useNow, usePolling } from './polling.tsx';
 import { PathInput } from './PathInput.tsx';
+import { ProjectPin } from './ProjectPin.tsx';
 import { useStore } from './store.tsx';
 import { ErrorBoundary } from './ErrorBoundary.tsx';
 import { TabBar, tabIds, useStoredTab } from './TabBar.tsx';
@@ -301,6 +302,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
                 ) : null}
                 {project.name}
               </h1>
+              <ProjectPin project={project} onError={setError} />
               <span className="path">{project.path}</span>
               <SlackLead key={`slack-${project.id}`} projectId={project.id} />
               <WorkspaceModeControl key={`workspace-${project.id}`} project={project} />

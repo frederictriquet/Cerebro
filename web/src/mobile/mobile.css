@@ -74,6 +74,22 @@
   font-size: 14px;
 }
 
+/* Sélecteur de machines du desktop (styles.css), en bandeau sous la barre, pastilles agrandies pour le doigt. */
+.m-app .machine-switcher {
+  flex: 0 0 auto;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.m-app .machine-pill {
+  min-height: 36px;
+  padding: 0 12px 0 10px;
+  font-size: 14px;
+}
+
 .m-main {
   display: flex;
   flex: 1 1 auto;
@@ -252,6 +268,21 @@
 
 .m-button:disabled {
   opacity: 0.6;
+}
+
+.m-pin {
+  margin-bottom: 16px;
+}
+
+.m-pin-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.m-pin-button.active {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .m-form-error {

@@ -1,9 +1,20 @@
 import { readStored, writeStored } from '../storage.ts';
 
-/** Choix « version complète » fait sur ce navigateur : la page d'accueil ne redirige plus vers /mobile. */
+/**
+ * Choix « version complète » fait sur ce navigateur : la page d'accueil ne redirige plus vers /mobile, jusqu'à la
+ * prochaine ouverture de la vue mobile (`forgetFullVersion`).
+ */
 export const FULL_VERSION_KEY = 'cerebro.fullVersion';
 
 const PHONE_QUERY = '(max-width: 800px) and (pointer: coarse)';
+
+/**
+ * Chemin de la vue mobile, barres finales comprises : le serveur sert aussi index.html pour `/mobile/`, et y
+ * monter le desktop ferait monter `Term`, qui imposerait la taille du téléphone au PTY partagé.
+ */
+export function isMobilePath(pathname: string): boolean {
+  return pathname.replace(/\/+$/, '') === '/mobile';
+}
 
 /**
  * Sur un écran tactile étroit, remplace `/` par la vue mobile en gardant le hash : un lien d'alerte Slack
@@ -27,4 +38,13 @@ export function openFullVersion(): string | null {
   if (error !== null) return error;
   window.location.assign(`/${window.location.hash}`);
   return null;
+}
+
+/**
+ * Efface le choix de la version complète : ouvrir la vue mobile vaut choix du mobile. Sinon un lien d'alerte Slack
+ * `/#/s/<id>` ouvrirait pour toujours le desktop sur le téléphone, et `Term` imposerait sa largeur au PTY partagé.
+ * Renvoie le message d'erreur si le stockage échoue.
+ */
+export function forgetFullVersion(): string | null {
+  return writeStored(FULL_VERSION_KEY, null);
 }

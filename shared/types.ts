@@ -274,6 +274,8 @@ export interface Project {
    * the copy deletes them like the regenerable folders at its root.
    */
   regenerablePaths: string[];
+  /** Projet ouvert en basculant sur cette machine depuis le sélecteur ; un seul par machine. */
+  pinned: boolean;
   createdAt: number;
 }
 
@@ -690,6 +692,8 @@ export function parseProject(v: unknown): Project | null {
     // Absent des serveurs antérieurs au push automatique.
     autoPush: v.autoPush === true,
     regenerablePaths,
+    // Absent des serveurs antérieurs à l'épingle des projets.
+    pinned: v.pinned === true,
     createdAt,
   };
 }

@@ -1767,7 +1767,8 @@ label.block {
 }
 
 .project-title-row .slack-lead,
-.project-title-row .workspace-mode {
+.project-title-row .workspace-mode,
+.project-title-row .session-toggle {
   margin: 0;
   align-self: center;
 }

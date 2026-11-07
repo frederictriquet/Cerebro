@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { Project } from '../../shared/types.ts';
 
 export type Route =
   | { kind: 'home' }
@@ -66,8 +67,18 @@ export function go(path: string): void {
   assignHash(href(path));
 }
 
-export function goMachine(id: string | null): void {
-  assignHash(id === null || id === 'local' ? '#/' : `#/m/${id}/`);
+/**
+ * Hash ouvert en basculant sur la machine `id` (null : locale) : son projet épinglé, sinon son accueil.
+ * `projects` : dernier état connu de la machine, absent tant que sa surveillance n'a pas reçu de snapshot.
+ */
+export function machineHash(id: string | null, projects?: readonly Pick<Project, 'id' | 'pinned'>[]): string {
+  const home = id === null || id === 'local' ? '#/' : `#/m/${id}/`;
+  const pinned = projects?.find((project) => project.pinned);
+  return pinned === undefined ? home : `${home}p/${encodeURIComponent(pinned.id)}`;
+}
+
+export function goMachine(id: string | null, projects?: readonly Pick<Project, 'id' | 'pinned'>[]): void {
+  assignHash(machineHash(id, projects));
 }
 
 // replaceState ne déclenche pas hashchange : cet événement resynchronise les hooks du routeur

@@ -14,7 +14,7 @@ const HOME_TABS = ['sessions', 'worktrees', 'councils', 'stats'] as const;
 type HomeTab = (typeof HOME_TABS)[number];
 
 export function HomeView() {
-  const { projects, sessions } = useStore();
+  const { projects, sessions, hasData } = useStore();
   const now = useNow();
   const [error, setError] = useState<string | null>(null);
   const [tab, selectTab] = useStoredTab<HomeTab>('cerebro.home-tab', HOME_TABS);
@@ -44,7 +44,7 @@ export function HomeView() {
         </div>
       </header>
 
-      {projects.length === 0 ? (
+      {hasData && projects.length === 0 ? (
         <NewProjectForm
           className="card home-create"
           heading="Créer un projet"

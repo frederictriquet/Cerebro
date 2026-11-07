@@ -14,7 +14,9 @@ import {
   writeMuted,
 } from './notify.ts';
 import { attentionCounts, errorMessage } from './format.ts';
+import { lastKnownData, rememberData, sortSessions, upsertById, upsertSession } from './machine-data.ts';
 import { openReconnectingSocket } from './reconnectingSocket.ts';
+import { parseMachine } from './route.ts';
 import {
   parseAgentInfoList,
   parseEpic,
@@ -53,6 +55,8 @@ export interface Store {
   connected: boolean;
   // Vrai dès le premier snapshot : les listes reflètent alors le serveur.
   loaded: boolean;
+  // Vrai dès que les listes montrent un état de la machine : son dernier état connu dans cette page, sinon le snapshot.
+  hasData: boolean;
   // Intervalle de relecture des runs d'epic et de commande : null tant que la connexion courante diffuse
   // leurs événements (ou que son snapshot n'est pas arrivé), RUN_FALLBACK_POLL_MS face à une instance antérieure.
   runPollMs: number | null;
@@ -76,6 +80,7 @@ export interface Store {
   deleteSession: (id: string) => Promise<void>;
   setSessionProtected: (id: string, value: boolean) => Promise<void>;
   setSessionPinned: (id: string, value: boolean) => Promise<void>;
+  setProjectPinned: (id: string, value: boolean) => Promise<void>;
   purgeProjectSessions: (projectId: string) => Promise<void>;
   /** Supprime les sessions non protégées d'un epic. */
   deleteEpicSessions: (epicId: string) => Promise<void>;
@@ -150,36 +155,20 @@ export function useRunEvents(listener: (event: RunEvent) => void): void {
   }, [current]);
 }
 
-// L'activité (statut, titre, attention) ne déplace pas une session.
-function sortSessions(list: Session[]): Session[] {
-  return [...list].sort((a, b) => b.createdAt - a.createdAt);
-}
-
-/** Remplace l'élément de même id, sinon l'ajoute en tête (start) ou en fin de liste. */
-export function upsertById<T extends { id: string }>(
-  list: readonly T[],
-  item: T,
-  insert: 'start' | 'end' = 'end',
-): T[] {
-  const i = list.findIndex((existing) => existing.id === item.id);
-  if (i === -1) return insert === 'start' ? [item, ...list] : [...list, item];
-  const next = list.slice();
-  next[i] = item;
-  return next;
-}
-
-function upsertSession(list: Session[], session: Session): Session[] {
-  return sortSessions(upsertById(list, session, 'start'));
-}
-
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [epics, setEpics] = useState<Epic[]>([]);
+  // Lue une seule fois : App remonte le store à chaque changement de machine. Suivre le hash laisserait le store
+  // sortant enregistrer ses listes sous la clé de la machine suivante.
+  const [machineKey] = useState(() => parseMachine(window.location.hash) ?? 'local');
+  // Dernier état connu de la machine, affiché sans attendre son snapshot.
+  const [cached] = useState(() => lastKnownData(machineKey));
+  const [projects, setProjects] = useState<Project[]>(cached?.projects ?? []);
+  const [sessions, setSessions] = useState<Session[]>(cached?.sessions ?? []);
+  const [tasks, setTasks] = useState<Task[]>(cached?.tasks ?? []);
+  const [epics, setEpics] = useState<Epic[]>(cached?.epics ?? []);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [connected, setConnected] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [hasData, setHasData] = useState(cached !== undefined);
   // null : snapshot de la connexion courante pas encore reçu.
   const [runEvents, setRunEvents] = useState<boolean | null>(null);
   const [peersVersion, setPeersVersion] = useState(0);
@@ -204,6 +193,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => armNotificationPermission(), []);
+
+  // Pas avant les premières données : des listes vides passeraient pour l'état de la machine.
+  useEffect(() => {
+    if (hasData) rememberData(machineKey, { projects, sessions, tasks, epics });
+  }, [machineKey, hasData, projects, sessions, tasks, epics]);
 
   useEffect(() => {
     const { total, waiting, pendingFindings } = attentionCounts(sessions);
@@ -257,6 +251,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             setEpics(msg.epics);
             setRunEvents(msg.runEvents);
             setLoaded(true);
+            setHasData(true);
             break;
           case 'session':
             setSessions((list) => upsertSession(list, msg.session));
@@ -455,6 +450,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  const setProjectPinned = useCallback(async (id: string, value: boolean): Promise<void> => {
+    // Le serveur renvoie la liste entière : l'épingle précédente de la machine tombe aussi.
+    // Une réponse qui n'est pas une liste échoue au lieu de vider la barre latérale.
+    const parse = (raw: unknown): Project[] | null => (Array.isArray(raw) ? parseProjectList(raw) : null);
+    const list = await apiParsed(apiPath`/api/projects/${id}/pin`, parse, {
+      method: 'PATCH',
+      body: JSON.stringify({ pinned: value }),
+    });
+    setProjects(list);
+  }, []);
+
   const renameSession = useCallback(async (id: string, title: string): Promise<Session> => {
     const session = await apiParsed(apiPath`/api/sessions/${id}`, parseSession, {
       method: 'PATCH',
@@ -616,6 +622,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       watchAgents,
       connected,
       loaded,
+      hasData,
       runPollMs,
       peersVersion,
       slackWatchesVersion,
@@ -633,6 +640,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteSession,
       setSessionProtected,
       setSessionPinned,
+      setProjectPinned,
       purgeProjectSessions,
       deleteEpicSessions,
       markSeen,
@@ -665,6 +673,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       watchAgents,
       connected,
       loaded,
+      hasData,
       runPollMs,
       peersVersion,
       slackWatchesVersion,
@@ -682,6 +691,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteSession,
       setSessionProtected,
       setSessionPinned,
+      setProjectPinned,
       purgeProjectSessions,
       deleteEpicSessions,
       markSeen,

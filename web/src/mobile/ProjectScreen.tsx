@@ -1,7 +1,9 @@
 import { useState } from 'react';
+import { useAsyncAction } from '../async-action.ts';
 import { isAwaiting } from '../format.ts';
+import { PinIcon } from '../PinIcon.tsx';
 import { useStore } from '../store.tsx';
-import type { Session } from '../../../shared/types.ts';
+import type { Project, Session } from '../../../shared/types.ts';
 import { LaunchForm } from './LaunchForm.tsx';
 import { MobileBacklog } from './MobileBacklog.tsx';
 import { SessionCard } from './SessionCard.tsx';
@@ -18,7 +20,34 @@ function SessionCards({ sessions }: { sessions: Session[] }) {
   );
 }
 
-/** Page projet `#/p/<id>` : sessions, lancement et backlog. */
+/** Épingle du projet : basculer sur sa machine depuis le sélecteur ouvre ce projet. */
+function PinButton({ project }: { project: Project }) {
+  const { setProjectPinned } = useStore();
+  const { run, busy, error } = useAsyncAction((value: boolean) => setProjectPinned(project.id, value), {
+    fallback: 'Modification de l’épingle impossible',
+  });
+  return (
+    <div className="m-pin">
+      <button
+        type="button"
+        className={`m-button m-pin-button${project.pinned ? ' active' : ''}`}
+        aria-pressed={project.pinned}
+        disabled={busy}
+        onClick={() => void run(!project.pinned)}
+      >
+        <PinIcon filled={project.pinned} />
+        Épingler ce projet
+      </button>
+      {error === null ? null : (
+        <p className="m-form-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Page projet `#/p/<id>` : épingle, sessions, lancement et backlog. */
 export function ProjectScreen({ projectId }: { projectId: string }) {
   const { projects, sessions, loaded } = useStore();
   const [showEnded, setShowEnded] = useState(false);
@@ -37,6 +66,7 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
 
   return (
     <div className="m-content">
+      <PinButton project={project} />
       <section className="m-section" aria-labelledby="m-sessions-title">
         <h2 className="m-section-title" id="m-sessions-title">
           Sessions
