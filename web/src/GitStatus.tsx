@@ -11,6 +11,8 @@ export function GitStatus({ projectId }: { projectId: string }) {
   const [expanded, setExpanded] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const previewId = useId();
+  const [filesExpanded, setFilesExpanded] = useState(false);
+  const filesId = useId();
 
   const load = useCallback(async (): Promise<GitInfo> => {
     const raw = await api(`/api/projects/${projectId}/git${expanded ? '?commits=true' : ''}`);
@@ -43,6 +45,7 @@ export function GitStatus({ projectId }: { projectId: string }) {
   const count = git.ahead ?? 0;
   const preview = git.pendingCommits;
   const error = git.pendingCommitsError ?? previewError;
+  const dirtyLabel = plural(git.dirty, 'fichier modifié', 'fichiers modifiés', { zeroPlural: true });
   return (
     <>
       <div className="git-line">
@@ -50,11 +53,26 @@ export function GitStatus({ projectId }: { projectId: string }) {
         <GitActions
           projectId={projectId}
           git={git}
+          changes={
+            git.dirty > 0 ? (
+              <button
+                type="button"
+                className="git-toggle git-dirty"
+                aria-expanded={filesExpanded}
+                aria-controls={filesId}
+                onClick={() => setFilesExpanded((value) => !value)}
+              >
+                <span aria-hidden="true">{filesExpanded ? '▾' : '▸'}</span> {dirtyLabel}
+              </button>
+            ) : (
+              <span className="meta">{dirtyLabel}</span>
+            )
+          }
           pendingCommits={
             count > 0 ? (
               <button
                 type="button"
-                className="git-ahead-toggle"
+                className="git-toggle"
                 aria-expanded={expanded}
                 aria-controls={previewId}
                 onClick={() => {
@@ -68,8 +86,9 @@ export function GitStatus({ projectId }: { projectId: string }) {
           }
         />
       </div>
+      {filesExpanded && git.dirty > 0 ? <DirtyFiles id={filesId} git={git} /> : null}
       {expanded && count > 0 ? (
-        <section id={previewId} className="git-pending-preview" aria-label="Commits à pousser">
+        <section id={previewId} className="git-preview" aria-label="Commits à pousser">
           {error ? (
             <p className="form-error" role="alert">
               {error}
@@ -102,5 +121,36 @@ export function GitStatus({ projectId }: { projectId: string }) {
         </section>
       ) : null}
     </>
+  );
+}
+
+/** Fichiers comptés comme modifiés, dans l'ordre de `git status` ; un dossier non suivi y figure une fois (`dossier/`). */
+export function DirtyFileList({ git, noteClassName }: { git: GitInfo; noteClassName: string }) {
+  const files = git.dirtyFiles;
+  if (!files) return <p className={noteClassName}>Liste indisponible sur cette machine.</p>;
+  return (
+    <>
+      <ul className="git-file-list">
+        {/* Un même chemin peut figurer deux fois (`git rm --cached` : supprimé de l'index et non suivi). */}
+        {files.paths.map((path, index) => (
+          <li key={`${index}:${path}`}>
+            <code>{path}</code>
+          </li>
+        ))}
+      </ul>
+      {files.truncated ? (
+        <p className={noteClassName}>
+          Les {files.paths.length} premiers fichiers sont affichés sur {git.dirty}.
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+function DirtyFiles({ id, git }: { id: string; git: GitInfo }) {
+  return (
+    <section id={id} className="git-preview" aria-label="Fichiers modifiés">
+      <DirtyFileList git={git} noteClassName="meta" />
+    </section>
   );
 }

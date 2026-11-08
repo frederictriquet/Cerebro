@@ -7,7 +7,7 @@ import { useStore } from './store.tsx';
 import { pushBlockedReason, type GitInfo } from '../../shared/types.ts';
 import './automatic-commits.css';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
-import { errorMessage, plural } from './format.ts';
+import { errorMessage } from './format.ts';
 import { usePolling } from './polling.tsx';
 import {
   parseOptionalPushOperation,
@@ -23,10 +23,13 @@ import {
 export function GitActions({
   projectId,
   git,
+  changes,
   pendingCommits,
 }: {
   projectId: string;
   git: GitInfo;
+  // Compteur des fichiers modifiés, fourni par GitStatus qui en gère le dépliage.
+  changes: ReactNode;
   pendingCommits: ReactNode;
 }) {
   const { projects } = useStore();
@@ -39,9 +42,7 @@ export function GitActions({
   return (
     <>
       <span className="git-actions" role="group" aria-label="Changements à commiter">
-        <span className={hasChanges ? 'git-dirty' : 'meta'}>
-          {plural(git.dirty, 'fichier modifié', 'fichiers modifiés', { zeroPlural: true })}
-        </span>
+        {changes}
         <button
           type="button"
           className="btn"

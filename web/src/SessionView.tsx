@@ -380,13 +380,10 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const session = sessions.find((s) => s.id === sessionId);
   const project = session ? projects.find((p) => p.id === session.projectId) : undefined;
   const [error, setError] = useState<string | null>(null);
-  const { run: act } = useAsyncAction(
-    async (fn: () => Promise<unknown>, thenGo?: string) => {
-      await fn();
-      if (thenGo !== undefined) go(thenGo);
-    },
-    { fallback: 'Action impossible', onError: setError },
-  );
+  const { run: act } = useAsyncAction((fn: () => Promise<unknown>) => fn(), {
+    fallback: 'Action impossible',
+    onError: setError,
+  });
   const now = useNow();
   const live = session !== undefined && session.status !== 'exited';
   const termApi = useRef<TermApi | null>(null);
@@ -566,7 +563,16 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               explainDelete
               onKill={() => void act(() => killSession(session.id))}
               onResume={() => void act(() => resumeSession(session.id))}
-              onDelete={() => void act(() => deleteSession(session.id), project ? `#/p/${project.id}` : '#/')}
+              onDelete={() => {
+                const deletedId = session.id;
+                const projectHome = project ? `#/p/${project.id}` : '#/';
+                void act(async () => {
+                  await deleteSession(deletedId);
+                  // Pendant le délai de rétractation, l'utilisateur a pu ouvrir une autre page : il y reste.
+                  const route = parseHash(window.location.hash);
+                  if (route.kind === 'session' && route.sessionId === deletedId) go(projectHome);
+                });
+              }}
             />
           </div>
         </div>

@@ -80,8 +80,10 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
         )}
         {showEnded ? <SessionCards sessions={ended} /> : null}
       </section>
-      <ProjectGit key={project.id} project={project} />
-      <LaunchForm key={project.id} project={project} />
+      {/* Remontés à chaque projet. Des clés distinctes entre frères : une clé partagée laissait la section Git du
+          projet précédent affichée après un changement de projet. */}
+      <ProjectGit key={`git:${project.id}`} project={project} />
+      <LaunchForm key={`launch:${project.id}`} project={project} />
       <MobileBacklog project={project} />
     </div>
   );

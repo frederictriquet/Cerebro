@@ -374,6 +374,8 @@ export interface GitInfo {
   error?: string;
   branch: string | null;
   dirty: number;
+  // Chemins comptés par `dirty`, plafonnés ; absent sur une instance antérieure.
+  dirtyFiles?: { paths: string[]; truncated: boolean };
   ahead: number | null;
   hasCommits: boolean;
   hasUpstream: boolean;
@@ -904,11 +906,21 @@ export function parseGitInfo(v: unknown): GitInfo | null {
     pendingCommits = { upstream: preview.upstream, truncated: preview.truncated, commits };
   }
   const pendingCommitsError = typeof v.pendingCommitsError === 'string' ? v.pendingCommitsError : undefined;
+  // Une liste mal formée est ignorée : le compteur et le reste de l'état Git restent affichés.
+  const files = v.dirtyFiles;
+  const dirtyFiles =
+    isRecord(files) &&
+    typeof files.truncated === 'boolean' &&
+    Array.isArray(files.paths) &&
+    files.paths.every((path) => typeof path === 'string')
+      ? { paths: files.paths as string[], truncated: files.truncated }
+      : undefined;
   return {
     repository,
     ...(error ? { error } : {}),
     branch,
     dirty: v.dirty,
+    ...(dirtyFiles ? { dirtyFiles } : {}),
     ahead,
     hasCommits,
     hasUpstream,

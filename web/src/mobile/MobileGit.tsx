@@ -3,12 +3,13 @@
  * GitActions) ; les infobulles du desktop deviennent du texte visible, un téléphone n'affiche pas les `title`.
  * Code review et aperçu des commits à pousser restent sur la version complète.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useId, useState } from 'react';
 import { api, apiPath } from '../api.ts';
 import { useAsyncAction } from '../async-action.ts';
 import { AutomaticCommitDialog } from '../AutomaticCommitDialog.tsx';
 import { errorMessage, plural } from '../format.ts';
 import { PushDialog, useSessionGitContext } from '../GitActions.tsx';
+import { DirtyFileList } from '../GitStatus.tsx';
 import { usePolling } from '../polling.tsx';
 import { useStore } from '../store.tsx';
 import { parseGitInfo, pushBlockedReason, type GitInfo, type Project, type Session } from '../../../shared/types.ts';
@@ -54,6 +55,8 @@ export function ProjectGit({ project }: { project: Project }) {
   const [git, setGit] = useState<GitInfo | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [open, setOpen] = useState<'single' | 'atomic' | 'push' | null>(null);
+  const [filesExpanded, setFilesExpanded] = useState(false);
+  const filesId = useId();
   const fetcher = useCallback(() => fetchGit(project.id), [project.id]);
   const refresh = usePolling(fetcher, GIT_POLL_MS, {
     onData: (value) => {
@@ -88,6 +91,7 @@ export function ProjectGit({ project }: { project: Project }) {
     body = <p className="m-hint">Pas un dépôt git.</p>;
   } else {
     const hasChanges = git.dirty > 0;
+    const dirtyLabel = plural(git.dirty, 'fichier modifié', 'fichiers modifiés', { zeroPlural: true });
     const ahead = git.ahead ?? 0;
     const pushBlocked = pushBlockedReason(git);
     const reasons = [hasChanges ? null : 'Rien à commiter.', pushBlocked === null ? null : `${pushBlocked}.`].filter(
@@ -97,12 +101,27 @@ export function ProjectGit({ project }: { project: Project }) {
       <>
         <div className="m-git-state">
           <span className="pill">{git.branch ?? 'HEAD détachée'}</span>
-          <span className={hasChanges ? 'git-dirty' : undefined}>
-            {plural(git.dirty, 'fichier modifié', 'fichiers modifiés', { zeroPlural: true })}
-          </span>
+          {hasChanges ? (
+            <button
+              type="button"
+              className="m-git-files-toggle git-dirty"
+              aria-expanded={filesExpanded}
+              aria-controls={filesId}
+              onClick={() => setFilesExpanded((value) => !value)}
+            >
+              <span aria-hidden="true">{filesExpanded ? '▾' : '▸'}</span> {dirtyLabel}
+            </button>
+          ) : (
+            <span>{dirtyLabel}</span>
+          )}
           {ahead > 0 ? <span>{plural(ahead, 'commit')} à pousser</span> : null}
           {git.branch !== null && !git.hasUpstream ? <span>pas d’upstream</span> : null}
         </div>
+        {filesExpanded && hasChanges ? (
+          <section id={filesId} className="m-git-files" aria-label="Fichiers modifiés">
+            <DirtyFileList git={git} noteClassName="m-hint" />
+          </section>
+        ) : null}
         {readError === null ? null : <p className="m-form-error">Actualisation impossible : {readError}</p>}
         <div className="m-git-actions">
           <button type="button" className="m-button" disabled={!hasChanges} onClick={() => setOpen('single')}>

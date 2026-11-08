@@ -376,6 +376,27 @@
   font-size: 13px;
 }
 
+.m-git-files-toggle {
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.m-git-files {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.m-git-files .m-hint {
+  margin: 6px 0 0;
+}
+
 .m-git-actions {
   display: flex;
   flex-wrap: wrap;

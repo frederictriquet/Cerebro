@@ -48,7 +48,10 @@ export function SessionActions({
           Reprendre
         </button>
       ) : null}
+      {/* Clé : changer de session pendant un délai de suppression ne reporte pas le compte à rebours
+          sur la nouvelle ; la suppression demandée part quand même à l'échéance. */}
       <DelayedActionButton
+        key={session.id}
         disabled={session.protected}
         title={session.protected ? SESSION_PROTECTED_HINT : deleteHint}
         onAction={onDelete}

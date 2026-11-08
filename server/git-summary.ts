@@ -1,6 +1,7 @@
 import { git as runGit, parseStatusZ } from './git.ts';
 
 const PREVIEW_LIMIT = 50;
+const DIRTY_FILES_LIMIT = 200;
 // git.ts sets LC_ALL=C: Git's messages stay in English so that "not a git repository" can be recognized.
 const git = async (path: string, args: string[]): Promise<string> => (await runGit(path, args)).trimEnd();
 const message = (error: unknown): string =>
@@ -26,6 +27,8 @@ export interface GitSummary {
   error?: string;
   branch: string | null;
   dirty: number;
+  /** Paths counted by `dirty`, the first DIRTY_FILES_LIMIT of them; an untracked folder is one `folder/` entry. */
+  dirtyFiles: { paths: string[]; truncated: boolean };
   ahead: number | null;
   hasCommits: boolean;
   hasUpstream: boolean;
@@ -47,6 +50,7 @@ export async function gitSummary(path: string, includeCommits = false): Promise<
     repository: false,
     branch: null,
     dirty: 0,
+    dirtyFiles: { paths: [], truncated: false },
     ahead: 0,
     hasCommits: false,
     hasUpstream: false,
@@ -59,10 +63,12 @@ export async function gitSummary(path: string, includeCommits = false): Promise<
       git(path, ['rev-parse', '--verify', 'HEAD']).catch(() => null),
       git(path, ['rev-parse', '--verify', '@{upstream}']).catch(() => null),
     ]);
+    const paths = parseStatusZ(status);
     const result: GitSummary = {
       repository: true,
       branch: branch || null,
-      dirty: parseStatusZ(status).length,
+      dirty: paths.length,
+      dirtyFiles: { paths: paths.slice(0, DIRTY_FILES_LIMIT), truncated: paths.length > DIRTY_FILES_LIMIT },
       ahead: head ? null : 0,
       hasCommits: head !== null,
       hasUpstream: upstream !== null,

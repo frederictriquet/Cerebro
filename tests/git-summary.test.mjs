@@ -67,6 +67,7 @@ test('unpushed preview uses the upstream range, shows newest first, and preserve
   const summary = parseGitInfo(await gitSummary(repo, true));
   assert.equal(summary.ahead, 3);
   assert.equal(summary.dirty, 2);
+  assert.deepEqual(summary.dirtyFiles, { paths: ['file', 'new'], truncated: false });
   assert.equal(summary.pendingCommits.upstream, 'origin/main');
   assert.deepEqual(
     summary.pendingCommits.commits.map((c) => c.hash),
@@ -126,6 +127,7 @@ test('missing repository, unborn branch and missing upstream never invent commit
     repository: true,
     branch: 'main',
     dirty: 0,
+    dirtyFiles: { paths: [], truncated: false },
     ahead: 0,
     hasCommits: false,
     hasUpstream: false,
@@ -144,6 +146,27 @@ test('missing repository, unborn branch and missing upstream never invent commit
     hasCommits: true,
     hasUpstream: true,
   });
+});
+
+test('dirty file list names each counted path once, unquoted, and a malformed list does not hide the summary', async () => {
+  const repo = fixture();
+  base(repo);
+  writeFileSync(join(repo, 'à renommer'), 'contenu\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-m', 'Ajout');
+  git(repo, 'mv', 'à renommer', 'renommé "ici"');
+  writeFileSync(join(repo, 'file'), 'modifié\n');
+  mkdirSync(join(repo, 'dossier'));
+  writeFileSync(join(repo, 'dossier', 'a'), '');
+  writeFileSync(join(repo, 'dossier', 'b'), '');
+  const summary = parseGitInfo(await gitSummary(repo));
+  assert.equal(summary.dirty, 3);
+  assert.deepEqual(summary.dirtyFiles, { paths: ['file', 'renommé "ici"', 'dossier/'], truncated: false });
+  const { dirtyFiles: _, ...older } = summary;
+  assert.equal(parseGitInfo(older).dirtyFiles, undefined); // Older servers send no list.
+  const malformed = parseGitInfo({ ...summary, dirtyFiles: { paths: [1], truncated: false } });
+  assert.equal(malformed.dirty, 3);
+  assert.equal(malformed.dirtyFiles, undefined);
 });
 
 test('detached HEAD disables Push with an explanation, even with commits and no upstream', async () => {
@@ -179,6 +202,9 @@ test('status larger than the former 1 MiB buffer is counted, and an unreadable r
   assert.equal(big.error, undefined);
   assert.equal(big.branch, 'main');
   assert.equal(big.dirty, files);
+  assert.equal(big.dirtyFiles.paths.length, 200);
+  assert.equal(big.dirtyFiles.truncated, true);
+  assert.equal(big.dirtyFiles.paths[0], `untracked/000000-${'x'.repeat(200)}`);
   writeFileSync(join(repo, '.git/index'), 'corrompu');
   const broken = await gitSummary(repo, true);
   assert.equal(broken.repository, true);
