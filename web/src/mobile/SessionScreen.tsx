@@ -1,7 +1,8 @@
 /*
  * Écran `#/s/<id>` de la vue mobile. Ne monte jamais Term.tsx (voir MobileShell.tsx) : l'écran est lu par
- * GET /api/sessions/:id/screen et les touches partent par POST /api/sessions/:id/input, sans toucher à la taille
- * du PTY partagé avec le desktop.
+ * GET /api/sessions/:id/screen et les touches partent par POST /api/sessions/:id/input. Le PTY prend la taille
+ * du téléphone par POST /api/sessions/:id/resize à l'ouverture, au retour au premier plan, à chaque envoi et
+ * quand le cadre change de largeur ; le desktop la reprend dès qu'on y clique ou tape.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { AgentLabel } from '../AgentLabel.tsx';
@@ -25,6 +26,11 @@ const REFRESH_AFTER_SEND_MS = 250;
 const ENTER_DELAY_MS = 150;
 // Écart au bas sous lequel l'écran reste collé en bas à chaque rafraîchissement.
 const PINNED_SLACK_PX = 32;
+// Texte du gabarit invisible qui mesure la largeur d'une colonne et la hauteur d'une rangée.
+const PROBE_TEXT = '0123456789';
+// En deçà, le cadre n'est pas encore mis en page : aucune taille n'est imposée.
+const MIN_COLS = 20;
+const MIN_ROWS = 5;
 
 const QUICK_KEYS: readonly { label: string; data: string; name?: string; confirm?: boolean }[] = [
   { label: 'Entrée', data: '\r' },
@@ -43,6 +49,18 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+/** Colonnes et rangées que le cadre de l'écran affiche sans recouper les lignes, d'après son gabarit. */
+function measureScreen(probe: HTMLElement): { cols: number; rows: number } | null {
+  const glyphs = probe.firstElementChild?.getBoundingClientRect();
+  if (glyphs === undefined || glyphs.width <= 0 || glyphs.height <= 0) return null;
+  const style = getComputedStyle(probe);
+  const width = probe.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  const height = probe.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+  const cols = Math.floor(width / (glyphs.width / PROBE_TEXT.length));
+  const rows = Math.floor(height / glyphs.height);
+  return cols >= MIN_COLS && rows >= MIN_ROWS ? { cols, rows } : null;
 }
 
 async function fetchScreen(sessionId: string): Promise<string[]> {
@@ -113,7 +131,7 @@ function InstructionForm({ send }: { send: (data: string, failure: string) => Pr
 }
 
 function SessionDetail({ session }: { session: Session }) {
-  const { projects, sendSessionInput, killSession, resumeSession, markSeen } = useStore();
+  const { projects, sendSessionInput, resizeSession, killSession, resumeSession, markSeen } = useStore();
   const now = useNow();
   const id = session.id;
   const exited = session.status === 'exited';
@@ -125,6 +143,11 @@ function SessionDetail({ session }: { session: Session }) {
   const [busy, setBusy] = useState(false);
   const mounted = useRef(true);
   const exitedRef = useLatest(exited);
+  const probeRef = useRef<HTMLPreElement>(null);
+  // Le clavier virtuel réduit le cadre : on garde le plus grand nombre de rangées vu, pour que la TUI ne
+  // rapetisse pas à chaque saisie.
+  const maxRows = useRef(0);
+  const claimed = useRef('');
 
   useEffect(() => {
     mounted.current = true;
@@ -156,7 +179,53 @@ function SessionDetail({ session }: { session: Session }) {
     return () => document.removeEventListener('visibilitychange', acknowledge);
   }, [attention, id, markSeen]);
 
+  // Ce téléphone impose sa taille au PTY ; sans `force`, seulement si elle diffère de la dernière imposée.
+  const claimSize = useCallback(
+    async (force: boolean): Promise<boolean> => {
+      const probe = probeRef.current;
+      if (probe === null || exitedRef.current) return false;
+      const size = measureScreen(probe);
+      if (size === null) return false;
+      maxRows.current = Math.max(maxRows.current, size.rows);
+      const key = `${size.cols}x${maxRows.current}`;
+      if (!force && key === claimed.current) return false;
+      claimed.current = key;
+      try {
+        await resizeSession(id, size.cols, maxRows.current);
+      } catch (cause) {
+        claimed.current = '';
+        if (mounted.current) setError(`Taille du terminal non transmise : ${errorMessage(cause)}`);
+        return false;
+      }
+      return true;
+    },
+    [exitedRef, id, resizeSession],
+  );
+
+  useEffect(() => {
+    const probe = probeRef.current;
+    if (exited || probe === null) return;
+    claimed.current = '';
+    const claim = (force: boolean): void => {
+      void claimSize(force).then((done) => {
+        if (done) window.setTimeout(() => void refresh(), REFRESH_AFTER_SEND_MS);
+      });
+    };
+    // Premier appel à l'ouverture, puis à chaque changement de largeur (rotation).
+    const observer = new ResizeObserver(() => claim(false));
+    observer.observe(probe);
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') claim(true);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [claimSize, exited, refresh]);
+
   const send = async (data: string, failure: string): Promise<boolean> => {
+    void claimSize(true);
     try {
       await sendSessionInput(id, data);
     } catch (cause) {
@@ -239,6 +308,11 @@ function SessionDetail({ session }: { session: Session }) {
       ) : null}
       {readError === null ? null : <p className="m-form-error">Lecture de l'écran impossible : {readError}</p>}
       <div className="m-screen-wrap">
+        {exited ? null : (
+          <pre ref={probeRef} className="m-screen m-screen-probe" aria-hidden="true">
+            <span>{PROBE_TEXT}</span>
+          </pre>
+        )}
         {lines !== null && lines.length > 0 ? (
           <ScreenText lines={lines} />
         ) : exited ? null : (

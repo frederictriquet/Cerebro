@@ -26,6 +26,14 @@ const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
 };
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_SCREEN_LINES = 200;
+// Borne d'une dimension du PTY : le terminal du serveur alloue cols × rows cellules.
+const MAX_TERMINAL_DIMENSION = 1000;
+
+function terminalDimension(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_TERMINAL_DIMENSION
+    ? value
+    : null;
+}
 // Sous la limite d'un argument de commande (128 Kio sous Linux), consignes de l'agent comprises.
 const MAX_INLINE_COUNCIL_REPORT_BYTES = 100 * 1024;
 // Contexte d'un council tiré d'une session : de la marge pour ce que l'utilisateur y ajoute.
@@ -362,6 +370,23 @@ export function registerSessionRoutes(ctx: RouteContext): void {
     const body = asRecord(request.body);
     if (body === null || typeof body.data !== 'string') return error(reply, 400, 'Le champ data est requis');
     if (session.status === 'exited' || !sessions.writeInput(session.id, body.data)) {
+      return error(reply, 409, "La session n'est pas active");
+    }
+    return reply.code(204).send();
+  });
+
+  // Taille du PTY imposée sans terminal ouvert (vue mobile) : les terminaux ouverts s'y alignent, comme
+  // pour un redimensionnement par /ws/term.
+  app.post<{ Params: { id: string } }>('/api/sessions/:id/resize', async (request, reply) => {
+    const session = requireSession(request, reply);
+    if (session === null) return reply;
+    const body = asRecord(request.body);
+    const cols = terminalDimension(body?.cols);
+    const rows = terminalDimension(body?.rows);
+    if (cols === null || rows === null) {
+      return error(reply, 400, `Champs cols et rows : entiers de 1 à ${MAX_TERMINAL_DIMENSION} attendus`);
+    }
+    if (session.status === 'exited' || !sessions.resize(session.id, cols, rows)) {
       return error(reply, 409, "La session n'est pas active");
     }
     return reply.code(204).send();

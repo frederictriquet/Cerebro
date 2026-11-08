@@ -611,10 +611,25 @@
 }
 
 .m-session > .m-screen-wrap {
+  position: relative;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 96px;
+}
+
+/* Copie invisible du cadre de l'écran : mesure la taille imposée au PTY (SessionScreen.tsx). La barre de
+   défilement y est réservée, comme sur le cadre affiché dès qu'il défile. */
+.m-screen.m-screen-probe {
+  position: absolute;
+  inset: 0;
+  overflow-y: scroll;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.m-screen-probe > span {
+  display: inline-block;
 }
 
 .m-screen {

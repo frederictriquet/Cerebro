@@ -88,6 +88,8 @@ export interface Store {
   renameSession: (id: string, title: string) => Promise<Session>;
   updateProject: (id: string, patch: ProjectPatch) => Promise<Project>;
   sendSessionInput: (id: string, data: string) => Promise<void>;
+  /** Impose une taille au PTY sans terminal ouvert (vue mobile) ; les terminaux ouverts s'y alignent. */
+  resizeSession: (id: string, cols: number, rows: number) => Promise<void>;
   createTask: (projectId: string, text: string, options?: NewTaskOptions) => Promise<Task>;
   updateTask: (id: string, patch: TaskPatch) => Promise<Task>;
   deleteTask: (id: string) => Promise<void>;
@@ -486,6 +488,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const resizeSession = useCallback(async (id: string, cols: number, rows: number): Promise<void> => {
+    await api(apiPath`/api/sessions/${id}/resize`, {
+      method: 'POST',
+      body: JSON.stringify({ cols, rows }),
+    });
+  }, []);
+
   const createTask = useCallback(
     async (
       projectId: string,
@@ -647,6 +656,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       renameSession,
       updateProject,
       sendSessionInput,
+      resizeSession,
       createTask,
       updateTask,
       deleteTask,
@@ -698,6 +708,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       renameSession,
       updateProject,
       sendSessionInput,
+      resizeSession,
       createTask,
       updateTask,
       deleteTask,

@@ -3,9 +3,9 @@
  *
  * Règle : ne jamais monter Term.tsx dans la vue mobile, ni un composant qui le monte (SessionView). Term réclame
  * la taille du PTY à la connexion, au focus et à chaque envoi (`claim` dans web/src/Term.tsx), et le serveur
- * applique une taille unique à tous les postes (`SessionManager.resize`, server/sessions.ts) : le terminal du
- * desktop prendrait la largeur du téléphone. La vue mobile lit l'écran par GET /api/sessions/:id/screen et écrit
- * par POST /api/sessions/:id/input, qui ne touchent pas à la taille.
+ * applique une taille unique à tous les postes (`SessionManager.resize`, server/sessions.ts). La vue mobile lit
+ * l'écran par GET /api/sessions/:id/screen, écrit par POST /api/sessions/:id/input et n'impose la taille du
+ * téléphone, par POST /api/sessions/:id/resize, qu'aux moments décidés dans SessionScreen.tsx.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { formatDateTime, sessionTitle } from '../format.ts';

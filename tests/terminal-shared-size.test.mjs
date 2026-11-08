@@ -10,6 +10,10 @@ const root = mkdtempSync(join(tmpdir(), 'cerebro-term-size-'));
 process.env.HOME = root;
 process.env.CEREBRO_DATA_DIR = join(root, 'data');
 process.env.CODEX_HOME = join(root, 'codex');
+// Celles de la session Cerebro qui lance les tests imposeraient un jeton aux routes.
+for (const name of Object.keys(process.env)) {
+  if (name.startsWith('CEREBRO_') && name !== 'CEREBRO_DATA_DIR') delete process.env[name];
+}
 
 const { CerebroDatabase } = await import('../server/db.ts');
 (await import('../server/config.ts')).ensureDataDirs();
@@ -17,6 +21,7 @@ const { SessionManager } = await import('../server/sessions.ts');
 const { createServices } = await import('../server/services.ts');
 const { SESSIONS_DIR } = await import('../server/config.ts');
 const { parseTermServerMessage } = await import('../shared/types.ts');
+const { buildServer } = await import('../server/index.ts');
 
 const holders = new Set();
 after(() => {
@@ -49,11 +54,11 @@ async function until(condition, timeout, message) {
   }
 }
 
-test('a resize from one viewer is broadcast so every viewer renders at the PTY size', async () => {
-  const db = new CerebroDatabase(':memory:');
-  const path = join(root, 'projet');
+/** Session d'un nouveau projet, tenue par le faux holder tant qu'elle n'est pas terminée. */
+function seedSession(db, folder, status = 'running') {
+  const path = join(root, folder);
   mkdirSync(path, { recursive: true });
-  const project = db.createProject('Projet', path, 'shared');
+  const project = db.createProject(folder, path, 'shared');
   const id = randomUUID();
   db.createSession(
     {
@@ -65,16 +70,33 @@ test('a resize from one viewer is broadcast so every viewer renders at the PTY s
       effort: null,
       prompt: '',
       title: 'Partagée',
-      status: 'running',
+      status,
       agentSessionId: null,
     },
     'token',
   );
   const configPath = join(SESSIONS_DIR, `${id}.config.json`);
+  if (status === 'exited') return { id, configPath };
   writeFileSync(configPath, '{}\n');
   const holder = spawn(process.execPath, ['-e', FAKE_HOLDER, configPath], { stdio: 'ignore' });
   holders.add(holder);
   holder.on('exit', () => holders.delete(holder));
+  return { id, configPath };
+}
+
+/** Messages reçus par le faux holder de cette session. */
+function receivedBy(configPath) {
+  return existsSync(`${configPath}.received`)
+    ? readFileSync(`${configPath}.received`, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+    : [];
+}
+
+test('a resize from one viewer is broadcast so every viewer renders at the PTY size', async () => {
+  const db = new CerebroDatabase(':memory:');
+  const { id, configPath } = seedSession(db, 'projet');
 
   const manager = new SessionManager(db, createServices(db));
   try {
@@ -103,13 +125,7 @@ test('a resize from one viewer is broadcast so every viewer renders at the PTY s
     // A forced refresh reaches the holder even at the same size, so the application redraws.
     assert.equal(manager.resize(id, 180, 50, true), true);
     assert.equal(pc.length, 1);
-    const received = () =>
-      existsSync(`${configPath}.received`)
-        ? readFileSync(`${configPath}.received`, 'utf8')
-            .split('\n')
-            .filter(Boolean)
-            .map((line) => JSON.parse(line))
-        : [];
+    const received = () => receivedBy(configPath);
     await until(() => received().some((msg) => msg.force === true), 3_000, 'forced resize never reached the holder');
     assert.deepEqual(
       received().filter((msg) => msg.type === 'resize'),
@@ -121,6 +137,51 @@ test('a resize from one viewer is broadcast so every viewer renders at the PTY s
     );
   } finally {
     await manager.shutdown();
+    db.close();
+  }
+});
+
+test('POST /api/sessions/:id/resize impose sa taille au PTY sans terminal ouvert', async () => {
+  const db = new CerebroDatabase();
+  const { id, configPath } = seedSession(db, 'mobile');
+  const exited = seedSession(db, 'terminee', 'exited').id;
+  await until(() => existsSync(join(SESSIONS_DIR, `${id}.sock`)), 3_000, 'fake holder never listened');
+  const app = await buildServer();
+  const resize = async (session, payload) =>
+    (await app.inject({ method: 'POST', url: `/api/sessions/${session}/resize`, payload })).statusCode;
+  try {
+    // 409 jusqu'à ce que le serveur ait rejoint le holder.
+    const deadline = Date.now() + 3_000;
+    let status = await resize(id, { cols: 52, rows: 30 });
+    while (status === 409 && Date.now() < deadline) {
+      await wait(50);
+      status = await resize(id, { cols: 52, rows: 30 });
+    }
+    assert.equal(status, 204);
+    await until(
+      () => receivedBy(configPath).some((msg) => msg.type === 'resize'),
+      3_000,
+      'resize never reached the holder',
+    );
+    assert.deepEqual(
+      receivedBy(configPath).filter((msg) => msg.type === 'resize'),
+      [{ type: 'resize', cols: 52, rows: 30 }],
+    );
+
+    for (const payload of [
+      {},
+      { cols: 52 },
+      { cols: 0, rows: 30 },
+      { cols: 52, rows: 30.5 },
+      { cols: '52', rows: 30 },
+      { cols: 52, rows: 1001 },
+    ]) {
+      assert.equal(await resize(id, payload), 400, JSON.stringify(payload));
+    }
+    assert.equal(await resize(exited, { cols: 52, rows: 30 }), 409);
+    assert.equal(await resize(randomUUID(), { cols: 52, rows: 30 }), 404);
+  } finally {
+    await app.close();
     db.close();
   }
 });
