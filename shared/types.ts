@@ -338,6 +338,8 @@ export interface Task {
   epicId: string | null;
   // Tâche d'un autre projet que celle-ci doit traiter à sa place (délégation), ou null. La source reste dans son projet.
   originTaskId: string | null;
+  // Échéance (date AAAA-MM-JJ) ou null : les tâches se présentent par échéance croissante, sans échéance en dernier.
+  dueDate: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -351,6 +353,8 @@ export interface Epic {
   sourceSessionId: string | null;
   // Epic d'un autre projet que celui-ci traite à sa place (délégation), ou null. La source reste dans son projet.
   originEpicId: string | null;
+  // Échéance (date AAAA-MM-JJ) ou null.
+  dueDate: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -797,6 +801,8 @@ export function parseTask(v: unknown): Task | null {
   const epicId = typeof v.epicId === 'string' ? v.epicId : null;
   // Serveur antérieur à la délégation entre projets : aucune.
   const originTaskId = typeof v.originTaskId === 'string' ? v.originTaskId : null;
+  // Serveur antérieur aux échéances : aucune.
+  const dueDate = typeof v.dueDate === 'string' ? v.dueDate : null;
   if (
     id === null ||
     projectId === null ||
@@ -828,6 +834,7 @@ export function parseTask(v: unknown): Task | null {
     dependsOn,
     epicId,
     originTaskId,
+    dueDate,
     createdAt,
     updatedAt,
   };
@@ -841,6 +848,7 @@ export function parseEpic(v: unknown): Epic | null {
   const description = typeof v.description === 'string' ? v.description : '';
   const sourceSessionId = asNullableString(v.sourceSessionId);
   const originEpicId = typeof v.originEpicId === 'string' ? v.originEpicId : null;
+  const dueDate = typeof v.dueDate === 'string' ? v.dueDate : null;
   const createdAt = asNumber(v.createdAt);
   const updatedAt = asNumber(v.updatedAt);
   if (
@@ -853,7 +861,7 @@ export function parseEpic(v: unknown): Epic | null {
   ) {
     return null;
   }
-  return { id, projectId, title, description, sourceSessionId, originEpicId, createdAt, updatedAt };
+  return { id, projectId, title, description, sourceSessionId, originEpicId, dueDate, createdAt, updatedAt };
 }
 
 export function parseEpicList(v: unknown): Epic[] {

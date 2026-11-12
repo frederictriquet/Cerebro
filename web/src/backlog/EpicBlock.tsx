@@ -8,6 +8,8 @@ import { useStoredFlag } from '../storage.ts';
 import { useStore } from '../store.tsx';
 import { useBacklog } from './context.ts';
 import { DelegateButton, EpicDelegation } from './Delegation.tsx';
+import { byDueDate } from './due.ts';
+import { DueControl, DuePill } from './DueControl.tsx';
 import { EpicForm } from './EpicForm.tsx';
 import { EpicRunPanel } from './EpicRunPanel.tsx';
 import { dependencyOrder, epicPrompt, taskLabel } from './tasks.ts';
@@ -53,7 +55,7 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
     return task ? taskLabel(task, 80) : id;
   };
   // Affichées dans l'ordre de création ; le numéro donne le rang de traitement (ordre des dépendances).
-  const shown = showDone ? members : members.filter((t) => t.status !== 'done');
+  const shown = [...(showDone ? members : members.filter((t) => t.status !== 'done'))].sort(byDueDate);
   const startHint =
     open.length === 0
       ? 'Aucune tâche ouverte dans cet epic'
@@ -81,6 +83,7 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
             <span style={{ width: members.length === 0 ? 0 : `${(doneCount / members.length) * 100}%` }} />
           </span>
           {activeSession ? <TaskSessionLink session={activeSession} /> : null}
+          <DuePill dueDate={epic.dueDate} done={members.length > 0 && open.length === 0} />
           <EpicDelegation epic={epic} />
         </div>
         <div className="row-actions">
@@ -130,16 +133,25 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
         <EpicForm
           initialTitle={epic.title}
           initialDescription={epic.description}
+          initialDueDate={epic.dueDate}
+          withDueDate
           submitLabel="Enregistrer"
           onCancel={() => setEditing(false)}
-          onSubmit={async (title, description) => {
-            await updateEpic(epic.id, { title, description });
+          onSubmit={async (title, description, dueDate) => {
+            await updateEpic(epic.id, { title, description, dueDate });
             setEditing(false);
           }}
         />
       ) : epic.description !== '' && !collapsed ? (
         <p className="epic-description">{epic.description}</p>
       ) : null}
+      {collapsed ? null : (
+        <DueControl
+          dueDate={epic.dueDate}
+          onChange={(dueDate) => updateEpic(epic.id, { dueDate })}
+          onError={reportError}
+        />
+      )}
       {collapsed ? null : shown.length === 0 ? (
         <p className="empty-hint">
           {members.length === 0

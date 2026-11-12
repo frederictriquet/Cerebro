@@ -11,6 +11,20 @@ function isTaskStatus(value: unknown): value is TaskStatus {
   return typeof value === 'string' && (TASK_STATUSES as readonly string[]).includes(value);
 }
 
+export const DUE_DATE_ERROR = "L'échéance doit être une date AAAA-MM-JJ, ou null pour l'effacer";
+
+// Échéance proposée : null (aucune) ou une date calendaire AAAA-MM-JJ existante.
+export function parseDueDate(value: unknown): { ok: true; value: string | null } | { ok: false } {
+  if (value === null) return { ok: true, value: null };
+  if (typeof value !== 'string') return { ok: false };
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) return { ok: false };
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const real = date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  return real ? { ok: true, value } : { ok: false };
+}
+
 export function taskText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const text = value.trim();
@@ -112,9 +126,11 @@ export function registerTaskRoutes(ctx: RouteContext): void {
         : null;
     const epic = checkEpic(body?.epicId ?? null, request.params.id, db.listEpics());
     if (!epic.ok) return error(reply, 400, epic.message);
+    const due = parseDueDate(body?.dueDate ?? null);
+    if (!due.ok) return error(reply, 400, DUE_DATE_ERROR);
     const execution = await badRequest.orError(reply, () => commands.execution(request.params.id, body?.execution));
     if (!execution.ok) return execution.reply;
-    const task = db.createTask(request.params.id, text, source, epic.id, execution.value);
+    const task = db.createTask(request.params.id, text, source, epic.id, execution.value, null, due.value);
     broadcast({ type: 'task', task });
     return reply.code(201).send(task);
   });
@@ -131,6 +147,7 @@ export function registerTaskRoutes(ctx: RouteContext): void {
       execution?: TaskExecution;
       dependsOn?: string[];
       epicId?: string | null;
+      dueDate?: string | null;
     } = {};
     if (body.execution !== undefined) {
       const execution = await badRequest.orError(reply, () =>
@@ -157,6 +174,11 @@ export function registerTaskRoutes(ctx: RouteContext): void {
       );
       if (!checked.ok) return error(reply, 400, checked.message);
       changes.dependsOn = checked.ids;
+    }
+    if (body.dueDate !== undefined) {
+      const due = parseDueDate(body.dueDate);
+      if (!due.ok) return error(reply, 400, DUE_DATE_ERROR);
+      changes.dueDate = due.value;
     }
     if (body.epicId !== undefined) {
       const epic = checkEpic(body.epicId, (db.getTask(request.params.id) as Task).projectId, db.listEpics());

@@ -5,7 +5,7 @@ import type { Epic } from '../shared/types.ts';
 import { asRecord } from './util.ts';
 import { error } from './routes-util.ts';
 import { conflict, parseSessionDefaults, type RouteContext } from './route-context.ts';
-import { MAX_TASK_LENGTH } from './task-routes.ts';
+import { DUE_DATE_ERROR, MAX_TASK_LENGTH, parseDueDate } from './task-routes.ts';
 
 const MAX_EPIC_TITLE_LENGTH = 200;
 
@@ -46,6 +46,8 @@ export function createEpic(
   if (title === null) return { ok: false, message: EPIC_TITLE_ERROR };
   const description = epicDescription(body?.description);
   if (description === null) return { ok: false, message: EPIC_DESCRIPTION_ERROR };
+  const due = parseDueDate(body?.dueDate ?? null);
+  if (!due.ok) return { ok: false, message: DUE_DATE_ERROR };
   const rawIds = body?.taskIds ?? [];
   const own = new Set(ctx.projectTasks(projectId).map((t) => t.id));
   if (!Array.isArray(rawIds) || !rawIds.every((id) => typeof id === 'string' && own.has(id))) {
@@ -54,7 +56,7 @@ export function createEpic(
   const taskIds = [...new Set(rawIds as string[])];
   // Rien n'est diffusé avant que l'epic et le rangement des tâches soient validés ensemble.
   const epic = ctx.db.transaction(() => {
-    const epic = ctx.db.createEpic(projectId, title, description, sourceSessionId);
+    const epic = ctx.db.createEpic(projectId, title, description, sourceSessionId, null, due.value);
     for (const id of taskIds) ctx.db.updateTask(id, { epicId: epic.id });
     return epic;
   });
@@ -69,7 +71,12 @@ export function updateEpic(
   body: Record<string, unknown>,
 ): { ok: true; epic: Epic } | { ok: false; status: number; message: string } {
   if (ctx.db.getEpic(id) === null) return { ok: false, status: 404, message: 'Epic introuvable' };
-  const changes: { title?: string; description?: string } = {};
+  const changes: { title?: string; description?: string; dueDate?: string | null } = {};
+  if (body.dueDate !== undefined) {
+    const due = parseDueDate(body.dueDate);
+    if (!due.ok) return { ok: false, status: 400, message: DUE_DATE_ERROR };
+    changes.dueDate = due.value;
+  }
   if (body.title !== undefined) {
     const title = epicTitle(body.title);
     if (title === null) return { ok: false, status: 400, message: EPIC_TITLE_ERROR };

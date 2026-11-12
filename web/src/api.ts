@@ -427,40 +427,46 @@ export function getGlobalBacklog(): Promise<GlobalBacklog> {
   return apiParsed(GLOBAL_BACKLOG, parseGlobalBacklog);
 }
 
-export async function createGlobalTask(text: string, epicId: string | null): Promise<void> {
+export async function createGlobalTask(text: string, epicId: string | null, dueDate: string | null): Promise<void> {
   await apiParsed(`${GLOBAL_BACKLOG}/tasks`, parseGlobalTask, {
     method: 'POST',
-    body: JSON.stringify({ text, epicId }),
+    body: JSON.stringify({ text, epicId, dueDate }),
   });
 }
 
-export async function updateGlobalTask(id: string, patch: { text?: string; epicId?: string | null }): Promise<void> {
-  await apiParsed(apiPath`${GLOBAL_BACKLOG}/tasks/${id}`, parseGlobalTask, {
+export async function updateGlobalTask(
+  id: string,
+  patch: { text?: string; epicId?: string | null; dueDate?: string | null },
+): Promise<void> {
+  await apiParsed(`${GLOBAL_BACKLOG}${apiPath`/tasks/${id}`}`, parseGlobalTask, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   });
 }
 
 export async function deleteGlobalTask(id: string): Promise<void> {
-  await api(apiPath`${GLOBAL_BACKLOG}/tasks/${id}`, { method: 'DELETE' });
+  await api(`${GLOBAL_BACKLOG}${apiPath`/tasks/${id}`}`, { method: 'DELETE' });
 }
 
-export async function createGlobalEpic(title: string, description: string): Promise<void> {
+export async function createGlobalEpic(title: string, description: string, dueDate: string | null): Promise<void> {
   await apiParsed(`${GLOBAL_BACKLOG}/epics`, parseGlobalEpic, {
     method: 'POST',
-    body: JSON.stringify({ title, description }),
+    body: JSON.stringify({ title, description, dueDate }),
   });
 }
 
-export async function updateGlobalEpic(id: string, patch: { title?: string; description?: string }): Promise<void> {
-  await apiParsed(apiPath`${GLOBAL_BACKLOG}/epics/${id}`, parseGlobalEpic, {
+export async function updateGlobalEpic(
+  id: string,
+  patch: { title?: string; description?: string; dueDate?: string | null },
+): Promise<void> {
+  await apiParsed(`${GLOBAL_BACKLOG}${apiPath`/epics/${id}`}`, parseGlobalEpic, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   });
 }
 
 export async function deleteGlobalEpic(id: string): Promise<void> {
-  await api(apiPath`${GLOBAL_BACKLOG}/epics/${id}`, { method: 'DELETE' });
+  await api(`${GLOBAL_BACKLOG}${apiPath`/epics/${id}`}`, { method: 'DELETE' });
 }
 
 // Déplace la tâche ou l'epic (avec ses tâches) dans le backlog du projet ; le serveur diffuse les éléments créés.

@@ -8,7 +8,7 @@ import {
   epicDescription,
   epicTitle,
 } from './epic-routes.ts';
-import { MAX_TASK_LENGTH, taskText } from './task-routes.ts';
+import { DUE_DATE_ERROR, MAX_TASK_LENGTH, parseDueDate, taskText } from './task-routes.ts';
 
 // Backlog global : idées sans projet. Une tâche ou un epic y reste tel quel jusqu'à son dispatch, qui le
 // déplace d'un bloc dans le backlog du projet choisi. Aucune dépendance, aucune exécution : ces notions
@@ -25,14 +25,21 @@ export function registerGlobalBacklogRoutes(ctx: RouteContext): void {
     if (text === null) return error(reply, 400, textError);
     const epic = checkGlobalEpic(db, body?.epicId ?? null);
     if (!epic.ok) return error(reply, 400, epic.message);
-    return reply.code(201).send(db.createGlobalTask(text, epic.id));
+    const due = parseDueDate(body?.dueDate ?? null);
+    if (!due.ok) return error(reply, 400, DUE_DATE_ERROR);
+    return reply.code(201).send(db.createGlobalTask(text, epic.id, due.value));
   });
 
   app.patch<{ Params: { id: string } }>('/api/global-backlog/tasks/:id', async (request, reply) => {
     if (db.getGlobalTask(request.params.id) === null) return error(reply, 404, 'Tâche introuvable');
     const body = asRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps invalide');
-    const changes: { text?: string; epicId?: string | null } = {};
+    const changes: { text?: string; epicId?: string | null; dueDate?: string | null } = {};
+    if (body.dueDate !== undefined) {
+      const due = parseDueDate(body.dueDate);
+      if (!due.ok) return error(reply, 400, DUE_DATE_ERROR);
+      changes.dueDate = due.value;
+    }
     if (body.text !== undefined) {
       const text = taskText(body.text);
       if (text === null) return error(reply, 400, textError);
@@ -57,14 +64,21 @@ export function registerGlobalBacklogRoutes(ctx: RouteContext): void {
     if (title === null) return error(reply, 400, EPIC_TITLE_ERROR);
     const description = epicDescription(body?.description);
     if (description === null) return error(reply, 400, EPIC_DESCRIPTION_ERROR);
-    return reply.code(201).send(db.createGlobalEpic(title, description));
+    const due = parseDueDate(body?.dueDate ?? null);
+    if (!due.ok) return error(reply, 400, DUE_DATE_ERROR);
+    return reply.code(201).send(db.createGlobalEpic(title, description, due.value));
   });
 
   app.patch<{ Params: { id: string } }>('/api/global-backlog/epics/:id', async (request, reply) => {
     if (db.getGlobalEpic(request.params.id) === null) return error(reply, 404, 'Epic introuvable');
     const body = asRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps invalide');
-    const changes: { title?: string; description?: string } = {};
+    const changes: { title?: string; description?: string; dueDate?: string | null } = {};
+    if (body.dueDate !== undefined) {
+      const due = parseDueDate(body.dueDate);
+      if (!due.ok) return error(reply, 400, DUE_DATE_ERROR);
+      changes.dueDate = due.value;
+    }
     if (body.title !== undefined) {
       const title = epicTitle(body.title);
       if (title === null) return error(reply, 400, EPIC_TITLE_ERROR);

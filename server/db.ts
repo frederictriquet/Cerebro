@@ -109,6 +109,7 @@ interface TaskRow {
   source_session_id: string | null;
   epic_id: string | null;
   origin_task_id: string | null;
+  due_date: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -120,6 +121,7 @@ interface EpicRow {
   description: string;
   source_session_id: string | null;
   origin_epic_id: string | null;
+  due_date: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -128,6 +130,7 @@ interface GlobalTaskRow {
   id: string;
   text: string;
   epic_id: string | null;
+  due_date: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -136,12 +139,20 @@ interface GlobalEpicRow {
   id: string;
   title: string;
   description: string;
+  due_date: string | null;
   created_at: number;
   updated_at: number;
 }
 
 function globalTaskFromRow(row: GlobalTaskRow): GlobalTask {
-  return { id: row.id, text: row.text, epicId: row.epic_id, createdAt: row.created_at, updatedAt: row.updated_at };
+  return {
+    id: row.id,
+    text: row.text,
+    epicId: row.epic_id,
+    dueDate: row.due_date ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 function globalEpicFromRow(row: GlobalEpicRow): GlobalEpic {
@@ -149,6 +160,7 @@ function globalEpicFromRow(row: GlobalEpicRow): GlobalEpic {
     id: row.id,
     title: row.title,
     description: row.description,
+    dueDate: row.due_date ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -162,6 +174,7 @@ function epicFromRow(row: EpicRow): Epic {
     description: row.description,
     sourceSessionId: row.source_session_id,
     originEpicId: row.origin_epic_id ?? null,
+    dueDate: row.due_date ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -179,6 +192,7 @@ function taskFromRow(row: TaskRow, dependsOn: string[]): Task {
     execution: row.execution ? JSON.parse(row.execution) : { type: 'llm' },
     epicId: row.epic_id ?? null,
     originTaskId: row.origin_task_id ?? null,
+    dueDate: row.due_date ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -385,6 +399,8 @@ export class CerebroDatabase {
         BEGIN UPDATE table_versions SET version = version + 1 WHERE name = 'session_workspaces'; END;
     `);
     this.addColumnIfMissing('tasks', 'epic_id', 'TEXT REFERENCES epics(id) ON DELETE SET NULL');
+    this.addColumnIfMissing('tasks', 'due_date', 'TEXT');
+    this.addColumnIfMissing('epics', 'due_date', 'TEXT');
     this.addColumnIfMissing('tasks', 'origin_task_id', 'TEXT REFERENCES tasks(id) ON DELETE SET NULL');
     this.addColumnIfMissing('epics', 'origin_epic_id', 'TEXT REFERENCES epics(id) ON DELETE SET NULL');
     this.addColumnIfMissing('tasks', 'execution', `TEXT NOT NULL DEFAULT '{"type":"llm"}'`);
@@ -399,6 +415,8 @@ export class CerebroDatabase {
       CREATE TABLE IF NOT EXISTS global_tasks (id TEXT PRIMARY KEY, text TEXT NOT NULL, epic_id TEXT REFERENCES global_epics(id) ON DELETE SET NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS global_tasks_epic_id ON global_tasks(epic_id);
     `);
+    this.addColumnIfMissing('global_tasks', 'due_date', 'TEXT');
+    this.addColumnIfMissing('global_epics', 'due_date', 'TEXT');
     const notificationTurnColumns = this.connection
       .prepare('PRAGMA table_info(notification_turns)')
       .all() as unknown as { name: string }[];
@@ -1130,6 +1148,7 @@ export class CerebroDatabase {
     epicId: string | null = null,
     execution: TaskExecution = { type: 'llm' },
     originTaskId: string | null = null,
+    dueDate: string | null = null,
   ): Task {
     const now = Date.now();
     const task: Task = {
@@ -1143,14 +1162,15 @@ export class CerebroDatabase {
       execution,
       epicId,
       originTaskId,
+      dueDate,
       createdAt: now,
       updatedAt: now,
     };
     this.connection
       .prepare(
         `
-      INSERT INTO tasks (id, project_id, text, status, session_id, source_session_id, epic_id, created_at, updated_at, execution, origin_task_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (id, project_id, text, status, session_id, source_session_id, epic_id, created_at, updated_at, execution, origin_task_id, due_date)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       )
       .run(
@@ -1165,13 +1185,14 @@ export class CerebroDatabase {
         now,
         JSON.stringify(execution),
         originTaskId,
+        dueDate,
       );
     return task;
   }
 
   updateTask(
     id: string,
-    changes: Partial<Pick<Task, 'text' | 'status' | 'sessionId' | 'dependsOn' | 'epicId' | 'execution'>>,
+    changes: Partial<Pick<Task, 'text' | 'status' | 'sessionId' | 'dependsOn' | 'epicId' | 'execution' | 'dueDate'>>,
   ): Task | null {
     const current = this.getTask(id);
     if (current === null) return null;
@@ -1180,9 +1201,18 @@ export class CerebroDatabase {
     return this.transaction(() => {
       this.connection
         .prepare(
-          'UPDATE tasks SET text = ?, status = ?, session_id = ?, epic_id = ?, updated_at = ?, execution = ? WHERE id = ?',
+          'UPDATE tasks SET text = ?, status = ?, session_id = ?, epic_id = ?, updated_at = ?, execution = ?, due_date = ? WHERE id = ?',
         )
-        .run(next.text, next.status, next.sessionId, next.epicId, next.updatedAt, JSON.stringify(next.execution), id);
+        .run(
+          next.text,
+          next.status,
+          next.sessionId,
+          next.epicId,
+          next.updatedAt,
+          JSON.stringify(next.execution),
+          next.dueDate,
+          id,
+        );
       if (changes.dependsOn !== undefined) {
         this.setTaskDependencies(id, changes.dependsOn);
         next.dependsOn = this.taskDependencies(id);
@@ -1231,6 +1261,7 @@ export class CerebroDatabase {
     description: string,
     sourceSessionId: string | null,
     originEpicId: string | null = null,
+    dueDate: string | null = null,
   ): Epic {
     const now = Date.now();
     const epic: Epic = {
@@ -1240,27 +1271,28 @@ export class CerebroDatabase {
       description,
       sourceSessionId,
       originEpicId,
+      dueDate,
       createdAt: now,
       updatedAt: now,
     };
     this.connection
       .prepare(
         `
-      INSERT INTO epics (id, project_id, title, description, source_session_id, created_at, updated_at, origin_epic_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO epics (id, project_id, title, description, source_session_id, created_at, updated_at, origin_epic_id, due_date)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       )
-      .run(epic.id, projectId, title, description, sourceSessionId, now, now, originEpicId);
+      .run(epic.id, projectId, title, description, sourceSessionId, now, now, originEpicId, dueDate);
     return epic;
   }
 
-  updateEpic(id: string, changes: Partial<Pick<Epic, 'title' | 'description'>>): Epic | null {
+  updateEpic(id: string, changes: Partial<Pick<Epic, 'title' | 'description' | 'dueDate'>>): Epic | null {
     const current = this.getEpic(id);
     if (current === null) return null;
     const next = { ...current, ...changes, updatedAt: Date.now() };
     this.connection
-      .prepare('UPDATE epics SET title = ?, description = ?, updated_at = ? WHERE id = ?')
-      .run(next.title, next.description, next.updatedAt, id);
+      .prepare('UPDATE epics SET title = ?, description = ?, due_date = ?, updated_at = ? WHERE id = ?')
+      .run(next.title, next.description, next.dueDate, next.updatedAt, id);
     this.connection.prepare('UPDATE sessions SET epic_title = ? WHERE epic_id = ?').run(next.title, id);
     return next;
   }
@@ -1292,22 +1324,24 @@ export class CerebroDatabase {
     return row === undefined ? null : globalEpicFromRow(row);
   }
 
-  createGlobalTask(text: string, epicId: string | null): GlobalTask {
+  createGlobalTask(text: string, epicId: string | null, dueDate: string | null = null): GlobalTask {
     const now = Date.now();
-    const task: GlobalTask = { id: randomUUID(), text, epicId, createdAt: now, updatedAt: now };
+    const task: GlobalTask = { id: randomUUID(), text, epicId, dueDate, createdAt: now, updatedAt: now };
     this.connection
-      .prepare('INSERT INTO global_tasks (id, text, epic_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .run(task.id, text, epicId, now, now);
+      .prepare(
+        'INSERT INTO global_tasks (id, text, epic_id, due_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(task.id, text, epicId, dueDate, now, now);
     return task;
   }
 
-  updateGlobalTask(id: string, changes: Partial<Pick<GlobalTask, 'text' | 'epicId'>>): GlobalTask | null {
+  updateGlobalTask(id: string, changes: Partial<Pick<GlobalTask, 'text' | 'epicId' | 'dueDate'>>): GlobalTask | null {
     const current = this.getGlobalTask(id);
     if (current === null) return null;
     const next = { ...current, ...changes, updatedAt: Date.now() };
     this.connection
-      .prepare('UPDATE global_tasks SET text = ?, epic_id = ?, updated_at = ? WHERE id = ?')
-      .run(next.text, next.epicId, next.updatedAt, id);
+      .prepare('UPDATE global_tasks SET text = ?, epic_id = ?, due_date = ?, updated_at = ? WHERE id = ?')
+      .run(next.text, next.epicId, next.dueDate, next.updatedAt, id);
     return next;
   }
 
@@ -1315,22 +1349,27 @@ export class CerebroDatabase {
     return Number(this.connection.prepare('DELETE FROM global_tasks WHERE id = ?').run(id).changes) > 0;
   }
 
-  createGlobalEpic(title: string, description: string): GlobalEpic {
+  createGlobalEpic(title: string, description: string, dueDate: string | null = null): GlobalEpic {
     const now = Date.now();
-    const epic: GlobalEpic = { id: randomUUID(), title, description, createdAt: now, updatedAt: now };
+    const epic: GlobalEpic = { id: randomUUID(), title, description, dueDate, createdAt: now, updatedAt: now };
     this.connection
-      .prepare('INSERT INTO global_epics (id, title, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .run(epic.id, title, description, now, now);
+      .prepare(
+        'INSERT INTO global_epics (id, title, description, due_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(epic.id, title, description, dueDate, now, now);
     return epic;
   }
 
-  updateGlobalEpic(id: string, changes: Partial<Pick<GlobalEpic, 'title' | 'description'>>): GlobalEpic | null {
+  updateGlobalEpic(
+    id: string,
+    changes: Partial<Pick<GlobalEpic, 'title' | 'description' | 'dueDate'>>,
+  ): GlobalEpic | null {
     const current = this.getGlobalEpic(id);
     if (current === null) return null;
     const next = { ...current, ...changes, updatedAt: Date.now() };
     this.connection
-      .prepare('UPDATE global_epics SET title = ?, description = ?, updated_at = ? WHERE id = ?')
-      .run(next.title, next.description, next.updatedAt, id);
+      .prepare('UPDATE global_epics SET title = ?, description = ?, due_date = ?, updated_at = ? WHERE id = ?')
+      .run(next.title, next.description, next.dueDate, next.updatedAt, id);
     return next;
   }
 
@@ -1345,7 +1384,7 @@ export class CerebroDatabase {
     return this.transaction(() => {
       const source = this.getGlobalTask(id);
       if (source === null) throw new Error('Tâche globale introuvable');
-      const task = this.createTask(projectId, source.text, null);
+      const task = this.createTask(projectId, source.text, null, null, { type: 'llm' }, null, source.dueDate);
       this.deleteGlobalTask(id);
       return task;
     });
@@ -1357,8 +1396,10 @@ export class CerebroDatabase {
       const source = this.getGlobalEpic(id);
       if (source === null) throw new Error('Epic global introuvable');
       const members = this.listGlobalBacklog().tasks.filter((t) => t.epicId === id);
-      const epic = this.createEpic(projectId, source.title, source.description, null);
-      const tasks = members.map((t) => this.createTask(projectId, t.text, null, epic.id));
+      const epic = this.createEpic(projectId, source.title, source.description, null, null, source.dueDate);
+      const tasks = members.map((t) =>
+        this.createTask(projectId, t.text, null, epic.id, { type: 'llm' }, null, t.dueDate),
+      );
       for (const t of members) this.deleteGlobalTask(t.id);
       this.deleteGlobalEpic(id);
       return { epic, tasks };

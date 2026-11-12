@@ -43,7 +43,7 @@ export function registerDelegationRoutes(ctx: RouteContext): void {
       return error(reply, 409, "Tâche rangée dans un epic : déléguez l'epic, ou sortez la tâche de l'epic");
     if (task.dependsOn.some((id) => db.getTask(id)?.status !== 'done'))
       return error(reply, 409, 'Tâche bloquée par des dépendances ouvertes : terminez-les avant de la déléguer');
-    const created = db.createTask(to.id, task.text, null, null, { type: 'llm' }, task.id);
+    const created = db.createTask(to.id, task.text, null, null, { type: 'llm' }, task.id, task.dueDate);
     broadcast({ type: 'task', task: created });
     return reply.code(201).send(created);
   });
@@ -74,9 +74,10 @@ export function registerDelegationRoutes(ctx: RouteContext): void {
         return error(reply, 409, `${label(t)} dépend d'une tâche ouverte hors de l'epic : terminez-la d'abord`);
     }
     const { createdEpic, tasks } = db.transaction(() => {
-      const createdEpic = db.createEpic(to.id, epic.title, epic.description, null, epic.id);
+      const createdEpic = db.createEpic(to.id, epic.title, epic.description, null, epic.id, epic.dueDate);
       const copies = new Map<string, Task>();
-      for (const t of open) copies.set(t.id, db.createTask(to.id, t.text, null, createdEpic.id, { type: 'llm' }, t.id));
+      for (const t of open)
+        copies.set(t.id, db.createTask(to.id, t.text, null, createdEpic.id, { type: 'llm' }, t.id, t.dueDate));
       const tasks = open.map((t) => {
         const copy = copies.get(t.id) as Task;
         const dependsOn = t.dependsOn.flatMap((id) => (copies.get(id) ? [(copies.get(id) as Task).id] : []));

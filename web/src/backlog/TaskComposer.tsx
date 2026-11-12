@@ -21,13 +21,18 @@ export function TaskComposer() {
   const [draft, setDraft] = useState(stored?.prompt ?? '');
   const [draftError, setDraftError] = useState<string | null>(null);
   const [draftEpic, setDraftEpic] = useState('');
+  const [draftDue, setDraftDue] = useState('');
   const [creatingEpic, setCreatingEpic] = useState(false);
   const { run: addTask, busy } = useAsyncAction(
     async () => {
-      await createTask(projectId, images.expand(draft), { epicId: epicIds.has(draftEpic) ? draftEpic : null });
+      await createTask(projectId, images.expand(draft), {
+        epicId: epicIds.has(draftEpic) ? draftEpic : null,
+        dueDate: draftDue === '' ? null : draftDue,
+      });
       // Effacé ici aussi : le composant peut avoir été démonté pendant la création.
       setDraftError(writeDraft(draftKey, { prompt: '', images: [] }));
       setDraft('');
+      setDraftDue('');
       images.reset();
     },
     { fallback: 'Ajout impossible', onError: reportError },
@@ -130,6 +135,13 @@ export function TaskComposer() {
           {draftError ? <p className="form-error">Brouillon non sauvegardé : {draftError}</p> : null}
           <div className="task-add-actions">
             <EpicSelect epics={epics} value={selectedEpic} onChange={setDraftEpic} />
+            <input
+              type="date"
+              value={draftDue}
+              aria-label="Échéance de la tâche"
+              title="Échéance (facultative) : les tâches se présentent par échéance croissante"
+              onChange={(e) => setDraftDue(e.target.value)}
+            />
             <button type="submit" className="btn primary" disabled={busy || images.pending || draft.trim() === ''}>
               Ajouter
             </button>
@@ -164,9 +176,10 @@ export function TaskComposer() {
       {creatingEpic ? (
         <EpicForm
           submitLabel="Créer l'epic"
+          withDueDate
           onCancel={() => setCreatingEpic(false)}
-          onSubmit={async (title, description) => {
-            const epic = await createEpic(projectId, title, description);
+          onSubmit={async (title, description, dueDate) => {
+            const epic = await createEpic(projectId, title, description, dueDate);
             setDraftEpic(epic.id);
             setCreatingEpic(false);
           }}

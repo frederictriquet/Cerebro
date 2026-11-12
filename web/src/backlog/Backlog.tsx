@@ -5,6 +5,7 @@ import { LaunchSessionDialog } from '../Dialog.tsx';
 import { errorMessage } from '../format.ts';
 import { useStore } from '../store.tsx';
 import { BacklogContext, type BacklogScope } from './context.ts';
+import { byDueDate } from './due.ts';
 import { EpicBlock } from './EpicBlock.tsx';
 import { taskLabel } from './tasks.ts';
 import { TaskComposer } from './TaskComposer.tsx';
@@ -69,12 +70,16 @@ export function Backlog({ projectId }: { projectId: string }) {
   };
 
   const visible = (t: Task): boolean => showDone || t.status !== 'done';
-  const tasksWithoutEpic = projectTasks.filter((t) => (t.epicId === null || !epicIds.has(t.epicId)) && visible(t));
+  const tasksWithoutEpic = projectTasks
+    .filter((t) => (t.epicId === null || !epicIds.has(t.epicId)) && visible(t))
+    .sort(byDueDate);
   // Un epic entièrement terminé se range avec les tâches terminées.
-  const shownEpics = ownEpics.filter((e) => {
-    const members = projectTasks.filter((t) => t.epicId === e.id);
-    return showDone || members.length === 0 || members.some((t) => t.status !== 'done');
-  });
+  const shownEpics = ownEpics
+    .filter((e) => {
+      const members = projectTasks.filter((t) => t.epicId === e.id);
+      return showDone || members.length === 0 || members.some((t) => t.status !== 'done');
+    })
+    .sort(byDueDate);
 
   return (
     <BacklogContext.Provider value={scope}>

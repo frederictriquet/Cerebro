@@ -7,6 +7,7 @@ import { useStore } from '../store.tsx';
 import { CommandRunView } from './CommandRunView.tsx';
 import { useBacklog } from './context.ts';
 import { DelegateButton, TaskDelegation } from './Delegation.tsx';
+import { DueControl, DuePill } from './DueControl.tsx';
 import { EpicSelect } from './EpicSelect.tsx';
 import { dependents, openBlockers, taskLabel, taskPill, taskTitle } from './tasks.ts';
 import { TaskSessionLink } from './TaskSessionLink.tsx';
@@ -67,6 +68,7 @@ export function TaskRow({
         <div className="task-row-meta">
           <span className={`pill task-status ${pill.className}`}>{pill.label}</span>
           {session ? <TaskSessionLink session={session} /> : null}
+          <DuePill dueDate={task.dueDate} done={task.status === 'done'} />
           <TaskDelegation task={task} />
           {blockers.length > 0 && task.status !== 'done' ? (
             <span className="task-blockers">Attend : {blockers.map((t) => taskLabel(t, 60)).join(' · ')}</span>
@@ -166,6 +168,11 @@ export function TaskRow({
                   </select>
                 ) : null}
               </div>
+              <DueControl
+                dueDate={task.dueDate}
+                onChange={(dueDate) => updateTask(task.id, { dueDate })}
+                onError={reportError}
+              />
               {epics.length > 0 ? (
                 <div className="task-deps">
                   <span className="meta">Epic :</span>

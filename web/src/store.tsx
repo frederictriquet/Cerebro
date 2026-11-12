@@ -97,8 +97,8 @@ export interface Store {
   startTask: (id: string, spec: SessionDefaults) => Promise<Session>;
   /** Lance une tâche « commande » : aucune session, le serveur démarre la commande configurée. */
   startCommandTask: (id: string) => Promise<void>;
-  createEpic: (projectId: string, title: string, description?: string) => Promise<Epic>;
-  updateEpic: (id: string, patch: { title?: string; description?: string }) => Promise<Epic>;
+  createEpic: (projectId: string, title: string, description?: string, dueDate?: string | null) => Promise<Epic>;
+  updateEpic: (id: string, patch: { title?: string; description?: string; dueDate?: string | null }) => Promise<Epic>;
   deleteEpic: (id: string) => Promise<void>;
   /** Sans `spec`, l'epic ne compte que des tâches « commande » : aucun réglage de session. */
   startEpic: (id: string, spec?: SessionDefaults) => Promise<EpicRun>;
@@ -111,6 +111,7 @@ export interface NewTaskOptions {
   sourceSessionId?: string;
   epicId?: string | null;
   execution?: TaskExecution;
+  dueDate?: string | null;
 }
 
 export interface TaskPatch {
@@ -118,6 +119,7 @@ export interface TaskPatch {
   status?: TaskStatus;
   dependsOn?: string[];
   epicId?: string | null;
+  dueDate?: string | null;
 }
 
 export interface ProjectPatch {
@@ -499,11 +501,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     async (
       projectId: string,
       text: string,
-      { sourceSessionId, epicId, execution }: NewTaskOptions = {},
+      { sourceSessionId, epicId, execution, dueDate }: NewTaskOptions = {},
     ): Promise<Task> => {
       const task = await apiParsed(apiPath`/api/projects/${projectId}/tasks`, parseTask, {
         method: 'POST',
-        body: JSON.stringify({ text, sourceSessionId, epicId: epicId ?? null, execution }),
+        body: JSON.stringify({ text, sourceSessionId, epicId: epicId ?? null, execution, dueDate: dueDate ?? null }),
       });
       setTasks((list) => upsertById(list, task));
       return task;
@@ -556,23 +558,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (task) setTasks((list) => upsertById(list, task));
   }, []);
 
-  const createEpic = useCallback(async (projectId: string, title: string, description?: string): Promise<Epic> => {
-    const epic = await apiParsed(apiPath`/api/projects/${projectId}/epics`, parseEpic, {
-      method: 'POST',
-      body: JSON.stringify({ title, description }),
-    });
-    setEpics((list) => upsertById(list, epic));
-    return epic;
-  }, []);
+  const createEpic = useCallback(
+    async (projectId: string, title: string, description?: string, dueDate?: string | null): Promise<Epic> => {
+      const epic = await apiParsed(apiPath`/api/projects/${projectId}/epics`, parseEpic, {
+        method: 'POST',
+        body: JSON.stringify({ title, description, dueDate: dueDate ?? null }),
+      });
+      setEpics((list) => upsertById(list, epic));
+      return epic;
+    },
+    [],
+  );
 
-  const updateEpic = useCallback(async (id: string, patch: { title?: string; description?: string }): Promise<Epic> => {
-    const epic = await apiParsed(apiPath`/api/epics/${id}`, parseEpic, {
-      method: 'PATCH',
-      body: JSON.stringify(patch),
-    });
-    setEpics((list) => upsertById(list, epic));
-    return epic;
-  }, []);
+  const updateEpic = useCallback(
+    async (id: string, patch: { title?: string; description?: string; dueDate?: string | null }): Promise<Epic> => {
+      const epic = await apiParsed(apiPath`/api/epics/${id}`, parseEpic, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      });
+      setEpics((list) => upsertById(list, epic));
+      return epic;
+    },
+    [],
+  );
 
   const deleteEpic = useCallback(async (id: string): Promise<void> => {
     await api(apiPath`/api/epics/${id}`, { method: 'DELETE' });

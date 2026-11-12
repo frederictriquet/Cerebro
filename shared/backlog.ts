@@ -256,6 +256,8 @@ export interface GlobalTask {
   text: string;
   // Epic global qui regroupe la tâche, ou null.
   epicId: string | null;
+  // Échéance (date AAAA-MM-JJ) ou null.
+  dueDate: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -264,6 +266,7 @@ export interface GlobalEpic {
   id: string;
   title: string;
   description: string;
+  dueDate: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -277,6 +280,8 @@ const globalTask = object<GlobalTask>({
   id: string,
   text: string,
   epicId: nullable(string),
+  // Serveur antérieur aux échéances (machine distante) : aucune.
+  dueDate: (v) => (typeof v === 'string' ? v : null),
   createdAt: number,
   updatedAt: number,
 });
@@ -284,6 +289,7 @@ const globalEpic = object<GlobalEpic>({
   id: string,
   title: string,
   description: string,
+  dueDate: (v) => (typeof v === 'string' ? v : null),
   createdAt: number,
   updatedAt: number,
 });

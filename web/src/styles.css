@@ -3604,3 +3604,22 @@ a.btn:hover {
 .error-boundary-root {
   margin: 16px;
 }
+
+.pill.task-status.due.overdue {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.due-control input[type='date'],
+.epic-form-due input[type='date'],
+.task-add-actions input[type='date'] {
+  width: auto;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.epic-form-due {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

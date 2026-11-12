@@ -16,6 +16,8 @@ import { isSubmitShortcut, SUBMIT_HINT } from '../keys.ts';
 import { usePolling } from '../polling.tsx';
 import { readStored, writeStored } from '../storage.ts';
 import { useStore } from '../store.tsx';
+import { byDueDate } from './due.ts';
+import { DueControl, DuePill } from './DueControl.tsx';
 import { EpicForm } from './EpicForm.tsx';
 import { taskTitle } from './tasks.ts';
 
@@ -23,6 +25,12 @@ const TARGET_KEY = 'cerebro.global-backlog-target';
 const REFRESH_MS = 15_000;
 
 type Act = (fn: () => Promise<unknown>, fallback: string) => void;
+
+// Ce que partagent les lignes : rechargement du backlog et zone d'erreur commune, pour les modifications d'échéance.
+interface Refresh {
+  reload: () => Promise<void>;
+  onError: (message: string | null) => void;
+}
 
 function EpicChoice({
   epics,
@@ -51,11 +59,13 @@ function GlobalTaskRow({
   epics,
   target,
   act,
+  refresh,
 }: {
   task: GlobalTask;
   epics: GlobalEpic[];
   target: string;
   act: Act;
+  refresh: Refresh;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -74,6 +84,9 @@ function GlobalTaskRow({
           <span className="task-caret">{expanded ? '▾' : '▸'}</span>
           <span>{taskTitle(task.text)}</span>
         </button>
+        <div className="task-row-meta">
+          <DuePill dueDate={task.dueDate} done={false} />
+        </div>
       </div>
       <div className="row-actions">
         <button
@@ -113,6 +126,11 @@ function GlobalTaskRow({
           ) : (
             <>
               <pre className="task-text">{task.text}</pre>
+              <DueControl
+                dueDate={task.dueDate}
+                onChange={(dueDate) => updateGlobalTask(task.id, { dueDate }).then(refresh.reload)}
+                onError={refresh.onError}
+              />
               {epics.length > 0 ? (
                 <div className="task-deps">
                   <span className="meta">Epic :</span>
@@ -154,12 +172,14 @@ function GlobalEpicBlock({
   epics,
   target,
   act,
+  refresh,
 }: {
   epic: GlobalEpic;
   tasks: GlobalTask[];
   epics: GlobalEpic[];
   target: string;
   act: Act;
+  refresh: Refresh;
 }) {
   const [editing, setEditing] = useState(false);
   return (
@@ -171,6 +191,7 @@ function GlobalEpicBlock({
         </div>
         <div className="task-row-meta">
           <span className="pill task-status">{tasks.length} tâche(s)</span>
+          <DuePill dueDate={epic.dueDate} done={false} />
         </div>
         <div className="row-actions">
           <button
@@ -194,16 +215,23 @@ function GlobalEpicBlock({
         <EpicForm
           initialTitle={epic.title}
           initialDescription={epic.description}
+          initialDueDate={epic.dueDate}
+          withDueDate
           submitLabel="Enregistrer"
           onCancel={() => setEditing(false)}
-          onSubmit={async (title, description) => {
-            await updateGlobalEpic(epic.id, { title, description });
+          onSubmit={async (title, description, dueDate) => {
+            await updateGlobalEpic(epic.id, { title, description, dueDate });
             setEditing(false);
           }}
         />
       ) : epic.description !== '' ? (
         <p className="epic-description">{epic.description}</p>
       ) : null}
+      <DueControl
+        dueDate={epic.dueDate}
+        onChange={(dueDate) => updateGlobalEpic(epic.id, { dueDate }).then(refresh.reload)}
+        onError={refresh.onError}
+      />
       {tasks.length === 0 ? (
         <p className="empty-hint">
           Epic vide : rangez-y des tâches (menu « Epic » d'une tâche, ou sélecteur du champ d'ajout).
@@ -211,7 +239,7 @@ function GlobalEpicBlock({
       ) : (
         <ul className="task-list">
           {tasks.map((task) => (
-            <GlobalTaskRow key={task.id} task={task} epics={epics} target={target} act={act} />
+            <GlobalTaskRow key={task.id} task={task} epics={epics} target={target} act={act} refresh={refresh} />
           ))}
         </ul>
       )}
@@ -228,6 +256,7 @@ export function GlobalBacklog() {
   const [storedTarget, setStoredTarget] = useState(() => readStored(TARGET_KEY) ?? '');
   const [draft, setDraft] = useState('');
   const [draftEpic, setDraftEpic] = useState('');
+  const [draftDue, setDraftDue] = useState('');
   const [creatingEpic, setCreatingEpic] = useState(false);
   const [adding, setAdding] = useState(false);
 
@@ -251,7 +280,8 @@ export function GlobalBacklog() {
   const epics = data?.epics ?? [];
   const tasks = data?.tasks ?? [];
   const epicIds = new Set(epics.map((e) => e.id));
-  const loose = tasks.filter((t) => t.epicId === null || !epicIds.has(t.epicId));
+  const loose = tasks.filter((t) => t.epicId === null || !epicIds.has(t.epicId)).sort(byDueDate);
+  const refresh: Refresh = { reload, onError: setError };
   const selectedEpic = epicIds.has(draftEpic) ? draftEpic : '';
 
   const add = async (): Promise<void> => {
@@ -259,8 +289,9 @@ export function GlobalBacklog() {
     setAdding(true);
     setError(null);
     try {
-      await createGlobalTask(draft, selectedEpic === '' ? null : selectedEpic);
+      await createGlobalTask(draft, selectedEpic === '' ? null : selectedEpic, draftDue === '' ? null : draftDue);
       setDraft('');
+      setDraftDue('');
       await reload();
     } catch (err) {
       setError(errorMessage(err, 'Ajout impossible'));
@@ -318,6 +349,13 @@ export function GlobalBacklog() {
         />
         <div className="task-add-actions">
           <EpicChoice epics={epics} value={selectedEpic} onChange={setDraftEpic} />
+          <input
+            type="date"
+            value={draftDue}
+            aria-label="Échéance de la tâche"
+            title="Échéance (facultative) : les tâches se présentent par échéance croissante"
+            onChange={(e) => setDraftDue(e.target.value)}
+          />
           <button type="submit" className="btn primary" disabled={adding || draft.trim() === ''}>
             Ajouter
           </button>
@@ -330,21 +368,23 @@ export function GlobalBacklog() {
         <EpicForm
           submitLabel="Créer l'epic"
           onCancel={() => setCreatingEpic(false)}
-          onSubmit={async (title, description) => {
-            await createGlobalEpic(title, description);
+          withDueDate
+          onSubmit={async (title, description, dueDate) => {
+            await createGlobalEpic(title, description, dueDate);
             setCreatingEpic(false);
             await reload();
           }}
         />
       ) : null}
-      {epics.map((epic) => (
+      {[...epics].sort(byDueDate).map((epic) => (
         <GlobalEpicBlock
           key={epic.id}
           epic={epic}
-          tasks={tasks.filter((t) => t.epicId === epic.id)}
+          tasks={tasks.filter((t) => t.epicId === epic.id).sort(byDueDate)}
           epics={epics}
           target={target}
           act={act}
+          refresh={refresh}
         />
       ))}
       {epics.length > 0 && loose.length > 0 ? <h3 className="backlog-loose">Sans epic</h3> : null}
@@ -355,7 +395,7 @@ export function GlobalBacklog() {
       ) : loose.length > 0 ? (
         <ul className="task-list">
           {loose.map((task) => (
-            <GlobalTaskRow key={task.id} task={task} epics={epics} target={target} act={act} />
+            <GlobalTaskRow key={task.id} task={task} epics={epics} target={target} act={act} refresh={refresh} />
           ))}
         </ul>
       ) : null}
