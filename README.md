@@ -556,7 +556,7 @@ mettre ses findings dans le backlog, puis les traiter séparément.
   `cerebro-notify` :
 
   ```sh
-  cerebro-backlog "Une tâche"
+  cerebro-backlog --add "Une tâche"
   printf 'Tâche 1\ndétails\n---\nTâche 2\n' | cerebro-backlog
   ```
 

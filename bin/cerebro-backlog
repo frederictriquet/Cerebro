@@ -5,9 +5,10 @@ import { inSession, request, run, sessionPath } from './cerebro-client.mjs';
 const USAGE = `Usage : cerebro-backlog [commande]
 
 Ajouter des tâches au backlog du projet de la session :
-  cerebro-backlog "Tâche 1" "Tâche 2"      une tâche par argument
+  cerebro-backlog --add "Tâche 1" "Tâche 2"   une tâche par argument
   cerebro-backlog < taches.txt             tâches séparées par une ligne « --- »
-  cerebro-backlog -- "-tâche"              « -- » : les arguments suivants sont des tâches
+  cerebro-backlog --add -- "-tâche"        « -- » : les arguments suivants sont des tâches
+  Un mot sans option (« cerebro-backlog list ») ne crée jamais de tâche : il est refusé.
 
   Sur l'entrée standard, une tâche peut commencer par des lignes d'en-tête :
     after: 1 3 <id>      dépendances : un nombre désigne une tâche précédente du
@@ -71,6 +72,7 @@ let project = null;
 const PROJECT_COMMANDS = new Set([
   undefined,
   '--',
+  '--add',
   '--list',
   '--epics',
   '--projects',
@@ -315,9 +317,19 @@ async function main(args) {
       process.stdout.write(`${rest[0]} supprimée.\n`);
       return;
     }
+    case '--add': {
+      if (rest.length === 0)
+        throw new Error('--add "Tâche" [...] ; sans argument, les tâches se lisent sur l\'entrée standard');
+      return addFrom(rest);
+    }
     case '--':
       return add(rest);
     default:
+      // Un mot sans option est le plus souvent une commande mal écrite (« list ») : jamais une tâche.
+      if (command !== undefined && !command.startsWith('-'))
+        throw new Error(
+          `« ${command} » n'est pas une commande et ne crée aucune tâche. Ajouter : --add "texte" (ou entrée standard) ; consulter : --list ; aide : --help`,
+        );
       return addFrom(argv);
   }
 }
