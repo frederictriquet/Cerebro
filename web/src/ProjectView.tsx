@@ -6,7 +6,6 @@ import { CodeEditor } from './CodeEditor.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { Worktrees } from './worktrees/Worktrees.tsx';
 import { GitStatus } from './GitStatus.tsx';
-import { projectSlackLabel } from './ProjectSlackDialog.tsx';
 import { ProjectSettings } from './ProjectSettings.tsx';
 import { CouncilLaunch } from './CouncilLaunch.tsx';
 import { isDormant } from '../../shared/sessions.ts';
@@ -118,7 +117,6 @@ export function ProjectView({ projectId }: { projectId: string }) {
   };
 
   if (codeOpen) return <CodeEditor project={project} onClose={() => setCodeOpen(false)} />;
-  const slackLabel = projectSlackLabel(project);
 
   return (
     <div className="pane padded">
@@ -142,15 +140,6 @@ export function ProjectView({ projectId }: { projectId: string }) {
         <div className="row-actions">
           <button type="button" className="btn" onClick={() => setCodeOpen(true)} title="Ouvrir le projet dans VS Code">
             VS Code
-          </button>
-          <button
-            type="button"
-            className="btn"
-            aria-pressed={tab === 'settings'}
-            title={`Projet, Slack${slackLabel === null ? '' : ` (${slackLabel})`}, réglages LLM et suppression`}
-            onClick={() => selectTab('settings')}
-          >
-            Réglages
           </button>
         </div>
         <div className="project-head-details">
