@@ -39,6 +39,8 @@ import { registerSessionRoutes } from './session-routes.ts';
 import { registerTaskRoutes } from './task-routes.ts';
 import { registerEpicRoutes } from './epic-routes.ts';
 import { registerBacklogRoutes } from './backlog-routes.ts';
+import { registerDelegationRoutes } from './delegation-routes.ts';
+import { registerGlobalBacklogRoutes } from './global-backlog-routes.ts';
 import { registerHookRoutes } from './hook-routes.ts';
 import { registerSystemRoutes } from './system-routes.ts';
 
@@ -330,6 +332,8 @@ export async function buildServer(
   registerTaskRoutes(context);
   registerEpicRoutes(context);
   registerBacklogRoutes(context);
+  registerGlobalBacklogRoutes(context);
+  registerDelegationRoutes(context);
   registerHookRoutes(context);
 
   app.get('/ws/events', { websocket: true }, (socket) => {

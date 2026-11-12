@@ -6,6 +6,7 @@ import { href } from '../route.ts';
 import { useStore } from '../store.tsx';
 import { CommandRunView } from './CommandRunView.tsx';
 import { useBacklog } from './context.ts';
+import { DelegateButton, TaskDelegation } from './Delegation.tsx';
 import { EpicSelect } from './EpicSelect.tsx';
 import { dependents, openBlockers, taskLabel, taskPill, taskTitle } from './tasks.ts';
 import { TaskSessionLink } from './TaskSessionLink.tsx';
@@ -18,8 +19,8 @@ export function TaskRow({
   // Rang dans l'ordre de traitement de son epic.
   index?: number;
 }) {
-  const { sessions, updateTask, deleteTask } = useStore();
-  const { projectTasks, epics, launching, startTask, reportError } = useBacklog();
+  const { sessions, tasks, updateTask, deleteTask } = useStore();
+  const { projectId, projectTasks, epics, launching, startTask, reportError } = useBacklog();
   const session = sessions.find((s) => s.id === task.sessionId);
   const source = sessions.find((s) => s.id === task.sourceSessionId);
   const isLaunching = launching.has(task.id);
@@ -32,6 +33,8 @@ export function TaskRow({
   const blockers = openBlockers(task, projectTasks);
   const pill = taskPill(task, session, blockers.length > 0);
   // Relancer pendant que la session tourne en démarrerait une seconde et détacherait la première.
+  // Traitée dans un autre projet : la lancer ici la ferait traiter deux fois.
+  const delegated = tasks.some((t) => t.originTaskId === task.id);
   const sessionActive = task.status === 'started' && session !== undefined && session.status !== 'exited';
   const excluded = dependents(task.id, projectTasks);
   const candidates = projectTasks.filter(
@@ -64,13 +67,14 @@ export function TaskRow({
         <div className="task-row-meta">
           <span className={`pill task-status ${pill.className}`}>{pill.label}</span>
           {session ? <TaskSessionLink session={session} /> : null}
+          <TaskDelegation task={task} />
           {blockers.length > 0 && task.status !== 'done' ? (
             <span className="task-blockers">Attend : {blockers.map((t) => taskLabel(t, 60)).join(' · ')}</span>
           ) : null}
         </div>
       </div>
       <div className="row-actions">
-        {task.status !== 'done' && !sessionActive && !commandActive ? (
+        {task.status !== 'done' && !sessionActive && !commandActive && !delegated ? (
           <button
             type="button"
             className="btn primary"
@@ -80,6 +84,13 @@ export function TaskRow({
           >
             {isLaunching ? 'Lancement…' : task.status === 'started' ? 'Relancer' : 'Traiter'}
           </button>
+        ) : null}
+        {task.status === 'todo' &&
+        task.epicId === null &&
+        task.execution?.type !== 'command' &&
+        !delegated &&
+        blockers.length === 0 ? (
+          <DelegateButton kind="tasks" id={task.id} projectId={projectId} onError={reportError} />
         ) : null}
         <button
           type="button"

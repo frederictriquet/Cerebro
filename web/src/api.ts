@@ -24,6 +24,7 @@ import {
   type WatchDelivery,
 } from '../../shared/machine.ts';
 import { boolean, object, parser, string, type Parser } from '../../shared/parse.ts';
+import { parseGlobalBacklog, parseGlobalEpic, parseGlobalTask, type GlobalBacklog } from '../../shared/backlog.ts';
 import {
   parseCouncilRun,
   parseCouncilRunList,
@@ -417,4 +418,63 @@ const parseSessionTranscript = parser(
 // Conversation d'une session mise en forme pour le contexte d'un council.
 export function getSessionTranscript(sessionId: string): Promise<SessionTranscript> {
   return apiParsed(apiPath`/api/sessions/${sessionId}/transcript`, parseSessionTranscript);
+}
+
+// Backlog global : idées sans projet, dispatchées ensuite dans le projet choisi.
+const GLOBAL_BACKLOG = '/api/global-backlog';
+
+export function getGlobalBacklog(): Promise<GlobalBacklog> {
+  return apiParsed(GLOBAL_BACKLOG, parseGlobalBacklog);
+}
+
+export async function createGlobalTask(text: string, epicId: string | null): Promise<void> {
+  await apiParsed(`${GLOBAL_BACKLOG}/tasks`, parseGlobalTask, {
+    method: 'POST',
+    body: JSON.stringify({ text, epicId }),
+  });
+}
+
+export async function updateGlobalTask(id: string, patch: { text?: string; epicId?: string | null }): Promise<void> {
+  await apiParsed(apiPath`${GLOBAL_BACKLOG}/tasks/${id}`, parseGlobalTask, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteGlobalTask(id: string): Promise<void> {
+  await api(apiPath`${GLOBAL_BACKLOG}/tasks/${id}`, { method: 'DELETE' });
+}
+
+export async function createGlobalEpic(title: string, description: string): Promise<void> {
+  await apiParsed(`${GLOBAL_BACKLOG}/epics`, parseGlobalEpic, {
+    method: 'POST',
+    body: JSON.stringify({ title, description }),
+  });
+}
+
+export async function updateGlobalEpic(id: string, patch: { title?: string; description?: string }): Promise<void> {
+  await apiParsed(apiPath`${GLOBAL_BACKLOG}/epics/${id}`, parseGlobalEpic, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteGlobalEpic(id: string): Promise<void> {
+  await api(apiPath`${GLOBAL_BACKLOG}/epics/${id}`, { method: 'DELETE' });
+}
+
+// Déplace la tâche ou l'epic (avec ses tâches) dans le backlog du projet ; le serveur diffuse les éléments créés.
+export async function dispatchGlobalItem(kind: 'tasks' | 'epics', id: string, projectId: string): Promise<void> {
+  await api(`${GLOBAL_BACKLOG}/${kind}/${encodeURIComponent(id)}/dispatch`, {
+    method: 'POST',
+    body: JSON.stringify({ projectId }),
+  });
+}
+
+// Délégation : la tâche ou l'epic reste dans son projet, le projet cible en reçoit une copie qui pointe vers elle.
+export async function delegateItem(kind: 'tasks' | 'epics', id: string, projectId: string): Promise<void> {
+  await api(`/api/${kind}/${encodeURIComponent(id)}/delegate`, {
+    method: 'POST',
+    body: JSON.stringify({ projectId }),
+  });
 }

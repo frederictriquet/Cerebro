@@ -36,6 +36,7 @@ import {
   type TaskStatus,
   type WorkspaceMode,
 } from '../shared/types.ts';
+import type { GlobalBacklog, GlobalEpic, GlobalTask } from '../shared/backlog.ts';
 import { isRecord } from './util.ts';
 
 export class SessionProtectionError extends Error {}
@@ -107,6 +108,7 @@ interface TaskRow {
   session_id: string | null;
   source_session_id: string | null;
   epic_id: string | null;
+  origin_task_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -117,8 +119,39 @@ interface EpicRow {
   title: string;
   description: string;
   source_session_id: string | null;
+  origin_epic_id: string | null;
   created_at: number;
   updated_at: number;
+}
+
+interface GlobalTaskRow {
+  id: string;
+  text: string;
+  epic_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface GlobalEpicRow {
+  id: string;
+  title: string;
+  description: string;
+  created_at: number;
+  updated_at: number;
+}
+
+function globalTaskFromRow(row: GlobalTaskRow): GlobalTask {
+  return { id: row.id, text: row.text, epicId: row.epic_id, createdAt: row.created_at, updatedAt: row.updated_at };
+}
+
+function globalEpicFromRow(row: GlobalEpicRow): GlobalEpic {
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 function epicFromRow(row: EpicRow): Epic {
@@ -128,6 +161,7 @@ function epicFromRow(row: EpicRow): Epic {
     title: row.title,
     description: row.description,
     sourceSessionId: row.source_session_id,
+    originEpicId: row.origin_epic_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -144,6 +178,7 @@ function taskFromRow(row: TaskRow, dependsOn: string[]): Task {
     dependsOn,
     execution: row.execution ? JSON.parse(row.execution) : { type: 'llm' },
     epicId: row.epic_id ?? null,
+    originTaskId: row.origin_task_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -350,6 +385,8 @@ export class CerebroDatabase {
         BEGIN UPDATE table_versions SET version = version + 1 WHERE name = 'session_workspaces'; END;
     `);
     this.addColumnIfMissing('tasks', 'epic_id', 'TEXT REFERENCES epics(id) ON DELETE SET NULL');
+    this.addColumnIfMissing('tasks', 'origin_task_id', 'TEXT REFERENCES tasks(id) ON DELETE SET NULL');
+    this.addColumnIfMissing('epics', 'origin_epic_id', 'TEXT REFERENCES epics(id) ON DELETE SET NULL');
     this.addColumnIfMissing('tasks', 'execution', `TEXT NOT NULL DEFAULT '{"type":"llm"}'`);
     this.connection.exec(`
       CREATE TABLE IF NOT EXISTS project_commands (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, data TEXT NOT NULL);
@@ -358,6 +395,9 @@ export class CerebroDatabase {
       CREATE TABLE IF NOT EXISTS epic_runs (id TEXT PRIMARY KEY, epic_id TEXT NOT NULL REFERENCES epics(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS epic_workspaces (epic_id TEXT PRIMARY KEY REFERENCES epics(id) ON DELETE CASCADE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS command_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS global_epics (id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS global_tasks (id TEXT PRIMARY KEY, text TEXT NOT NULL, epic_id TEXT REFERENCES global_epics(id) ON DELETE SET NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS global_tasks_epic_id ON global_tasks(epic_id);
     `);
     const notificationTurnColumns = this.connection
       .prepare('PRAGMA table_info(notification_turns)')
@@ -1089,6 +1129,7 @@ export class CerebroDatabase {
     sourceSessionId: string | null,
     epicId: string | null = null,
     execution: TaskExecution = { type: 'llm' },
+    originTaskId: string | null = null,
   ): Task {
     const now = Date.now();
     const task: Task = {
@@ -1101,14 +1142,15 @@ export class CerebroDatabase {
       dependsOn: [],
       execution,
       epicId,
+      originTaskId,
       createdAt: now,
       updatedAt: now,
     };
     this.connection
       .prepare(
         `
-      INSERT INTO tasks (id, project_id, text, status, session_id, source_session_id, epic_id, created_at, updated_at, execution)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (id, project_id, text, status, session_id, source_session_id, epic_id, created_at, updated_at, execution, origin_task_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       )
       .run(
@@ -1122,6 +1164,7 @@ export class CerebroDatabase {
         now,
         now,
         JSON.stringify(execution),
+        originTaskId,
       );
     return task;
   }
@@ -1182,7 +1225,13 @@ export class CerebroDatabase {
     return row === undefined ? null : epicFromRow(row);
   }
 
-  createEpic(projectId: string, title: string, description: string, sourceSessionId: string | null): Epic {
+  createEpic(
+    projectId: string,
+    title: string,
+    description: string,
+    sourceSessionId: string | null,
+    originEpicId: string | null = null,
+  ): Epic {
     const now = Date.now();
     const epic: Epic = {
       id: randomUUID(),
@@ -1190,17 +1239,18 @@ export class CerebroDatabase {
       title,
       description,
       sourceSessionId,
+      originEpicId,
       createdAt: now,
       updatedAt: now,
     };
     this.connection
       .prepare(
         `
-      INSERT INTO epics (id, project_id, title, description, source_session_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO epics (id, project_id, title, description, source_session_id, created_at, updated_at, origin_epic_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `,
       )
-      .run(epic.id, projectId, title, description, sourceSessionId, now, now);
+      .run(epic.id, projectId, title, description, sourceSessionId, now, now, originEpicId);
     return epic;
   }
 
@@ -1218,6 +1268,101 @@ export class CerebroDatabase {
   // Les tâches de l'epic restent dans le backlog, sans epic (ON DELETE SET NULL).
   deleteEpic(id: string): boolean {
     return Number(this.connection.prepare('DELETE FROM epics WHERE id = ?').run(id).changes) > 0;
+  }
+
+  listGlobalBacklog(): GlobalBacklog {
+    const tasks = this.connection
+      .prepare('SELECT * FROM global_tasks ORDER BY created_at ASC, rowid ASC')
+      .all() as unknown as GlobalTaskRow[];
+    const epics = this.connection
+      .prepare('SELECT * FROM global_epics ORDER BY created_at ASC, rowid ASC')
+      .all() as unknown as GlobalEpicRow[];
+    return { tasks: tasks.map(globalTaskFromRow), epics: epics.map(globalEpicFromRow) };
+  }
+
+  getGlobalTask(id: string): GlobalTask | null {
+    const row = this.connection.prepare('SELECT * FROM global_tasks WHERE id = ?').get(id) as unknown as
+      GlobalTaskRow | undefined;
+    return row === undefined ? null : globalTaskFromRow(row);
+  }
+
+  getGlobalEpic(id: string): GlobalEpic | null {
+    const row = this.connection.prepare('SELECT * FROM global_epics WHERE id = ?').get(id) as unknown as
+      GlobalEpicRow | undefined;
+    return row === undefined ? null : globalEpicFromRow(row);
+  }
+
+  createGlobalTask(text: string, epicId: string | null): GlobalTask {
+    const now = Date.now();
+    const task: GlobalTask = { id: randomUUID(), text, epicId, createdAt: now, updatedAt: now };
+    this.connection
+      .prepare('INSERT INTO global_tasks (id, text, epic_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .run(task.id, text, epicId, now, now);
+    return task;
+  }
+
+  updateGlobalTask(id: string, changes: Partial<Pick<GlobalTask, 'text' | 'epicId'>>): GlobalTask | null {
+    const current = this.getGlobalTask(id);
+    if (current === null) return null;
+    const next = { ...current, ...changes, updatedAt: Date.now() };
+    this.connection
+      .prepare('UPDATE global_tasks SET text = ?, epic_id = ?, updated_at = ? WHERE id = ?')
+      .run(next.text, next.epicId, next.updatedAt, id);
+    return next;
+  }
+
+  deleteGlobalTask(id: string): boolean {
+    return Number(this.connection.prepare('DELETE FROM global_tasks WHERE id = ?').run(id).changes) > 0;
+  }
+
+  createGlobalEpic(title: string, description: string): GlobalEpic {
+    const now = Date.now();
+    const epic: GlobalEpic = { id: randomUUID(), title, description, createdAt: now, updatedAt: now };
+    this.connection
+      .prepare('INSERT INTO global_epics (id, title, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .run(epic.id, title, description, now, now);
+    return epic;
+  }
+
+  updateGlobalEpic(id: string, changes: Partial<Pick<GlobalEpic, 'title' | 'description'>>): GlobalEpic | null {
+    const current = this.getGlobalEpic(id);
+    if (current === null) return null;
+    const next = { ...current, ...changes, updatedAt: Date.now() };
+    this.connection
+      .prepare('UPDATE global_epics SET title = ?, description = ?, updated_at = ? WHERE id = ?')
+      .run(next.title, next.description, next.updatedAt, id);
+    return next;
+  }
+
+  // Les tâches de l'epic restent dans le backlog global, sans epic (ON DELETE SET NULL).
+  deleteGlobalEpic(id: string): boolean {
+    return Number(this.connection.prepare('DELETE FROM global_epics WHERE id = ?').run(id).changes) > 0;
+  }
+
+  // Déplace une tâche globale dans le backlog d'un projet, d'un bloc : elle disparaît du backlog global.
+  // L'appelant vérifie l'existence du projet et de la tâche.
+  dispatchGlobalTask(id: string, projectId: string): Task {
+    return this.transaction(() => {
+      const source = this.getGlobalTask(id);
+      if (source === null) throw new Error('Tâche globale introuvable');
+      const task = this.createTask(projectId, source.text, null);
+      this.deleteGlobalTask(id);
+      return task;
+    });
+  }
+
+  // Déplace un epic global et ses tâches dans un projet, d'un bloc.
+  dispatchGlobalEpic(id: string, projectId: string): { epic: Epic; tasks: Task[] } {
+    return this.transaction(() => {
+      const source = this.getGlobalEpic(id);
+      if (source === null) throw new Error('Epic global introuvable');
+      const members = this.listGlobalBacklog().tasks.filter((t) => t.epicId === id);
+      const epic = this.createEpic(projectId, source.title, source.description, null);
+      const tasks = members.map((t) => this.createTask(projectId, t.text, null, epic.id));
+      for (const t of members) this.deleteGlobalTask(t.id);
+      this.deleteGlobalEpic(id);
+      return { epic, tasks };
+    });
   }
 
   // Valide `fn` d'un bloc, ou rien. Appelé dans une transaction déjà ouverte, il pose un SAVEPOINT :

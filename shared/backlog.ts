@@ -249,3 +249,45 @@ export const parseSessionTasks = parser(
     }),
   ),
 );
+
+// Backlog global : idées sans projet, à dispatcher plus tard dans un projet (elles y deviennent tâches ou epic).
+export interface GlobalTask {
+  id: string;
+  text: string;
+  // Epic global qui regroupe la tâche, ou null.
+  epicId: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface GlobalEpic {
+  id: string;
+  title: string;
+  description: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface GlobalBacklog {
+  tasks: GlobalTask[];
+  epics: GlobalEpic[];
+}
+
+const globalTask = object<GlobalTask>({
+  id: string,
+  text: string,
+  epicId: nullable(string),
+  createdAt: number,
+  updatedAt: number,
+});
+const globalEpic = object<GlobalEpic>({
+  id: string,
+  title: string,
+  description: string,
+  createdAt: number,
+  updatedAt: number,
+});
+
+export const parseGlobalBacklog = parser(object<GlobalBacklog>({ tasks: array(globalTask), epics: array(globalEpic) }));
+export const parseGlobalTask = parser(globalTask);
+export const parseGlobalEpic = parser(globalEpic);

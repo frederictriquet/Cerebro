@@ -1,3 +1,4 @@
+import { GlobalBacklog } from './backlog/GlobalBacklog.tsx';
 import { Worktrees } from './worktrees/Worktrees.tsx';
 import { LlmUsageStats } from './LlmUsageStats.tsx';
 import { CouncilLaunch } from './CouncilLaunch.tsx';
@@ -10,7 +11,7 @@ import { SessionList } from './SessionList.tsx';
 import { TabBar, tabIds, useStoredTab } from './TabBar.tsx';
 
 // Onglets de l'accueil, dans l'ordre d'affichage ; les statistiques en dernier.
-const HOME_TABS = ['sessions', 'worktrees', 'councils', 'stats'] as const;
+const HOME_TABS = ['sessions', 'backlog', 'worktrees', 'councils', 'stats'] as const;
 type HomeTab = (typeof HOME_TABS)[number];
 
 export function HomeView() {
@@ -68,6 +69,7 @@ export function HomeView() {
             label: 'Sessions',
             count: { value: live.length, title: 'Sessions vivantes et reviews à traiter' },
           },
+          { id: 'backlog', label: 'Backlog' },
           { id: 'worktrees', label: 'Copies de travail' },
           { id: 'councils', label: 'Council' },
           { id: 'stats', label: 'Statistiques' },
@@ -92,6 +94,10 @@ export function HomeView() {
               </ErrorBoundary>
             )}
           </section>
+        ) : tab === 'backlog' ? (
+          <ErrorBoundary zone="Backlog global">
+            <GlobalBacklog />
+          </ErrorBoundary>
         ) : tab === 'worktrees' ? (
           <ErrorBoundary zone="Copies de travail">
             <Worktrees />

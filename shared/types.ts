@@ -336,6 +336,8 @@ export interface Task {
   execution: TaskExecution;
   // Epic du même projet qui regroupe la tâche, ou null.
   epicId: string | null;
+  // Tâche d'un autre projet que celle-ci doit traiter à sa place (délégation), ou null. La source reste dans son projet.
+  originTaskId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -347,6 +349,8 @@ export interface Epic {
   title: string;
   description: string;
   sourceSessionId: string | null;
+  // Epic d'un autre projet que celui-ci traite à sa place (délégation), ou null. La source reste dans son projet.
+  originEpicId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -791,6 +795,8 @@ export function parseTask(v: unknown): Task | null {
   const dependsOn = Array.isArray(v.dependsOn) ? v.dependsOn.filter((d): d is string => typeof d === 'string') : [];
   // Serveur antérieur aux epics (machine distante) : aucune.
   const epicId = typeof v.epicId === 'string' ? v.epicId : null;
+  // Serveur antérieur à la délégation entre projets : aucune.
+  const originTaskId = typeof v.originTaskId === 'string' ? v.originTaskId : null;
   if (
     id === null ||
     projectId === null ||
@@ -821,6 +827,7 @@ export function parseTask(v: unknown): Task | null {
     sourceSessionId,
     dependsOn,
     epicId,
+    originTaskId,
     createdAt,
     updatedAt,
   };
@@ -833,6 +840,7 @@ export function parseEpic(v: unknown): Epic | null {
   const title = asString(v.title);
   const description = typeof v.description === 'string' ? v.description : '';
   const sourceSessionId = asNullableString(v.sourceSessionId);
+  const originEpicId = typeof v.originEpicId === 'string' ? v.originEpicId : null;
   const createdAt = asNumber(v.createdAt);
   const updatedAt = asNumber(v.updatedAt);
   if (
@@ -845,7 +853,7 @@ export function parseEpic(v: unknown): Epic | null {
   ) {
     return null;
   }
-  return { id, projectId, title, description, sourceSessionId, createdAt, updatedAt };
+  return { id, projectId, title, description, sourceSessionId, originEpicId, createdAt, updatedAt };
 }
 
 export function parseEpicList(v: unknown): Epic[] {

@@ -7,6 +7,7 @@ import { errorMessage, pluralize, WORKSPACE_TARGET } from '../format.ts';
 import { useStoredFlag } from '../storage.ts';
 import { useStore } from '../store.tsx';
 import { useBacklog } from './context.ts';
+import { DelegateButton, EpicDelegation } from './Delegation.tsx';
 import { EpicForm } from './EpicForm.tsx';
 import { EpicRunPanel } from './EpicRunPanel.tsx';
 import { dependencyOrder, epicPrompt, taskLabel } from './tasks.ts';
@@ -14,8 +15,8 @@ import { TaskRow } from './TaskRow.tsx';
 import { TaskSessionLink } from './TaskSessionLink.tsx';
 
 export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean }) {
-  const { projects, sessions, updateEpic, deleteEpic } = useStore();
-  const { projectTasks, launching, startEpic, reportError } = useBacklog();
+  const { projects, sessions, tasks, epics, updateEpic, deleteEpic } = useStore();
+  const { projectId, projectTasks, launching, startEpic, reportError } = useBacklog();
   const project = projects.find((p) => p.id === epic.projectId);
   const workspaceMode = project?.workspaceMode ?? 'isolated';
   // Repli mémorisé par ce navigateur ; sans stockage disponible, il reste utilisable sans persistance.
@@ -43,6 +44,10 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
   // par « Reprendre » dans son panneau.
   const runHoldsEpic = run !== null && (RUN_ACTIVE.includes(run.status) || run.status === 'failed');
   const isLaunching = launching.has(epic.id);
+  // Traité dans un autre projet (lui-même ou une de ses tâches) : le lancer ici le ferait traiter deux fois.
+  const delegated =
+    epics.some((e) => e.originEpicId === epic.id) ||
+    open.some((t) => tasks.some((other) => other.originTaskId === t.id));
   const labelOf = (id: string): string => {
     const task = byId.get(id);
     return task ? taskLabel(task, 80) : id;
@@ -52,11 +57,13 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
   const startHint =
     open.length === 0
       ? 'Aucune tâche ouverte dans cet epic'
-      : outsideBlockers.length > 0
-        ? `Attend des tâches hors de l'epic : ${outsideBlockers.map((t) => taskLabel(t, 60)).join(' · ')}`
-        : activeSession !== undefined
-          ? 'Une session traite déjà cet epic'
-          : `Le serveur ordonnance les ${open.length} tâche(s) selon leurs dépendances${continuedWorkspace ? `, dans ${continuedWorkspace.path}` : ''}`;
+      : delegated
+        ? 'Traité dans un autre projet : supprimez sa copie pour le traiter ici'
+        : outsideBlockers.length > 0
+          ? `Attend des tâches hors de l'epic : ${outsideBlockers.map((t) => taskLabel(t, 60)).join(' · ')}`
+          : activeSession !== undefined
+            ? 'Une session traite déjà cet epic'
+            : `Le serveur ordonnance les ${open.length} tâche(s) selon leurs dépendances${continuedWorkspace ? `, dans ${continuedWorkspace.path}` : ''}`;
 
   return (
     <div className="epic">
@@ -74,13 +81,20 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
             <span style={{ width: members.length === 0 ? 0 : `${(doneCount / members.length) * 100}%` }} />
           </span>
           {activeSession ? <TaskSessionLink session={activeSession} /> : null}
+          <EpicDelegation epic={epic} />
         </div>
         <div className="row-actions">
           {runHoldsEpic ? null : (
             <button
               type="button"
               className="btn primary"
-              disabled={isLaunching || open.length === 0 || outsideBlockers.length > 0 || activeSession !== undefined}
+              disabled={
+                isLaunching ||
+                open.length === 0 ||
+                outsideBlockers.length > 0 ||
+                activeSession !== undefined ||
+                delegated
+              }
               title={startHint}
               onClick={() => startEpic(epic, epicPrompt(epic))}
             >
@@ -95,6 +109,9 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
                       : `Traiter l'epic ${WORKSPACE_TARGET[workspaceMode]}`}
             </button>
           )}
+          {!runHoldsEpic && !delegated && open.length > 0 ? (
+            <DelegateButton kind="epics" id={epic.id} projectId={projectId} onError={reportError} />
+          ) : null}
           <EpicReviewActions epic={epic} run={run} onError={reportError} />
           <button type="button" className="btn" onClick={() => setEditing((v) => !v)}>
             Éditer

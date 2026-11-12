@@ -186,6 +186,8 @@ export function registerTaskRoutes(ctx: RouteContext): void {
     const task = db.getTask(request.params.id);
     if (task === null) return error(reply, 404, 'Tâche introuvable');
     if (epicRunner.reserved(task.id)) return error(reply, 409, 'Tâche réservée par un ordonnanceur d’epic.');
+    if (db.listTasks().some((t) => t.originTaskId === task.id))
+      return error(reply, 409, 'Tâche traitée dans un autre projet : supprimez sa copie pour la traiter ici.');
     if (task.epicId && epicRunner.list(task.epicId).some(isActiveRun))
       return error(reply, 409, 'Cet epic est en cours : utilisez reprendre et recalculer pour ajouter ses tâches.');
     const project = found(db.getProject(task.projectId), reply, 'Projet introuvable');

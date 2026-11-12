@@ -25,6 +25,16 @@ export function epicDescription(value: unknown): string | null {
 export const EPIC_TITLE_ERROR = `Le titre de l'epic doit contenir entre 1 et ${MAX_EPIC_TITLE_LENGTH} caractères`;
 export const EPIC_DESCRIPTION_ERROR = `La description de l'epic doit contenir au plus ${MAX_TASK_LENGTH} caractères`;
 
+// Valide l'epic global proposé pour une tâche du backlog global : null (aucun) ou un epic existant.
+export function checkGlobalEpic(
+  db: RouteContext['db'],
+  value: unknown,
+): { ok: true; id: string | null } | { ok: false; message: string } {
+  if (value === null) return { ok: true, id: null };
+  if (typeof value !== 'string' || db.getGlobalEpic(value) === null) return { ok: false, message: 'Epic introuvable' };
+  return { ok: true, id: value };
+}
+
 // Valide { title, description?, taskIds? } puis crée l'epic et y range les tâches désignées.
 export function createEpic(
   ctx: RouteContext,
@@ -150,6 +160,17 @@ export function registerEpicRoutes(ctx: RouteContext): void {
     await catalog.ready();
     const epic = requireEpic(request, reply);
     if (epic === null) return reply;
+    const all = db.listTasks();
+    const members = all.filter((t) => t.epicId === epic.id && t.status !== 'done');
+    if (
+      db.listEpics().some((e) => e.originEpicId === epic.id) ||
+      members.some((t) => all.some((other) => other.originTaskId === t.id))
+    )
+      return error(
+        reply,
+        409,
+        'Epic (ou une de ses tâches) traité dans un autre projet : supprimez sa copie pour le traiter ici.',
+      );
     const body = asRecord(request.body) ?? {};
     const options = parseSessionDefaults(catalog, db.getProject(epic.projectId)!.sessionDefaults, {
       ...body,
