@@ -1,6 +1,6 @@
 import { AdvisorPanel, useAdvisor } from './AdvisorSettings.tsx';
 import { AgentLabel } from './AgentLabel.tsx';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { acquireGeneralSlack, getGeneralSlack, getSlackStatus, updateSlackSettings } from './api.ts';
 import { errorMessage, needsAttention, relativeTime, sessionTitle } from './format.ts';
 import { AppVersion, MachineSwitcher } from './MachineSwitcher.tsx';
@@ -9,13 +9,13 @@ import { useNow } from './polling.tsx';
 import { StatusDot } from './StatusDot.tsx';
 import { useStore } from './store.tsx';
 import { UsageGauges } from './UsageGauges.tsx';
+import { SidebarTodos } from './SidebarTodos.tsx';
 import { WorktreeLabel } from './WorktreeLabel.tsx';
 import { SessionEpicBadge } from './SessionEpicBadge.tsx';
 import { NumberSetting, SLACK_ALERT_TOGGLES, SlackWatchSettings } from './SlackWatchSettings.tsx';
 import { projectSlackLabel } from './ProjectSlackDialog.tsx';
 import type { Session } from '../../shared/types.ts';
 import type { GeneralSlackStatus, SlackSettings, SlackStatus } from '../../shared/machine.ts';
-import { useSessionPreview } from './ScreenPreview.tsx';
 import { attentionTone, SessionAttention } from './SessionMeta.tsx';
 
 export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () => void }) {
@@ -120,6 +120,8 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
           </ul>
         )}
       </section>
+
+      <SidebarTodos />
 
       <section className="side-section side-advisor">
         <button
@@ -304,10 +306,14 @@ function AttentionItem({
   now: number;
   onNavigate: () => void;
 }) {
+  const { projects } = useStore();
   const tone = attentionTone(session);
-  const preview = useSessionPreview(session.id);
+  const color = projects.find((project) => project.id === session.projectId)?.color ?? null;
   return (
-    <li className="attention-item">
+    <li
+      className={color ? 'attention-item colored' : 'attention-item'}
+      style={color ? ({ '--project-color': color } as CSSProperties) : undefined}
+    >
       <a
         href={href(`#/s/${session.id}`)}
         className={`attention-link ${tone} ${active ? 'active' : ''}`}
@@ -327,9 +333,7 @@ function AttentionItem({
       </a>
       <div className="attention-extra">
         <SessionAttention session={session} onNavigate={onNavigate} />
-        {preview.button}
       </div>
-      {preview.popover}
     </li>
   );
 }

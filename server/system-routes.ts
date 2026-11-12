@@ -12,12 +12,14 @@ import { WatchError } from './slack.ts';
 import { deliveryModes, WATCH_LABEL_MAX, watchRequestFrom } from './slack-state.ts';
 import { parseSlackPermalink } from '../bin/slack-permalink.mjs';
 import { normalizeAdvisorModel, WATCH_DELIVERIES } from '../shared/machine.ts';
+import { registerTodoRoutes } from './todo-routes.ts';
 
 const { orError: watchOrError } = routeErrors(statusCodeOf(WatchError, 500));
 
 // Routes propres à la machine : opérations, synchronisation entre machines, agents, quotas, mises à jour, Slack.
 export function registerSystemRoutes(ctx: RouteContext): void {
   const { app, db, peers, notifier, catalog } = ctx;
+  registerTodoRoutes(app, db);
 
   app.get<{ Querystring: { projectId?: string } }>('/api/operations', async (request) =>
     notifier.operations.list(request.query.projectId),

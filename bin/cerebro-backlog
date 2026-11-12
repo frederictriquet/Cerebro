@@ -44,6 +44,12 @@ Autre projet (par exemple une limite de Cerebro repérée en travaillant ailleur
                                session a créé
   --projects                   projets de Cerebro (nom, identifiant)
 
+Rattacher à cette session des tâches qui existent déjà (travail commencé hors du backlog) :
+  --claim <id> [<id>...]       rattache des tâches, ou les tâches ouvertes d'un epic (identifiant d'epic) ;
+                               elles passent « démarrées », confiées à cette session ; --done <id> les clôt
+  --release <id> [<id>...]     rend au backlog des tâches rattachées par erreur (de nouveau à faire)
+  --list --full / --epics --full   texte complet des tâches et des epics, pour choisir quoi rattacher
+
 Autres commandes :
   --list                       tâches du projet : identifiant, statut, epic, dépendances
   --depends <id> [<id>...]     remplace les dépendances de la tâche <id>
@@ -138,6 +144,15 @@ function takeOptions(args, names) {
   return { options, rest };
 }
 
+// Texte complet décalé sous son identifiant.
+function indent(text) {
+  return text
+    .trim()
+    .split('\n')
+    .map((line) => `      | ${line}`)
+    .join('\n');
+}
+
 function epicLabel(epics, id) {
   const epic = epics.find((e) => e.id === id);
   return epic === undefined ? id : `${firstLine(epic.title)} (${id})`;
@@ -170,7 +185,7 @@ async function add(args, epic) {
   });
 }
 
-async function list() {
+async function list(full = false) {
   const [tasks, epics] = await Promise.all([call('GET', ''), call('GET', '/epics')]);
   if (tasks.length === 0) {
     process.stdout.write('Backlog vide.\n');
@@ -182,10 +197,11 @@ async function list() {
     const mine = task.mine ? ' [créée par cette session]' : '';
     const assigned = task.assigned ? ' [confiée à cette session]' : '';
     process.stdout.write(`${task.id}  ${task.status}${mine}${assigned}  ${firstLine(task.text)}${inEpic}${deps}\n`);
+    if (full) process.stdout.write(`${indent(task.text)}\n`);
   }
 }
 
-async function listEpics() {
+async function listEpics(full = false) {
   const [epics, tasks] = await Promise.all([call('GET', '/epics'), call('GET', '')]);
   if (epics.length === 0) {
     process.stdout.write('Aucun epic.\n');
@@ -195,7 +211,8 @@ async function listEpics() {
   for (const epic of epics) {
     const mine = epic.mine ? ' [cette session]' : '';
     process.stdout.write(`${epic.id}${mine}  ${firstLine(epic.title)}\n`);
-    if (epic.description !== '') process.stdout.write(`    ${firstLine(epic.description)}\n`);
+    if (epic.description !== '')
+      process.stdout.write(full ? `${indent(epic.description)}\n` : `    ${firstLine(epic.description)}\n`);
     for (const id of epic.tasks) {
       const task = byId.get(id);
       process.stdout.write(`    - ${id}  ${task?.status ?? '?'}  ${task === undefined ? '' : firstLine(task.text)}\n`);
@@ -231,9 +248,24 @@ async function main(args) {
       process.stdout.write(USAGE);
       return;
     case '--list':
-      return list();
+      return list(rest.includes('--full'));
     case '--epics':
-      return listEpics();
+      return listEpics(rest.includes('--full'));
+    case '--claim': {
+      if (rest.length === 0) throw new Error('--claim <tâche-id | epic-id> [...]');
+      const { claimed, already } = await call('POST', '/claim', { ids: rest });
+      if (claimed.length > 0) process.stdout.write(`${claimed.length} tâche(s) rattachée(s) à cette session :\n`);
+      for (const task of claimed) process.stdout.write(`${task.id}  ${firstLine(task.text)}\n`);
+      if (already.length > 0) process.stdout.write(`Déjà rattachée(s) : ${already.join(', ')}\n`);
+      return;
+    }
+    case '--release': {
+      if (rest.length === 0) throw new Error('--release <tâche-id | epic-id> [...]');
+      const { released } = await call('POST', '/release', { ids: rest });
+      process.stdout.write(`${released.length} tâche(s) rendue(s) au backlog (à faire).\n`);
+      for (const task of released) process.stdout.write(`${task.id}  ${firstLine(task.text)}\n`);
+      return;
+    }
     case '--epic-create': {
       const { options, rest: positional } = takeOptions(rest, ['description']);
       const [title, ...taskIds] = positional;

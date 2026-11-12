@@ -374,6 +374,77 @@ body.sidebar-resizing .main {
   align-items: center;
 }
 
+.usage-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.usage-summary-agent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.gauge-mini {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: var(--running);
+  background: conic-gradient(currentColor var(--usage-percent), var(--line) 0);
+  cursor: help;
+}
+
+.gauge-mini.warn {
+  color: var(--waiting);
+}
+
+.gauge-mini.high {
+  color: var(--danger);
+}
+
+.gauge-mini-value {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--bg-1);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gauge-mini-pace {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.gauge-mini-pace::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: calc(50% - 1px);
+  width: 2px;
+  height: 5px;
+  border-radius: 1px;
+  background: var(--text);
+  opacity: 0.55;
+}
+
+.usage-summary-empty {
+  font-size: 11px;
+  color: var(--faint);
+  cursor: help;
+}
+
 /* Agents, gauges and their lines are cells of .usage-grid: the columns line up across agents. */
 .usage-agent {
   display: contents;
@@ -696,6 +767,113 @@ body.sidebar-resizing .main {
   list-style: none;
   margin: 0;
   padding: 0;
+}
+
+.side-todos {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(30vh, 260px);
+  margin: 12px 0;
+}
+
+.side-todos > :not(.todo-list) {
+  flex-shrink: 0;
+}
+
+.todo-add,
+.todo-edit-actions,
+.todo-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.todo-add {
+  margin-bottom: 6px;
+}
+
+.todo-add input,
+.todo-edit input {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.todo-add .btn,
+.todo-edit .btn {
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.todo-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.todo-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.todo-row > input {
+  margin: 4px 0 0;
+  accent-color: var(--accent);
+}
+
+.todo-text {
+  padding-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.todo-row.done .todo-text {
+  color: var(--faint);
+  text-decoration: line-through;
+}
+
+.todo-edit {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.todo-icon {
+  width: 22px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.todo-icon:hover,
+.todo-icon:focus-visible {
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.todo-delete:hover,
+.todo-delete:focus-visible {
+  color: var(--danger);
+}
+
+.todo-load-error {
+  font-size: 11px;
 }
 
 .side-list.nested {
@@ -1211,9 +1389,13 @@ textarea {
 }
 
 .project-tab.active {
+  position: relative;
+  z-index: 1;
   color: var(--text);
   background: #1e3a6b;
   border-color: #3d5a8c;
+  outline: 3px solid var(--text);
+  outline-offset: 1px;
 }
 
 .project-tab-name {
@@ -1237,6 +1419,65 @@ textarea {
 .project-tab.active .project-tab-count {
   color: #d6e4ff;
   background: rgba(11, 13, 17, 0.4);
+}
+
+.project-tab.colored {
+  color: var(--text);
+  background: color-mix(in srgb, var(--project-color) 32%, var(--bg-2));
+  border-color: color-mix(in srgb, var(--project-color) 55%, var(--line));
+}
+
+.project-tab.colored:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--project-color) 36%, var(--bg-2));
+}
+
+.project-tab.colored.active {
+  padding-bottom: 10px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--project-color) 42%, var(--bg-2));
+  border-color: var(--project-color);
+  box-shadow: inset 0 -6px 0 var(--project-color);
+}
+
+.project-tab.colored.alert.waiting {
+  border-color: var(--waiting);
+}
+
+.project-tab.colored.alert.idle {
+  border-color: var(--idle);
+}
+
+.project-tab.colored.drop-before {
+  box-shadow:
+    -3px 0 0 var(--accent),
+    var(--shadow);
+}
+
+.project-tab.colored.drop-after {
+  box-shadow:
+    3px 0 0 var(--accent),
+    var(--shadow);
+}
+
+.project-tab.colored.active.drop-before {
+  box-shadow:
+    inset 0 -6px 0 var(--project-color),
+    -3px 0 0 var(--accent),
+    var(--shadow);
+}
+
+.project-tab.colored.active.drop-after {
+  box-shadow:
+    inset 0 -6px 0 var(--project-color),
+    3px 0 0 var(--accent),
+    var(--shadow);
+}
+
+.project-tab.colored .project-tab-count,
+.project-tab.colored.active .project-tab-count {
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
 }
 
 .project-tab.alert.waiting {
@@ -2035,6 +2276,26 @@ label.block {
 
 .attention-item {
   margin-bottom: 4px;
+}
+
+.attention-item.colored {
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--project-color) 34%, var(--bg-1));
+}
+
+.attention-item.colored:hover,
+.attention-item.colored:has(.attention-link.active) {
+  background: color-mix(in srgb, var(--project-color) 42%, var(--bg-1));
+}
+
+.attention-item.colored .attention-link,
+.attention-item.colored .attention-link:hover,
+.attention-item.colored .attention-link.active {
+  background: transparent;
+}
+
+.attention-item.colored .meta {
+  color: color-mix(in srgb, var(--text) 82%, var(--muted));
 }
 
 .attention-extra {

@@ -1,7 +1,7 @@
-import { AgentLabel } from './AgentLabel.tsx';
-import { useState } from 'react';
+import { AgentLabel, AgentLogo } from './AgentLabel.tsx';
+import { useState, type CSSProperties } from 'react';
 import { getUpdates, getUsage, setAutoUpdate, startUpdate } from './api.ts';
-import { errorMessage, formatDateTime, formatDuration, relativeTime } from './format.ts';
+import { AGENT_LABEL, errorMessage, formatDateTime, formatDuration, relativeTime } from './format.ts';
 import { useNow, usePolling } from './polling.tsx';
 import { useStoredFlag } from './storage.ts';
 import type { AgentAuth, AgentUpdate, AgentUsage, UsageWindow } from '../../shared/machine.ts';
@@ -35,7 +35,7 @@ function elapsedPercent(window: UsageWindow, now: number): number | null {
   return Math.min(100, Math.max(0, 100 - (remaining / window.minutes) * 100));
 }
 
-function Gauge({ window, now }: { window: UsageWindow; now: number }) {
+function Gauge({ window, now, compact = false }: { window: UsageWindow; now: number; compact?: boolean }) {
   const percent = Math.round(window.percent);
   const elapsed = elapsedPercent(window, now);
   const title = [
@@ -45,6 +45,27 @@ function Gauge({ window, now }: { window: UsageWindow; now: number }) {
   ]
     .filter(Boolean)
     .join('\n');
+  if (compact) {
+    return (
+      <span
+        className={`gauge-mini ${level(window.percent)}`}
+        style={{ '--usage-percent': `${Math.min(100, Math.max(0, window.percent))}%` } as CSSProperties}
+        title={title}
+        role="meter"
+        aria-label={window.label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+      >
+        <span className="gauge-mini-value" aria-hidden="true">
+          {percent}
+        </span>
+        {elapsed === null ? null : (
+          <span className="gauge-mini-pace" style={{ transform: `rotate(${elapsed * 3.6}deg)` }} aria-hidden="true" />
+        )}
+      </span>
+    );
+  }
   // Fragment: label, track and value are cells of the section's grid, so columns line up across agents.
   return (
     <>
@@ -238,6 +259,29 @@ export function UsageGauges() {
           <span aria-hidden="true">{collapsed ? '▴' : '▾'}</span>
         </button>
       </h2>
+      {collapsed && usage !== null ? (
+        <div className="usage-summary" role="group" aria-label="Résumé des consommations">
+          {usage.map((u) => (
+            <div key={u.agent} className="usage-summary-agent" role="group" aria-label={AGENT_LABEL[u.agent]}>
+              <span className="agent-label" title={AGENT_LABEL[u.agent]}>
+                <AgentLogo agent={u.agent} />
+              </span>
+              {u.windows.map((w) => (
+                <Gauge key={w.label} window={w} now={now} compact />
+              ))}
+              {u.windows.length === 0 ? (
+                <span
+                  className="usage-summary-empty"
+                  title={u.error ?? 'Consommation indisponible'}
+                  aria-label="Consommation indisponible"
+                >
+                  —
+                </span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div id="sidebar-usage-content" hidden={collapsed}>
         {usage === null ? (
           <p className="empty-hint">{failed ? 'Indisponible' : 'Chargement…'}</p>

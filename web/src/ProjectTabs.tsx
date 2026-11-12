@@ -1,4 +1,4 @@
-import { useRef, useState, type DragEvent } from 'react';
+import { useRef, useState, type CSSProperties, type DragEvent } from 'react';
 import { Modal } from './Dialog.tsx';
 import { attentionCounts, plural } from './format.ts';
 import { NewProjectForm } from './NewProjectForm.tsx';
@@ -95,7 +95,8 @@ export function ProjectTabs({ route }: { route: Route }) {
         return (
           <a
             key={project.id}
-            className={`project-tab${active ? ' active' : ''}${alerts > 0 ? ` alert ${alertTone}` : ''}${dragging === project.id ? ' dragging' : ''}${dropTarget?.id === project.id ? ` drop-${dropTarget.side}` : ''}`}
+            className={`project-tab${project.color ? ' colored' : ''}${active ? ' active' : ''}${alerts > 0 ? ` alert ${alertTone}` : ''}${dragging === project.id ? ' dragging' : ''}${dropTarget?.id === project.id ? ` drop-${dropTarget.side}` : ''}`}
+            style={project.color ? ({ '--project-color': project.color } as CSSProperties) : undefined}
             href={href(`#/p/${project.id}`)}
             aria-current={active ? 'page' : undefined}
             title={`${project.path}${alertLabel ? `\n${alertLabel}` : ''}`}

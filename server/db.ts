@@ -37,9 +37,14 @@ import {
   type WorkspaceMode,
 } from '../shared/types.ts';
 import type { GlobalBacklog, GlobalEpic, GlobalTask } from '../shared/backlog.ts';
+import type { TodoItem } from '../shared/todos.ts';
 import { isRecord } from './util.ts';
 
 export class SessionProtectionError extends Error {}
+
+type TodoRow = Omit<TodoItem, 'done'> & { done: number };
+const TODO_COLUMNS = 'id, text, done, created_at AS createdAt, updated_at AS updatedAt';
+const todoFromRow = (row: TodoRow): TodoItem => ({ ...row, done: row.done === 1 });
 
 // Un autre agent ne doit pas recevoir le modèle ou l'effort mémorisé pour le précédent.
 // undefined inherits the saved choice; null explicitly resets to the Cerebro default (see parseTuning).
@@ -303,6 +308,13 @@ export class CerebroDatabase {
     this.connection = new DatabaseSync(path);
     this.connection.exec(`
       PRAGMA foreign_keys = ON;
+      CREATE TABLE IF NOT EXISTS todos (
+        id TEXT PRIMARY KEY,
+        text TEXT NOT NULL,
+        done INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -817,6 +829,38 @@ export class CerebroDatabase {
     this.connection
       .prepare('INSERT INTO settings (key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data')
       .run(key, JSON.stringify(value));
+  }
+
+  // Todo-list personnelle de la machine, conservée indépendamment des projets et de leurs backlogs.
+  listTodos(): TodoItem[] {
+    const rows = this.connection
+      .prepare(`SELECT ${TODO_COLUMNS} FROM todos ORDER BY created_at, rowid`)
+      .all() as TodoRow[];
+    return rows.map(todoFromRow);
+  }
+
+  createTodo(text: string): TodoItem {
+    const now = Date.now();
+    const item: TodoItem = { id: randomUUID(), text, done: false, createdAt: now, updatedAt: now };
+    this.connection
+      .prepare('INSERT INTO todos (id, text, done, created_at, updated_at) VALUES (?, ?, 0, ?, ?)')
+      .run(item.id, text, now, now);
+    return item;
+  }
+
+  updateTodo(id: string, patch: Partial<Pick<TodoItem, 'text' | 'done'>>): TodoItem | null {
+    const row = this.connection
+      .prepare(
+        `UPDATE todos SET text = COALESCE(?, text), done = COALESCE(?, done), updated_at = ?
+        WHERE id = ? RETURNING ${TODO_COLUMNS}`,
+      )
+      .get(patch.text ?? null, patch.done === undefined ? null : Number(patch.done), Date.now(), id) as
+      TodoRow | undefined;
+    return row === undefined ? null : todoFromRow(row);
+  }
+
+  deleteTodo(id: string): boolean {
+    return this.connection.prepare('DELETE FROM todos WHERE id = ?').run(id).changes > 0;
   }
 
   // Modèle d'advisor global (`claude --advisor`), appliqué à chaque lancement ou reprise d'une session Claude.

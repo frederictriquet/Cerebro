@@ -567,6 +567,13 @@ mettre ses findings dans le backlog, puis les traiter séparément.
   `--delete` (tâches créées par la session) agissent avec le seul jeton de
   session. `cerebro-backlog --help` détaille l'usage.
 
+  Pour retrouver dans le backlog du travail déjà commencé hors de lui, demandez
+  à la session de lister les tâches et epics qui correspondent
+  (`--list --full`, `--epics --full`). Après votre accord elle les rattache avec
+  `cerebro-backlog --claim <id>...` (tâche, ou epic pour ses tâches ouvertes) :
+  elles passent « démarrées » dans cette session, `--done <id>` les clôt et
+  `--release <id>` rend au backlog celles rattachées par erreur.
+
   Pour signaler depuis une session un besoin qui relève d'un autre projet
   (typiquement une limite de Cerebro repérée en travaillant sur un autre
   dépôt), `--project <nom|id>` en tête vise le backlog de ce projet :
