@@ -1,4 +1,5 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
+import { AgentLabel } from './AgentLabel.tsx';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, apiParsed, markOperationSeen } from './api.ts';
 import { Modal } from './Dialog.tsx';
@@ -56,8 +57,12 @@ function AutomaticCommitRun({
   const [now, setNow] = useState(Date.now);
   const start = useRef<Promise<AutomaticCommit> | null>(null);
   const path = endpoint ?? `/api/projects/${projectId}/git`;
+  // Le serveur passe la phase à « finished » en fin d'opération : la dernière étape vue désigne celle où
+  // l'opération s'est arrêtée.
+  const [lastPhase, setLastPhase] = useState<AutomaticCommit['phase']>('collecting');
   const show = useCallback((value: AutomaticCommit): void => {
     setOperation(value);
+    if (value.phase !== 'finished') setLastPhase(value.phase);
     setError(null);
     if (value.finishedAt) markOperationSeen(`auto-commit:${value.id}`);
   }, []);
@@ -107,53 +112,70 @@ function AutomaticCommitRun({
     return () => window.clearInterval(timer);
   }, [active]);
   const phase = operation?.phase ?? 'collecting';
-  const steps = [
+  const steps: [AutomaticCommit['phase'], string][] = [
     ['collecting', 'Vérifier les fichiers'],
     ['drafting', 'Rédiger le message'],
     ['committing', 'Créer le commit'],
-    ...(push ? [['pushing', 'Envoyer les commits']] : []),
+    ...(push ? [['pushing', 'Envoyer les commits'] as [AutomaticCommit['phase'], string]] : []),
   ];
+  const succeeded = operation?.status === 'succeeded';
+  const stopped = !active && !succeeded;
+  const currentIndex = steps.findIndex(([key]) => key === lastPhase);
+  const stepState = (index: number): 'done' | 'current' | 'stopped' | 'todo' => {
+    if (succeeded || index < currentIndex) return 'done';
+    if (index > currentIndex) return 'todo';
+    return stopped ? 'stopped' : 'current';
+  };
+  const stopTitle = operation?.needsProjectScope
+    ? 'Cette conversation utilise le dossier partagé du projet.'
+    : operation?.status === 'cancelled'
+      ? 'Opération annulée.'
+      : operation
+        ? 'L’opération s’est arrêtée.'
+        : 'L’opération n’a pas pu démarrer.';
+  const stopMessage = operation?.needsProjectScope
+    ? 'Ses changements ne peuvent pas être séparés de ceux des autres conversations. Vous pouvez commiter et pousser les changements du projet entier depuis ici.'
+    : (operation?.error ?? error);
   return (
     <Modal title={push ? 'Commit et push automatiques' : 'Commit automatique'} onClose={onClose}>
       <div className="automatic-commit">
-        <p className="automatic-commit-status">
-          <ActivityStatus active={active}>
-            {operation?.status === 'succeeded'
-              ? operation.push
-                ? operation.commits.length
-                  ? 'Commit et push terminés.'
-                  : 'Push terminé.'
-                : operation.commits.length
-                  ? 'Commit créé.'
-                  : 'Aucun changement à commiter.'
-              : operation?.needsProjectScope
-                ? 'Cette conversation utilise le dossier partagé du projet.'
-                : operation?.status === 'cancelled'
-                  ? 'Opération annulée.'
-                  : operation && operation.status !== 'running'
-                    ? 'L’opération s’est arrêtée.'
-                    : !operation && error
-                      ? 'L’opération n’a pas pu démarrer.'
-                      : PHASE_LABEL[operation?.phase ?? 'collecting']}
-          </ActivityStatus>
+        <p className="meta">
+          {scopeLabel ?? (endpoint ? 'Changements de cette copie de travail' : 'Changements du projet')}
+          {operation?.path ? (
+            <>
+              {' · '}
+              <span className="mono">{operation.path}</span>
+            </>
+          ) : null}
         </p>
+        <ol className="automatic-commit-steps" aria-label="Étapes de l’opération">
+          {steps.map(([key, label], index) => {
+            const state = stepState(index);
+            return (
+              <li key={key} className={state} aria-current={state === 'current' ? 'step' : undefined}>
+                <span
+                  className={
+                    state === 'current' ? 'pill status running' : state === 'stopped' ? 'pill status waiting' : 'pill'
+                  }
+                >
+                  {state === 'done' ? '✓' : index + 1}
+                </span>
+                {label}
+              </li>
+            );
+          })}
+        </ol>
         {active ? (
           <div className="automatic-commit-progress">
-            <ol aria-label="Étapes de l’opération">
-              {steps.map(([key, label]) => (
-                <li
-                  key={key}
-                  aria-current={phase === key ? 'step' : undefined}
-                  className={phase === key ? 'current' : undefined}
-                >
-                  {label}
-                </li>
-              ))}
-            </ol>
-            <p className="meta">
-              {Math.max(0, Math.floor((now - (operation?.startedAt ?? openedAt)) / 1000))} s écoulées
+            <p className="automatic-commit-status">
+              <ActivityStatus active>{PHASE_LABEL[phase]}</ActivityStatus>
+              <span className="meta">
+                {' · '}
+                {Math.max(0, Math.floor((now - (operation?.startedAt ?? openedAt)) / 1000))} s
+                {operation?.files.length ? ` · ${plural(operation.files.length, 'fichier')} à commiter` : ''}
+              </span>
             </p>
-            <p>
+            <p className="hint">
               {phase === 'collecting'
                 ? 'Lecture des changements Git en cours.'
                 : phase === 'drafting'
@@ -162,37 +184,37 @@ function AutomaticCommitRun({
                     ? 'Git enregistre les changements. Cette étape ne peut plus être annulée.'
                     : 'Git envoie les commits aux dépôts distants. Cette étape ne peut plus être annulée.'}
             </p>
-            {operation?.files.length ? (
-              <p className="meta">{plural(operation.files.length, 'fichier')} à commiter</p>
-            ) : null}
           </div>
         ) : null}
-        <p className="meta">
-          {scopeLabel ?? (endpoint ? 'Changements de cette copie de travail' : 'Changements du projet')}
-          {operation?.path ? ` · ${operation.path}` : ''}
-        </p>
-        {operation && operation.phase === 'drafting' ? (
-          <p className="meta">
-            {operation.settings.agent} · {operation.settings.model ?? 'modèle par défaut'} · effort{' '}
-            {operation.settings.effort ?? 'par défaut'}
-          </p>
+        {succeeded ? (
+          <div className="automatic-commit-ok" role="status">
+            <b>
+              {operation.push
+                ? operation.commits.length
+                  ? 'Commit et push terminés.'
+                  : 'Push terminé.'
+                : operation.commits.length
+                  ? 'Commit créé.'
+                  : 'Aucun changement à commiter.'}
+            </b>
+            {operation.commits.map((commit) => (
+              <span key={commit.hash}>
+                <code>{commit.hash.slice(0, 8)}</code> {commit.title}
+              </span>
+            ))}
+          </div>
         ) : null}
-        {operation?.commits.map((commit) => (
-          <p className="automatic-commit-result" key={commit.hash}>
-            <code>{commit.hash.slice(0, 8)}</code> {commit.title}
-          </p>
-        ))}
-        {operation?.needsProjectScope ? (
-          <p>
-            Ses changements ne peuvent pas être séparés de ceux des autres conversations. Vous pouvez commiter et
-            pousser les changements du projet entier depuis ici.
-          </p>
-        ) : operation?.error ? (
-          <p className="form-error" role="alert">
-            {operation.error}
-          </p>
-        ) : null}
-        {error ? (
+        {stopped ? (
+          <div className="automatic-commit-stop" role="alert">
+            <b>{stopTitle}</b>
+            {stopMessage ? <span>{stopMessage}</span> : null}
+            {operation?.commits.map((commit) => (
+              <span key={commit.hash}>
+                Commit conservé : <code>{commit.hash.slice(0, 8)}</code> {commit.title}
+              </span>
+            ))}
+          </div>
+        ) : error ? (
           <p className="form-error" role="alert">
             {error}
           </p>
@@ -204,7 +226,7 @@ function AutomaticCommitRun({
           </p>
         ))}
         {!operation?.needsProjectScope && operation?.exclusions.length ? (
-          <details>
+          <details className="automatic-commit-fold">
             <summary>
               {plural(operation.exclusions.length, 'fichier écarté, conservé', 'fichiers écartés, conservés')} dans le
               dépôt
@@ -212,7 +234,7 @@ function AutomaticCommitRun({
             <ul>
               {operation.exclusions.map((file) => (
                 <li key={file.path}>
-                  <code>{file.path}</code> — {file.reason}
+                  <code>{file.path}</code> : {file.reason}
                 </li>
               ))}
             </ul>
@@ -238,7 +260,7 @@ function AutomaticCommitRun({
           </div>
         ) : null}
         {operation?.files.length || operation?.pushOperation ? (
-          <details>
+          <details className="automatic-commit-fold">
             <summary>Détails de l’opération</summary>
             <p className="path">{operation.path}</p>
             {operation.files.length ? <pre>{operation.files.join('\n')}</pre> : null}
@@ -250,28 +272,32 @@ function AutomaticCommitRun({
             ))}
           </details>
         ) : null}
-        <div className="row-actions">
+        <div className="automatic-commit-footer">
+          {operation ? (
+            <span className="hint">
+              <AgentLabel agent={operation.settings.agent} /> · {operation.settings.model ?? 'modèle par défaut'} ·{' '}
+              {operation.settings.effort ?? 'effort par défaut'}
+            </span>
+          ) : null}
+          <span className="automatic-commit-spacer" />
           {operation?.needsProjectScope && projectId ? (
             <button type="button" className="btn primary" onClick={onUseProject}>
               {push ? 'Commiter et pousser tout le projet' : 'Commiter tout le projet'}
             </button>
           ) : null}
-          <button type="button" className="btn" onClick={onClose}>
-            {active ? 'Continuer en arrière-plan' : 'Fermer'}
-          </button>
-          {active && !error ? (
-            <span className="hint">Ce bouton masque la fenêtre sans arrêter l’opération.</span>
-          ) : null}
           {operation?.status === 'running' && ['collecting', 'drafting'].includes(operation.phase) ? (
-            <button
-              type="button"
-              className="btn automatic-commit-cancel"
-              disabled={cancelling}
-              onClick={() => void cancel()}
-            >
+            <button type="button" className="btn" disabled={cancelling} onClick={() => void cancel()}>
               <ActivityStatus active={cancelling}>{cancelling ? 'Annulation…' : 'Annuler l’opération'}</ActivityStatus>
             </button>
           ) : null}
+          <button
+            type="button"
+            className="btn"
+            title={active ? 'Masque la fenêtre sans arrêter l’opération' : undefined}
+            onClick={onClose}
+          >
+            {active ? 'Continuer en arrière-plan' : 'Fermer'}
+          </button>
         </div>
       </div>
     </Modal>

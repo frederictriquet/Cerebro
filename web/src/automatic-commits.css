@@ -8,7 +8,11 @@
 .automatic-commit-status {
   font-weight: 600;
 }
-.automatic-commit-result code {
+.automatic-commit-status .meta {
+  font-weight: 400;
+}
+.automatic-commit-ok code,
+.automatic-commit-stop code {
   color: var(--accent);
 }
 .automatic-commit pre {
@@ -46,20 +50,83 @@
 
 .automatic-commit-progress {
   display: grid;
-  gap: 12px;
+  gap: 4px;
 }
-.automatic-commit-progress ol {
+.automatic-commit-steps {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 1.75rem;
-  padding-left: 1.25rem;
+  flex-direction: column;
+  gap: 6px;
   margin: 0;
+  padding: 0;
+  list-style: none;
   color: var(--muted);
 }
-.automatic-commit-progress li.current {
-  color: var(--accent);
+.automatic-commit .automatic-commit-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.automatic-commit-steps li.done {
+  color: var(--text);
+}
+.automatic-commit-steps li.current {
+  color: var(--running);
   font-weight: 600;
 }
-.automatic-commit-cancel {
-  margin-left: auto;
+.automatic-commit-steps li.stopped {
+  color: var(--waiting);
+  font-weight: 600;
+}
+.automatic-commit-steps .pill {
+  justify-content: center;
+  min-width: 20px;
+}
+.automatic-commit-stop,
+.automatic-commit-ok {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--waiting-border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  overflow-wrap: anywhere;
+}
+.automatic-commit-stop b {
+  color: var(--waiting);
+  font-weight: 600;
+}
+.automatic-commit-ok {
+  border-color: var(--running-border);
+}
+.automatic-commit-ok b {
+  color: var(--running);
+  font-weight: 600;
+}
+.automatic-commit-fold {
+  padding: 8px 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-lg);
+}
+.automatic-commit-fold summary {
+  color: var(--muted);
+  cursor: pointer;
+}
+.automatic-commit-fold[open] summary {
+  margin-bottom: 8px;
+}
+.automatic-commit-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.automatic-commit-spacer {
+  flex: 1 1 auto;
+}
+.automatic-commit .mono {
+  font-family: var(--font-mono);
 }
