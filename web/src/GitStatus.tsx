@@ -1,12 +1,14 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useCallback, useId, useState } from 'react';
 import { api } from './api.ts';
-import { plural } from './format.ts';
+import { plural, sessionTitle } from './format.ts';
 import { GitActions } from './GitActions.tsx';
 import { usePolling } from './polling.tsx';
-import { parseGitInfo, type GitInfo } from '../../shared/types.ts';
+import { useStore } from './store.tsx';
+import { parseGitInfo, type GitInfo, type Session } from '../../shared/types.ts';
 
 export function GitStatus({ projectId }: { projectId: string }) {
+  const { sessions } = useStore();
   const [git, setGit] = useState<GitInfo | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -86,6 +88,7 @@ export function GitStatus({ projectId }: { projectId: string }) {
           }
         />
       </div>
+      <CommitBlockers git={git} busy={sessions.filter((s) => s.projectId === projectId && workingInProjectFolder(s))} />
       {filesExpanded && git.dirty > 0 ? <DirtyFiles id={filesId} git={git} /> : null}
       {expanded && count > 0 ? (
         <section id={previewId} className="git-preview" aria-label="Commits à pousser">
@@ -152,5 +155,34 @@ function DirtyFiles({ id, git }: { id: string; git: GitInfo }) {
     <section id={id} className="git-preview" aria-label="Fichiers modifiés">
       <DirtyFileList git={git} noteClassName="meta" />
     </section>
+  );
+}
+
+// Session en tour dans le dossier du projet : le serveur refuse alors le commit automatique (automatic-commits.ts).
+function workingInProjectFolder(session: Session): boolean {
+  return session.worktree === null && session.status !== 'idle' && session.status !== 'exited';
+}
+
+/** Ce qui arrêtera un commit automatique du projet, dit avant de cliquer. */
+function CommitBlockers({ git, busy }: { git: GitInfo; busy: Session[] }) {
+  const staged = git.staged ?? 0;
+  if (busy.length === 0 && staged === 0) return null;
+  return (
+    <ul className="commit-blockers" aria-label="Avant de commiter">
+      {busy.length > 0 ? (
+        <li>
+          {busy.length === 1
+            ? `« ${sessionTitle(busy[0]?.title ?? '')} » travaille encore dans ce dossier`
+            : `${busy.length} sessions travaillent encore dans ce dossier`}{' '}
+          : le commit automatique sera refusé jusqu’à la fin de leur tour.
+        </li>
+      ) : null}
+      {staged > 0 ? (
+        <li>
+          {plural(staged, 'fichier déjà indexé', 'fichiers déjà indexés')} : le commit automatique s’arrêtera s’il
+          touche les mêmes lignes.
+        </li>
+      ) : null}
+    </ul>
   );
 }

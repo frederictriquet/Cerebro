@@ -1,6 +1,6 @@
 .automatic-commit {
   display: grid;
-  gap: 0.75rem;
+  gap: 12px;
 }
 .automatic-commit p {
   margin: 0;
@@ -30,7 +30,7 @@
 }
 .commit-settings-section {
   display: grid;
-  gap: 0.6rem;
+  gap: 8px;
 }
 .commit-settings-section + .commit-settings-section {
   padding-top: 0.9rem;
@@ -38,7 +38,7 @@
 }
 .commit-settings-section h3 {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: 12px;
 }
 .commit-settings-warning {
   color: var(--waiting);
@@ -46,12 +46,12 @@
 
 .automatic-commit-progress {
   display: grid;
-  gap: 0.75rem;
+  gap: 12px;
 }
 .automatic-commit-progress ol {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem 1.75rem;
+  gap: 8px 1.75rem;
   padding-left: 1.25rem;
   margin: 0;
   color: var(--muted);

@@ -55,7 +55,7 @@ test('a Codex thread resumed days after its creation is still recognised by its 
   handleHook(sessions, 's1', 'codex', 'notify', turnComplete(threadId));
   assert.deepEqual(calls, [
     ['setAgentSessionId', 's1', threadId],
-    ['setReliableState', 's1', 'idle', 'Tour terminé'],
+    ['setReliableState', 's1', 'idle', 'Tour terminé', { kind: 'turn', message: 'Fini' }],
     ['reportTurnComplete', 's1', 'Fini'],
   ]);
 

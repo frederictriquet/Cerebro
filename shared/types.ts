@@ -279,6 +279,27 @@ export interface Project {
   createdAt: number;
 }
 
+export interface QuestionOption {
+  label: string;
+  description: string | null;
+  preview: string | null;
+}
+
+/** Une question posée par l'outil AskUserQuestion (un onglet du dialogue). */
+export interface AgentQuestion {
+  question: string;
+  header: string | null;
+  multiSelect: boolean;
+  options: QuestionOption[];
+}
+
+/** Ce qui attend l'utilisateur, en clair, pour y répondre sans ouvrir la session. */
+export type AttentionDetail =
+  | { kind: 'questions'; questions: AgentQuestion[] }
+  // summary : commande Bash ou fichier visé ; null quand l'agent n'a pas transmis l'outil.
+  | { kind: 'permission'; tool: string | null; summary: string | null }
+  | { kind: 'turn'; message: string };
+
 export interface Session {
   id: string;
   projectId: string;
@@ -296,6 +317,8 @@ export interface Session {
   // Une seule par projet : ouvrir le projet redirige vers elle.
   pinned: boolean;
   attentionReason: string | null;
+  // null quand rien de précis n'est connu (heuristique, signal sans détail, instance antérieure).
+  attentionDetail: AttentionDetail | null;
   agentSessionId: string | null;
   exitCode: number | null;
   createdAt: number;
@@ -384,6 +407,8 @@ export interface GitInfo {
   dirty: number;
   // Chemins comptés par `dirty`, plafonnés ; absent sur une instance antérieure.
   dirtyFiles?: { paths: string[]; truncated: boolean };
+  // Fichiers déjà dans l'index : le commit automatique refuse de partir. Absent sur une instance antérieure.
+  staged?: number;
   ahead: number | null;
   hasCommits: boolean;
   hasUpstream: boolean;
@@ -708,6 +733,47 @@ export function parseProject(v: unknown): Project | null {
   };
 }
 
+function parseQuestion(v: unknown): AgentQuestion | null {
+  if (!isRecord(v) || typeof v.question !== 'string' || !Array.isArray(v.options)) return null;
+  const options = v.options.flatMap((option): QuestionOption[] =>
+    isRecord(option) && typeof option.label === 'string'
+      ? [
+          {
+            label: option.label,
+            description: typeof option.description === 'string' ? option.description : null,
+            preview: typeof option.preview === 'string' ? option.preview : null,
+          },
+        ]
+      : [],
+  );
+  return {
+    question: v.question,
+    header: typeof v.header === 'string' ? v.header : null,
+    multiSelect: v.multiSelect === true,
+    options,
+  };
+}
+
+/** Détail d'attention reçu d'une autre instance ou relu en base ; null quand il est absent ou illisible. */
+export function parseAttentionDetail(v: unknown): AttentionDetail | null {
+  if (!isRecord(v)) return null;
+  if (v.kind === 'questions' && Array.isArray(v.questions)) {
+    const questions = v.questions.map(parseQuestion);
+    return questions.length > 0 && questions.every((question) => question !== null)
+      ? { kind: 'questions', questions: questions as AgentQuestion[] }
+      : null;
+  }
+  if (v.kind === 'permission') {
+    return {
+      kind: 'permission',
+      tool: typeof v.tool === 'string' ? v.tool : null,
+      summary: typeof v.summary === 'string' ? v.summary : null,
+    };
+  }
+  if (v.kind === 'turn' && typeof v.message === 'string') return { kind: 'turn', message: v.message };
+  return null;
+}
+
 export function parseSession(v: unknown): Session | null {
   if (!isRecord(v)) return null;
   const id = asString(v.id);
@@ -754,6 +820,8 @@ export function parseSession(v: unknown): Session | null {
     protected: v.protected === true,
     pinned: v.pinned === true,
     attentionReason,
+    // Absent des serveurs antérieurs au détail d'attention.
+    attentionDetail: parseAttentionDetail(v.attentionDetail),
     agentSessionId,
     exitCode,
     createdAt,
@@ -931,12 +999,14 @@ export function parseGitInfo(v: unknown): GitInfo | null {
     files.paths.every((path) => typeof path === 'string')
       ? { paths: files.paths as string[], truncated: files.truncated }
       : undefined;
+  const staged = typeof v.staged === 'number' && Number.isSafeInteger(v.staged) && v.staged >= 0 ? v.staged : undefined;
   return {
     repository,
     ...(error ? { error } : {}),
     branch,
     dirty: v.dirty,
     ...(dirtyFiles ? { dirtyFiles } : {}),
+    ...(staged !== undefined ? { staged } : {}),
     ahead,
     hasCommits,
     hasUpstream,

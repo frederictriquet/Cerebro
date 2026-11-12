@@ -128,6 +128,7 @@ test('missing repository, unborn branch and missing upstream never invent commit
     branch: 'main',
     dirty: 0,
     dirtyFiles: { paths: [], truncated: false },
+    staged: 0,
     ahead: 0,
     hasCommits: false,
     hasUpstream: false,
@@ -250,4 +251,16 @@ test('project API exposes previews on request without launching an agent', async
   } finally {
     await app.close();
   }
+});
+
+test("les fichiers déjà indexés sont comptés : le commit automatique s'arrête sur un conflit avec eux", async () => {
+  const repo = fixture();
+  base(repo);
+  writeFileSync(join(repo, 'staged.txt'), 'indexé\n');
+  writeFileSync(join(repo, 'loose.txt'), 'pas indexé\n');
+  git(repo, 'add', 'staged.txt');
+  const summary = await gitSummary(repo);
+  assert.equal(summary.staged, 1);
+  assert.equal(summary.dirty, 2);
+  assert.equal(parseGitInfo({ ...summary }).staged, 1);
 });

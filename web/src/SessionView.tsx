@@ -361,6 +361,9 @@ function QuickReply({
       </form>
       <AttachmentStrip {...stripProps} />
       {note ? <p className="form-error">{note}</p> : null}
+      <p className="quick-keys-hint">
+        <kbd>Échap</kbd> retour au projet · <kbd>Maj</kbd>+<kbd>Échap</kbd> envoie Échap à l’agent
+      </p>
     </div>
   );
 }
@@ -593,12 +596,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       <ErrorBoundary zone="Fils Slack surveillés" resetKey={session.id}>
         <SlackWatches sessions={[session]} showSession={false} />
       </ErrorBoundary>
-      {drawer !== null ? (
-        <section
-          id={drawer === 'findings' ? 'session-findings' : undefined}
-          className={`session-drawer${drawer === 'findings' ? ' findings-drawer' : ''}`}
-          aria-label={drawer === 'findings' ? 'Résultats de la review' : undefined}
-        >
+      {drawer === 'tasks' || drawer === 'provenance' ? (
+        <section className="session-drawer">
           <button
             type="button"
             className="btn session-drawer-close"
@@ -610,9 +609,47 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           <ErrorBoundary zone="Panneau" resetKey={`${session.id}:${drawer}`}>
             {drawer === 'tasks' ? (
               <SessionTasksPanel key={session.id} {...sessionTasks} />
-            ) : drawer === 'provenance' ? (
-              <ProvenancePanel {...provenance} />
             ) : (
+              <ProvenancePanel {...provenance} />
+            )}
+          </ErrorBoundary>
+        </section>
+      ) : null}
+      {/* Findings à droite du terminal : il garde sa hauteur ; le panneau se replie en languette. */}
+      <div className="session-body">
+        <div className="term-wrap">
+          <Term
+            key={`${session.id}:${live ? 'live' : 'exited'}`}
+            sessionId={session.id}
+            onApi={onApi}
+            onSelectionChange={setHasSelection}
+            onEscape={() => go(project ? `#/p/${project.id}` : '#/')}
+            onExit={live ? () => void refreshSession(session.id) : undefined}
+          />
+          {hasSelection ? (
+            // preventDefault au mousedown : le clic ne doit pas effacer la sélection du terminal.
+            <div className="selection-bar" onMouseDown={(e) => e.preventDefault()}>
+              <button type="button" className="btn" onClick={() => openSelection('session')}>
+                Nouvelle session
+              </button>
+              <button type="button" className="btn" onClick={() => openSelection('task')}>
+                Ajouter au backlog
+              </button>
+            </div>
+          ) : null}
+        </div>
+        {drawer === 'findings' ? (
+          <aside id="session-findings" className="session-side findings-drawer" aria-label="Résultats de la review">
+            <button
+              type="button"
+              className="btn session-drawer-close"
+              aria-label="Masquer le panneau vers la droite"
+              title="Masquer le panneau"
+              onClick={() => showDrawer(null)}
+            >
+              ›
+            </button>
+            <ErrorBoundary zone="Panneau" resetKey={`${session.id}:findings`}>
               <FindingsPanel
                 key={session.id}
                 sessionId={session.id}
@@ -620,29 +657,21 @@ export function SessionView({ sessionId }: { sessionId: string }) {
                 reports={findings.reports}
                 refresh={findings.refresh}
               />
-            )}
-          </ErrorBoundary>
-        </section>
-      ) : null}
-      <div className="term-wrap">
-        <Term
-          key={`${session.id}:${live ? 'live' : 'exited'}`}
-          sessionId={session.id}
-          onApi={onApi}
-          onSelectionChange={setHasSelection}
-          onEscape={() => go(project ? `#/p/${project.id}` : '#/')}
-          onExit={live ? () => void refreshSession(session.id) : undefined}
-        />
-        {hasSelection ? (
-          // preventDefault au mousedown : le clic ne doit pas effacer la sélection du terminal.
-          <div className="selection-bar" onMouseDown={(e) => e.preventDefault()}>
-            <button type="button" className="btn" onClick={() => openSelection('session')}>
-              Nouvelle session
-            </button>
-            <button type="button" className="btn" onClick={() => openSelection('task')}>
-              Ajouter au backlog
-            </button>
-          </div>
+            </ErrorBoundary>
+          </aside>
+        ) : findings.reports.length > 0 ? (
+          <button
+            type="button"
+            className="session-side-tab"
+            aria-expanded="false"
+            aria-controls="session-findings"
+            title="Afficher les résultats de la review"
+            onClick={() => showDrawer('findings')}
+          >
+            <span aria-hidden="true">‹</span>
+            {session.pendingFindings > 0 ? <span className="count">{session.pendingFindings}</span> : null}
+            <span className="session-side-tab-label">Résultats de la review</span>
+          </button>
         ) : null}
       </div>
       {selectionAction?.kind === 'session' ? (
@@ -666,12 +695,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           onClose={() => setSelectionAction(null)}
         />
       ) : null}
-      <QuickReply
-        key={session.id}
-        sessionId={session.id}
-        disabled={!live}
-        send={send}
-      />
+      <QuickReply key={session.id} sessionId={session.id} disabled={!live} send={send} />
     </div>
   );
 }

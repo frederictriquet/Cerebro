@@ -17,8 +17,10 @@ import {
   DEFAULT_RESOLUTION_SETTINGS,
   DEFAULT_SESSION_DEFAULTS,
   normalizeMode,
+  parseAttentionDetail,
   parsePersonaNeeds,
   type Agent,
+  type AttentionDetail,
   type CouncilRun,
   type CouncilSettings,
   type Effort,
@@ -93,6 +95,7 @@ interface SessionRow {
   protected: number;
   pinned: number;
   attention_reason: string | null;
+  attention_detail: string | null;
   agent_session_id: string | null;
   exit_code: number | null;
   hook_token: string | null;
@@ -275,6 +278,17 @@ const SESSION_SELECT = `SELECT s.*, w.data AS workspace, COALESCE(e.title, s.epi
   FROM sessions s LEFT JOIN session_workspaces w ON w.session_id = s.id
   LEFT JOIN epics e ON e.id = s.epic_id AND e.project_id = s.project_id`;
 
+/** Détail illisible (base modifiée à la main, format futur) : la session reste affichée, sans détail. */
+function readAttentionDetail(value: string | null): AttentionDetail | null {
+  if (value === null) return null;
+  try {
+    return parseAttentionDetail(JSON.parse(value));
+  } catch (error) {
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
 function sessionFromRow(row: SessionRow): Session {
   return {
     id: row.id,
@@ -290,6 +304,7 @@ function sessionFromRow(row: SessionRow): Session {
     protected: row.protected !== 0,
     pinned: row.pinned !== 0,
     attentionReason: row.attention_reason,
+    attentionDetail: readAttentionDetail(row.attention_detail),
     agentSessionId: row.agent_session_id,
     exitCode: row.exit_code,
     createdAt: row.created_at,
@@ -465,6 +480,8 @@ export class CerebroDatabase {
       'CREATE UNIQUE INDEX IF NOT EXISTS sessions_pinned_project ON sessions(project_id) WHERE pinned = 1',
     );
     this.addColumnIfMissing('sessions', 'hook_token', 'TEXT');
+    // Questions, outil à autoriser ou dernier message du tour, en JSON (AttentionDetail).
+    this.addColumnIfMissing('sessions', 'attention_detail', 'TEXT');
     for (const column of ['model', 'effort']) this.addColumnIfMissing('sessions', column, 'TEXT');
     const epicColumns = ['epic_id', 'epic_title'];
     if (epicColumns.some((name) => !this.hasColumn('sessions', name))) {
@@ -1027,6 +1044,7 @@ export class CerebroDatabase {
       protected: false,
       pinned: false,
       attentionReason: null,
+      attentionDetail: null,
       exitCode: null,
       createdAt: now,
       updatedAt: now,
@@ -1081,7 +1099,10 @@ export class CerebroDatabase {
   updateSession(
     id: string,
     changes: Partial<
-      Pick<Session, 'title' | 'status' | 'attention' | 'attentionReason' | 'agentSessionId' | 'exitCode'>
+      Pick<
+        Session,
+        'title' | 'status' | 'attention' | 'attentionReason' | 'attentionDetail' | 'agentSessionId' | 'exitCode'
+      >
     >,
   ): Session | null {
     const current = this.getSession(id);
@@ -1090,7 +1111,7 @@ export class CerebroDatabase {
     this.connection
       .prepare(
         `
-      UPDATE sessions SET title = ?, status = ?, attention = ?, attention_reason = ?,
+      UPDATE sessions SET title = ?, status = ?, attention = ?, attention_reason = ?, attention_detail = ?,
         agent_session_id = ?, exit_code = ?, updated_at = ? WHERE id = ?
     `,
       )
@@ -1099,6 +1120,7 @@ export class CerebroDatabase {
         next.status,
         next.attention ? 1 : 0,
         next.attentionReason,
+        next.attentionDetail === null ? null : JSON.stringify(next.attentionDetail),
         next.agentSessionId,
         next.exitCode,
         next.updatedAt,

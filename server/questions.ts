@@ -1,18 +1,9 @@
 // Structured questions asked through the AskUserQuestion tool (several tabs, several options each).
+import type { AgentQuestion, QuestionOption } from '../shared/types.ts';
 import { isRecord } from './util.ts';
 
-export interface QuestionOption {
-  label: string;
-  description: string | null;
-  preview: string | null;
-}
-
-export interface AgentQuestion {
-  question: string;
-  header: string | null;
-  multiSelect: boolean;
-  options: QuestionOption[];
-}
+// Définis dans shared/types.ts : le navigateur les reçoit dans le détail d'attention des sessions.
+export type { AgentQuestion, QuestionOption };
 
 const PREVIEW_MAX_LINES = 12;
 

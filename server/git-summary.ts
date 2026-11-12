@@ -29,6 +29,8 @@ export interface GitSummary {
   dirty: number;
   /** Paths counted by `dirty`, the first DIRTY_FILES_LIMIT of them; an untracked folder is one `folder/` entry. */
   dirtyFiles: { paths: string[]; truncated: boolean };
+  /** Files already in the index (`git diff --cached`): the automatic commit refuses to start over them. */
+  staged: number;
   ahead: number | null;
   hasCommits: boolean;
   hasUpstream: boolean;
@@ -51,15 +53,17 @@ export async function gitSummary(path: string, includeCommits = false): Promise<
     branch: null,
     dirty: 0,
     dirtyFiles: { paths: [], truncated: false },
+    staged: 0,
     ahead: 0,
     hasCommits: false,
     hasUpstream: false,
   };
   try {
     if (!(await insideWorkTree(path))) return empty;
-    const [branch, status, head, upstream] = await Promise.all([
+    const [branch, status, staged, head, upstream] = await Promise.all([
       git(path, ['branch', '--show-current']),
       git(path, ['status', '--porcelain', '-z']),
+      git(path, ['diff', '--cached', '--name-only', '-z']),
       git(path, ['rev-parse', '--verify', 'HEAD']).catch(() => null),
       git(path, ['rev-parse', '--verify', '@{upstream}']).catch(() => null),
     ]);
@@ -69,6 +73,7 @@ export async function gitSummary(path: string, includeCommits = false): Promise<
       branch: branch || null,
       dirty: paths.length,
       dirtyFiles: { paths: paths.slice(0, DIRTY_FILES_LIMIT), truncated: paths.length > DIRTY_FILES_LIMIT },
+      staged: staged.split('\0').filter((name) => name !== '').length,
       ahead: head ? null : 0,
       hasCommits: head !== null,
       hasUpstream: upstream !== null,

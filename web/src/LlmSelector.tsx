@@ -28,6 +28,7 @@ export function LlmSelector({
   defaults,
   onChange,
   disabled = false,
+  oneLine = false,
   children,
 }: {
   agents: AgentInfo[];
@@ -35,6 +36,8 @@ export function LlmSelector({
   defaults?: LlmSelection;
   onChange: (selection: LlmSelection) => void;
   disabled?: boolean;
+  // Tous les choix sur une ligne, libellés réservés aux lecteurs d'écran (formulaire de la page projet).
+  oneLine?: boolean;
   children?: ReactNode;
 }) {
   const { refreshAgents, agentsRefreshing: refreshing, agentsRefreshError: refreshError, watchAgents } = useStore();
@@ -48,7 +51,7 @@ export function LlmSelector({
   const missingModel = value.model !== null && !models.some((item) => item.value === value.model) ? value.model : null;
   const missingEffort = value.effort !== null && !efforts.includes(value.effort) ? value.effort : null;
   return (
-    <div className="tuning-row">
+    <div className={oneLine ? 'tuning-row one-line' : 'tuning-row'}>
       <div className="tuning">
         <span className="field-label">Agent</span>
         {available.length === 0 ? (

@@ -64,6 +64,33 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
   );
 }
 
+/** Formulaire de réglages : en modale, ou en section de la page Réglages du projet (`inline`). */
+export function SettingsFrame({
+  title,
+  inline,
+  onClose,
+  children,
+}: {
+  title: string;
+  inline: boolean;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  if (!inline) {
+    return (
+      <Modal title={title} onClose={onClose}>
+        {children}
+      </Modal>
+    );
+  }
+  return (
+    <section className="card settings-section" aria-label={title}>
+      <h2>{title}</h2>
+      {children}
+    </section>
+  );
+}
+
 /** Charge le périmètre affiché avant un lancement ; `load` doit rester stable entre les rendus. */
 export function usePrepared<T>(load: (() => Promise<T>) | null): { value: T | null; error: string | null } {
   const [state, setState] = useState<{ value: T | null; error: string | null }>({ value: null, error: null });

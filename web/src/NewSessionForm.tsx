@@ -1,5 +1,14 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
 import { uploadProjectImage } from './api.ts';
 import { AttachmentStrip, restoredAttachment, useAttachedField } from './attachments.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
@@ -49,6 +58,8 @@ export function NewSessionForm({
   launchDisabled = false,
   autoFocus = false,
   className = '',
+  oneLine = false,
+  extraChoices,
   onLaunch,
   onCancel,
 }: {
@@ -63,6 +74,9 @@ export function NewSessionForm({
   launchDisabled?: boolean;
   autoFocus?: boolean;
   className?: string;
+  // Page projet : les choix tiennent sur une ligne, suivis de `extraChoices` (dossier de travail).
+  oneLine?: boolean;
+  extraChoices?: ReactNode;
   onLaunch: (spec: SessionDefaults) => Promise<void>;
   onCancel?: () => void;
 }) {
@@ -245,6 +259,7 @@ export function NewSessionForm({
         value={{ agent, model, effort }}
         defaults={defaults}
         disabled={busy}
+        oneLine={oneLine}
         onChange={(selection) => {
           setAgent(selection.agent);
           setModel(selection.model);
@@ -270,6 +285,7 @@ export function NewSessionForm({
             }}
           />
         </div>
+        {extraChoices}
       </LlmSelector>
       <label className="block">
         Prompt

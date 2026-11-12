@@ -2,10 +2,10 @@ import { SLACK_USER } from './config.ts';
 import type { CerebroDatabase } from './db.ts';
 import type { PeerSync } from './peers.ts';
 import { interpretAnswer } from './questions.ts';
-import type { AgentQuestion } from './questions.ts';
 import type { SessionManager } from './sessions.ts';
 import { messageFrom, type SlackClient, type SlackMessage } from './slack-api.ts';
 import { decodeSlackText, escapeMrkdwn, INACTIVE_SESSION_REPLY, isKeyShortcut, laterThan } from './slack-format.ts';
+import { answerQuestions, delay, typeIntoSession } from './session-input.ts';
 import { armReply, THREAD_MAX_AGE_MS, type ActiveThread, type MessageKind, type SlackState } from './slack-state.ts';
 
 export const POLL_INTERVAL_MS = 5_000;
@@ -23,26 +23,8 @@ const READ_PAGE_SIZE = 200;
 const MAX_DM_PAGES = 10;
 const MAX_THREAD_PAGES = 5;
 
-export function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-/** Types `text` then Enter into a session; an open question dialog is dismissed (Esc) first. */
-export async function typeIntoSession(
-  sessions: SessionManager,
-  sessionId: string,
-  text: string,
-  dismissDialog = false,
-): Promise<boolean> {
-  if (dismissDialog) {
-    if (!sessions.writeInput(sessionId, '\x1b')) return false;
-    sessions.setPendingQuestions(sessionId, null);
-    await delay(800);
-  }
-  if (!sessions.writeInput(sessionId, text)) return false;
-  await delay(150);
-  return sessions.writeInput(sessionId, '\r');
-}
+// Déplacés dans session-input.ts, partagé avec l'interface web ; réexportés pour les modules Slack.
+export { delay, typeIntoSession };
 
 /**
  * Reads every page of a history or replies call, as long as `nextPage` allows another call, and returns the
@@ -73,10 +55,6 @@ export async function readMessages(
   }
   messages.sort((left, right) => (laterThan(left.ts, right.ts) ? 1 : laterThan(right.ts, left.ts) ? -1 : 0));
   return { messages, complete: cursor === null };
-}
-
-function sameQuestions(left: AgentQuestion[] | null, right: AgentQuestion[]): boolean {
-  return left === right || (left !== null && JSON.stringify(left) === JSON.stringify(right));
 }
 
 /**
@@ -254,13 +232,8 @@ export class SlackPoller {
     const session = this.db.getSession(sessionId);
     if (session === null || session.status === 'exited') return false;
     const interpreted = interpretAnswer(questions, text);
-    const answer = (interpreted ?? text).replace(/\s*\n+\s*/g, ' ');
     // Answered or dismissed meanwhile (e.g. from the web UI): the answer becomes a plain message.
-    const dialogOpen = sameQuestions(this.sessions.pendingQuestions(sessionId), questions);
-    const prefix = dialogOpen
-      ? '[Réponse Slack à tes questions, le dialogue a été fermé]'
-      : '[Réponse Slack à tes questions]';
-    if (!(await typeIntoSession(this.sessions, sessionId, `${prefix} ${answer}`, dialogOpen))) return false;
+    if (!(await answerQuestions(this.sessions, sessionId, questions, interpreted ?? text, 'Slack'))) return false;
     // Later replies in this thread are ordinary messages.
     thread.questions = null;
     this.state.markDirty();

@@ -59,6 +59,9 @@ function hookSettings(agent: 'claude' | 'grok'): { hooks: Record<string, object[
           hooks: [{ type: 'command', command: hookCommand(agent, 'PreToolUse', guarded) }],
         },
       ],
+      // Claude seul : l'outil et sa commande, montrés dans la file « À traiter ». Le hook ne répond rien, le
+      // dialogue d'autorisation reste celui de Claude.
+      ...(agent === 'claude' ? { PermissionRequest: [entry('PermissionRequest')] } : {}),
       ...(agent === 'grok' ? { SessionStart: [entry('SessionStart')] } : {}),
     },
   };

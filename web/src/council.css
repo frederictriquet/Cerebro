@@ -7,7 +7,7 @@
 }
 .persona-list {
   display: grid;
-  gap: 0.5rem;
+  gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -17,8 +17,8 @@
 .persona-item {
   display: flex;
   align-items: flex-start;
-  gap: 0.75rem;
-  padding: 0.6rem 0.75rem;
+  gap: 12px;
+  padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg-2);
@@ -32,7 +32,7 @@
 .persona-name {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
   overflow-wrap: anywhere;
 }
 .persona-description {
@@ -43,8 +43,8 @@
 .persona-badge {
   flex: none;
   padding: 0 6px;
-  border-radius: 999px;
-  background: rgba(122, 162, 247, 0.16);
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
   color: var(--accent);
   font-size: 11px;
   font-weight: 600;
@@ -58,7 +58,7 @@
   flex: 1;
   min-width: 0;
   display: grid;
-  gap: 0.75rem;
+  gap: 12px;
 }
 .persona-form label {
   display: grid;
@@ -67,7 +67,7 @@
 .persona-field-head {
   display: flex;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: 8px;
 }
 .persona-counter {
   color: var(--faint);
@@ -90,7 +90,7 @@
 .persona-form .persona-need {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
   cursor: pointer;
 }
 .persona-need input {
@@ -116,7 +116,7 @@
   margin: 0;
 }
 .council-scope {
-  padding: 0.5rem 0.75rem;
+  padding: 8px 12px;
   border: 1px solid var(--line);
   border-left: 3px solid var(--faint);
   border-radius: var(--radius);
@@ -128,7 +128,7 @@
 }
 .council-settings-section {
   display: grid;
-  gap: 0.5rem;
+  gap: 8px;
 }
 .council-settings-section h3 {
   margin: 0;
@@ -138,11 +138,11 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
+  gap: 12px;
 }
 .council-advisors {
   display: grid;
-  gap: 0.5rem;
+  gap: 8px;
 }
 .council-advisor-tabs {
   display: flex;
@@ -152,10 +152,10 @@
 .council-advisor-tab {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 6px;
   padding: 4px 10px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--bg-2);
   color: var(--faint);
   font-size: 12px;
@@ -174,12 +174,12 @@
 }
 .council-advisor-tab[aria-selected='true'] {
   border-color: var(--accent);
-  background: rgba(122, 162, 247, 0.16);
+  background: var(--accent-soft);
   color: var(--accent);
 }
 .council-advisor-tab:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.45);
+  box-shadow: 0 0 0 2px var(--accent-ring);
 }
 /* Même boîte que le logo de l'agent, pour qu'un onglet garde sa largeur quand on (dé)coche. */
 .council-advisor-tab .agent-logo,
@@ -202,8 +202,8 @@
 }
 .council-advisor {
   display: grid;
-  gap: 0.5rem;
-  padding: 0.6rem 0.75rem;
+  gap: 8px;
+  padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg-2);
@@ -222,7 +222,7 @@
   display: flex;
   flex-direction: row;
   align-items: flex-start;
-  gap: 0.6rem;
+  gap: 8px;
   cursor: pointer;
 }
 .council-read-project input {
@@ -236,7 +236,7 @@
 .council-advisor-head {
   display: flex;
   align-items: flex-start;
-  gap: 0.75rem;
+  gap: 12px;
 }
 .council-advisor-head .persona-description {
   flex: 1;
@@ -247,8 +247,8 @@
   flex: none;
   margin-left: auto;
   padding: 2px 10px;
-  border: 1px solid #4a2a32;
-  border-radius: 999px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-pill);
   background: var(--bg);
   color: var(--danger);
   font-size: 12px;
@@ -257,7 +257,7 @@
   cursor: pointer;
 }
 .council-advisor-toggle.on {
-  border-color: #1f4a37;
+  border-color: var(--running-border);
   color: var(--running);
   text-decoration: none;
 }
@@ -267,13 +267,13 @@
 }
 .council-advisor-toggle:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.45);
+  box-shadow: 0 0 0 2px var(--accent-ring);
 }
 /* Sélecteur de composition du lancement : libellé et liste sur une ligne. */
 .council-composition {
   flex-direction: row;
   align-items: center;
-  gap: 0.6rem;
+  gap: 8px;
 }
 .council-composition select {
   width: auto;
@@ -282,7 +282,7 @@
 }
 .council-compositions {
   display: grid;
-  gap: 0.5rem;
+  gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -290,7 +290,7 @@
 .council-composition-item {
   display: grid;
   gap: 0.45rem;
-  padding: 0.6rem 0.75rem;
+  padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg-2);
@@ -298,7 +298,7 @@
 .council-composition-head {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
 }
 .council-composition-head input {
   flex: 1;
@@ -313,7 +313,7 @@
 .council-composition-persona {
   padding: 2px 10px;
   border: 1px dashed var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--bg);
   color: var(--faint);
   font-size: 12px;
@@ -326,7 +326,7 @@
 .council-composition-persona.on {
   border-style: solid;
   border-color: var(--accent);
-  background: rgba(122, 162, 247, 0.16);
+  background: var(--accent-soft);
   color: var(--accent);
 }
 .council-composition-persona:disabled {
@@ -335,7 +335,7 @@
 }
 .council-composition-persona:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.45);
+  box-shadow: 0 0 0 2px var(--accent-ring);
 }
 
 .council-launch,
@@ -359,11 +359,11 @@
   align-items: center;
   justify-content: flex-end;
   flex-wrap: wrap;
-  gap: 0.5rem 0.75rem;
+  gap: 8px 12px;
 }
 .council-runs {
   display: grid;
-  gap: 0.4rem;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -373,8 +373,8 @@
 .council-run {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.5rem 0.75rem;
+  gap: 12px;
+  padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg-2);
@@ -392,7 +392,7 @@
 }
 .council-run-meta {
   display: flex;
-  gap: 0.6rem;
+  gap: 8px;
   color: var(--muted);
   font-size: 12px;
 }
@@ -423,7 +423,7 @@
   max-width: 980px;
 }
 .council-view .card h3 {
-  margin: 0.9rem 0 0.4rem;
+  margin: 0.9rem 0 6px;
   font-size: 14px;
 }
 .council-view-meta {
@@ -431,7 +431,7 @@
   overflow-wrap: anywhere;
 }
 .council-view h1 .council-run-status {
-  margin-left: 0.5rem;
+  margin-left: 8px;
   font-size: 13px;
   vertical-align: middle;
 }
@@ -442,13 +442,13 @@
   font-size: 14px;
 }
 .council-question details {
-  margin-top: 0.6rem;
+  margin-top: 8px;
 }
 .council-images {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 0.6rem 0 0;
+  margin: 8px 0 0;
   padding: 0;
   list-style: none;
 }
@@ -475,13 +475,13 @@
 .council-images span {
   display: block;
   padding: 2px 6px;
-  font: 11px var(--mono);
+  font: 11px var(--font-mono);
 }
 .council-steps {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
-  margin: 0 0 0.75rem;
+  gap: 6px;
+  margin: 0 0 12px;
   padding: 0;
   list-style: none;
   counter-reset: council-step;
@@ -490,7 +490,7 @@
   counter-increment: council-step;
   padding: 0.25rem 0.7rem;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   color: var(--faint);
 }
 .council-steps li::before {
@@ -508,20 +508,20 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem 1rem;
-  margin: 0 0 0.75rem;
+  gap: 6px 1rem;
+  margin: 0 0 12px;
 }
 .council-actions-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 8px;
 }
 .council-progress .council-actions-row {
-  margin-top: 0.75rem;
+  margin-top: 12px;
 }
 .council-table {
   overflow-x: auto;
-  margin: 0.25rem 0 0.5rem;
+  margin: 0.25rem 0 8px;
 }
 .council-table table,
 .md table {
@@ -532,13 +532,13 @@
   caption-side: top;
   text-align: left;
   color: var(--muted);
-  padding-bottom: 0.4rem;
+  padding-bottom: 6px;
 }
 .council-table th,
 .council-table td,
 .md th,
 .md td {
-  padding: 0.35rem 0.6rem;
+  padding: 0.35rem 8px;
   border-bottom: 1px solid var(--line);
   text-align: left;
   vertical-align: top;
@@ -576,7 +576,7 @@
   white-space: pre-wrap;
 }
 .council-outcome {
-  margin-bottom: 22px;
+  margin-bottom: 24px;
   padding: 0.7rem 0.9rem;
   border: 1px solid var(--line);
   border-left: 3px solid var(--danger);
@@ -593,11 +593,11 @@
   margin: 0;
 }
 .council-outcome p + p {
-  margin-top: 0.4rem;
+  margin-top: 6px;
 }
 .council-synthesis-section + .council-synthesis-section {
   border-top: 1px solid var(--line);
-  margin-top: 0.75rem;
+  margin-top: 12px;
 }
 .council-synthesis-section.recommendation h3,
 .council-synthesis-section.firstAction h3 {
@@ -605,7 +605,7 @@
 }
 .council-follow-up {
   display: grid;
-  gap: 0.75rem;
+  gap: 12px;
   margin-top: 0.9rem;
   padding-top: 0.9rem;
   border-top: 1px solid var(--line);
@@ -620,17 +620,17 @@
   display: flex;
   justify-content: flex-end;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 8px;
 }
 .council-observed > p,
 .council-observed > .md {
-  margin: 0 0 0.75rem;
+  margin: 0 0 12px;
 }
 .council-observed-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.3rem 0.75rem;
+  gap: 0.3rem 12px;
 }
 .council-verdict {
   font-weight: 600;
@@ -649,7 +649,7 @@
 }
 .council-observed-form {
   display: grid;
-  gap: 0.75rem;
+  gap: 12px;
 }
 .council-verdicts {
   display: flex;
@@ -669,7 +669,7 @@
 .council-verdicts label {
   flex-direction: row;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
   cursor: pointer;
 }
 .council-verdicts input {
@@ -681,31 +681,31 @@
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg-2);
-  padding: 0.5rem 0.75rem;
+  padding: 8px 12px;
 }
 .council-answer + .council-answer,
 .council-review + .council-review {
-  margin-top: 0.5rem;
+  margin-top: 8px;
 }
 .council-answer > summary,
 .council-review > summary {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.3rem 0.6rem;
+  gap: 0.3rem 8px;
   cursor: pointer;
 }
 .council-answer[open] > summary,
 .council-review[open] > summary {
-  margin-bottom: 0.5rem;
+  margin-bottom: 8px;
 }
 .council-letter {
   display: inline-grid;
   place-items: center;
   min-width: 1.6rem;
   padding: 0 0.3rem;
-  border-radius: 4px;
-  background: rgba(122, 162, 247, 0.16);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
   color: var(--accent);
   font-weight: 700;
 }
@@ -737,7 +737,7 @@
 .md blockquote,
 .md pre,
 .md .md-table {
-  margin: 0.5rem 0;
+  margin: 8px 0;
 }
 .md ul,
 .md ol {
@@ -750,7 +750,7 @@
 .md h4,
 .md h5,
 .md h6 {
-  margin: 0.9rem 0 0.4rem;
+  margin: 0.9rem 0 6px;
   font-size: 13px;
 }
 .md h3 {
@@ -758,14 +758,14 @@
 }
 .md code {
   padding: 0 0.25rem;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: var(--bg-hover);
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 12px;
 }
 .md pre {
   overflow-x: auto;
-  padding: 0.6rem 0.75rem;
+  padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg);
@@ -775,7 +775,7 @@
   background: none;
 }
 .md blockquote {
-  padding-left: 0.75rem;
+  padding-left: 12px;
   border-left: 3px solid var(--line);
   color: var(--muted);
 }

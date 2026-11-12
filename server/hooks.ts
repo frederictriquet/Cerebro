@@ -5,7 +5,7 @@ import { getGrokHookSettings } from './agents.ts';
 import { codexHome } from './codex-config.ts';
 import { parseQuestions } from './questions.ts';
 import type { SessionManager } from './sessions.ts';
-import type { Agent } from '../shared/types.ts';
+import type { Agent, AttentionDetail } from '../shared/types.ts';
 import { ignoreEnoent, isRecord } from './util.ts';
 
 type HookPayload = Record<string, unknown>;
@@ -16,6 +16,36 @@ function stringField(payload: HookPayload, ...names: string[]): string | null {
     if (typeof value === 'string' && value !== '') return value;
   }
   return null;
+}
+
+// Assez pour lire une commande ou un message dans une liste, sans transporter un rapport entier.
+const SUMMARY_MAX = 400;
+const TURN_MESSAGE_MAX = 600;
+
+function clip(value: string, max: number): string {
+  const trimmed = value.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+}
+
+/** Ce que l'outil va faire, en une ligne lisible : commande Bash, fichier modifié, URL lue. */
+export function summarizeToolUse(tool: string | null, input: unknown): string | null {
+  if (!isRecord(input)) return null;
+  const field = (name: string): string | null => {
+    const value = input[name];
+    return typeof value === 'string' && value.trim() !== '' ? value : null;
+  };
+  const summary =
+    tool === 'Bash'
+      ? field('command')
+      : (field('file_path') ?? field('notebook_path') ?? field('url') ?? field('pattern') ?? field('path'));
+  return summary === null ? null : clip(summary, SUMMARY_MAX);
+}
+
+/** Dernier message du tour ; undefined quand l'agent n'en transmet pas (le détail connu est gardé). */
+export function turnDetail(message: string | null): AttentionDetail | undefined {
+  return message === null || message.trim() === ''
+    ? undefined
+    : { kind: 'turn', message: clip(message, TURN_MESSAGE_MAX) };
 }
 
 // Threads already matched to a rollout: a rollout is never removed while its session lives.
@@ -100,8 +130,9 @@ export function handleHook(
     if (threadId === null || !codexRolloutExists(threadId)) return;
     sessions.setAgentSessionId(sessionId, threadId);
     if (event === 'notify' && payload.type === 'agent-turn-complete') {
-      sessions.setReliableState(sessionId, 'idle', 'Tour terminé');
-      sessions.reportTurnComplete(sessionId, stringField(payload, 'last-assistant-message'));
+      const message = stringField(payload, 'last-assistant-message');
+      sessions.setReliableState(sessionId, 'idle', 'Tour terminé', turnDetail(message));
+      sessions.reportTurnComplete(sessionId, message);
     }
     return;
   }
@@ -120,28 +151,48 @@ export function handleHook(
   }
   if (event === 'Stop') {
     sessions.setPendingQuestions(sessionId, null);
-    sessions.setReliableState(sessionId, 'idle', 'Tour terminé');
-    sessions.reportTurnComplete(sessionId, stringField(payload, 'last_assistant_message'));
+    const message = stringField(payload, 'last_assistant_message');
+    sessions.setReliableState(sessionId, 'idle', 'Tour terminé', turnDetail(message));
+    sessions.reportTurnComplete(sessionId, message);
     return;
   }
   if (event === 'PreToolUse') {
     const toolName = stringField(payload, 'tool_name') ?? '';
     if (!/ask.*user/i.test(toolName)) return;
-    // Kept for Slack: the terminal only shows the current tab of a multi-question dialog.
-    sessions.setPendingQuestions(sessionId, parseQuestions(payload.tool_input));
-    sessions.setReliableState(sessionId, 'waiting', 'Question');
+    // Kept for Slack and the web queue: the terminal only shows the current tab of a multi-question dialog.
+    const questions = parseQuestions(payload.tool_input);
+    sessions.setPendingQuestions(sessionId, questions);
+    sessions.setReliableState(
+      sessionId,
+      'waiting',
+      'Question',
+      questions === null ? null : { kind: 'questions', questions },
+    );
+    return;
+  }
+  if (event === 'PermissionRequest') {
+    // Arrive avant la notification permission_prompt (environ 6 s) : l'outil est gardé pour elle.
+    const tool = stringField(payload, 'tool_name');
+    sessions.rememberPermissionRequest(sessionId, { tool, summary: summarizeToolUse(tool, payload.tool_input) });
     return;
   }
   if (event !== 'Notification') return;
 
   const notificationType = stringField(payload, 'notification_type', 'type');
   const message = stringField(payload, 'message');
-  if (notificationType === 'permission_prompt' || notificationType === 'elicitation_dialog') {
+  if (notificationType === 'permission_prompt') {
+    sessions.setReliableState(
+      sessionId,
+      'waiting',
+      message ?? 'Permission demandée',
+      sessions.takePermissionRequest(sessionId),
+    );
+  } else if (notificationType === 'elicitation_dialog') {
     sessions.setReliableState(sessionId, 'waiting', message ?? 'Permission demandée');
   } else if (notificationType === 'idle_prompt') {
     sessions.reportIdlePrompt(sessionId);
   } else if (message !== null && /permission/i.test(message)) {
-    sessions.setReliableState(sessionId, 'waiting', message);
+    sessions.setReliableState(sessionId, 'waiting', message, sessions.takePermissionRequest(sessionId));
   } else {
     sessions.setReliableState(sessionId, 'idle', message ?? 'Tour terminé');
   }

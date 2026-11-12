@@ -11,6 +11,8 @@ import { conflictResolutionPrompt } from './conflict-resolution.ts';
 import { councilSessionPrompt, exportMarkdown } from './council.ts';
 import { MAX_CONTEXT_LENGTH } from './council-runner.ts';
 import { findPeerName } from './peer-name.ts';
+import { interpretAnswer } from './questions.ts';
+import { answerQuestions } from './session-input.ts';
 import { defaultTranscriptRoots, readSessionTranscript, transcriptContext } from './transcripts.ts';
 import { WorktreeError } from './worktrees.ts';
 import { normalizeMode } from '../shared/types.ts';
@@ -370,6 +372,35 @@ export function registerSessionRoutes(ctx: RouteContext): void {
     const body = asRecord(request.body);
     if (body === null || typeof body.data !== 'string') return error(reply, 400, 'Le champ data est requis');
     if (session.status === 'exited' || !sessions.writeInput(session.id, body.data)) {
+      return error(reply, 409, "La session n'est pas active");
+    }
+    return reply.code(204).send();
+  });
+
+  // Réponse aux questions de l'agent depuis la file « À traiter » : choices[i] liste les options (indices à
+  // partir de 0) retenues pour la question i, dans l'ordre du dialogue.
+  app.post<{ Params: { id: string } }>('/api/sessions/:id/answer', async (request, reply) => {
+    const session = requireSession(request, reply);
+    if (session === null) return reply;
+    const detail = session.attentionDetail;
+    if (session.status !== 'waiting' || detail?.kind !== 'questions') {
+      return error(reply, 409, "La session n'attend plus de réponse à ses questions");
+    }
+    const choices = asRecord(request.body)?.choices;
+    const valid =
+      Array.isArray(choices) &&
+      choices.length === detail.questions.length &&
+      choices.every(
+        (picked) =>
+          Array.isArray(picked) &&
+          picked.length > 0 &&
+          picked.every((index) => Number.isSafeInteger(index) && (index as number) >= 0),
+      );
+    if (!valid) return error(reply, 400, 'Une réponse par question est attendue (champ choices)');
+    const numericReply = (choices as number[][]).map((picked) => picked.map((index) => index + 1).join(',')).join(' ');
+    const answer = interpretAnswer(detail.questions, numericReply);
+    if (answer === null) return error(reply, 400, 'Choix hors des options proposées');
+    if (!(await answerQuestions(sessions, session.id, detail.questions, answer, 'Cerebro'))) {
       return error(reply, 409, "La session n'est pas active");
     }
     return reply.code(204).send();

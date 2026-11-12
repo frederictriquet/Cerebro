@@ -1,7 +1,7 @@
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useState } from 'react';
 import { useAsyncAction } from './async-action.ts';
-import { Modal } from './Dialog.tsx';
+import { SettingsFrame } from './Dialog.tsx';
 import { useStore } from './store.tsx';
 import { LlmSelector, type LlmSelection } from './LlmSelector.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
@@ -9,7 +9,16 @@ import { MODE_CHIP, MODE_DESCRIPTION } from './format.ts';
 import { MODE_CHOICES, normalizeMode, type Project, type ResolutionSettings } from '../../shared/types.ts';
 import './automatic-commits.css';
 
-export function CommitSettingsDialog({ project, onClose }: { project: Project; onClose: () => void }) {
+// inline : section de la page Réglages du projet, sans bouton Annuler ; onClose suit chaque enregistrement.
+export function CommitSettingsDialog({
+  project,
+  onClose,
+  inline = false,
+}: {
+  project: Project;
+  onClose: () => void;
+  inline?: boolean;
+}) {
   const { agents, updateProject } = useStore();
   const [settings, setSettings] = useState<LlmSelection>(() => {
     const { agent, model, effort } = project.commitSettings;
@@ -28,7 +37,7 @@ export function CommitSettingsDialog({ project, onClose }: { project: Project; o
     onClose();
   });
   return (
-    <Modal title="Réglages LLM" onClose={onClose}>
+    <SettingsFrame title="Réglages LLM" inline={inline} onClose={onClose}>
       <form
         className="commit-settings"
         onSubmit={(event) => {
@@ -96,11 +105,13 @@ export function CommitSettingsDialog({ project, onClose }: { project: Project; o
           <button type="submit" className="btn primary" disabled={busy}>
             <ActivityStatus active={busy}>{busy ? 'Enregistrement…' : 'Enregistrer'}</ActivityStatus>
           </button>
-          <button type="button" className="btn" disabled={busy} onClick={onClose}>
-            Annuler
-          </button>
+          {inline ? null : (
+            <button type="button" className="btn" disabled={busy} onClick={onClose}>
+              Annuler
+            </button>
+          )}
         </div>
       </form>
-    </Modal>
+    </SettingsFrame>
   );
 }

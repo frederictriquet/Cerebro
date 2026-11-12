@@ -20,7 +20,7 @@
 }
 .session-tasks [data-state='cancelled'],
 .session-tasks-indicator[data-state='cancelled'] {
-  --task-color: #b39bce;
+  --task-color: var(--review);
 }
 .pill.session-tasks-indicator {
   gap: 5px;
@@ -97,7 +97,7 @@
   height: 3px;
   margin: 6px 0 3px;
   overflow: hidden;
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
 }
 .session-task-distribution span {
   min-width: 3px;
@@ -141,7 +141,7 @@
   min-width: 0;
   padding: 3px 0;
   border: 0;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text);
   font: inherit;

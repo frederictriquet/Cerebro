@@ -88,6 +88,8 @@ export interface Store {
   renameSession: (id: string, title: string) => Promise<Session>;
   updateProject: (id: string, patch: ProjectPatch) => Promise<Project>;
   sendSessionInput: (id: string, data: string) => Promise<void>;
+  /** Répond aux questions de l'agent : une liste d'options (indices) par question, dans l'ordre. */
+  answerSessionQuestions: (id: string, choices: number[][]) => Promise<void>;
   /** Impose une taille au PTY sans terminal ouvert (vue mobile) ; les terminaux ouverts s'y alignent. */
   resizeSession: (id: string, cols: number, rows: number) => Promise<void>;
   createTask: (projectId: string, text: string, options?: NewTaskOptions) => Promise<Task>;
@@ -490,6 +492,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const answerSessionQuestions = useCallback(async (id: string, choices: number[][]): Promise<void> => {
+    await api(apiPath`/api/sessions/${id}/answer`, {
+      method: 'POST',
+      body: JSON.stringify({ choices }),
+    });
+  }, []);
+
   const resizeSession = useCallback(async (id: string, cols: number, rows: number): Promise<void> => {
     await api(apiPath`/api/sessions/${id}/resize`, {
       method: 'POST',
@@ -664,6 +673,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       renameSession,
       updateProject,
       sendSessionInput,
+      answerSessionQuestions,
       resizeSession,
       createTask,
       updateTask,
@@ -716,6 +726,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       renameSession,
       updateProject,
       sendSessionInput,
+      answerSessionQuestions,
       resizeSession,
       createTask,
       updateTask,

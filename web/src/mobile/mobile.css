@@ -16,7 +16,7 @@
   flex: 0 0 auto;
   align-items: center;
   gap: 4px;
-  min-height: 56px;
+  min-height: 48px;
   padding: 0 4px 0 12px;
   border-bottom: 1px solid var(--line);
   background: var(--bg-1);
@@ -59,7 +59,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -125,7 +125,7 @@
 .m-content {
   flex: 1 1 auto;
   min-height: 0;
-  padding: 16px;
+  padding: 12px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -153,19 +153,19 @@
 }
 
 .m-section {
-  margin-bottom: 28px;
+  margin-bottom: 18px;
 }
 
 .m-section-title {
-  margin: 0 0 10px;
-  font-size: 17px;
+  margin: 0 0 6px;
+  font-size: 18px;
   font-weight: 650;
 }
 
 .m-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   margin: 0 0 12px;
   padding: 0;
   list-style: none;
@@ -177,7 +177,7 @@
   flex-direction: column;
   gap: 4px;
   min-height: 44px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg-1);
@@ -185,8 +185,56 @@
   text-decoration: none;
 }
 
-.m-card:active {
-  background: var(--bg-hover);
+.m-card-link {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.m-card-link:active {
+  opacity: 0.7;
+}
+
+/* Détail d'attention (styles.css) à l'échelle du téléphone : texte lisible, cibles tactiles de 40 px. */
+.m-card .attention-detail > :not(.reason-line) {
+  margin-left: 0;
+  max-width: 100%;
+}
+
+.m-card .attention-detail,
+.m-card .attention-options {
+  align-items: stretch;
+  width: 100%;
+}
+
+.m-card .reason-line {
+  padding-left: 0;
+  font-size: 13px;
+}
+
+.m-card .attention-question legend,
+.m-card .attention-message {
+  font-size: 14px;
+}
+
+.m-card .attention-option {
+  min-height: 40px;
+  justify-content: center;
+  font-size: 15px;
+}
+
+.m-card .attention-option .meta {
+  font-size: 13px;
+}
+
+.m-card .attention-command {
+  font-size: 12px;
+}
+
+.m-card .btn {
+  min-height: 40px;
 }
 
 .m-card-head {
@@ -261,9 +309,9 @@
 }
 
 .m-button.primary {
-  border-color: #2d4f8a;
-  background: #1e3a6b;
-  color: #d6e4ff;
+  border-color: var(--primary-border);
+  background: var(--primary);
+  color: var(--on-primary);
 }
 
 .m-button:disabled {
@@ -355,7 +403,7 @@
   padding: 10px;
   border-radius: var(--radius);
   background: var(--bg-2);
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 13px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -389,7 +437,7 @@
   margin: 0 0 10px;
   padding: 8px 10px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius);
   font-size: 13px;
 }
 
@@ -486,7 +534,7 @@
 
 .m-button.m-danger {
   width: 100%;
-  border-color: #3a2429;
+  border-color: var(--danger-border);
   color: var(--danger);
 }
 
@@ -593,13 +641,15 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-left: auto;
+  gap: 6px;
+}
+
+.m-session-actions > * {
+  flex: 1 1 0;
 }
 
 .m-button.m-session-kill {
-  border-color: #3a2429;
+  border-color: var(--danger-border);
   color: var(--danger);
 }
 
@@ -643,7 +693,7 @@
   border-radius: var(--radius);
   background: var(--bg);
   color: var(--text);
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.35;
   white-space: pre-wrap;
@@ -653,7 +703,7 @@
 .m-keys {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 6px;
+  gap: 4px;
 }
 
 /* Cellules étroites : « Annuler (5 s) » de Ctrl+C passe sur deux lignes. */
@@ -674,4 +724,25 @@
   flex: 1 1 auto;
   min-width: 0;
   max-height: 30dvh;
+}
+
+/* Lancement mobile : les choix du bureau, repliés sur plusieurs lignes, en cibles tactiles de 36 px. */
+.m-launch .tuning-row {
+  margin-bottom: 0;
+  gap: 6px 8px;
+}
+
+.m-launch .field-label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.m-launch .choice-group.compact {
+  flex-wrap: wrap;
+  overflow: visible;
+}
+
+.m-launch .choice-group.compact .choice {
+  min-height: 36px;
+  font-size: 14px;
 }

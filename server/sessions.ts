@@ -16,7 +16,7 @@ import { createWorkspace, createWorkspaceInContext, joinWorkspace, workspaceAt, 
 import type { Services } from './services.ts';
 import { isDormant } from '../shared/sessions.ts';
 import { findProcessesByArgument, isAlive, processTree, signalProcesses, type ProcessInfo } from './proc.ts';
-import type { Agent, Mode, Project, Session, SessionDefaults, Task } from '../shared/types.ts';
+import type { Agent, AttentionDetail, Mode, Project, Session, SessionDefaults, Task } from '../shared/types.ts';
 import type { Workspace, WorkspaceContext } from '../shared/git.ts';
 import { appendHolderLog, createTerminal, encodeMessage, holderPaths } from './holder-protocol.ts';
 import type { ClientMessage, ExitRecord, HolderConfig } from './holder-protocol.ts';
@@ -201,6 +201,8 @@ export class SessionManager {
   /** Launches still preparing their workspace (no holder yet): a deletion waits for them, then they abort. */
   private readonly preparing = new Map<string, Promise<void>>();
   private readonly questions = new Map<string, AgentQuestion[]>();
+  /** Outil dont Claude demande l'autorisation (hook PermissionRequest), montré quand la notification arrive. */
+  private readonly permissionRequests = new Map<string, { tool: string | null; summary: string | null }>();
   /** Free-text question sent by the agent (`cerebro-notify --ask`), unanswered yet. */
   private readonly askedQuestions = new Map<string, string>();
   private readonly eventListeners = new Set<(event: SessionEvent) => void>();
@@ -402,6 +404,7 @@ export class SessionManager {
         status: 'starting',
         attention: false,
         attentionReason: null,
+        attentionDetail: null,
         exitCode: null,
       });
       if (updated === null) throw new Error('Session introuvable');
@@ -820,14 +823,27 @@ export class SessionManager {
     this.setReliableState(id, 'waiting', question.slice(0, 160));
   }
 
-  setReliableState(id: string, requested: 'waiting' | 'idle', requestedReason: string): Session | null {
+  /** `detail` undefined : le détail connu est gardé (un second signal du même tour n'en apporte pas). */
+  setReliableState(
+    id: string,
+    requested: 'waiting' | 'idle',
+    requestedReason: string,
+    detail?: AttentionDetail | null,
+  ): Session | null {
     const session = this.db.getSession(id);
     if (session === null || session.status === 'exited') return null;
     // The agent asked through cerebro-notify then ended its turn: it is waiting for an answer, not done.
     const asked = requested === 'idle' ? this.askedQuestions.get(id) : undefined;
     const status = asked === undefined ? requested : 'waiting';
     const reason = asked === undefined ? requestedReason : `Question : ${asked}`.slice(0, 160);
-    if (session.status === status && session.attentionReason === reason) return session;
+    const attentionDetail = detail === undefined ? session.attentionDetail : detail;
+    if (
+      session.status === status &&
+      session.attentionReason === reason &&
+      JSON.stringify(session.attentionDetail) === JSON.stringify(attentionDetail)
+    ) {
+      return session;
+    }
     // Several signals often report the same transition (codex OSC 9 + notify, Claude Stop + idle_prompt):
     // only the first one alerts, the others just refine the reason.
     const alreadySignaled = session.status === status && session.attention;
@@ -835,6 +851,7 @@ export class SessionManager {
       status,
       attention: true,
       attentionReason: alreadySignaled && session.attentionReason !== null ? session.attentionReason : reason,
+      attentionDetail,
     });
     if (updated !== null) {
       this.emit({ type: 'session', session: updated });
@@ -872,6 +889,18 @@ export class SessionManager {
     this.askedQuestions.delete(id);
   }
 
+  /** Hook PermissionRequest : l'outil est retenu jusqu'à la notification qui met la session en attente. */
+  rememberPermissionRequest(id: string, request: { tool: string | null; summary: string | null }): void {
+    this.permissionRequests.set(id, request);
+  }
+
+  /** Détail à afficher pour une demande d'autorisation ; vide (outil inconnu) quand le hook n'a rien transmis. */
+  takePermissionRequest(id: string): AttentionDetail {
+    const request = this.permissionRequests.get(id);
+    this.permissionRequests.delete(id);
+    return { kind: 'permission', tool: request?.tool ?? null, summary: request?.summary ?? null };
+  }
+
   setPendingQuestions(id: string, questions: AgentQuestion[] | null): void {
     if (questions === null) this.questions.delete(id);
     else this.questions.set(id, questions);
@@ -882,7 +911,13 @@ export class SessionManager {
     if (session === null || session.status === 'exited') return null;
     if (session.status === 'running') return session;
     // The previous end-of-turn reason ("Tour terminé", a question…) no longer applies once work resumes.
-    const updated = this.db.updateSession(id, { status: 'running', attention: false, attentionReason: null });
+    this.permissionRequests.delete(id);
+    const updated = this.db.updateSession(id, {
+      status: 'running',
+      attention: false,
+      attentionReason: null,
+      attentionDetail: null,
+    });
     if (updated !== null) this.emit({ type: 'session', session: updated });
     this.scheduleIdleCheck(id);
     return updated;
@@ -972,7 +1007,10 @@ export class SessionManager {
     runtime.cols = cols;
     runtime.rows = rows;
     runtime.terminal.resize(cols, rows);
-    const sent = this.sendHolder(runtime, force ? { type: 'resize', cols, rows, force } : { type: 'resize', cols, rows });
+    const sent = this.sendHolder(
+      runtime,
+      force ? { type: 'resize', cols, rows, force } : { type: 'resize', cols, rows },
+    );
     if (changed) this.broadcastSize(runtime);
     return sent;
   }
@@ -1075,6 +1113,7 @@ export class SessionManager {
           this.cleanupAllArtifacts(session.id);
           this.questions.delete(session.id);
           this.askedQuestions.delete(session.id);
+          this.permissionRequests.delete(session.id);
           this.emit({ type: 'session-deleted', id: session.id });
         }
       });
@@ -1135,6 +1174,7 @@ export class SessionManager {
       this.cleanupAllArtifacts(id);
       this.questions.delete(id);
       this.askedQuestions.delete(id);
+      this.permissionRequests.delete(id);
       this.emit({ type: 'session-deleted', id });
       // La base délie ces tâches (ON DELETE SET NULL) : diffuser leur nouvel état.
       for (const taskId of linked) {
@@ -1209,11 +1249,13 @@ export class SessionManager {
     // A question left unanswered by the stopped agent must not resurface as the reason of a resumed session.
     this.questions.delete(id);
     this.askedQuestions.delete(id);
+    this.permissionRequests.delete(id);
     const updated = this.db.updateSession(id, {
       status: 'exited',
       exitCode,
       attention: false,
       attentionReason: null,
+      attentionDetail: null,
     });
     if (updated !== null) {
       this.emit({ type: 'session', session: updated });

@@ -4,7 +4,7 @@
   max-width: 960px;
   background: var(--bg-1);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
 }
 
@@ -22,7 +22,7 @@
 }
 .llm-stats h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
 }
 .llm-stats-head p {
   margin: 3px 0 0;
@@ -40,7 +40,7 @@
   display: flex;
   height: 10px;
   overflow: hidden;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: var(--line);
   margin-bottom: 14px;
 }
@@ -49,13 +49,13 @@
   background: var(--llm-color);
 }
 .llm-tone-claude {
-  --llm-color: #d99a7e;
+  --llm-color: var(--agent-claude);
 }
 .llm-tone-codex {
-  --llm-color: #7aa2f7;
+  --llm-color: var(--accent);
 }
 .llm-tone-grok {
-  --llm-color: #a6d9b1;
+  --llm-color: var(--agent-grok);
 }
 
 .llm-stats-total {

@@ -220,7 +220,7 @@ function ProjectSlackOverrides({ onNavigate }: { onNavigate: () => void }) {
           {index > 0 ? ', ' : null}
           <a
             href={href(`#/p/${encodeURIComponent(project.id)}`)}
-            title="Ce projet a ses propres réglages Slack : bouton Slack de son en-tête"
+            title="Ce projet a ses propres réglages Slack : onglet Réglages du projet"
             onClick={onNavigate}
           >
             {project.name}
@@ -332,7 +332,7 @@ function AttentionItem({
         ) : null}
       </a>
       <div className="attention-extra">
-        <SessionAttention session={session} onNavigate={onNavigate} />
+        <SessionAttention session={session} withKeys onNavigate={onNavigate} />
       </div>
     </li>
   );

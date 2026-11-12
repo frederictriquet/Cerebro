@@ -3,7 +3,7 @@ import { ActivityStatus } from './ActivityStatus.tsx';
 import { getSlackStatus } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
-import { Modal } from './Dialog.tsx';
+import { SettingsFrame } from './Dialog.tsx';
 import { DELIVERY_LABELS, SLACK_ALERT_TOGGLES, toggled } from './SlackWatchSettings.tsx';
 import { useStore } from './store.tsx';
 import {
@@ -39,7 +39,16 @@ export function projectSlackLabel(project: Project): string | null {
 }
 
 /** Ce que Cerebro poste dans Slack pour ce projet : réglages de la machine, rien, ou des réglages propres. */
-export function ProjectSlackDialog({ project, onClose }: { project: Project; onClose: () => void }) {
+// inline : section de la page Réglages du projet, sans bouton Annuler ; onClose suit chaque enregistrement.
+export function ProjectSlackDialog({
+  project,
+  onClose,
+  inline = false,
+}: {
+  project: Project;
+  onClose: () => void;
+  inline?: boolean;
+}) {
   const { updateProject } = useStore();
   const own = project.slackSettings;
   const [choice, setChoice] = useState<Choice>(own === null ? 'machine' : own.mode);
@@ -74,7 +83,7 @@ export function ProjectSlackDialog({ project, onClose }: { project: Project; onC
   const live = posting.watchDeliveryLive;
 
   return (
-    <Modal title="Réglages Slack du projet" onClose={onClose}>
+    <SettingsFrame title="Réglages Slack du projet" inline={inline} onClose={onClose}>
       <form
         className="commit-settings project-slack"
         onSubmit={(event) => {
@@ -185,11 +194,13 @@ export function ProjectSlackDialog({ project, onClose }: { project: Project; onC
           <button type="submit" className="btn primary" disabled={busy}>
             <ActivityStatus active={busy}>{busy ? 'Enregistrement…' : 'Enregistrer'}</ActivityStatus>
           </button>
-          <button type="button" className="btn" disabled={busy} onClick={onClose}>
-            Annuler
-          </button>
+          {inline ? null : (
+            <button type="button" className="btn" disabled={busy} onClick={onClose}>
+              Annuler
+            </button>
+          )}
         </div>
       </form>
-    </Modal>
+    </SettingsFrame>
   );
 }

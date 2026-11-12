@@ -96,7 +96,7 @@ export function SessionRow({ session, grouped = false }: { session: Session; gro
                 title="Acquitter sans ouvrir"
                 onClick={() => void markSeen(session.id)}
               >
-                Vu
+                Marquer comme lu
               </button>
             ) : null}
             {preview.button}

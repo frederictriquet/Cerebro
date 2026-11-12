@@ -21,7 +21,7 @@ function Section({ id, title, sessions }: { id: string; title: string; sessions:
   );
 }
 
-/** Onglet « À traiter » de l'accueil : sessions de tous les projets qui attendent, puis celles en cours. */
+/** Onglet « À traiter » de l'accueil : sessions qui attendent une réponse, tours terminés, puis sessions en cours. */
 export function TodoTab() {
   const { sessions, hasData } = useStore();
   if (!hasData) return <p className="m-hint">Chargement…</p>;
@@ -29,7 +29,16 @@ export function TodoTab() {
   if (awaiting.length === 0 && running.length === 0) return <p className="m-hint">Rien à traiter.</p>;
   return (
     <>
-      <Section id="m-todo-awaiting" title="En attente" sessions={awaiting} />
+      <Section
+        id="m-todo-awaiting"
+        title="En attente"
+        sessions={awaiting.filter((session) => session.status === 'waiting')}
+      />
+      <Section
+        id="m-todo-turns"
+        title="Tours terminés"
+        sessions={awaiting.filter((session) => session.status !== 'waiting')}
+      />
       <Section id="m-todo-running" title="En cours" sessions={running} />
     </>
   );

@@ -67,6 +67,9 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
             ? 'Une session traite déjà cet epic'
             : `Le serveur ordonnance les ${open.length} tâche(s) selon leurs dépendances${continuedWorkspace ? `, dans ${continuedWorkspace.path}` : ''}`;
 
+  // Raison écrite sous le bouton quand il est désactivé : l'infobulle seule passait inaperçue.
+  const startBlocked = open.length === 0 || outsideBlockers.length > 0 || activeSession !== undefined || delegated;
+
   return (
     <div className="epic">
       <div className="epic-head">
@@ -91,13 +94,7 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
             <button
               type="button"
               className="btn primary"
-              disabled={
-                isLaunching ||
-                open.length === 0 ||
-                outsideBlockers.length > 0 ||
-                activeSession !== undefined ||
-                delegated
-              }
+              disabled={isLaunching || startBlocked}
               title={startHint}
               onClick={() => startEpic(epic, epicPrompt(epic))}
             >
@@ -128,6 +125,7 @@ export function EpicBlock({ epic, showDone }: { epic: Epic; showDone: boolean })
           </DelayedActionButton>
         </div>
       </div>
+      {!runHoldsEpic && startBlocked ? <p className="hint epic-start-reason">{startHint}</p> : null}
       {run ? <EpicRunPanel run={run} labelOf={labelOf} onChanged={refreshRun} /> : null}
       {editing ? (
         <EpicForm

@@ -3,12 +3,24 @@ import { test } from 'node:test';
 import { launchSpec } from '../web/src/mobile/launch.ts';
 import { openBlockers } from '../web/src/backlog/tasks.ts';
 
-test("lancement mobile avec l'agent du projet : seul le prompt part", () => {
-  assert.deepEqual(launchSpec('claude', 'claude', 'Corrige le test'), { prompt: 'Corrige le test' });
+test('lancement mobile : agent, modèle, effort, mode et prompt partent explicitement', () => {
+  assert.deepEqual(launchSpec({ agent: 'codex', model: 'gpt-5', effort: 'high', mode: 'plan' }, 'Corrige le test'), {
+    agent: 'codex',
+    model: 'gpt-5',
+    effort: 'high',
+    mode: 'plan',
+    prompt: 'Corrige le test',
+  });
 });
 
-test('lancement mobile avec un autre agent : modèle et effort repartent du défaut', () => {
-  assert.deepEqual(launchSpec('claude', 'codex', ''), { agent: 'codex', prompt: '', model: null, effort: null });
+test('lancement mobile : modèle et effort par défaut gardés à null', () => {
+  assert.deepEqual(launchSpec({ agent: 'claude', model: null, effort: null, mode: 'auto' }, ''), {
+    agent: 'claude',
+    model: null,
+    effort: null,
+    mode: 'auto',
+    prompt: '',
+  });
 });
 
 const task = (id, status, dependsOn = []) => ({ id, status, dependsOn });

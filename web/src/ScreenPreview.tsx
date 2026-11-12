@@ -6,7 +6,7 @@ import { errorMessage } from './format.ts';
 
 const POPOVER_WIDTH = 440;
 
-/** Bouton « Aperçu » et fenêtre des dernières lignes du terminal, placés séparément par l'appelant. */
+/** Bouton « Voir l’écran » et fenêtre des dernières lignes du terminal, placés séparément par l'appelant. */
 export function useSessionPreview(sessionId: string): { button: ReactNode; popover: ReactNode } {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLSpanElement>(null);
@@ -94,8 +94,14 @@ function PreviewButton({
 }) {
   return (
     <span className="preview-anchor" ref={anchorRef}>
-      <button type="button" className="btn preview-btn" aria-expanded={pressed} onClick={onToggle}>
-        Aperçu
+      <button
+        type="button"
+        className="btn preview-btn"
+        aria-expanded={pressed}
+        title="Dernières lignes du terminal, sans ouvrir la session"
+        onClick={onToggle}
+      >
+        Voir l’écran
       </button>
     </span>
   );

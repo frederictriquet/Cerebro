@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { AgentLabel } from './AgentLabel.tsx';
+import { AttentionDetail } from './AttentionDetail.tsx';
 import { FindingsLink } from './FindingsLink.tsx';
 import { STATUS_LABEL, type DisplayStatus } from './format.ts';
 import type { Session } from '../../shared/types.ts';
@@ -42,17 +43,19 @@ export function SessionMeta({
 export function SessionAttention({
   session,
   showReason = true,
+  withKeys = false,
   onNavigate,
 }: {
   session: Session;
   showReason?: boolean;
+  withKeys?: boolean;
   onNavigate?: () => void;
 }) {
   return (
     <>
       <FindingsLink sessionId={session.id} count={session.pendingFindings} onNavigate={onNavigate} />
-      {showReason && session.attentionReason ? (
-        <p className={`reason-line ${attentionTone(session)}`}>{session.attentionReason}</p>
+      {showReason && (session.attentionReason || session.attentionDetail) ? (
+        <AttentionDetail session={session} reason={session.attentionReason} withKeys={withKeys} />
       ) : null}
     </>
   );

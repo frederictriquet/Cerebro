@@ -265,33 +265,6 @@ function SessionDetail({ session }: { session: Session }) {
         </span>
         {project === undefined ? null : <a href={href(`#/p/${project.id}`)}>{project.name}</a>}
         <AgentLabel agent={session.agent} />
-        <span className="m-session-actions">
-          <SessionCommit key={id} session={session} />
-          {exited ? (
-            <button
-              type="button"
-              className="m-button primary"
-              disabled={busy}
-              onClick={() =>
-                void act('Reprise impossible', async () => {
-                  const live = await resumeSession(id);
-                  go(`#/s/${live.id}`);
-                })
-              }
-            >
-              {busy ? 'Reprise…' : 'Reprendre'}
-            </button>
-          ) : (
-            <DelayedActionButton
-              className="m-button m-session-kill"
-              cancelLabel="Annuler"
-              disabled={busy}
-              onAction={() => void act('Arrêt impossible', () => killSession(id))}
-            >
-              Arrêter
-            </DelayedActionButton>
-          )}
-        </span>
       </div>
       {isAwaiting(session) && session.attentionReason ? (
         <p className={`m-card-reason ${attentionTone(session)}`}>{session.attentionReason}</p>
@@ -349,6 +322,34 @@ function SessionDetail({ session }: { session: Session }) {
           <InstructionForm send={send} />
         </>
       )}
+      {/* En bas, près des touches : on y a déjà le pouce ; Arrêter reste différé de 5 s. */}
+      <div className="m-session-actions">
+        <SessionCommit key={id} session={session} />
+        {exited ? (
+          <button
+            type="button"
+            className="m-button primary"
+            disabled={busy}
+            onClick={() =>
+              void act('Reprise impossible', async () => {
+                const live = await resumeSession(id);
+                go(`#/s/${live.id}`);
+              })
+            }
+          >
+            {busy ? 'Reprise…' : 'Reprendre'}
+          </button>
+        ) : (
+          <DelayedActionButton
+            className="m-button m-session-kill"
+            cancelLabel="Annuler"
+            disabled={busy}
+            onAction={() => void act('Arrêt impossible', () => killSession(id))}
+          >
+            Arrêter
+          </DelayedActionButton>
+        )}
+      </div>
     </div>
   );
 }
