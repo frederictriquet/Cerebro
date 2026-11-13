@@ -331,7 +331,9 @@ Le holder :
 ## Serveur (sessions.ts)
 
 - `launch` : écrit le fichier config, démarre le holder, puis se connecte au socket (réessais toutes les 100 ms, 10 s max ;
-  échec → session `exited`, exitCode 1, erreur loggée). Le `Runtime` contient une connexion au holder, pas d'`IPty` ;
+  au-delà, l'attente continue tant que le processus holder vit, jusqu'à 60 s ; une connexion tardive est notée dans
+  `holder.log`. Échec → si le holder vit encore, il est arrêté (SIGTERM puis SIGKILL) pour qu'aucun agent ne tourne
+  derrière une session terminée ; session `exited`, exitCode 1, erreur loggée et ajoutée au log terminal rejoué par l'UI). Le `Runtime` contient une connexion au holder, pas d'`IPty` ;
   le serveur garde son **propre** terminal headless (nécessaire pour `inspectScreen` / `screenText` / snapshot ws) :
   à chaque `snapshot` reçu du holder, il recrée ce terminal et y écrit le snapshot, puis applique les `output`.
   OSC 9, focus 1004 et minuteurs d'inactivité/écran sont alimentés par les `output` du holder.

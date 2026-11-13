@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import type { Socket } from 'node:net';
 import { delimiter, join } from 'node:path';
@@ -116,6 +116,9 @@ const FORCE_KILL_DELAY_MS = 3_000;
 const FOCUS_OUT_DELAY_MS = 1_500;
 const MAX_LOG_SNAPSHOT = 2 * 1024 * 1024;
 const HOLDER_START_TIMEOUT_MS = 10_000;
+// A holder process still alive after HOLDER_START_TIMEOUT_MS is only slow to boot (node + node-pty under load):
+// keep waiting for it up to this bound, then stop it so no agent runs behind an exited session.
+const HOLDER_START_HARD_TIMEOUT_MS = 60_000;
 const HOLDER_START_RETRY_MS = 100;
 const HOLDER_RECONNECT_ATTEMPTS = 3;
 const HOLDER_RECONNECT_DELAY_MS = 1_000;
@@ -214,6 +217,8 @@ export class SessionManager {
   onSessionReleased: (id: string, workspaceRoot: string | null) => void = () => {};
   /** Stop project-scoped background work and prevent new starts until removal finishes. */
   withProjectDeletion: (id: string, remove: () => Promise<void>) => Promise<void> = async (_id, remove) => remove();
+  /** Holder start deadlines: `soft` alone when the holder process is gone, `hard` while it is still alive. */
+  holderStartTimeouts = { soft: HOLDER_START_TIMEOUT_MS, hard: HOLDER_START_HARD_TIMEOUT_MS };
   /** Starts the detached holder process for a session config file. */
   spawnHolder: (configPath: string) => ChildProcess = (configPath) =>
     spawn(
@@ -451,6 +456,8 @@ export class SessionManager {
     this.runtimes.set(id, runtime);
     let spawned = false;
     let failed = false;
+    let holderProcess: ChildProcess | null = null;
+    let holderExited = false;
     const fail = (error: unknown): void => {
       if (failed) return;
       failed = true;
@@ -460,8 +467,13 @@ export class SessionManager {
     };
     try {
       const holder = this.spawnHolder(configPath);
+      holderProcess = holder;
       holder.once('spawn', () => {
         spawned = true;
+      });
+      // Emitted even though the holder is unref'd: tells a slow holder from a dead one during the start wait.
+      holder.once('exit', () => {
+        holderExited = true;
       });
       // EAGAIN, EMFILE, ENOMEM… arrive as an 'error' event: unhandled, it would crash the server.
       holder.on('error', (error) => {
@@ -473,9 +485,16 @@ export class SessionManager {
       fail(error);
     }
 
-    const deadline = Date.now() + HOLDER_START_TIMEOUT_MS;
+    const startedAt = Date.now();
+    const softDeadline = startedAt + this.holderStartTimeouts.soft;
+    const hardDeadline = startedAt + this.holderStartTimeouts.hard;
+    const holderRunning = (): boolean => spawned && !holderExited;
+    const mayWait = (): boolean => {
+      const now = Date.now();
+      return now < softDeadline || (now < hardDeadline && holderRunning());
+    };
     let connected = false;
-    while (!connected && !failed && this.runtimes.get(id) === runtime && Date.now() < deadline) {
+    while (!connected && !failed && this.runtimes.get(id) === runtime && mayWait()) {
       connected = await this.connectOnce(id, runtime);
       if (!connected) {
         const exit = this.readExitRecord(id);
@@ -483,12 +502,26 @@ export class SessionManager {
         await delay(HOLDER_START_RETRY_MS);
       }
     }
+    const waitedSeconds = Math.round((Date.now() - startedAt) / 1000);
     // Failed, or stopped by kill() before the holder ever listened.
     if (failed || this.runtimes.get(id) !== runtime) return this.db.getSession(id) ?? session;
     if (!connected) {
-      this.logHolderError(id, new Error('Connexion au holder impossible après 10 secondes'));
+      // [SPEC Serveur (sessions.ts) — launch] A holder that outlived the wait must not start the agent
+      // behind a session already marked exited: nothing could reach it any more.
+      const stillRunning = holderRunning();
+      const stopped =
+        holderProcess !== null && stillRunning
+          ? await this.stopStartingHolder(holderProcess, () => holderExited)
+          : true;
+      const message = `Connexion au holder impossible après ${waitedSeconds} secondes${
+        stillRunning ? (stopped ? ' : holder arrêté' : " : holder toujours actif, arrêt impossible") : ''
+      }`;
+      this.logHolderError(id, new Error(message));
+      this.appendTerminalError(id, `Échec du lancement de la session. ${message}.`);
       return this.finishSession(id, 1) ?? session;
     }
+    if (Date.now() > softDeadline)
+      this.logHolderError(id, new Error(`Holder lent : connexion établie après ${waitedSeconds} secondes`));
 
     const running = this.db.updateSession(id, { status: 'running' });
     if (running === null) return session;
@@ -1210,6 +1243,35 @@ export class SessionManager {
     const killDeadline = Date.now() + HOLDER_KILL_WAIT_MS;
     while (targets.some(isAlive) && Date.now() < killDeadline) await delay(HOLDER_START_RETRY_MS);
     if (targets.some(isAlive)) throw new Error("Impossible d'arrêter les processus de la session");
+  }
+
+  // A holder that never listened: no socket to send `kill` through. Signals go to the holder by its pid (works
+  // everywhere) and, where /proc lists it, to its process tree. Returns whether everything stopped.
+  private async stopStartingHolder(holder: ChildProcess, exited: () => boolean): Promise<boolean> {
+    const targets = holder.pid === undefined ? [] : processTree(holder.pid);
+    const done = (): boolean => exited() && !targets.some(isAlive);
+    const signal = (name: NodeJS.Signals): void => {
+      signalProcesses(targets, name);
+      if (!exited()) holder.kill(name);
+    };
+    signal('SIGTERM');
+    const deadline = Date.now() + FORCE_KILL_DELAY_MS;
+    while (!done() && Date.now() < deadline) await delay(HOLDER_START_RETRY_MS);
+    if (done()) return true;
+    // SIGTERM stays pending on a stopped process: only SIGKILL reaches it.
+    signal('SIGKILL');
+    const killDeadline = Date.now() + HOLDER_KILL_WAIT_MS;
+    while (!done() && Date.now() < killDeadline) await delay(HOLDER_START_RETRY_MS);
+    return done();
+  }
+
+  // The terminal log is what the UI replays for an exited session: a launch failure must show there.
+  private appendTerminalError(id: string, message: string): void {
+    try {
+      appendFileSync(join(LOG_DIR, `${id}.log`), `\r\n\x1b[31m${message}\x1b[0m\r\n`);
+    } catch (error) {
+      this.logHolderError(id, error);
+    }
   }
 
   private holderAlive(id: string): boolean {
