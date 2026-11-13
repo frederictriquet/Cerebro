@@ -15,6 +15,17 @@ export interface TranscriptRoots {
   claude: string;
   codex: string;
   grok: string;
+  gemini: string;
+}
+
+/** Data folder of the Antigravity CLI: conversations live in `brain/<id>/`. */
+export function geminiHome(): string {
+  return join(homedir(), '.gemini', 'antigravity-cli');
+}
+
+/** Readable transcript of an agy conversation (one JSON step per line). */
+export function geminiTranscriptPath(root: string, conversationId: string): string {
+  return join(root, 'brain', conversationId, '.system_generated', 'logs', 'transcript.jsonl');
 }
 
 export function defaultTranscriptRoots(): TranscriptRoots {
@@ -22,6 +33,7 @@ export function defaultTranscriptRoots(): TranscriptRoots {
     claude: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
     codex: codexHome(),
     grok: process.env.GROK_HOME ?? join(homedir(), '.grok'),
+    gemini: geminiHome(),
   };
 }
 
@@ -117,10 +129,30 @@ function grokMessages(text: string): TranscriptMessage[] {
   });
 }
 
+// Steps of agy: the user's own inputs (USER_EXPLICIT) wrap the request in <USER_REQUEST>, followed by metadata the CLI
+// adds; the model's text answers are PLANNER_RESPONSE steps (empty when the step only calls tools).
+function geminiMessages(text: string): TranscriptMessage[] {
+  return records(text).flatMap((record): TranscriptMessage[] => {
+    if (typeof record.content !== 'string') return [];
+    if (record.type === 'USER_INPUT' && record.source === 'USER_EXPLICIT') {
+      const request = /<USER_REQUEST>\n?([\s\S]*?)\n?<\/USER_REQUEST>/.exec(record.content);
+      return [{ role: 'user', text: request === null ? record.content : (request[1] ?? '') }];
+    }
+    if (record.type === 'PLANNER_RESPONSE' && record.source === 'MODEL')
+      return [{ role: 'assistant', text: record.content }];
+    return [];
+  });
+}
+
+const PARSERS: Record<Agent, (text: string) => TranscriptMessage[]> = {
+  claude: claudeMessages,
+  codex: codexMessages,
+  grok: grokMessages,
+  gemini: geminiMessages,
+};
+
 export function parseTranscript(agent: Agent, text: string): TranscriptMessage[] {
-  return merged(
-    agent === 'claude' ? claudeMessages(text) : agent === 'codex' ? codexMessages(text) : grokMessages(text),
-  );
+  return merged(PARSERS[agent](text));
 }
 
 async function newest(paths: string[]): Promise<string | null> {
@@ -152,6 +184,9 @@ export async function findTranscript(
     return newest(
       (await subdirectories(join(roots.claude, 'projects'))).map((dir) => join(dir, `${agentSessionId}.jsonl`)),
     );
+  // Conversation ids are UUIDs: anything else could leave the brain folder.
+  if (agent === 'gemini')
+    return /^[\w-]+$/.test(agentSessionId) ? newest([geminiTranscriptPath(roots.gemini, agentSessionId)]) : null;
   if (agent === 'grok')
     return newest(
       (await subdirectories(join(roots.grok, 'sessions'))).map((dir) =>

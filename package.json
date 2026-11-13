@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Pilote des sessions Claude / Codex / Grok par projet, depuis une UI web locale.",
+  "description": "Pilote des sessions Claude / Codex / Grok / Gemini par projet, depuis une UI web locale.",
   "scripts": {
     "dev": "node --disable-warning=ExperimentalWarning scripts/dev.mjs",
     "db:backup": "node --disable-warning=ExperimentalWarning scripts/db-backup.mjs",

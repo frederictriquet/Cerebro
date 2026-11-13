@@ -1,10 +1,12 @@
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { DATA_DIR } from './config.ts';
-import { AGENTS, type Agent } from '../shared/types.ts';
+import { geminiHome } from './transcripts.ts';
+import { AGENT_COMMAND, AGENTS, type Agent } from '../shared/types.ts';
 import type { AgentUpdate } from '../shared/machine.ts';
 import { errorMessage, isRecord } from './util.ts';
 
@@ -56,7 +58,7 @@ export function isNewer(candidate: string, current: string): boolean {
 }
 
 async function installedVersion(agent: Agent): Promise<string> {
-  const { stdout } = await execFileAsync(agent, ['--version'], { timeout: COMMAND_TIMEOUT_MS });
+  const { stdout } = await execFileAsync(AGENT_COMMAND[agent], ['--version'], { timeout: COMMAND_TIMEOUT_MS });
   const match = VERSION.exec(stdout);
   if (match === null) throw new Error(`version illisible : ${stdout.trim().slice(0, 80)}`);
   return match[0];
@@ -93,10 +95,24 @@ async function grokLatest(): Promise<string> {
   return result.latestVersion;
 }
 
-const LATEST: Record<Agent, () => Promise<string>> = {
+/**
+ * agy has no check-only command: its updater checks (and installs) at each launch and on `agy update`, then records
+ * the outcome in updater/update_status.json, read here.
+ */
+async function geminiLatest(installed: string): Promise<string> {
+  const status: unknown = JSON.parse(await readFile(join(geminiHome(), 'updater', 'update_status.json'), 'utf8'));
+  const message = isRecord(status) && typeof status.message === 'string' ? status.message : '';
+  if (isRecord(status) && status.success === true && /already on the latest version/i.test(message)) return installed;
+  const version = VERSION.exec(message);
+  if (version === null) throw new Error(`dernier état du programme de mise à jour d’agy : ${message || 'illisible'}`);
+  return version[0];
+}
+
+const LATEST: Record<Agent, (installed: string) => Promise<string>> = {
   claude: () => npmDistTag('@anthropic-ai/claude-code', claudeChannel()),
   codex: () => npmDistTag('@openai/codex', 'latest'),
   grok: grokLatest,
+  gemini: geminiLatest,
 };
 
 function stripAnsi(text: string): string {
@@ -104,7 +120,7 @@ function stripAnsi(text: string): string {
 }
 
 function loadAuto(): Record<Agent, boolean> {
-  const auto: Record<Agent, boolean> = { claude: false, codex: false, grok: false };
+  const auto = Object.fromEntries(AGENTS.map((agent) => [agent, false])) as Record<Agent, boolean>;
   if (!existsSync(SETTINGS_FILE)) return auto;
   try {
     const value: unknown = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8'));
@@ -205,7 +221,7 @@ export class UpdateManager {
     }
     current.installed = installed;
     try {
-      current.latest = await LATEST[agent]();
+      current.latest = await LATEST[agent](installed);
       current.error = null;
     } catch (cause) {
       current.error = `Vérification impossible : ${errorMessage(cause)}`;
@@ -227,7 +243,7 @@ export class UpdateManager {
     let ok = false;
     let output: string;
     try {
-      const pending = execFileAsync(agent, ['update'], {
+      const pending = execFileAsync(AGENT_COMMAND[agent], ['update'], {
         timeout: UPDATE_TIMEOUT_MS,
         maxBuffer: 4 * 1024 * 1024,
         // Codex's own switch for unattended runs: only its process gets it.

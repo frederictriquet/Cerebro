@@ -175,3 +175,30 @@ test('rendre au backlog une tâche rattachée par erreur', () =>
     assert.equal(db.getTask(mine.id).status, 'todo');
     assert.equal(db.getTask(mine.id).sessionId, null);
   }));
+
+test('l’interface rattache une tâche à une session active, sans jeton, et refuse une session arrêtée', () =>
+  withProject(async ({ app, db, project, session, makeSession }) => {
+    const task = db.createTask(project.id, 'Commencée dans la session', null);
+    const ui = (s) => app.inject({ method: 'POST', url: `/api/sessions/${s.id}/claim`, payload: { ids: [task.id] } });
+    const res = await ui(session);
+    assert.equal(res.statusCode, 200);
+    assert.equal(db.getTask(task.id).status, 'started');
+    assert.equal(db.getTask(task.id).sessionId, session.id);
+
+    const other = db.createTask(project.id, 'Autre', null);
+    const exited = makeSession('token-arrêtée', 'exited');
+    const refused = await app.inject({
+      method: 'POST',
+      url: `/api/sessions/${exited.id}/claim`,
+      payload: { ids: [other.id] },
+    });
+    assert.equal(refused.statusCode, 409);
+    assert.equal(db.getTask(other.id).status, 'todo');
+
+    const missing = await app.inject({
+      method: 'POST',
+      url: `/api/sessions/${randomUUID()}/claim`,
+      payload: { ids: [other.id] },
+    });
+    assert.equal(missing.statusCode, 404);
+  }));

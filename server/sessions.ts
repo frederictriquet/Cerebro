@@ -7,7 +7,7 @@ import { delimiter, join } from 'node:path';
 import type { SerializeAddon } from '@xterm/addon-serialize';
 import { withoutCerebroVariables } from './agent-env.ts';
 import { secretMatches } from './secret-compare.ts';
-import { buildAgentCommand, type Tuning } from './agents.ts';
+import { buildAgentCommand, workspaceArgs, type Tuning } from './agents.ts';
 import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
 import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError } from './db.ts';
 import type { AgentQuestion } from './questions.ts';
@@ -133,7 +133,7 @@ function titleFor(agent: Agent, prompt: string): string {
   return text === '' ? `${agent} session` : text.slice(0, 120);
 }
 
-function ptyEnvironment(sessionId: string, token: string): Record<string, string | undefined> {
+function ptyEnvironment(sessionId: string, token: string, agent: Agent): Record<string, string | undefined> {
   const env = withoutCerebroVariables();
   const binPath = join(ROOT, 'bin');
   // Strip markers that make a CLI think it runs nested inside another agent session
@@ -155,6 +155,9 @@ function ptyEnvironment(sessionId: string, token: string): Record<string, string
     TERM: 'xterm-256color',
     COLORTERM: 'truecolor',
     CEREBRO_SESSION_ID: sessionId,
+    // Agent launched by Cerebro in this terminal: a CLI started from inside it (an `agy` run by a Claude session)
+    // inherits the session's variables, but not this agent.
+    CEREBRO_AGENT: agent,
     CEREBRO_TOKEN: token,
     CEREBRO_URL: INTERNAL_URL,
     CEREBRO_NOTIFY: join(binPath, 'cerebro-notify'),
@@ -430,9 +433,9 @@ export class SessionManager {
       this.cleanupHolderArtifacts(id);
       const config: HolderConfig = {
         cmd: command.cmd,
-        args: command.args,
+        args: [...workspaceArgs(agent, cwd), ...command.args],
         cwd,
-        env: ptyEnvironment(id, token),
+        env: ptyEnvironment(id, token, agent),
         cols: 120,
         rows: 32,
       };
@@ -697,8 +700,8 @@ export class SessionManager {
 
   private handleOscMessage(id: string, message: string): void {
     const waiting = /approv|permission|confirm/i.test(message);
-    // Claude émet « Claude is waiting for your input » en fin de tour : c'est un idle, pas une question.
-    const genericIdle = /waiting for your input/i.test(message);
+    // Fin de tour, pas une question : « Claude is waiting for your input », « Antigravity CLI is ready for input » (agy).
+    const genericIdle = /waiting for your input|ready for input/i.test(message);
     const reason = waiting ? message || 'Permission demandée' : genericIdle || !message ? 'Tour terminé' : message;
     this.setReliableState(id, waiting ? 'waiting' : 'idle', reason);
   }

@@ -1,5 +1,5 @@
 import { accessWarning } from '../shared/council.ts';
-import type { Agent, CouncilRun, Session } from '../shared/types.ts';
+import { isAgent, type Agent, type CouncilRun, type Session } from '../shared/types.ts';
 import { PUBLIC_URL } from './config.ts';
 import type { CerebroDatabase } from './db.ts';
 
@@ -13,7 +13,9 @@ interface DmCommand {
 }
 
 export function parseDmCommand(text: string): DmCommand | null {
-  const match = text.match(/^([^\s:/+]+(?:[ \-_.][^\s:/+]+)*?)\s*(?:\/(claude|codex|grok))?\s*(\+)?\s*:\s*([\s\S]+)$/);
+  const match = text.match(
+    /^([^\s:/+]+(?:[ \-_.][^\s:/+]+)*?)\s*(?:\/(claude|codex|grok|gemini))?\s*(\+)?\s*:\s*([\s\S]+)$/,
+  );
   if (match === null) return null;
   const projectName = match[1]?.trim() ?? '';
   const agent = match[2];
@@ -21,7 +23,7 @@ export function parseDmCommand(text: string): DmCommand | null {
   if (projectName === '' || prompt === '') return null;
   return {
     projectName,
-    agent: agent === 'claude' || agent === 'codex' || agent === 'grok' ? agent : null,
+    agent: isAgent(agent) ? agent : null,
     forceNew: match[3] !== undefined,
     text: prompt,
   };

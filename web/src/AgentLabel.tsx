@@ -1,10 +1,11 @@
 import claude from './assets/agents/claude.svg';
 import codex from './assets/agents/codex.svg';
+import gemini from './assets/agents/gemini.svg';
 import grok from './assets/agents/grok.svg';
 import { AGENT_LABEL } from './format.ts';
 import type { Agent } from '../../shared/types.ts';
 
-const logos: Record<Agent, string> = { claude, codex, grok };
+const logos: Record<Agent, string> = { claude, codex, grok, gemini };
 
 export function AgentLogo({ agent }: { agent: Agent }) {
   return (

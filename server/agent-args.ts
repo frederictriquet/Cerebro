@@ -15,7 +15,8 @@ export function tuningArgs(agent: Agent, { model, effort }: Tuning): string[] {
     return args;
   }
   if (model !== null) args.push('--model', model);
-  if (effort !== null) args.push(agent === 'claude' ? '--effort' : '--reasoning-effort', effort);
+  // agy: `model` is a base id (« gemini-4-argon »), its efforts being separate ids that `--effort` selects.
+  if (effort !== null) args.push(agent === 'grok' ? '--reasoning-effort' : '--effort', effort);
   return args;
 }
 
@@ -27,6 +28,11 @@ export function modeArgs(agent: Agent, mode: Mode): string[] {
   }
   if (agent === 'grok') {
     return ['--permission-mode', mode === 'bypass' ? 'bypassPermissions' : mode];
+  }
+  if (agent === 'gemini') {
+    // agy's auto mode needs its terminal sandbox: without one, agy falls back to its default mode.
+    if (mode === 'bypass') return ['--dangerously-skip-permissions'];
+    return ['--mode', mode === 'acceptEdits' ? 'accept-edits' : mode];
   }
   if (mode === 'auto') return ['-a', 'on-request', '-s', 'workspace-write'];
   if (mode === 'acceptEdits') return ['-a', 'never', '-s', 'workspace-write'];

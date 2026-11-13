@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { Task } from '../../../shared/types.ts';
+import { ClaimToSessionButton } from '../ClaimControls.tsx';
 import { DelayedActionButton } from '../DelayedActionButton.tsx';
 import { errorMessage, sessionTitle } from '../format.ts';
 import { href } from '../route.ts';
@@ -94,6 +95,7 @@ export function TaskRow({
         blockers.length === 0 ? (
           <DelegateButton kind="tasks" id={task.id} projectId={projectId} onError={reportError} />
         ) : null}
+        {!sessionActive && !commandActive ? <ClaimToSessionButton task={task} onError={reportError} /> : null}
         <button
           type="button"
           className="btn"

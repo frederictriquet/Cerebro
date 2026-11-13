@@ -40,6 +40,7 @@
   --agent-claude: #d99a7e;
   --agent-codex: var(--accent);
   --agent-grok: #a6d9b1;
+  --agent-gemini: #e08bd6;
   --backdrop: rgba(5, 7, 10, 0.7);
   --radius-sm: 4px;
   --radius: 6px;
@@ -510,6 +511,10 @@ body.sidebar-resizing .main {
 
 .agent-logo-claude {
   background-color: #d97757;
+}
+
+.agent-logo-gemini {
+  background-color: #4796e3;
 }
 
 .usage-agent-name {
@@ -1221,18 +1226,10 @@ body.sidebar-resizing .main {
   flex-wrap: wrap;
 }
 
-/* Nom de pair de la session : un nom long est tronqué, l'infobulle le donne en entier. */
-.btn.peer-name {
-  font-family: var(--font-mono);
-  max-width: 22ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .session-toggles {
   display: inline-flex;
   align-self: start;
+  align-items: center;
   gap: 2px;
 }
 
@@ -1265,6 +1262,57 @@ body.sidebar-resizing .main {
 .session-toggle:has(input:disabled) {
   opacity: 0.5;
   cursor: wait;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--bg-2);
+  color: var(--text);
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.icon-btn.active {
+  color: var(--accent);
+}
+
+.icon-btn.danger,
+.icon-btn.danger:hover:not(:disabled) {
+  color: var(--danger);
+}
+
+/* Décompte du délai de suppression à la place du picto, dans la même cellule. */
+.icon-btn.delayed-btn {
+  display: inline-grid;
+  place-items: center;
+}
+
+.icon-btn.delayed-btn.pending,
+.icon-btn.delayed-btn.pending:hover:not(:disabled) {
+  color: var(--on-danger);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .session-toggle input {
@@ -4123,4 +4171,14 @@ a.btn:hover {
 .epic-start-reason {
   margin: 4px 0 0;
   color: var(--waiting);
+}
+
+/* Rattachement d'une tâche à une session : liste et boutons sur une ligne. */
+.claim-picker {
+  flex-wrap: nowrap;
+}
+.claim-picker select {
+  width: auto;
+  max-width: 170px;
+  min-width: 0;
 }

@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { query, type ModelInfo } from '@anthropic-ai/claude-agent-sdk';
 import { claudeQueryOptions, getAgentAvailability, type Tuning } from './agents.ts';
 import { readCodexString } from './codex-config.ts';
+import { geminiHome } from './transcripts.ts';
 import { EFFORTS, isEffort, type Agent, type Effort, type ModelChoice } from '../shared/types.ts';
 import { errorMessage, isRecord } from './util.ts';
 
@@ -36,6 +37,7 @@ const FALLBACK: Record<Agent, AgentCatalog> = {
   },
   codex: { models: [], efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultModel: null },
   grok: { models: [], efforts: ['low', 'medium', 'high', 'xhigh'], defaultModel: null },
+  gemini: { models: [], efforts: [], defaultModel: null },
 };
 
 function sortEfforts(efforts: Effort[]): Effort[] {
@@ -135,6 +137,49 @@ async function discoverGrok(): Promise<AgentCatalog> {
   return { models, efforts: fallbackDefault.efforts, defaultModel: fallbackDefault.value };
 }
 
+// `agy models` lists one id per model and effort (« gemini-4-argon-high\tGemini 4 Argon (High) »): variants of a
+// model become its efforts, chosen with `--effort` next to the base id. ~/.gemini/antigravity-cli/settings.json keeps
+// the model in use by its label.
+export function parseGeminiModels(listing: string, configuredLabel: string | null): AgentCatalog {
+  const models: ModelChoice[] = [];
+  let defaultModel: string | null = null;
+  for (const line of listing.split('\n')) {
+    const [id, label] = line.split('\t').map((part) => part.trim());
+    if (id === undefined || label === undefined || id === '' || label === '') continue;
+    const variant = /^(.+)-([a-z]+)$/.exec(id);
+    const effort = variant !== null && isEffort(variant[2]) ? variant[2] : null;
+    const value = effort === null ? id : variant![1]!;
+    let model = models.find((m) => m.value === value);
+    if (model === undefined) {
+      model = {
+        value,
+        label: effort === null ? label : label.replace(/\s*\([^)]*\)$/, ''),
+        description: '',
+        efforts: [],
+      };
+      models.push(model);
+    }
+    if (effort !== null && !model.efforts.includes(effort)) model.efforts = sortEfforts([...model.efforts, effort]);
+    if (label === configuredLabel) defaultModel = value;
+  }
+  if (models.length === 0) throw new Error('aucun modèle');
+  const fallbackDefault = models.find((m) => m.value === defaultModel) ?? models[0]!;
+  return { models, efforts: fallbackDefault.efforts, defaultModel: fallbackDefault.value };
+}
+
+async function discoverGemini(): Promise<AgentCatalog> {
+  const { stdout } = await execFileAsync('agy', ['models'], { timeout: DISCOVERY_TIMEOUT_MS });
+  let configured: string | null = null;
+  try {
+    const settings: unknown = JSON.parse(await readFile(join(geminiHome(), 'settings.json'), 'utf8'));
+    if (isRecord(settings) && typeof settings.model === 'string') configured = settings.model;
+  } catch (error) {
+    // No settings yet: agy's first model is its default.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  return parseGeminiModels(stdout, configured);
+}
+
 // `codex debug models` : catalogue JSON de la CLI installée (même source que `model/list` de
 // `codex app-server`, plus léger). Défaut : celui de config.toml, sinon le premier visible.
 async function discoverCodex(): Promise<AgentCatalog> {
@@ -172,6 +217,7 @@ const DISCOVERERS: Partial<Record<Agent, () => Promise<AgentCatalog>>> = {
   claude: discoverClaude,
   codex: discoverCodex,
   grok: discoverGrok,
+  gemini: discoverGemini,
 };
 
 /**

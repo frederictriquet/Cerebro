@@ -339,7 +339,7 @@ export class CerebroDatabase {
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-        agent TEXT NOT NULL CHECK (agent IN ('claude', 'codex', 'grok')),
+        agent TEXT NOT NULL CHECK (agent IN ('claude', 'codex', 'grok', 'gemini')),
         mode TEXT NOT NULL CHECK (mode IN ('default', 'auto', 'acceptEdits', 'plan', 'bypass')),
         prompt TEXT NOT NULL,
         title TEXT NOT NULL,
@@ -535,6 +535,7 @@ export class CerebroDatabase {
     this.convertLegacyCouncilSettings();
     this.seedCouncilCompositions();
     this.allowAutoMode();
+    this.allowGeminiAgent();
   }
 
   private hasColumn(table: string, column: string): boolean {
@@ -702,13 +703,24 @@ export class CerebroDatabase {
 
   // SQLite ne permet pas de modifier une contrainte CHECK : on reconstruit la table.
   private allowAutoMode(): void {
+    this.rebuildSessions("'auto'", (sql) =>
+      sql.replace("('default', 'acceptEdits'", "('default', 'auto', 'acceptEdits'"),
+    );
+  }
+
+  private allowGeminiAgent(): void {
+    this.rebuildSessions("'gemini'", (sql) => sql.replace("'codex', 'grok')", "'codex', 'grok', 'gemini')"));
+  }
+
+  /** Rebuilds `sessions` from its own definition rewritten by `rewrite`, unless that definition contains `marker`. */
+  private rebuildSessions(marker: string, rewrite: (sql: string) => string): void {
     const row = this.connection
       .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'")
       .get() as { sql: string } | undefined;
-    if (row === undefined || row.sql.includes("'auto'")) return;
-    const sql = row.sql
-      .replace("('default', 'acceptEdits'", "('default', 'auto', 'acceptEdits'")
-      .replace(/^CREATE TABLE "?sessions"?/, 'CREATE TABLE sessions_new');
+    if (row === undefined || row.sql.includes(marker)) return;
+    const rewritten = rewrite(row.sql);
+    if (!rewritten.includes(marker)) throw new Error(`Migration de la table sessions impossible : ${marker} absent`);
+    const sql = rewritten.replace(/^CREATE TABLE "?sessions"?/, 'CREATE TABLE sessions_new');
     this.connection.exec('PRAGMA foreign_keys = OFF');
     try {
       this.transaction(() =>

@@ -1,11 +1,13 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { Agent } from '../shared/types.ts';
 import type { AgentAuth, AgentUsage, UsageWindow } from '../shared/machine.ts';
+import { withoutCerebroVariables } from './agent-env.ts';
+import { getAgentAvailability } from './agents.ts';
 import { codexHome, listCodexRollouts } from './codex-config.ts';
 import { readJsonlTail } from './jsonl.ts';
 import { asRecord, errorMessage, isEnoent } from './util.ts';
@@ -236,6 +238,59 @@ export async function readCodex(): Promise<AgentUsage> {
   return { agent: 'codex', windows, auth: null, updatedAt: latest.timestamp, error: null };
 }
 
+async function agentAvailable(agent: Agent): Promise<boolean> {
+  return (await getAgentAvailability()).some((entry) => entry.agent === agent && entry.available);
+}
+
+const GEMINI_MIN_INTERVAL_MS = 2 * 60_000;
+const GEMINI_WINDOWS: Readonly<Record<string, number>> = { '5h': 300, weekly: 10_080 };
+
+/** Windows of `agy -p /usage --output-format json`: per model group, the share left of a 5-hour and a weekly limit. */
+export function parseGeminiUsage(output: string): UsageWindow[] {
+  const groups = asRecord(asRecord(asRecord(JSON.parse(output))?.command)?.data)?.groups;
+  if (!Array.isArray(groups)) throw new Error('sortie de `agy -p /usage` illisible');
+  return groups.flatMap((value) => {
+    const group = asRecord(value);
+    const buckets = group?.buckets;
+    if (group === null || !Array.isArray(buckets)) return [];
+    // « Gemini Models » → « Gemini », « Claude and GPT models » → « Claude/GPT ».
+    const name = String(group.name ?? '')
+      .replace(/\s+models$/i, '')
+      .replace(/\s+and\s+/gi, '/');
+    const windows = buckets.flatMap((item): UsageWindow[] => {
+      const bucket = asRecord(item);
+      if (bucket === null || typeof bucket.remaining_fraction !== 'number') return [];
+      const minutes = typeof bucket.window === 'string' ? (GEMINI_WINDOWS[bucket.window] ?? null) : null;
+      return [
+        {
+          label: `${name} ${minutes === null ? String(bucket.window ?? 'limite') : windowLabel(minutes)}`.trim(),
+          percent: clampPercent((1 - bucket.remaining_fraction) * 100),
+          minutes,
+          resetsAt: isoFromString(bucket.reset_time),
+        },
+      ];
+    });
+    // agy lists the weekly limit first: shortest window first, as for Claude and Codex (5 h, then the week).
+    return windows.sort((a, b) => (a.minutes ?? Infinity) - (b.minutes ?? Infinity));
+  });
+}
+
+async function readGemini(): Promise<AgentUsage> {
+  // Outside any project, without Cerebro's variables: the command only reads the account's quota.
+  const { stdout } = await execFileAsync('agy', ['-p', '/usage', '--output-format', 'json'], {
+    cwd: tmpdir(),
+    env: withoutCerebroVariables(),
+    timeout: 30_000,
+  });
+  return {
+    agent: 'gemini',
+    windows: parseGeminiUsage(stdout),
+    auth: null,
+    updatedAt: new Date().toISOString(),
+    error: null,
+  };
+}
+
 const GROK_USAGE: AgentUsage = {
   agent: 'grok',
   windows: [],
@@ -253,6 +308,9 @@ export class UsageTracker {
   private codexReadAt = 0;
   private codexAuth: AgentAuth | null = null;
   private grokAuth: AgentAuth | null = null;
+  private gemini: AgentUsage | null = null;
+  private geminiReadAt = 0;
+  private geminiPending: Promise<void> | null = null;
 
   async get(): Promise<AgentUsage[]> {
     const now = Date.now();
@@ -291,12 +349,38 @@ export class UsageTracker {
       this.grokAuth = readAuth(readGrokAuth);
     }
 
+    // Only where agy is installed, like the other CLIs' figures that need a local login.
+    if (now - this.geminiReadAt >= GEMINI_MIN_INTERVAL_MS && (await agentAvailable('gemini'))) {
+      this.geminiReadAt = now;
+      this.geminiPending = readGemini()
+        .then((usage) => {
+          this.gemini = usage;
+        })
+        .catch((cause: unknown) => {
+          const usage = this.gemini ?? {
+            agent: 'gemini' as const,
+            windows: [],
+            auth: null,
+            updatedAt: null,
+            error: null,
+          };
+          this.gemini = { ...usage, error: errorMessage(cause) };
+        })
+        .finally(() => {
+          this.geminiPending = null;
+        });
+    }
+    if (this.geminiPending !== null) await this.geminiPending;
+
     const auth: Record<Agent, AgentAuth | null> = {
       claude: this.claudeAuth,
       codex: this.codexAuth,
       grok: this.grokAuth,
+      gemini: null,
     };
-    return [this.claude, this.codex, GROK_USAGE].map((usage) => ({
+    const all =
+      this.gemini === null ? [this.claude, this.codex, GROK_USAGE] : [this.claude, this.codex, GROK_USAGE, this.gemini];
+    return all.map((usage) => ({
       ...usage,
       auth: auth[usage.agent],
       windows: usage.windows.map((w) => freshen(w, now)),

@@ -3,7 +3,7 @@
 import { asNullableNumber, asNullableString, asNumber, asString, isRecord, parseItems } from './parse.ts';
 import type { CommandRun, EpicRun } from './backlog.ts';
 
-export type Agent = 'claude' | 'codex' | 'grok';
+export type Agent = 'claude' | 'codex' | 'grok' | 'gemini';
 // « default » (agent configuration) remains a stored mode: sessions launched before its removal keep it.
 export type Mode = 'default' | 'auto' | 'acceptEdits' | 'plan' | 'bypass';
 export type Status = 'starting' | 'running' | 'waiting' | 'idle' | 'exited';
@@ -13,7 +13,14 @@ export type TaskStatus = 'todo' | 'started' | 'done';
 export type Effort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export type WorkspaceMode = 'isolated' | 'shared';
 
-export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok'];
+export const AGENTS: readonly Agent[] = ['claude', 'codex', 'grok', 'gemini'];
+// Executable of each agent's CLI: Gemini runs through Google's Antigravity CLI.
+export const AGENT_COMMAND: Readonly<Record<Agent, string>> = {
+  claude: 'claude',
+  codex: 'codex',
+  grok: 'grok',
+  gemini: 'agy',
+};
 export const MODES: readonly Mode[] = ['auto', 'default', 'acceptEdits', 'plan', 'bypass'];
 // Modes offered by the widgets and sent for new launches: « default » is not a choice any more.
 export type ModeChoice = Exclude<Mode, 'default'>;
@@ -450,7 +457,7 @@ export type TermServerMessage =
   | { type: 'size'; cols: number; rows: number };
 
 export function isAgent(v: unknown): v is Agent {
-  return v === 'claude' || v === 'codex' || v === 'grok';
+  return (AGENTS as readonly unknown[]).includes(v);
 }
 
 export function isMode(v: unknown): v is Mode {

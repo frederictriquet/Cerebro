@@ -1,3 +1,4 @@
+import { CommitPushIcon, ReviewIcon } from './SessionIcons.tsx';
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, apiParsed, apiPath } from './api.ts';
@@ -336,10 +337,11 @@ function SessionReviewDialog({
   );
 }
 
-export function SessionGitActions({ sessionId }: { sessionId: string }) {
+// `review` : bouton « Code review » de la rangée d'actions ; `commit` : picto Commit / push de l'en-tête.
+export function SessionGitActions({ sessionId, part }: { sessionId: string; part: 'review' | 'commit' }) {
   // Une autre session repart d'un état vierge : ni le contexte ni le dialogue de la précédente. Changer de machine
   // remonte déjà tout l'arbre (StoreProvider par machine, App.tsx).
-  return <SessionGitActionsPanel key={sessionId} sessionId={sessionId} />;
+  return <SessionGitActionsPanel key={sessionId} sessionId={sessionId} part={part} />;
 }
 
 /** Dossier Git d'une session (partagé, copie isolée ou copie retirée), lu au montage : le composant appelant est remonté par session. */
@@ -365,7 +367,7 @@ export function useSessionGitContext(sessionId: string): {
   return { context, error };
 }
 
-function SessionGitActionsPanel({ sessionId }: { sessionId: string }) {
+function SessionGitActionsPanel({ sessionId, part }: { sessionId: string; part: 'review' | 'commit' }) {
   const { sessions } = useStore();
   const session = sessions.find((s) => s.id === sessionId);
   const [open, setOpen] = useState<'review' | 'commit' | null>(null);
@@ -375,25 +377,41 @@ function SessionGitActionsPanel({ sessionId }: { sessionId: string }) {
   const shared = context?.mode === 'shared';
   return (
     <>
-      <button className="btn" disabled={!context || context.mode === 'removed'} onClick={() => setOpen('review')}>
-        {shared ? 'Code review du projet' : 'Code review'}
-      </button>
-      <button
-        className="btn"
-        disabled={!context || context.mode === 'removed'}
-        title={
-          contextError ??
-          (shared
-            ? 'Traite tous les changements du dossier partagé du projet, y compris ceux des autres conversations.'
-            : context?.mode === 'removed'
-              ? 'La copie de travail de cette conversation a été retirée.'
-              : 'Traite les changements vérifiables de la copie de cette conversation.')
-        }
-        onClick={() => setOpen('commit')}
-      >
-        {shared ? 'Commit / push du projet' : 'Commit / push'}
-      </button>
-      {contextError ? <span className="form-error">{contextError}</span> : null}
+      {part === 'review' ? (
+        <button
+          type="button"
+          className="icon-btn"
+          aria-label={shared ? 'Code review du projet' : 'Code review'}
+          title={
+            shared
+              ? 'Code review du projet : tous les changements du dossier partagé'
+              : 'Code review des changements de cette conversation'
+          }
+          disabled={!context || context.mode === 'removed'}
+          onClick={() => setOpen('review')}
+        >
+          <ReviewIcon />
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="icon-btn"
+          aria-label={shared ? 'Commit / push du projet' : 'Commit / push'}
+          disabled={!context || context.mode === 'removed'}
+          title={`${shared ? 'Commit / push du projet' : 'Commit / push'}. ${
+            contextError ??
+            (shared
+              ? 'Traite tous les changements du dossier partagé du projet, y compris ceux des autres conversations.'
+              : context?.mode === 'removed'
+                ? 'La copie de travail de cette conversation a été retirée.'
+                : 'Traite les changements vérifiables de la copie de cette conversation.')
+          }`}
+          onClick={() => setOpen('commit')}
+        >
+          <CommitPushIcon />
+        </button>
+      )}
+      {contextError && part === 'review' ? <span className="form-error">{contextError}</span> : null}
       {open === 'commit' ? (
         <AutomaticCommitDialog
           projectId={session.projectId}

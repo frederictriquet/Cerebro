@@ -18,15 +18,15 @@ test('périodes calendaires : bornes incluses, sessions terminées et exclusion 
   ];
   assert.deepEqual(
     llmStats(sessions, '7d', now).map((r) => r.count),
-    [1, 1, 0],
+    [1, 1, 0, 0],
   );
   assert.deepEqual(
     llmStats(sessions, '30d', now).map((r) => r.count),
-    [2, 1, 1],
+    [2, 1, 1, 0],
   );
   assert.deepEqual(
     llmStats(sessions, 'all', now).map((r) => r.count),
-    [2, 1, 2],
+    [2, 1, 2, 0],
   );
 });
 

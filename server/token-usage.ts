@@ -5,6 +5,7 @@ import type { Session } from '../shared/types.ts';
 import type { SessionTokenUsage, TokenCounts } from '../shared/machine.ts';
 import { codexHome, listCodexRollouts } from './codex-config.ts';
 import { iterateJsonl } from './jsonl.ts';
+import { geminiHome, geminiTranscriptPath } from './transcripts.ts';
 import { asRecord } from './util.ts';
 
 const count = (v: unknown): number | null => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null);
@@ -32,6 +33,7 @@ export class TokenAccumulator {
   private messages = new Map<string, TokenCounts>();
   private codex: TokenCounts | null = null;
   private grok = new Map<string, Map<string, TokenCounts>>();
+  private gemini = new Map<number, TokenCounts>();
 
   accept(agent: Session['agent'], value: unknown): void {
     const event = asRecord(value);
@@ -69,12 +71,24 @@ export class TokenAccumulator {
       const messages = this.grok.get(event.sid) ?? new Map<string, TokenCounts>();
       messages.set(`${event.ts}:${asRecord(event.ctx)?.loop_index ?? ''}`, tokens);
       this.grok.set(event.sid, messages);
+    } else if (agent === 'gemini' && event.type === 'PLANNER_RESPONSE' && typeof event.step_index === 'number') {
+      // agy: one model call per step, whose input count leaves out the cached part.
+      const input = count(event.input_tokens);
+      const output = count(event.output_tokens);
+      if (input === null || output === null) return;
+      const cached = count(event.cache_read_tokens) ?? 0;
+      this.gemini.set(event.step_index, {
+        inputTokens: input + cached,
+        outputTokens: output,
+        cachedInputTokens: cached,
+        cacheWriteInputTokens: 0,
+      });
     }
   }
 
   total(agent: Session['agent'], id = ''): TokenCounts | null {
     if (agent === 'codex') return this.codex;
-    const entries = agent === 'claude' ? this.messages : this.grok.get(id);
+    const entries = agent === 'claude' ? this.messages : agent === 'gemini' ? this.gemini : this.grok.get(id);
     if (entries === undefined || entries.size === 0) return null;
     return [...entries.values()].reduce(
       (sum, t) => ({
@@ -106,6 +120,7 @@ interface Roots {
   claude: string;
   codex: string;
   grok: string;
+  gemini: string;
 }
 
 /** Bytes kept from each end of the consumed prefix to detect in-place rewrites. */
@@ -151,6 +166,7 @@ export class TokenUsageTracker {
       claude: process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
       codex: codexHome(),
       grok: process.env.GROK_HOME ?? join(homedir(), '.grok'),
+      gemini: geminiHome(),
     },
   ) {
     this.roots = roots;
@@ -230,7 +246,14 @@ export class TokenUsageTracker {
       let tokens: TokenCounts | null = null;
       if (id !== null) {
         if (session.agent === 'grok') tokens = grok?.total('grok', id) ?? null;
-        else {
+        else if (session.agent === 'gemini') {
+          // Conversation ids are UUIDs: anything else could leave the brain folder.
+          if (/^[\w-]+$/.test(id)) {
+            const path = geminiTranscriptPath(this.roots.gemini, id);
+            usedPaths.add(path);
+            tokens = (await this.parse('gemini', path))?.total('gemini') ?? null;
+          }
+        } else {
           const paths = session.agent === 'claude' ? claude : codex;
           const suffix = session.agent === 'claude' ? `/${id}.jsonl` : `-${id}.jsonl`;
           const candidates = paths.filter((p) => p.endsWith(suffix));

@@ -327,7 +327,7 @@ export class SlackDmCommands {
       '*Piloter Cerebro depuis Slack*',
       '`projet: instruction` — reprendre la session active, ou en créer une',
       '`projet+: instruction` — toujours créer une nouvelle session',
-      '`projet/agent: instruction` — choisir `claude`, `codex` ou `grok`',
+      '`projet/agent: instruction` — choisir `claude`, `codex`, `grok` ou `gemini`',
       '`projet/agent+: instruction` — choisir l’agent et créer une nouvelle session',
       '`council: question` — réunir le council de LLM hors projet (synthèse dans le fil)',
       '`projet/council: question` — réunir le council sur un projet, avec ses réglages (lecture du dépôt comprise)',

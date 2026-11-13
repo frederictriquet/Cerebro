@@ -1079,9 +1079,9 @@ test('conversion des réglages au format advisors[] (global et projet)', () => {
         model: null,
         effort: null,
       },
-      { id: 'y', name: 'Inconnu', persona: 'Persona sans agent valide.', agent: 'gemini' },
+      { id: 'y', name: 'Inconnu', persona: 'Persona sans agent valide.', agent: 'mistral' },
     ],
-    chairman: { agent: 'gemini' },
+    chairman: { agent: 'mistral' },
   };
   const path = join(root, 'convert.db');
   let db = new CerebroDatabase(path);
@@ -1394,7 +1394,7 @@ test('validation des réglages du council', () => {
   assert.match(error({ ...settings, defaultPersonaIds: ['contrarian', 'contrarian'] }), /double/);
   assert.match(error({ ...settings, assignments: { absent: { agent: 'claude' } } }), /Persona inconnue/);
   assert.match(error({ ...settings, assignments: { contrarian: 'claude' } }), /contrarian.*invalide/);
-  assert.match(error({ ...settings, assignments: { contrarian: { agent: 'gemini' } } }), /agent/);
+  assert.match(error({ ...settings, assignments: { contrarian: { agent: 'mistral' } } }), /agent/);
   // Agent connu mais absent de la liste acceptée (par exemple non installé).
   assert.match(error(settings, ['claude']), /outsider.*agent/);
   assert.match(
@@ -1638,7 +1638,7 @@ test('résolution des participants d’un run', () => {
   assert.match(resolve([{ personaId: 'contrarian' }, 'outsider']).error, /Conseiller 2 : invalide/);
   assert.match(resolve('contrarian').error, /Participants invalides/);
   assert.match(
-    resolve([{ personaId: 'contrarian' }, { personaId: 'outsider', agent: 'gemini' }]).error,
+    resolve([{ personaId: 'contrarian' }, { personaId: 'outsider', agent: 'mistral' }]).error,
     /Conseiller 2 : agent/,
   );
   assert.match(

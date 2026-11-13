@@ -1,10 +1,17 @@
-import { globSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, globSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { getGrokHookSettings } from './agents.ts';
+import {
+  GEMINI_QUESTION_TOOL,
+  getGeminiHookSettings,
+  getGeminiSessionInjection,
+  getGrokHookSettings,
+} from './agents.ts';
 import { codexHome } from './codex-config.ts';
 import { parseQuestions } from './questions.ts';
 import type { SessionManager } from './sessions.ts';
+import { findTranscript, geminiHome } from './transcripts.ts';
 import type { Agent, AttentionDetail } from '../shared/types.ts';
 import { ignoreEnoent, isRecord } from './util.ts';
 
@@ -99,12 +106,7 @@ function codexRolloutExists(threadId: string): boolean {
   return true;
 }
 
-/**
- * Rewritten at each server start and never removed: the hook is a no-op outside Cerebro sessions.
- * To uninstall, stop Cerebro then delete the file (see README, « Désinstallation »).
- */
-export function installGrokHook(path = join(homedir(), '.grok', 'hooks', 'cerebro.json')): void {
-  const contents = `${JSON.stringify(getGrokHookSettings(), null, 2)}\n`;
+function writeIfChanged(path: string, contents: string): void {
   let current: string | null = null;
   try {
     current = readFileSync(path, 'utf8');
@@ -114,6 +116,125 @@ export function installGrokHook(path = join(homedir(), '.grok', 'hooks', 'cerebr
   if (current === contents) return;
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, contents, { mode: 0o600 });
+}
+
+/**
+ * Rewritten at each server start and never removed: the hook is a no-op outside Cerebro sessions.
+ * To uninstall, stop Cerebro then delete the file (see README, « Désinstallation »).
+ */
+export function installGrokHook(path = join(homedir(), '.grok', 'hooks', 'cerebro.json')): void {
+  writeIfChanged(path, `${JSON.stringify(getGrokHookSettings(), null, 2)}\n`);
+}
+
+/**
+ * Cerebro plugin of agy, discovered in its global customization folder. Same lifecycle as the Grok hook: rewritten
+ * at each server start when agy is installed, inert outside Cerebro sessions; to uninstall, stop Cerebro then delete
+ * the folder.
+ */
+export function installGeminiHook(
+  dir = join(homedir(), '.gemini', 'config', 'plugins', 'cerebro'),
+  home = geminiHome(),
+): void {
+  // agy not installed: nothing to add next to another Gemini tool's files.
+  if (!existsSync(home)) return;
+  const injection = join(dir, 'session-start.json');
+  writeIfChanged(join(dir, 'plugin.json'), `${JSON.stringify({ name: 'cerebro' }, null, 2)}\n`);
+  writeIfChanged(injection, `${JSON.stringify(getGeminiSessionInjection())}\n`);
+  writeIfChanged(join(dir, 'hooks.json'), `${JSON.stringify(getGeminiHookSettings(injection), null, 2)}\n`);
+}
+
+// agy runs its Stop hook just before writing the turn's last answer to the transcript: read it a little later.
+const GEMINI_STOP_POLL_MS = 400;
+const GEMINI_STOP_ATTEMPTS = 8;
+// Turns begun per session, so that an end of turn handled late never overrides a turn started meanwhile.
+const geminiTurns = new Map<string, number>();
+
+/** Text of the turn's final answer once it is the transcript's last step; undefined while it is not written yet. */
+export function geminiFinalAnswer(transcript: string): string | undefined {
+  const last = transcript.trimEnd().split('\n').at(-1);
+  if (last === undefined || last === '') return undefined;
+  let step: unknown;
+  try {
+    step = JSON.parse(last);
+  } catch {
+    // Line still being written.
+    return undefined;
+  }
+  if (!isRecord(step) || step.type !== 'PLANNER_RESPONSE' || step.source !== 'MODEL') return undefined;
+  if (Array.isArray(step.tool_calls) && step.tool_calls.length > 0) return undefined;
+  return typeof step.content === 'string' ? step.content : undefined;
+}
+
+async function geminiLastAnswer(conversationId: string): Promise<string | null> {
+  const path = await findTranscript('gemini', conversationId);
+  if (path === null) return null;
+  for (let attempt = 0; attempt < GEMINI_STOP_ATTEMPTS; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, GEMINI_STOP_POLL_MS));
+    const answer = geminiFinalAnswer(await readFile(path, 'utf8'));
+    if (answer !== undefined) return answer;
+  }
+  return null;
+}
+
+async function finishGeminiTurn(
+  sessions: SessionManager,
+  sessionId: string,
+  conversationId: string,
+  answered: boolean,
+): Promise<void> {
+  const turn = geminiTurns.get(sessionId);
+  let message: string | null = null;
+  try {
+    if (answered) message = await geminiLastAnswer(conversationId);
+  } catch (error) {
+    console.warn('[hooks] dernière réponse agy illisible :', error instanceof Error ? error.message : error);
+  }
+  if (geminiTurns.get(sessionId) !== turn) return;
+  sessions.setPendingQuestions(sessionId, null);
+  sessions.setReliableState(sessionId, 'idle', 'Tour terminé', turnDetail(message));
+  sessions.reportTurnComplete(sessionId, message);
+}
+
+function handleGeminiHook(sessions: SessionManager, sessionId: string, event: string, payload: HookPayload): void {
+  const conversationId = stringField(payload, 'conversationId');
+  if (conversationId === null) return;
+  const known = sessions.db.getSession(sessionId)?.agentSessionId ?? null;
+  if (event === 'SessionStart') {
+    // Only the session's own conversation: subagents start conversations of their own.
+    if (known === null) sessions.setAgentSessionId(sessionId, conversationId);
+    return;
+  }
+  if (known !== null && known !== conversationId) return;
+  if (event === 'PreInvocation') {
+    // The first model call of a turn follows a new prompt: it answers a pending question.
+    if (payload.invocationNum === 0) {
+      geminiTurns.set(sessionId, (geminiTurns.get(sessionId) ?? 0) + 1);
+      sessions.clearAsked(sessionId);
+    }
+    sessions.setPendingQuestions(sessionId, null);
+    sessions.setRunning(sessionId);
+    return;
+  }
+  if (event === 'PostToolUse') {
+    sessions.setPendingQuestions(sessionId, null);
+    sessions.setRunning(sessionId);
+    return;
+  }
+  if (event === 'PreToolUse') {
+    const tool = isRecord(payload.toolCall) ? payload.toolCall : null;
+    if (tool?.name !== GEMINI_QUESTION_TOOL) return;
+    const questions = parseQuestions(tool.args);
+    sessions.setPendingQuestions(sessionId, questions);
+    sessions.setReliableState(
+      sessionId,
+      'waiting',
+      'Question',
+      questions === null ? null : { kind: 'questions', questions },
+    );
+    return;
+  }
+  if (event === 'Stop')
+    void finishGeminiTurn(sessions, sessionId, conversationId, payload.terminationReason === 'NO_TOOL_CALL');
 }
 
 export function handleHook(
@@ -137,6 +258,10 @@ export function handleHook(
     return;
   }
 
+  if (agent === 'gemini') {
+    handleGeminiHook(sessions, sessionId, event, payload);
+    return;
+  }
   if (event === 'SessionStart' && agent === 'grok') {
     const agentSessionId = stringField(payload, 'session_id');
     if (agentSessionId !== null) sessions.setAgentSessionId(sessionId, agentSessionId);

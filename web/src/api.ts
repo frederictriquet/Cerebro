@@ -484,3 +484,11 @@ export async function delegateItem(kind: 'tasks' | 'epics', id: string, projectI
     body: JSON.stringify({ projectId }),
   });
 }
+
+/** Rattache des tâches du backlog à une session en cours : elles passent « démarrées » dans cette session. */
+export async function claimTasksForSession(sessionId: string, ids: string[]): Promise<void> {
+  await api(`/api/sessions/${encodeURIComponent(sessionId)}/claim`, {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+  });
+}

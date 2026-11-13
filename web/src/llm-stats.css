@@ -57,6 +57,9 @@
 .llm-tone-grok {
   --llm-color: var(--agent-grok);
 }
+.llm-tone-gemini {
+  --llm-color: var(--agent-gemini);
+}
 
 .llm-stats-total {
   font-variant-numeric: tabular-nums;

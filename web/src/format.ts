@@ -154,6 +154,7 @@ export const AGENT_LABEL: Record<Agent, string> = {
   claude: 'claude',
   codex: 'codex',
   grok: 'grok',
+  gemini: 'gemini',
 };
 
 // Suffixe des boutons de lancement : rappelle où travailleront les nouvelles conversations du projet.

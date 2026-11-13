@@ -83,3 +83,16 @@ export function taskPill(
       return { label: 'À valider', className: 'review' };
   }
 }
+
+/**
+ * Tâche qu'on peut rattacher à une session en cours (POST /api/sessions/:id/claim) : ouverte, à traiter par un
+ * agent, pas déjà confiée à une session active ni traitée dans un autre projet. Le serveur refuse aussi une
+ * tâche réservée par un epic en cours d'exécution.
+ */
+export function claimableTask(task: Task, sessions: Session[], tasks: Task[]): boolean {
+  if (task.status === 'done' || task.execution?.type === 'command') return false;
+  if (tasks.some((t) => t.originTaskId === task.id)) return false;
+  if (task.status !== 'started') return true;
+  const holder = sessions.find((s) => s.id === task.sessionId);
+  return holder === undefined || holder.status === 'exited';
+}

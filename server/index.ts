@@ -16,7 +16,7 @@ import { registerCouncilRoutes } from './council-routes.ts';
 import type { Catalog } from './catalog.ts';
 import { BIND_TOKEN, ensureDataDirs, HOST, PORT, ROOT } from './config.ts';
 import { CerebroDatabase } from './db.ts';
-import { installGrokHook } from './hooks.ts';
+import { installGeminiHook, installGrokHook } from './hooks.ts';
 import { PeerSync } from './peers.ts';
 import { workspaceFor } from './provenance.ts';
 import { secretMatches } from './secret-compare.ts';
@@ -123,6 +123,7 @@ export async function buildServer(
   purgeTimer.unref();
 
   installGrokHook();
+  installGeminiHook();
   await sessions.initialize();
   await app.register(fastifyWebsocket);
 

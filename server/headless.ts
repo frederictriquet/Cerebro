@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
-import type { Agent, Effort } from '../shared/types.ts';
+import { AGENT_COMMAND, type Agent, type Effort } from '../shared/types.ts';
 import { tuningArgs } from './agent-args.ts';
 import { readCodexConfig } from './codex-config.ts';
 import { jsonlFromEnd } from './jsonl.ts';
@@ -260,7 +260,50 @@ function grokArgs(access: HeadlessAccess, web: boolean, schema: string, input: s
   ];
 }
 
-/** Runs one non-interactive claude/codex/grok inference and returns its structured output, validated against `schema`. */
+/**
+ * agy has no tool allow-list: permission rules, passed as session settings never saved, refuse what the access level
+ * excludes (deny wins over allow), and a headless run refuses anything else needing an approval it cannot ask for.
+ * The default agent mode is forced: the account's may be « auto », which approves edits by itself. Its web search
+ * tool has no permission rule; page reads (`read_url`) do. The folder is not trusted: its own hooks stay off.
+ * The prompt goes on stdin as a stream-json message: an argument would be capped at 128 KiB.
+ */
+function geminiArgs(access: HeadlessAccess, web: boolean, schema: string, cwd: string): string[] {
+  const allow = [...(access === 'none' ? [] : [`read_file(${cwd}/)`]), ...(web ? ['read_url(*)'] : [])];
+  const deny = [
+    'write_file(*)',
+    'command(*)',
+    'mcp(*)',
+    'execute_url(*)',
+    ...(access === 'none' ? ['read_file(*)'] : []),
+    ...(web ? [] : ['read_url(*)']),
+  ];
+  return [
+    '--input-format',
+    'stream-json',
+    '--output-format',
+    'stream-json',
+    '--settings',
+    JSON.stringify({ agentMode: '', permissions: { allow, deny } }),
+    '--json-schema',
+    schema,
+  ];
+}
+
+// agy's stream-json output ends with a `result` event: its structured output, or the reason for the failure.
+function geminiResult(text: string): unknown {
+  for (const record of jsonlFromEnd(text)) {
+    const event = record as { event?: unknown; result?: { status?: unknown; error?: unknown } } | null;
+    if (event?.event !== 'result' || event.result === undefined) continue;
+    if (event.result.status !== 'SUCCESS')
+      throw new Error(
+        `L’agent a échoué : ${typeof event.result.error === 'string' && event.result.error !== '' ? event.result.error : String(event.result.status)}`,
+      );
+    return interpret(event.result);
+  }
+  throw new Error('L’agent n’a pas produit de résultat final.');
+}
+
+/** Runs one non-interactive claude/codex/grok/gemini inference and returns its structured output, validated against `schema`. */
 export async function runHeadless(options: HeadlessOptions): Promise<unknown> {
   const { agent, model, effort, prompt, access, timeoutMs, signal } = options;
   const web = options.web === true;
@@ -287,6 +330,12 @@ export async function runHeadless(options: HeadlessOptions): Promise<unknown> {
     let stdin: string | undefined = prompt;
     if (agent === 'codex') {
       args = [...codexArgs(access, web, schema, output, model, effort, images), '-'];
+    } else if (agent === 'gemini') {
+      args = [
+        ...geminiArgs(access, web, schemaText, options.cwd ?? directory),
+        ...tuningArgs(agent, { model, effort }),
+      ];
+      stdin = `${JSON.stringify({ event: 'user', message: { content: prompt } })}\n`;
     } else {
       args =
         agent === 'claude'
@@ -301,7 +350,7 @@ export async function runHeadless(options: HeadlessOptions): Promise<unknown> {
     delete env.CLAUDECODE;
     const text = await new Promise<string>((accept, reject) => {
       signal.throwIfAborted();
-      const child = spawn(agent, args, {
+      const child = spawn(AGENT_COMMAND[agent], args, {
         cwd: options.cwd ?? directory,
         env,
         detached: process.platform !== 'win32',
@@ -365,9 +414,11 @@ export async function runHeadless(options: HeadlessOptions): Promise<unknown> {
     const result =
       agent === 'codex'
         ? decode(await readFile(output, 'utf8'))
-        : agent === 'claude' && images.length > 0
-          ? interpret(resultRecord(text))
-          : decode(text);
+        : agent === 'gemini'
+          ? geminiResult(text)
+          : agent === 'claude' && images.length > 0
+            ? interpret(resultRecord(text))
+            : decode(text);
     validateSchema(result, options.schema);
     return result;
   } finally {

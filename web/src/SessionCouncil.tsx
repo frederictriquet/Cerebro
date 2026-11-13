@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { ActivityStatus } from './ActivityStatus.tsx';
 import { getSessionTranscript, type SessionTranscript } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
 import { CouncilLaunch } from './CouncilLaunch.tsx';
 import { Modal } from './Dialog.tsx';
+import { CouncilIcon } from './SessionIcons.tsx';
 import type { Session } from '../../shared/types.ts';
 
 // « Council » : la conversation de la session (y compris issue d'un council) devient le contexte d'un nouveau
@@ -20,12 +20,14 @@ export function SessionCouncilButton({ session, onError }: { session: Session; o
     <>
       <button
         type="button"
-        className="btn"
+        className="icon-btn"
+        aria-label="Council"
+        aria-busy={busy}
         disabled={busy}
-        title="Soumettre cette conversation à un council : elle devient le contexte de la question posée aux conseillers"
+        title="Council : soumettre cette conversation à un council ; elle devient le contexte de la question posée aux conseillers"
         onClick={() => void open()}
       >
-        <ActivityStatus active={busy}>Council</ActivityStatus>
+        <CouncilIcon />
       </button>
       {transcript !== null ? (
         <Modal title="Soumettre la session à un council" onClose={() => setTranscript(null)}>

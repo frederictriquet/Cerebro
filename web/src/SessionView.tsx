@@ -1,3 +1,5 @@
+import { ResizeIcon } from './SessionIcons.tsx';
+import { ClaimTaskButton } from './ClaimControls.tsx';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useLatest } from './use-latest.ts';
 import { FindingsNotice, FindingsPanel } from './Findings.tsx';
@@ -535,6 +537,41 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           </p>
         </div>
         <div className="session-toggles">
+          <SessionPeerName key={session.id} session={session} onError={setError} />
+          <SessionCouncilButton session={session} onError={setError} />
+          <SessionGitActions sessionId={session.id} part="review" />
+          <SessionGitActions sessionId={session.id} part="commit" />
+          {live ? (
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="Redimensionner"
+              title="Redimensionner : réajuster le terminal à cette fenêtre et forcer la session à se redessiner"
+              onClick={() => {
+                if (!termApi.current?.refreshSize()) setError('Terminal non connecté : dimensions non rafraîchies');
+              }}
+            >
+              <ResizeIcon />
+            </button>
+          ) : null}
+          <SessionActions
+            session={session}
+            emphasizeResume
+            explainDelete
+            icons
+            onKill={() => void act(() => killSession(session.id))}
+            onResume={() => void act(() => resumeSession(session.id))}
+            onDelete={() => {
+              const deletedId = session.id;
+              const projectHome = project ? `#/p/${project.id}` : '#/';
+              void act(async () => {
+                await deleteSession(deletedId);
+                // Pendant le délai de rétractation, l'utilisateur a pu ouvrir une autre page : il y reste.
+                const route = parseHash(window.location.hash);
+                if (route.kind === 'session' && route.sessionId === deletedId) go(projectHome);
+              });
+            }}
+          />
           <SessionPin session={session} onError={setError} />
           <SessionProtection session={session} onError={setError} />
         </div>
@@ -545,38 +582,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             </span>
           ) : null}
           <div className="row-actions">
-            <SessionPeerName key={session.id} session={session} onError={setError} />
-            <SessionCouncilButton session={session} onError={setError} />
-            <SessionGitActions sessionId={session.id} />
-            {live ? (
-              <button
-                type="button"
-                className="btn"
-                title="Réajuster le terminal à cette fenêtre et forcer la session à se redessiner"
-                onClick={() => {
-                  if (!termApi.current?.refreshSize()) setError('Terminal non connecté : dimensions non rafraîchies');
-                }}
-              >
-                Redimensionner
-              </button>
-            ) : null}
-            <SessionActions
-              session={session}
-              emphasizeResume
-              explainDelete
-              onKill={() => void act(() => killSession(session.id))}
-              onResume={() => void act(() => resumeSession(session.id))}
-              onDelete={() => {
-                const deletedId = session.id;
-                const projectHome = project ? `#/p/${project.id}` : '#/';
-                void act(async () => {
-                  await deleteSession(deletedId);
-                  // Pendant le délai de rétractation, l'utilisateur a pu ouvrir une autre page : il y reste.
-                  const route = parseHash(window.location.hash);
-                  if (route.kind === 'session' && route.sessionId === deletedId) go(projectHome);
-                });
-              }}
-            />
+            <ClaimTaskButton session={session} onError={setError} />
           </div>
         </div>
       </header>

@@ -32,6 +32,7 @@ Object.assign(process.env, secrets, {
   CEREBRO_DATA_DIR: join(root, 'data'),
   PATH: `${bin}:${process.env.PATH}`,
   CEREBRO_SESSION_ID: 'parent-session',
+  CEREBRO_AGENT: 'gemini',
   CEREBRO_TOKEN: 'parent-token',
   CEREBRO_URL: 'http://parent.invalid',
 });
@@ -65,6 +66,8 @@ test('le PTY d’une session ne reçoit que les variables Cerebro de la liste bl
     const cerebro = Object.fromEntries(Object.entries(env).filter(([key]) => key.startsWith('CEREBRO_')));
     assert.deepEqual(cerebro, {
       CEREBRO_SESSION_ID: session.id,
+      // L'agent lancé, pas celui de la session parente : les hooks d'agy s'en servent comme garde.
+      CEREBRO_AGENT: 'claude',
       CEREBRO_TOKEN: db.getHookToken(session.id),
       CEREBRO_URL: INTERNAL_URL,
       CEREBRO_NOTIFY: join(ROOT, 'bin', 'cerebro-notify'),

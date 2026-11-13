@@ -1,5 +1,6 @@
 import { isActiveRun } from '../shared/backlog.ts';
-import type { Epic, Task } from '../shared/types.ts';
+import type { FastifyReply } from 'fastify';
+import type { Epic, Session, Task } from '../shared/types.ts';
 import { asRecord } from './util.ts';
 import { error } from './routes-util.ts';
 import type { RouteContext } from './route-context.ts';
@@ -11,7 +12,7 @@ const MAX_CLAIMED = 100;
 // Elles prennent l'état d'une tâche lancée depuis le backlog : démarrées, confiées à cette session, que
 // `cerebro-backlog --done <id>` peut ensuite clore. Tout ou rien : une tâche refusée n'en rattache aucune.
 export function registerClaimRoutes(ctx: RouteContext): void {
-  const { app, db, epicRunner, broadcast, tokenSession } = ctx;
+  const { app, db, epicRunner, broadcast, tokenSession, requireSession } = ctx;
 
   const label = (t: Task): string => `« ${t.text.split('\n')[0]?.slice(0, 60)} »`;
 
@@ -61,13 +62,8 @@ export function registerClaimRoutes(ctx: RouteContext): void {
     return { ok: true, tasks: [...found.values()], explicit };
   };
 
-  app.post<{ Params: { id: string } }>('/api/backlog/:id/claim', async (request, reply) => {
-    const checked = tokenSession(request, reply);
-    if (!checked.ok) return checked.reply;
-    const session = checked.value;
-    const resolved = resolve(session.projectId, request.body, (_epic, members) =>
-      members.filter((t) => t.status !== 'done'),
-    );
+  const claim = (session: Session, body: unknown, reply: FastifyReply): FastifyReply => {
+    const resolved = resolve(session.projectId, body, (_epic, members) => members.filter((t) => t.status !== 'done'));
     if (!resolved.ok) return error(reply, resolved.status, resolved.message);
     const all = db.listTasks();
     const already: string[] = [];
@@ -100,6 +96,23 @@ export function registerClaimRoutes(ctx: RouteContext): void {
       claimed: claimed.map(({ id, text, epicId }) => ({ id, text, epicId })),
       already,
     });
+  };
+
+  // Depuis l'agent : `cerebro-backlog --claim`, authentifié par le jeton de la session.
+  app.post<{ Params: { id: string } }>('/api/backlog/:id/claim', async (request, reply) => {
+    const checked = tokenSession(request, reply);
+    if (!checked.ok) return checked.reply;
+    return claim(checked.value, request.body, reply);
+  });
+
+  // Depuis l'interface : boutons « Rattacher » du backlog et de la vue session. Une session arrêtée ne
+  // reprendrait pas la tâche ; « Traiter » ou « Relancer » s'en chargent.
+  app.post<{ Params: { id: string } }>('/api/sessions/:id/claim', async (request, reply) => {
+    const session = requireSession(request, reply);
+    if (session === null) return reply;
+    if (session.status === 'exited')
+      return error(reply, 409, 'Session arrêtée : reprenez-la avant d’y rattacher une tâche');
+    return claim(session, request.body, reply);
   });
 
   // Rend au backlog des tâches rattachées par erreur : de nouveau à faire, plus confiées à la session.

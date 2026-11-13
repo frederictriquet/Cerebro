@@ -18,6 +18,7 @@ export function DelayedActionButton({
   className = 'btn danger-ghost',
   disabled,
   title,
+  iconLabel,
 }: {
   children: ReactNode;
   cancelLabel?: ReactNode;
@@ -25,6 +26,8 @@ export function DelayedActionButton({
   className?: string;
   disabled?: boolean;
   title?: string;
+  // Bouton picto : nom accessible du bouton ; pendant le délai, le picto laisse la place au décompte seul.
+  iconLabel?: string;
 }) {
   const [remaining, setRemaining] = useState<number | null>(null);
   const fire = useRef<number | undefined>(undefined);
@@ -90,13 +93,20 @@ export function DelayedActionButton({
       title={title}
       onClick={onClick}
       style={{ ['--undo-window' as string]: `${UNDO_WINDOW_MS}ms` }}
+      aria-label={iconLabel === undefined ? undefined : pending ? `Annuler : ${iconLabel}` : iconLabel}
     >
       {/* Les deux libellés occupent la même cellule : la largeur ne bouge pas. */}
       <span className="delayed-btn-label" aria-hidden={pending}>
         {children}
       </span>
       <span className="delayed-btn-label" aria-hidden={!pending}>
-        {cancelLabel} ({remaining ?? Math.ceil(UNDO_WINDOW_MS / 1000)} s)
+        {iconLabel === undefined ? (
+          <>
+            {cancelLabel} ({remaining ?? Math.ceil(UNDO_WINDOW_MS / 1000)} s)
+          </>
+        ) : (
+          (remaining ?? Math.ceil(UNDO_WINDOW_MS / 1000))
+        )}
       </span>
     </button>
   );

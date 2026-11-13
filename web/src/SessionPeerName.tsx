@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ApiError, getPeerName } from './api.ts';
 import { errorMessage } from './format.ts';
 import { usePolling } from './polling.tsx';
+import { CheckIcon, PeerNameIcon } from './SessionIcons.tsx';
 import type { Session } from '../../shared/types.ts';
 
 const REFRESH_MS = 10_000;
@@ -37,7 +38,8 @@ export function SessionPeerName({ session, onError }: { session: Session; onErro
   return (
     <button
       type="button"
-      className="btn peer-name"
+      className={copied ? 'icon-btn active' : 'icon-btn'}
+      aria-label={copied ? `Nom ${name} copié` : `Copier le nom de pair ${name}`}
       title={`${name} : nom à donner à une autre session Claude pour lui faire écrire à celle-ci. Cliquer pour le copier`}
       onClick={() => {
         if (!navigator.clipboard) {
@@ -50,7 +52,7 @@ export function SessionPeerName({ session, onError }: { session: Session; onErro
         );
       }}
     >
-      {copied ? 'Copié' : name}
+      {copied ? <CheckIcon /> : <PeerNameIcon />}
     </button>
   );
 }

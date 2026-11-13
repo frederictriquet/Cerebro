@@ -5,7 +5,7 @@ import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { modeArgs, tuningArgs, type Tuning } from './agent-args.ts';
 import { readCodexString } from './codex-config.ts';
 import { HOOK_SCRIPT, SLACK_ENABLED, SLACK_WATCH_ENABLED } from './config.ts';
-import { AGENTS, type Agent, type Mode } from '../shared/types.ts';
+import { AGENT_COMMAND, AGENTS, type Agent, type Mode } from '../shared/types.ts';
 
 export type { Tuning } from './agent-args.ts';
 
@@ -71,6 +71,48 @@ export function getGrokHookSettings(): { hooks: Record<string, object[]> } {
   return hookSettings('grok');
 }
 
+/** Tool agy calls to put a question to the user, shown as a dialog in its TUI. */
+export const GEMINI_QUESTION_TOOL = 'ask_question';
+
+/**
+ * hooks.json of the Cerebro plugin for agy (Antigravity CLI): one named hook, inert outside the agy sessions Cerebro
+ * launches since agy loads it in every session. At SessionStart, `injection` (a file holding the `injectSteps` answer) gives the conversation
+ * Cerebro's instructions: agy has no flag for them. agy reads each hook's answer on stdout, the node script prints
+ * nothing. A resumed conversation does not run SessionStart again and keeps the injected message.
+ */
+export function getGeminiHookSettings(injection: string): Record<string, Record<string, object[]>> {
+  // Only the agy that Cerebro launched: one started from inside another session inherits CEREBRO_SESSION_ID.
+  const guard = '[ "$CEREBRO_AGENT" != gemini ] ||';
+  const node = (event: string): string => `node ${shellQuote(HOOK_SCRIPT)} gemini ${event}`;
+  const command = (event: string): object => ({ type: 'command', command: `${guard} ${node(event)}` });
+  const sessionStart = `${guard} { cat ${shellQuote(injection)}; ${node('SessionStart')}; }`;
+  return {
+    cerebro: {
+      SessionStart: [{ type: 'command', command: sessionStart }],
+      PreInvocation: [command('PreInvocation')],
+      PreToolUse: [{ matcher: `^${GEMINI_QUESTION_TOOL}$`, hooks: [command('PreToolUse')] }],
+      PostToolUse: [{ matcher: '*', hooks: [command('PostToolUse')] }],
+      Stop: [command('Stop')],
+    },
+  };
+}
+
+/** Answer of the SessionStart hook: Cerebro's instructions as a system message kept in the conversation. */
+export function getGeminiSessionInjection(): { injectSteps: object[] } {
+  return { injectSteps: [{ systemMessage: { systemMessage: AGENT_INSTRUCTIONS } }] };
+}
+
+/**
+ * Arguments that depend on the folder the session runs in, known only once its workspace is ready. agy: session
+ * settings, never saved. The bell and OSC 9 notification report its approval prompts, which no hook does; the folder
+ * is trusted, since agy would otherwise ask for each new worktree (trusting a parent does not cover it), which also
+ * enables that project's own agy hooks.
+ */
+export function workspaceArgs(agent: Agent, cwd: string): string[] {
+  if (agent !== 'gemini') return [];
+  return ['--settings', JSON.stringify({ notifications: true, trustedWorkspaces: [cwd] })];
+}
+
 // Top-level `developer_instructions` of the user's Codex config: our `-c` override replaces it,
 // so Cerebro's instructions are appended to it rather than silently dropping the user's.
 export function readCodexDeveloperInstructions(): string | null {
@@ -129,6 +171,12 @@ export function buildAgentCommand(
     args.push(...modeArgs(agent, mode), ...tuningArgs(agent, tuning));
     args.push('--rules', AGENT_INSTRUCTIONS);
     if (resumeSessionId === null && prompt !== '') args.push(prompt);
+  } else if (agent === 'gemini') {
+    // agy chooses the conversation id itself: the SessionStart hook reports it.
+    agentSessionId = resumeSessionId;
+    if (resumeSessionId !== null) args.push('--conversation', resumeSessionId);
+    args.push(...modeArgs(agent, mode), ...tuningArgs(agent, tuning));
+    if (resumeSessionId === null && prompt !== '') args.push('--prompt-interactive', prompt);
   } else {
     if (resumeSessionId === null) {
       args.push(...codexConfigArgs(), ...modeArgs(agent, mode), ...tuningArgs(agent, tuning));
@@ -144,7 +192,7 @@ export function buildAgentCommand(
       );
     }
   }
-  return { cmd: agent, args, agentSessionId };
+  return { cmd: AGENT_COMMAND[agent], args, agentSessionId };
 }
 
 async function which(command: string): Promise<string> {
@@ -174,7 +222,7 @@ export function getAgentAvailability(refresh = false): Promise<AgentAvailability
     const value = Promise.all(
       AGENTS.map(async (agent) => {
         try {
-          await which(agent);
+          await which(AGENT_COMMAND[agent]);
           return { agent, available: true };
         } catch {
           return { agent, available: false };

@@ -1,7 +1,7 @@
 # Cerebro
 
 Cerebro est une application web locale qui centralise des sessions interactives de
-Claude Code, Codex et Grok. Les sessions sont regroupées par projet, restent
+Claude Code, Codex, Grok et Gemini (par la CLI Antigravity `agy`). Les sessions sont regroupées par projet, restent
 pilotables dans un terminal web et signalent les demandes de confirmation ou la fin
 d'un tour. Chaque agent est hébergé dans un processus détaché : les sessions en
 cours survivent à l'arrêt, au redémarrage ou au crash du serveur Cerebro.
@@ -9,7 +9,7 @@ cours survivent à l'arrêt, au redémarrage ou au crash du serveur Cerebro.
 ## Prérequis
 
 - Node.js 22 et npm ;
-- au moins un des exécutables `claude`, `codex` ou `grok` dans le `PATH` ;
+- au moins un des exécutables `claude`, `codex`, `grok` ou `agy` (Gemini) dans le `PATH` ;
 - Git, uniquement pour afficher l'état Git des projets.
 
 ## Installation et lancement
@@ -95,8 +95,8 @@ fichier, une seule par fichier ; un nouveau fichier les écrit en anglais.
 
 ## Statistiques d’utilisation des LLM
 
-L’accueil affiche une barre de répartition des sessions entre Claude, Codex et
-Grok, avec des filtres sur 7 jours, 30 jours ou tout l’historique conservé. La
+L’accueil affiche une barre de répartition des sessions entre Claude, Codex,
+Grok et Gemini, avec des filtres sur 7 jours, 30 jours ou tout l’historique conservé. La
 période sélectionne les sessions par leur date de création ; les tokens affichés
 sont les cumuls de ces sessions principales, hors sous-agents.
 
@@ -164,7 +164,7 @@ l'intégration.
 Dans le message privé, écrivez `projet: instruction` pour reprendre la session
 active du projet, ou en créer une avec les réglages mémorisés du projet s'il n'y en a pas. Ajoutez `+`
 (`projet+: instruction`) pour forcer une nouvelle session, et `/claude`,
-`/codex` ou `/grok` pour choisir l'agent (`projet/codex+: instruction`). La
+`/codex`, `/grok` ou `/gemini` pour choisir l'agent (`projet/codex+: instruction`). La
 lecture de ces commandes nécessite le scope Bot Token `im:history`. Envoyez `help` (ou
 `aide`, `?`) pour obtenir la syntaxe, la liste des projets avec leur session
 active et la façon de répondre dans un fil. `list` (ou `liste`, `projets`) affiche seulement
@@ -439,13 +439,14 @@ expiration, le dernier message lu, une éventuelle remise propre et un bouton
 
 ## Détection de l'attente
 
-Cerebro combine plusieurs signaux, car les trois agents ne publient pas les mêmes
+Cerebro combine plusieurs signaux, car les quatre agents ne publient pas les mêmes
 événements :
 
 - Claude reçoit des hooks temporaires via son option `--settings` (notifications,
   questions, reprise du travail et fin de tour).
 - Grok utilise le hook global idempotent `~/.grok/hooks/cerebro.json`. Celui-ci ne
   fait rien pour les sessions lancées hors de Cerebro.
+- Gemini (agy) utilise le plugin global `~/.gemini/config/plugins/cerebro/`, réécrit à chaque démarrage quand agy est installé. Ses commandes ne font rien hors des sessions agy lancées par Cerebro (`CEREBRO_AGENT=gemini`), y compris pour un `agy` lancé depuis une autre session. Son hook `SessionStart` injecte les instructions de Cerebro dans la conversation, agy n'ayant pas d'option pour cela ; `PreInvocation`, `PostToolUse` et `PreToolUse` (outil `ask_question`) suivent le tour, et `Stop` le termine avec la dernière réponse, lue dans le transcript juste après le hook. agy ne signale ses demandes d'autorisation que par sa notification terminal OSC 9, activée pour la session par `--settings`. Ces réglages de session, jamais enregistrés, approuvent aussi le dossier de la session : sans cela, agy demande confirmation pour chaque nouveau worktree. Les hooks propres au projet (`.agents/hooks.json`) s'exécutent donc dans les sessions Gemini.
 - Codex utilise son callback `notify` et les notifications terminal OSC 9. Les fils
   auxiliaires, notamment ceux de génération de titre, sont filtrés.
 - L'écran du terminal est inspecté pour repérer les dialogues de confiance, menus
@@ -662,12 +663,14 @@ fixe l'epic d'une tâche. `--epics`, `--epic-remove`, `--epic-edit` et
 
 ## Modes de permission
 
-| Mode | Claude | Codex | Grok |
-|---|---|---|---|
-| `auto` | `--permission-mode auto` | `-a on-request -s workspace-write` | `--permission-mode auto` |
-| `acceptEdits` | `--permission-mode acceptEdits` | `-a never -s workspace-write` | `--permission-mode acceptEdits` |
-| `plan` | `--permission-mode plan` | `-s read-only` | `--permission-mode plan` |
-| `bypass` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--permission-mode bypassPermissions` |
+| Mode | Claude | Codex | Grok | Gemini (agy) |
+|---|---|---|---|---|
+| `auto` | `--permission-mode auto` | `-a on-request -s workspace-write` | `--permission-mode auto` | `--mode auto` |
+| `acceptEdits` | `--permission-mode acceptEdits` | `-a never -s workspace-write` | `--permission-mode acceptEdits` | `--mode accept-edits` |
+| `plan` | `--permission-mode plan` | `-s read-only` | `--permission-mode plan` | `--mode plan` |
+| `bypass` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--permission-mode bypassPermissions` | `--dangerously-skip-permissions` |
+
+Le mode `auto` d'agy exige son bac à sable de terminal ; sans lui, agy revient à son mode par défaut.
 
 Le mode `default` (configuration de l'agent) n'est plus proposé : une valeur enregistrée
 avec ce mode se lit et se lance comme `auto`.
@@ -819,14 +822,15 @@ utilisateur sans session ouverte, l'administrateur peut activer le linger avec
 ## Désinstallation
 
 Hors de son dossier de données et de l'éventuelle unité systemd, Cerebro n'écrit
-que le hook Grok `~/.grok/hooks/cerebro.json`, réécrit à chaque démarrage du serveur et jamais
-retiré automatiquement. Arrêtez d'abord Cerebro (et le service systemd s'il est
-installé), puis supprimez ce hook et, si vous ne conservez rien, les données :
+que le hook Grok `~/.grok/hooks/cerebro.json` et le plugin agy `~/.gemini/config/plugins/cerebro/`, réécrits à chaque démarrage du serveur et jamais
+retirés automatiquement. Arrêtez d'abord Cerebro (et le service systemd s'il est
+installé), puis supprimez ces hooks et, si vous ne conservez rien, les données :
 
 ```sh
 systemctl --user disable --now cerebro.service   # si le service est installé
 rm -f ~/.config/systemd/user/cerebro.service
 rm -f ~/.grok/hooks/cerebro.json
+rm -rf ~/.gemini/config/plugins/cerebro
 rm -rf ~/.cerebro                                # $CEREBRO_DATA_DIR : données, sauvegardes, logs, worktrees (irréversible)
 ```
 
@@ -851,7 +855,7 @@ dans chaque dépôt concerné.
 ## Dépannage
 
 Vérifiez d'abord que l'exécutable de l'agent est présent avec `which claude`,
-`which codex` ou `which grok`. Les sorties brutes des terminaux se trouvent dans
+`which codex`, `which grok` ou `which agy`. Les sorties brutes des terminaux se trouvent dans
 `$CEREBRO_DATA_DIR/logs/` (par défaut `~/.cerebro/logs/`). Le journal
 `$CEREBRO_DATA_DIR/hooks.jsonl` contient chaque événement reçu avec son agent, son
 type et sa charge utile ; c'est la source principale pour diagnostiquer une attente
@@ -1317,7 +1321,7 @@ Si la branche a été supprimée entre-temps, la reprise est refusée.
 
 Le council soumet une question ou une décision à plusieurs conseillers LLM, puis
 fait synthétiser leurs avis. Chaque conseiller associe une **persona** (un angle de
-réflexion) à un **agent** (`claude`, `codex` ou `grok`), avec son modèle et son
+réflexion) à un **agent** (`claude`, `codex`, `grok` ou `gemini`), avec son modèle et son
 effort : le même angle peut être joué par des modèles différents, et un même modèle
 peut tenir plusieurs angles. Un council réunit de 2 à 8 conseillers et se déroule en
 trois phases, sans session interactive :
@@ -1483,9 +1487,9 @@ apparaît sous les champs, et effacer le jeton retire l'image. Au plus dix image
 `$CEREBRO_DATA_DIR/attachments/project-<id>/` (projet) ou `attachments/council/`
 (hors projet) et supprimées avec le council. Elles sont jointes au message de
 chaque appel, réponses, relectures et synthèse comprises, sans outil : Claude les
-reçoit dans son message (entrée `stream-json`), Codex par `--image`. Grok ne
-prend pas en charge les images : le lancement est refusé tant qu'un participant
-coché ou le chairman l'utilise. Le rapport affiche les images jointes et l'export
+reçoit dans son message (entrée `stream-json`), Codex par `--image`. Grok et Gemini ne
+prennent pas en charge les images : le lancement est refusé tant qu'un participant
+coché ou le chairman les utilise. Le rapport affiche les images jointes et l'export
 Markdown les liste ; la suite **Poursuivre dans une session** transmet leurs chemins.
 
 Depuis un projet, la case **Laisser les conseillers lire le projet** (valeur par
@@ -1501,6 +1505,9 @@ dossier temporaire vide. Les options passées aux CLI :
 | `claude` | `--print --tools ""` | `--print --tools Read,Glob,Grep --max-turns 30` |
 | `codex` | `exec --sandbox read-only --disable shell_tool` | `exec --sandbox read-only` (shell conservé pour `cat`/`rg`, écriture interdite par le bac à sable) |
 | `grok` | `--tools "" --deny '*' --max-turns 2` | `--tools Read,Glob,Grep --allow Read --allow Glob --allow Grep --max-turns 30` |
+| `gemini` (`agy`) | règles `deny` : `read_file(*)`, `write_file(*)`, `command(*)`, `mcp(*)`, `execute_url(*)` | règle `allow` : `read_file(<dossier>/)` ; mêmes `deny` sauf `read_file` |
+
+agy n'a pas de liste d'outils : ses règles de permission sont passées par `--settings` sans être enregistrées, et un appel non interactif refuse tout ce qui demanderait une approbation. Le mode d'agent par défaut est imposé, car celui du compte peut être `auto`. Vérifié avec agy 1.5.8 en lecture seule : lecture des fichiers du projet acceptée ; création, modification de fichier et commande refusées ; `sed_file`, `notebook_edit`, le navigateur et la lecture de pages absents des outils proposés. La recherche web (`search_web`) reste disponible même sans web, faute de règle de permission. La question part sur l'entrée standard (`--input-format stream-json`). Le dossier n'est pas approuvé, ses hooks de projet ne s'exécutent donc pas. Chaque appel laisse une conversation dans `~/.gemini/antigravity-cli/brain/`.
 
 Dans tous les cas : sortie JSON validée par un schéma, aucun serveur MCP
 (`--strict-mcp-config` pour Claude ; pour Codex, `--ignore-user-config --ignore-rules` :
@@ -1558,7 +1565,8 @@ d'un council) ouvre le formulaire de council du projet, avec la conversation de 
 session comme contexte ; il reste à poser la question et à choisir les
 participants. La conversation est relue à chaque ouverture dans le transcript de
 la CLI (`~/.claude/projects/*/<id>.jsonl`, rollout Codex
-`~/.codex/sessions/AAAA/MM/JJ/*-<id>.jsonl`, `~/.grok/sessions/*/<id>/chat_history.jsonl`) :
+`~/.codex/sessions/AAAA/MM/JJ/*-<id>.jsonl`, `~/.grok/sessions/*/<id>/chat_history.jsonl`,
+`~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`) :
 seuls les messages de l'utilisateur et les réponses textuelles de l'agent sont
 repris, sans appels d'outils, réflexions ni messages injectés par la CLI. Au-delà
 de 90 000 caractères, la demande initiale est gardée (tronquée au besoin) avec les

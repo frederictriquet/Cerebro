@@ -888,6 +888,6 @@ test('agent availability is cached and shared, and only re-detected on demand', 
   assert.equal(getAgentAvailability(), refreshed);
   assert.deepEqual(
     (await refreshed).map((entry) => entry.agent),
-    ['claude', 'codex', 'grok'],
+    ['claude', 'codex', 'grok', 'gemini'],
   );
 });
