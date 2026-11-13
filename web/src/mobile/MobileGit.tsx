@@ -1,5 +1,5 @@
 /*
- * Commit et push depuis la vue mobile. Mêmes opérations serveur et mêmes dialogues que le desktop (GitStatus,
+ * Commit, pull et push depuis la vue mobile. Mêmes opérations serveur et mêmes dialogues que le desktop (GitStatus,
  * GitActions) ; les infobulles du desktop deviennent du texte visible, un téléphone n'affiche pas les `title`.
  * Code review et aperçu des commits à pousser restent sur la version complète.
  */
@@ -8,11 +8,18 @@ import { api, apiPath } from '../api.ts';
 import { useAsyncAction } from '../async-action.ts';
 import { AutomaticCommitDialog } from '../AutomaticCommitDialog.tsx';
 import { errorMessage, plural } from '../format.ts';
-import { PushDialog, useSessionGitContext } from '../GitActions.tsx';
+import { PullDialog, PushDialog, useSessionGitContext } from '../GitActions.tsx';
 import { DirtyFileList } from '../GitStatus.tsx';
 import { usePolling } from '../polling.tsx';
 import { useStore } from '../store.tsx';
-import { parseGitInfo, pushBlockedReason, type GitInfo, type Project, type Session } from '../../../shared/types.ts';
+import {
+  parseGitInfo,
+  pullBlockedReason,
+  pushBlockedReason,
+  type GitInfo,
+  type Project,
+  type Session,
+} from '../../../shared/types.ts';
 
 const GIT_POLL_MS = 10_000;
 
@@ -50,11 +57,11 @@ function AutoPushToggle({ project }: { project: Project }) {
   );
 }
 
-/** Section Git de la page projet : état du dossier du projet, commit automatique, push et push auto. */
+/** Section Git de la page projet : état du dossier du projet, commit automatique, pull, push et push auto. */
 export function ProjectGit({ project }: { project: Project }) {
   const [git, setGit] = useState<GitInfo | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
-  const [open, setOpen] = useState<'single' | 'atomic' | 'push' | null>(null);
+  const [open, setOpen] = useState<'single' | 'atomic' | 'pull' | 'push' | null>(null);
   const [filesExpanded, setFilesExpanded] = useState(false);
   const filesId = useId();
   const fetcher = useCallback(() => fetchGit(project.id), [project.id]);
@@ -93,10 +100,14 @@ export function ProjectGit({ project }: { project: Project }) {
     const hasChanges = git.dirty > 0;
     const dirtyLabel = plural(git.dirty, 'fichier modifié', 'fichiers modifiés', { zeroPlural: true });
     const ahead = git.ahead ?? 0;
+    const pullBlocked = pullBlockedReason(git);
     const pushBlocked = pushBlockedReason(git);
-    const reasons = [hasChanges ? null : 'Rien à commiter.', pushBlocked === null ? null : `${pushBlocked}.`].filter(
-      (reason) => reason !== null,
-    );
+    const reasons = [
+      hasChanges ? null : 'Rien à commiter.',
+      ...(git.branch === null
+        ? ['HEAD détachée : choisissez une branche.']
+        : [pullBlocked === null ? null : `${pullBlocked}.`, pushBlocked === null ? null : `${pushBlocked}.`]),
+    ].filter((reason) => reason !== null);
     body = (
       <>
         <div className="m-git-state">
@@ -130,6 +141,9 @@ export function ProjectGit({ project }: { project: Project }) {
           <button type="button" className="m-button" disabled={!hasChanges} onClick={() => setOpen('atomic')}>
             Un commit par intention
           </button>
+          <button type="button" className="m-button" disabled={pullBlocked !== null} onClick={() => setOpen('pull')}>
+            Pull
+          </button>
           <button type="button" className="m-button" disabled={pushBlocked !== null} onClick={() => setOpen('push')}>
             Push
           </button>
@@ -149,6 +163,7 @@ export function ProjectGit({ project }: { project: Project }) {
       {open === 'single' || open === 'atomic' ? (
         <AutomaticCommitDialog projectId={project.id} push={project.autoPush} strategy={open} onClose={close} />
       ) : null}
+      {open === 'pull' ? <PullDialog projectId={project.id} onSettled={() => void refresh()} onClose={close} /> : null}
       {open === 'push' ? <PushDialog projectId={project.id} onClose={close} /> : null}
     </section>
   );

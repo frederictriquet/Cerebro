@@ -1,4 +1,4 @@
-// Git contracts read by the web UI: snapshots to commit, pushes, reviews, provenance and automatic commits.
+// Git contracts read by the web UI: snapshots to commit, pulls, pushes, reviews, provenance and automatic commits.
 import {
   array,
   boolean,
@@ -75,6 +75,19 @@ export interface PushOperation {
   finishedAt: number | null;
   error: string | null;
   remotes: PushRemoteResult[];
+}
+export interface PullOperation {
+  id: string;
+  branch: string | null;
+  upstream: string | null;
+  beforeHead: string | null;
+  afterHead: string | null;
+  status: 'running' | 'succeeded' | 'failed';
+  startedAt: number;
+  finishedAt: number | null;
+  error: string | null;
+  exitCode: number | null;
+  output: string;
 }
 
 export interface PreparedReview {
@@ -258,8 +271,24 @@ const provenanceSchema = object<Provenance>({
   warning: string,
 });
 
+const pullOperationSchema = object<PullOperation>({
+  id: string,
+  branch: nullable(string),
+  upstream: nullable(string),
+  beforeHead: nullable(string),
+  afterHead: nullable(string),
+  status: literal('running', 'succeeded', 'failed'),
+  startedAt: number,
+  finishedAt: nullable(number),
+  error: nullable(string),
+  exitCode: nullable(number),
+  output: string,
+});
+
 export const parsePushOperation = parser(pushOperationSchema);
 export const parseOptionalPushOperation = parser(nullable(pushOperationSchema));
+export const parsePullOperation = parser(pullOperationSchema);
+export const parseOptionalPullOperation = parser(nullable(pullOperationSchema));
 export const parseGitSnapshot = parser(object<GitSnapshot>(gitSnapshotFields));
 export const parseSessionGitSnapshot = parser(
   object<SessionGitSnapshot>({

@@ -1,21 +1,24 @@
 import { CommitPushIcon, ReviewIcon } from './SessionIcons.tsx';
 import { ActivityStatus } from './ActivityStatus.tsx';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { api, apiParsed, apiPath } from './api.ts';
+import { api, apiParsed, apiPath, markOperationSeen } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
 import { LaunchDialog, Modal, usePrepared } from './Dialog.tsx';
 import { useStore } from './store.tsx';
-import { pushBlockedReason, type GitInfo } from '../../shared/types.ts';
+import { pullBlockedReason, pushBlockedReason, type GitInfo } from '../../shared/types.ts';
 import './automatic-commits.css';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
 import { errorMessage } from './format.ts';
 import { usePolling } from './polling.tsx';
 import {
+  parseOptionalPullOperation,
   parseOptionalPushOperation,
   parsePreparedReview,
+  parsePullOperation,
   parsePushOperation,
   parseSessionGitContext,
   parseSessionGitSnapshot,
+  type PullOperation,
   type PushOperation,
   type PushRemoteResult,
   type SessionGitContext,
@@ -26,17 +29,23 @@ export function GitActions({
   git,
   changes,
   pendingCommits,
+  onRefresh,
 }: {
   projectId: string;
   git: GitInfo;
   // Compteur des fichiers modifiés, fourni par GitStatus qui en gère le dépliage.
   changes: ReactNode;
   pendingCommits: ReactNode;
+  onRefresh?: () => void;
 }) {
   const { projects } = useStore();
-  const [open, setOpen] = useState<'review' | 'single' | 'atomic' | 'push' | null>(null);
-  const close = (): void => setOpen(null);
+  const [open, setOpen] = useState<'review' | 'single' | 'atomic' | 'pull' | 'push' | null>(null);
+  const close = (): void => {
+    setOpen(null);
+    onRefresh?.();
+  };
   const hasChanges = git.dirty > 0;
+  const pullBlocked = pullBlockedReason(git);
   const pushBlocked = pushBlockedReason(git);
   const autoPush = projects.find((project) => project.id === projectId)?.autoPush === true;
 
@@ -69,9 +78,18 @@ export function GitActions({
           </button>
         ))}
       </span>
-      <span className="git-actions git-actions-publish" role="group" aria-label="Publication des commits">
+      <span className="git-actions git-actions-publish" role="group" aria-label="Synchronisation avec les remotes">
         {pendingCommits}
         {git.branch !== null && !git.hasUpstream ? <span className="meta">pas d’upstream</span> : null}
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setOpen('pull')}
+          disabled={pullBlocked !== null}
+          title={pullBlocked ?? 'Tirer les commits de l’upstream (avance rapide)'}
+        >
+          Pull
+        </button>
         <button
           type="button"
           className="btn"
@@ -87,6 +105,7 @@ export function GitActions({
       {open === 'single' || open === 'atomic' ? (
         <AutomaticCommitDialog projectId={projectId} push={autoPush} strategy={open} onClose={close} />
       ) : null}
+      {open === 'pull' ? <PullDialog projectId={projectId} onSettled={onRefresh} onClose={close} /> : null}
       {open === 'push' ? <PushDialog projectId={projectId} onClose={close} /> : null}
     </>
   );
@@ -122,6 +141,123 @@ const REMOTE_STATUS: Record<PushRemoteResult['status'], string> = {
   succeeded: 'envoyé',
   failed: 'échec',
 };
+
+export function PullDialog({
+  projectId,
+  onSettled,
+  onClose,
+}: {
+  projectId: string;
+  onSettled?: () => void;
+  onClose: () => void;
+}) {
+  const [operation, setOperation] = useState<PullOperation | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const start = useRef<Promise<PullOperation> | null>(null);
+  const settled = useRef(false);
+  const onSettledRef = useRef(onSettled);
+  useEffect(() => {
+    onSettledRef.current = onSettled;
+  }, [onSettled]);
+
+  const apply = useCallback((value: PullOperation | null): void => {
+    setOperation(value);
+    if (value?.finishedAt) {
+      markOperationSeen(value.id);
+      if (!settled.current) {
+        settled.current = true;
+        onSettledRef.current?.();
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    // Reuse the same request in React StrictMode; a double submission returns the running operation.
+    start.current ??= apiParsed(apiPath`/api/projects/${projectId}/git/pull`, parsePullOperation, {
+      method: 'POST',
+    });
+    void start.current.then(
+      (value) => {
+        if (!disposed) apply(value);
+      },
+      (cause) => {
+        if (!disposed) setError(errorMessage(cause));
+      },
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [projectId, apply]);
+
+  // Suivi tant que le pull tourne ; une erreur de suivi l'interrompt.
+  const load = useCallback(
+    () => apiParsed(apiPath`/api/projects/${projectId}/git/pull`, parseOptionalPullOperation),
+    [projectId],
+  );
+  usePolling(load, 500, {
+    enabled: operation?.status === 'running' && error === null,
+    immediate: false,
+    onData: apply,
+    onError: (cause) => setError(errorMessage(cause)),
+  });
+
+  const running = !error && (!operation || operation.status === 'running');
+  const updated =
+    operation?.beforeHead != null && operation.afterHead != null && operation.beforeHead !== operation.afterHead;
+  const headLabel = updated
+    ? `${operation.beforeHead!.slice(0, 8)} → ${operation.afterHead!.slice(0, 8)}`
+    : (operation?.afterHead ?? operation?.beforeHead)?.slice(0, 8);
+  return (
+    <Modal title="Pull" onClose={onClose}>
+      <div className="automatic-commit">
+        <p className="automatic-commit-status">
+          <ActivityStatus active={running}>
+            {operation?.status === 'succeeded'
+              ? updated
+                ? 'Projet mis à jour.'
+                : 'Déjà à jour.'
+              : operation?.status === 'failed'
+                ? 'Le pull a échoué.'
+                : error
+                  ? operation
+                    ? 'Suivi du pull interrompu.'
+                    : 'Le pull n’a pas pu démarrer.'
+                  : 'Pull depuis l’upstream…'}
+          </ActivityStatus>
+        </p>
+        {operation?.branch ? (
+          <p className="meta">
+            Branche {operation.branch}
+            {operation.upstream ? ` ← ${operation.upstream}` : ''}
+            {headLabel ? ` · ${headLabel}` : ''}
+          </p>
+        ) : null}
+        {operation?.error ? (
+          <p className="form-error" role="alert">
+            {operation.error}
+          </p>
+        ) : null}
+        {error ? (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        {operation?.output ? (
+          <details>
+            <summary>Détails de l’opération</summary>
+            <pre>{operation.output}</pre>
+          </details>
+        ) : null}
+        <div className="row-actions">
+          <button type="button" className="btn" onClick={onClose}>
+            {running ? 'Continuer en arrière-plan' : 'Fermer'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
 
 export function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
   const [operation, setOperation] = useState<PushOperation | null>(null);

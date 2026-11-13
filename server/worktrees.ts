@@ -1412,6 +1412,8 @@ export class WorktreeManager {
       view.mergeBlockers.push(
         `Le dossier cible doit être propre : une opération Git est en cours dans ${view.targetPath}.`,
       );
+    if ((await this.services.pulls?.current(view.targetPath))?.status === 'running')
+      view.mergeBlockers.push('Un pull est en cours dans le dossier cible.');
     view.mergeBlockers.push(...activityReasons(repositoryActivity(this.db, view.targetPath), false));
     return hash(dirty + '\0' + JSON.stringify(pending));
   }

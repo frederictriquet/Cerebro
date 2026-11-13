@@ -22,7 +22,7 @@ export function GitStatus({ projectId }: { projectId: string }) {
     if (!parsed) throw new Error('Réponse Git invalide');
     return parsed;
   }, [projectId, expanded]);
-  usePolling(load, 10_000, {
+  const refresh = usePolling(load, 10_000, {
     onData: (parsed) => {
       setGit(parsed);
       setPreviewError(
@@ -55,6 +55,7 @@ export function GitStatus({ projectId }: { projectId: string }) {
         <GitActions
           projectId={projectId}
           git={git}
+          onRefresh={() => void refresh()}
           changes={
             git.dirty > 0 ? (
               <button

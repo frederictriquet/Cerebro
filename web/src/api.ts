@@ -255,8 +255,8 @@ export function publishFindingsReport(sessionId: string, report: unknown): Promi
   return api(apiPath`/api/sessions/${sessionId}/findings`, { method: 'POST', body: JSON.stringify(report) });
 }
 
-// Résultat d'une opération affiché (exécution d'epic, commande, council, commit automatique) : il ne doit plus être
-// notifié. Sans incidence en cas d'échec.
+// Résultat d'une opération affiché (exécution d'epic, commande, council, commit automatique, pull) : il ne doit plus
+// être notifié. Sans incidence en cas d'échec.
 export function markOperationSeen(id: string): void {
   void api(apiPath`/api/operations/${id}/seen`, { method: 'POST' }).catch(() => {});
 }

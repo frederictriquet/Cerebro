@@ -4,7 +4,7 @@ export interface OperationResult {
   id: string;
   projectId: string | null;
   sessionId: string | null;
-  kind: 'push' | 'commit' | 'command' | 'epic' | 'council';
+  kind: 'push' | 'pull' | 'commit' | 'command' | 'epic' | 'council';
   ok: boolean;
   summary: string;
   startedAt: number;

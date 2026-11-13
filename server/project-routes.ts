@@ -75,6 +75,7 @@ export function registerProjectRoutes(ctx: RouteContext): void {
     catalog,
     git,
     pushes,
+    pulls,
     reviews,
     broadcast,
     requireProject,
@@ -241,7 +242,8 @@ export function registerProjectRoutes(ctx: RouteContext): void {
     if ('slackSettings' in body) {
       // null : le projet revient aux réglages Slack de la machine.
       const settings = body.slackSettings === null ? null : projectSlackSettingsFrom(body.slackSettings);
-      if (body.slackSettings !== null && settings === null) return error(reply, 400, 'Réglages Slack du projet invalides');
+      if (body.slackSettings !== null && settings === null)
+        return error(reply, 400, 'Réglages Slack du projet invalides');
       changes.slackSettings = settings;
     }
     if ('resolutionSettings' in body) {
@@ -338,6 +340,19 @@ export function registerProjectRoutes(ctx: RouteContext): void {
     const result = await orError(reply, () =>
       pushes.start(project.path, { allowDirty: asRecord(request.body)?.allowDirty === true }),
     );
+    return result.ok ? reply.code(202).send(result.value) : result.reply;
+  });
+
+  app.get<{ Params: { id: string } }>('/api/projects/:id/git/pull', async (request, reply) => {
+    const project = requireProject(request, reply);
+    if (project === null) return reply;
+    const result = await orError(reply, () => pulls.current(project.path));
+    return result.ok ? reply.send(result.value) : result.reply;
+  });
+  app.post<{ Params: { id: string } }>('/api/projects/:id/git/pull', async (request, reply) => {
+    const project = requireProject(request, reply);
+    if (project === null) return reply;
+    const result = await orError(reply, () => pulls.start(project.path));
     return result.ok ? reply.code(202).send(result.value) : result.reply;
   });
 

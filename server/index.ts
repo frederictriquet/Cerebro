@@ -93,7 +93,7 @@ export async function buildServer(
   const app = Fastify({ logger: LOGGER_OPTIONS, forceCloseConnections: true });
   const db = new CerebroDatabase();
   const services = createServices(db, options.catalog);
-  const { catalog, epicWorkspaces, git, pushes, reviews, sessionGit } = services;
+  const { catalog, epicWorkspaces, git, pulls, pushes, reviews, sessionGit } = services;
   if (options.refreshCatalog) {
     const stopRefresh = catalog.startRefresh();
     app.addHook('onClose', async () => stopRefresh());
@@ -172,6 +172,7 @@ export async function buildServer(
     peers.stop();
     notifier.stop();
     unsubscribePush();
+    unsubscribePull();
     autoPush.stop();
     await vscode.stop();
     await automaticCommits.shutdown();
@@ -265,6 +266,24 @@ export async function buildServer(
       finishedAt: operation.finishedAt ?? Date.now(),
     });
   });
+  const unsubscribePull = pulls.onComplete((path, operation) => {
+    const project = db.listProjects().find((p) => resolve(p.path) === resolve(path));
+    if (!project) return;
+    const updated =
+      operation.beforeHead && operation.afterHead && operation.beforeHead !== operation.afterHead
+        ? `${operation.branch ?? 'HEAD'} mis à jour (${operation.beforeHead.slice(0, 8)} → ${operation.afterHead.slice(0, 8)})`
+        : `${operation.branch ?? 'HEAD'} déjà à jour`;
+    notifier.operations.record({
+      id: operation.id,
+      projectId: project.id,
+      sessionId: null,
+      kind: 'pull',
+      ok: operation.status === 'succeeded',
+      summary: operation.error ?? updated,
+      startedAt: operation.startedAt,
+      finishedAt: operation.finishedAt ?? Date.now(),
+    });
+  });
   const autoPush = new AutoPush(db, pushes, (path) =>
     automaticCommits.list().some((commit) => commit.status === 'running' && resolve(commit.path) === resolve(path)),
   );
@@ -323,6 +342,7 @@ export async function buildServer(
     catalog,
     git,
     pushes,
+    pulls,
     reviews,
     sessionGit,
     epicWorkspaces,

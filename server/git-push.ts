@@ -9,7 +9,7 @@ const LIMIT = 64 * 1024;
 const git = async (path: string, args: string[]): Promise<string> => (await runGit(path, args)).trim();
 
 /** An overflowing status is not empty: that alone proves the worktree is dirty. */
-async function isDirty(path: string): Promise<boolean> {
+export async function isDirty(path: string): Promise<boolean> {
   try {
     return (await git(path, ['status', '--porcelain=v1', '-z'])) !== '';
   } catch (cause) {
@@ -19,7 +19,7 @@ async function isDirty(path: string): Promise<boolean> {
 }
 
 /** `symbolic-ref --quiet` exits with 1 on a detached HEAD: that is a state, not a failure. */
-async function currentBranch(path: string): Promise<string | null> {
+export async function currentBranch(path: string): Promise<string | null> {
   try {
     return (await git(path, ['symbolic-ref', '--quiet', '--short', 'HEAD'])) || null;
   } catch (cause) {
@@ -29,7 +29,7 @@ async function currentBranch(path: string): Promise<string | null> {
 }
 
 /** Canonical worktree identity also serializes aliases of the same project path. */
-async function keyFor(path: string): Promise<string> {
+export async function keyFor(path: string): Promise<string> {
   return git(path, ['rev-parse', '--absolute-git-dir']);
 }
 

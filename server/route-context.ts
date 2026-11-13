@@ -13,6 +13,7 @@ import type { SlackNotifier } from './slack.ts';
 import type { VscodeServer } from './vscode.ts';
 import type { WorktreeManager } from './worktrees.ts';
 import type { GitPlanner } from './git-plan.ts';
+import type { GitPulls } from './git-pull.ts';
 import type { GitPushes } from './git-push.ts';
 import type { Reviews } from './review.ts';
 import type { SessionGit } from './session-git.ts';
@@ -56,6 +57,7 @@ export interface RouteServices {
   catalog: Catalog;
   git: GitPlanner;
   pushes: GitPushes;
+  pulls: GitPulls;
   reviews: Reviews;
   sessionGit: SessionGit;
   epicWorkspaces: EpicWorkspaces;

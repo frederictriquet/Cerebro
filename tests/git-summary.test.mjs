@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, mock, test } from 'node:test';
-import { parseGitInfo, pushBlockedReason } from '../shared/types.ts';
+import { parseGitInfo, pullBlockedReason, pushBlockedReason } from '../shared/types.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'cerebro-git-summary-'));
 process.env.HOME = root;
@@ -184,6 +184,11 @@ test('detached HEAD disables Push with an explanation, even with commits and no 
   assert.match(pushBlockedReason(detached), /HEAD détachée/);
   assert.match(pushBlockedReason({ ...detached, ahead: 2 }), /HEAD détachée/);
   assert.equal(pushBlockedReason({ ...summary, hasUpstream: true, ahead: 0 }), 'Rien à pousser');
+  assert.match(pullBlockedReason(detached), /HEAD détachée/);
+  assert.match(pullBlockedReason(summary), /upstream/);
+  assert.equal(pullBlockedReason({ ...summary, hasUpstream: true, ahead: 0 }), null);
+  assert.equal(pullBlockedReason({ ...summary, hasUpstream: true, ahead: 2 }), null);
+  assert.match(pullBlockedReason({ ...summary, hasUpstream: true, dirty: 1 }), /Modifications en attente/);
 });
 
 test('status larger than the former 1 MiB buffer is counted, and an unreadable repository is an error, not "not a repository"', async () => {

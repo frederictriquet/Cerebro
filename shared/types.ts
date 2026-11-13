@@ -1029,6 +1029,14 @@ export function pushBlockedReason(git: GitInfo): string | null {
   return (git.ahead ?? 0) > 0 || (git.hasCommits && !git.hasUpstream) ? null : 'Rien à pousser';
 }
 
+// Raison affichée sur le bouton Pull désactivé ; null quand le dépôt est propre sur une branche suivie.
+export function pullBlockedReason(git: GitInfo): string | null {
+  if (git.branch === null) return 'HEAD détachée : choisissez une branche pour tirer';
+  if (git.dirty > 0) return 'Modifications en attente : commitez ou annulez-les avant de tirer';
+  if (!git.hasUpstream) return 'Pas d’upstream configuré pour cette branche';
+  return null;
+}
+
 export function parseScreenLines(v: unknown): string[] | null {
   if (!isRecord(v) || !Array.isArray(v.lines)) return null;
   const lines: string[] = [];
