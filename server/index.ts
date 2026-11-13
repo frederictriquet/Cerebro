@@ -44,6 +44,7 @@ import { registerDelegationRoutes } from './delegation-routes.ts';
 import { registerGlobalBacklogRoutes } from './global-backlog-routes.ts';
 import { registerHookRoutes } from './hook-routes.ts';
 import { registerSystemRoutes } from './system-routes.ts';
+import { registerTranscriptRoutes } from './transcript-routes.ts';
 
 const HISTORY_RETENTION_MS = 30 * 86_400_000;
 
@@ -328,6 +329,7 @@ export async function buildServer(
     broadcast,
   });
   registerSessionTaskRoutes(app, db, context.sessionTokenValid);
+  registerTranscriptRoutes(app);
   registerSystemRoutes(context);
   registerProjectRoutes(context);
   registerSessionRoutes(context);

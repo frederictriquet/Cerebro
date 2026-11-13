@@ -251,3 +251,54 @@ test('codex sessions run inline so the web terminal keeps mouse selection', () =
     assert.ok(args.includes('--no-alt-screen'));
   }
 });
+
+test('bouton « Traiter » : consigne tapée seulement au tour terminé, pour une sous-tâche à faire ou bloquée', async () => {
+  const app = await buildServer();
+  const db = new CerebroDatabase();
+  const { insertSessionTask, sessionTaskPrompt } = await import('../server/session-tasks.ts');
+  const project = db.createProject('Traiter', root);
+  const make = (id, status) =>
+    db.createSession(
+      {
+        id,
+        projectId: project.id,
+        agent: 'claude',
+        mode: 'auto',
+        model: null,
+        effort: null,
+        prompt: '',
+        title: id,
+        status,
+        agentSessionId: id,
+      },
+      `${id}-token`,
+    );
+  const auth = { authorization: 'Bearer browser-token' };
+  const prompt = (sessionId, taskId) =>
+    app.inject({ method: 'POST', url: `/api/sessions/${sessionId}/tasks/${taskId}/prompt`, headers: auth });
+  try {
+    make('idle-session', 'idle');
+    make('busy-session', 'running');
+    const todo = insertSessionTask(db, 'idle-session', { title: 'À faire' });
+    const done = insertSessionTask(db, 'idle-session', { title: 'Finie', status: 'done' });
+    const busy = insertSessionTask(db, 'busy-session', { title: 'Pendant un tour' });
+
+    assert.equal((await prompt('idle-session', 'inconnue')).statusCode, 404);
+    assert.equal((await prompt('idle-session', done.id)).statusCode, 409);
+    const running = await prompt('busy-session', busy.id);
+    assert.equal(running.statusCode, 409);
+    assert.match(running.json().error, /terminé son tour/);
+    // Tour terminé mais aucun processus vivant ici : les contrôles passent, la saisie échoue.
+    const idle = await prompt('idle-session', todo.id);
+    assert.equal(idle.statusCode, 409);
+    assert.match(idle.json().error, /pas active/);
+
+    const text = sessionTaskPrompt({ id: 'x1', title: 'Titre', note: 'ligne 1\n\nligne 2' });
+    assert.equal(text.includes('\n'), false);
+    assert.match(text, /« Titre » \(id x1\)\. Note : « ligne 1 · ligne 2 »/);
+    assert.match(text, /cerebro-tasks update x1 --status in_progress/);
+  } finally {
+    db.close();
+    await app.close();
+  }
+});

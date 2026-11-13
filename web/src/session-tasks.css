@@ -117,7 +117,10 @@
 }
 .session-task-heading {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr) 26px;
+  /* Boutons en fin de ligne (Traiter, Modifier) : autant de colonnes de 26 px que nécessaire. */
+  grid-template-columns: 92px minmax(0, 1fr);
+  grid-auto-flow: column;
+  grid-auto-columns: 26px;
   align-items: center;
   gap: 8px;
 }

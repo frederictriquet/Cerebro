@@ -5,6 +5,7 @@ import { errorMessage, plural, SESSION_TASK_STATUS_LABEL } from './format.ts';
 import { usePolling } from './polling.tsx';
 import './session-tasks.css';
 import { parseSessionTasks, type SessionTask, type SessionTaskStatus } from '../../shared/backlog.ts';
+import type { Status } from '../../shared/types.ts';
 
 // « à faire » et « en cours » sont invariables ; les autres états s'accordent avec le nombre.
 const INVARIABLE: readonly SessionTaskStatus[] = ['todo', 'in_progress'];
@@ -50,6 +51,13 @@ export function useSessionTasks(sessionId: string) {
     },
     [sessionId],
   );
+  // Bouton « Traiter » : le serveur tape la consigne dans le terminal de la session.
+  const prompt = useCallback(
+    async (id: string): Promise<void> => {
+      await api(apiPath`/api/sessions/${sessionId}/tasks/${id}/prompt`, { method: 'POST' });
+    },
+    [sessionId],
+  );
   return {
     tasks: data?.sessionId === sessionId ? data.tasks : [],
     loaded: data?.sessionId === sessionId,
@@ -57,6 +65,7 @@ export function useSessionTasks(sessionId: string) {
     refresh,
     save,
     remove,
+    prompt,
   };
 }
 
@@ -66,7 +75,23 @@ interface SessionTaskChanges {
   status?: SessionTaskStatus;
 }
 
-export function SessionTasksPanel({ tasks, loaded, error, refresh, save, remove }: ReturnType<typeof useSessionTasks>) {
+// Tour terminé : seul état où une consigne tapée démarre un tour sans en interrompre un ni valider un dialogue.
+const PROMPT_BLOCKED: Partial<Record<Status, string>> = {
+  starting: 'La session démarre',
+  running: 'L’agent travaille : attendez la fin de son tour',
+  waiting: 'La session attend votre réponse ou une autorisation',
+};
+
+export function SessionTasksPanel({
+  tasks,
+  loaded,
+  error,
+  refresh,
+  save,
+  remove,
+  prompt,
+  sessionStatus,
+}: ReturnType<typeof useSessionTasks> & { sessionStatus: Status }) {
   const [editing, setEditing] = useState<SessionTask | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -275,6 +300,32 @@ export function SessionTasksPanel({ tasks, loaded, error, refresh, save, remove 
               ) : (
                 <span className="session-task-title">{task.title}</span>
               )}
+              {(task.status === 'todo' || task.status === 'blocked') && sessionStatus !== 'exited' ? (
+                <button
+                  type="button"
+                  className="btn session-task-icon"
+                  disabled={busy || PROMPT_BLOCKED[sessionStatus] !== undefined}
+                  aria-label={`Traiter : ${task.title}`}
+                  title={
+                    PROMPT_BLOCKED[sessionStatus] ??
+                    'Traiter : demander à l’agent de traiter cette sous-tâche maintenant'
+                  }
+                  onClick={() => void mutate(() => prompt(task.id))}
+                >
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M7 4.5v15l12-7.5Z" />
+                  </svg>
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="btn session-task-icon"

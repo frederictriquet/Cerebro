@@ -12,7 +12,8 @@ import { councilSessionPrompt, exportMarkdown } from './council.ts';
 import { MAX_CONTEXT_LENGTH } from './council-runner.ts';
 import { findPeerName } from './peer-name.ts';
 import { interpretAnswer } from './questions.ts';
-import { answerQuestions } from './session-input.ts';
+import { answerQuestions, typeIntoSession } from './session-input.ts';
+import { getSessionTask, sessionTaskPrompt } from './session-tasks.ts';
 import { defaultTranscriptRoots, readSessionTranscript, transcriptContext } from './transcripts.ts';
 import { WorktreeError } from './worktrees.ts';
 import { normalizeMode } from '../shared/types.ts';
@@ -405,6 +406,26 @@ export function registerSessionRoutes(ctx: RouteContext): void {
     }
     return reply.code(204).send();
   });
+
+  // Bouton « Traiter » du panneau Sous-tâches : la consigne est tapée comme prochain message. Seulement au tour
+  // terminé : pendant un tour, elle serait mise en file ou interromprait l'agent ; devant une question ou une
+  // autorisation, Entrée validerait le choix affiché. Le statut reste à l'agent, qui confirme ainsi la reprise.
+  app.post<{ Params: { id: string; taskId: string } }>(
+    '/api/sessions/:id/tasks/:taskId/prompt',
+    async (request, reply) => {
+      const session = requireSession(request, reply);
+      if (session === null) return reply;
+      const task = getSessionTask(db, session.id, request.params.taskId);
+      if (task === null) return error(reply, 404, 'Sous-tâche introuvable dans cette session');
+      if (task.status !== 'todo' && task.status !== 'blocked')
+        return error(reply, 409, 'Seule une sous-tâche à faire ou bloquée se confie à l’agent');
+      if (session.status !== 'idle')
+        return error(reply, 409, 'La session doit avoir terminé son tour pour recevoir cette consigne');
+      if (!(await typeIntoSession(sessions, session.id, sessionTaskPrompt(task))))
+        return error(reply, 409, "La session n'est pas active");
+      return reply.code(204).send();
+    },
+  );
 
   // Taille du PTY imposée sans terminal ouvert (vue mobile) : les terminaux ouverts s'y alignent, comme
   // pour un redimensionnement par /ws/term.

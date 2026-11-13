@@ -1,8 +1,9 @@
 import { isActiveRun } from '../shared/backlog.ts';
-import type { FastifyReply } from 'fastify';
 import type { Epic, Session, Task } from '../shared/types.ts';
 import { asRecord } from './util.ts';
 import { error } from './routes-util.ts';
+import { typeIntoSession } from './session-input.ts';
+import { insertSessionTask } from './session-tasks.ts';
 import type { RouteContext } from './route-context.ts';
 
 const MAX_CLAIMED = 100;
@@ -12,7 +13,7 @@ const MAX_CLAIMED = 100;
 // Elles prennent l'état d'une tâche lancée depuis le backlog : démarrées, confiées à cette session, que
 // `cerebro-backlog --done <id>` peut ensuite clore. Tout ou rien : une tâche refusée n'en rattache aucune.
 export function registerClaimRoutes(ctx: RouteContext): void {
-  const { app, db, epicRunner, broadcast, tokenSession, requireSession } = ctx;
+  const { app, db, sessions, epicRunner, broadcast, tokenSession, requireSession } = ctx;
 
   const label = (t: Task): string => `« ${t.text.split('\n')[0]?.slice(0, 60)} »`;
 
@@ -62,14 +63,16 @@ export function registerClaimRoutes(ctx: RouteContext): void {
     return { ok: true, tasks: [...found.values()], explicit };
   };
 
-  const claim = (session: Session, body: unknown, reply: FastifyReply): FastifyReply => {
+  type Claimed = { ok: true; claimed: Task[]; already: string[] } | { ok: false; status: number; message: string };
+  const refuse = (message: string): Claimed => ({ ok: false, status: 409, message });
+  const claim = (session: Session, body: unknown): Claimed => {
     const resolved = resolve(session.projectId, body, (_epic, members) => members.filter((t) => t.status !== 'done'));
-    if (!resolved.ok) return error(reply, resolved.status, resolved.message);
+    if (!resolved.ok) return resolved;
     const all = db.listTasks();
     const already: string[] = [];
     const toClaim: Task[] = [];
     for (const task of resolved.tasks) {
-      if (task.status === 'done') return error(reply, 409, `Tâche déjà terminée : ${label(task)}`);
+      if (task.status === 'done') return refuse(`Tâche déjà terminée : ${label(task)}`);
       if (task.status === 'started' && task.sessionId === session.id) {
         already.push(task.id);
         continue;
@@ -78,41 +81,30 @@ export function registerClaimRoutes(ctx: RouteContext): void {
         // Une session arrêtée ou supprimée ne retient plus la tâche (comme « Relancer » depuis le backlog).
         const holder = task.sessionId === null ? null : db.getSession(task.sessionId);
         if (holder !== null && holder.status !== 'exited')
-          return error(reply, 409, `Tâche déjà confiée à une autre session en cours : ${label(task)}`);
+          return refuse(`Tâche déjà confiée à une autre session en cours : ${label(task)}`);
       }
       if (task.execution.type !== 'llm')
-        return error(reply, 409, `Une commande ne se rattache pas à une session : ${label(task)}`);
-      if (epicRunner.reserved(task.id))
-        return error(reply, 409, `Tâche réservée par un epic en cours : ${label(task)}`);
+        return refuse(`Une commande ne se rattache pas à une session : ${label(task)}`);
+      if (epicRunner.reserved(task.id)) return refuse(`Tâche réservée par un epic en cours : ${label(task)}`);
       if (all.some((t) => t.originTaskId === task.id))
-        return error(reply, 409, `Tâche traitée dans un autre projet : ${label(task)}`);
+        return refuse(`Tâche traitée dans un autre projet : ${label(task)}`);
       toClaim.push(task);
     }
     const claimed = db.transaction(() =>
       toClaim.map((task) => db.updateTask(task.id, { status: 'started', sessionId: session.id }) ?? task),
     );
     for (const task of claimed) broadcast({ type: 'task', task });
-    return reply.send({
-      claimed: claimed.map(({ id, text, epicId }) => ({ id, text, epicId })),
-      already,
-    });
+    return { ok: true, claimed, already };
   };
+  const summary = (claimed: Task[]) => claimed.map(({ id, text, epicId }) => ({ id, text, epicId }));
 
   // Depuis l'agent : `cerebro-backlog --claim`, authentifié par le jeton de la session.
   app.post<{ Params: { id: string } }>('/api/backlog/:id/claim', async (request, reply) => {
     const checked = tokenSession(request, reply);
     if (!checked.ok) return checked.reply;
-    return claim(checked.value, request.body, reply);
-  });
-
-  // Depuis l'interface : boutons « Rattacher » du backlog et de la vue session. Une session arrêtée ne
-  // reprendrait pas la tâche ; « Traiter » ou « Relancer » s'en chargent.
-  app.post<{ Params: { id: string } }>('/api/sessions/:id/claim', async (request, reply) => {
-    const session = requireSession(request, reply);
-    if (session === null) return reply;
-    if (session.status === 'exited')
-      return error(reply, 409, 'Session arrêtée : reprenez-la avant d’y rattacher une tâche');
-    return claim(session, request.body, reply);
+    const result = claim(checked.value, request.body);
+    if (!result.ok) return error(reply, result.status, result.message);
+    return reply.send({ claimed: summary(result.claimed), already: result.already });
   });
 
   // Rend au backlog des tâches rattachées par erreur : de nouveau à faire, plus confiées à la session.
@@ -131,4 +123,52 @@ export function registerClaimRoutes(ctx: RouteContext): void {
     for (const task of released) broadcast({ type: 'task', task });
     return reply.send({ released: released.map(({ id, text }) => ({ id, text })) });
   });
+
+  // Depuis l'interface : boutons « Rattacher » du backlog et de la vue session. L'agent l'ignorerait : chaque
+  // tâche devient une sous-tâche de la session (rappel qui survit à une compaction) et un message tapé dans
+  // son terminal lui en donne le texte. Une session arrêtée ne reprendrait pas la tâche (« Traiter » ou
+  // « Relancer » s'en chargent) ; une session qui attend une réponse ou une autorisation recevrait le message
+  // dans son dialogue, où Entrée validerait le choix affiché.
+  app.post<{ Params: { id: string } }>('/api/sessions/:id/claim', async (request, reply) => {
+    const session = requireSession(request, reply);
+    if (session === null) return reply;
+    if (session.status === 'exited')
+      return error(reply, 409, 'Session arrêtée : reprenez-la avant de lui confier une tâche');
+    if (session.status === 'waiting')
+      return error(
+        reply,
+        409,
+        'La session attend votre réponse ou une autorisation : traitez-la avant de lui confier une tâche',
+      );
+    const result = claim(session, request.body);
+    if (!result.ok) return error(reply, result.status, result.message);
+    let notified = true;
+    for (const task of result.claimed) {
+      insertSessionTask(db, session.id, {
+        title: taskTitle(task.text).slice(0, 500),
+        note: `Tâche du backlog ${task.id} : à clore avec cerebro-backlog --done ${task.id} une fois terminée et vérifiée.`,
+      });
+      notified = (await typeIntoSession(sessions, session.id, claimMessage(task))) && notified;
+    }
+    return reply.send({ claimed: summary(result.claimed), already: result.already, notified });
+  });
+}
+
+function taskTitle(text: string): string {
+  return (
+    text
+      .split('\n')
+      .find((line) => line.trim() !== '')
+      ?.trim() ?? text.trim()
+  );
+}
+
+// Tapé dans le terminal : une seule ligne, un retour à la ligne enverrait le message en plusieurs morceaux.
+export function claimMessage(task: Pick<Task, 'id' | 'text'>): string {
+  const text = task.text.trim().replace(/\s*\n+\s*/g, ' · ');
+  return (
+    `[Cerebro] Tâche du backlog confiée à cette session (id ${task.id}) : « ${text} ». ` +
+    `Traite-la après ton travail en cours, puis clos-la avec cerebro-backlog --done ${task.id} une fois ` +
+    'terminée et vérifiée. Elle figure aussi dans tes sous-tâches.'
+  );
 }

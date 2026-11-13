@@ -184,6 +184,23 @@ test('l’interface rattache une tâche à une session active, sans jeton, et re
     assert.equal(res.statusCode, 200);
     assert.equal(db.getTask(task.id).status, 'started');
     assert.equal(db.getTask(task.id).sessionId, session.id);
+    // Sans processus vivant, le message ne peut pas être tapé : la réponse le dit.
+    assert.equal(res.json().notified, false);
+    const subtasks = (await app.inject({ method: 'GET', url: `/api/sessions/${session.id}/tasks` })).json();
+    assert.deepEqual(
+      subtasks.map((t) => [t.title, t.status, t.note.includes(task.id)]),
+      [['Commencée dans la session', 'todo', true]],
+    );
+
+    const waiting = makeSession('token-attente', 'waiting');
+    const asked = db.createTask(project.id, 'Pendant une question', null);
+    const blocked = await app.inject({
+      method: 'POST',
+      url: `/api/sessions/${waiting.id}/claim`,
+      payload: { ids: [asked.id] },
+    });
+    assert.equal(blocked.statusCode, 409);
+    assert.equal(db.getTask(asked.id).status, 'todo');
 
     const other = db.createTask(project.id, 'Autre', null);
     const exited = makeSession('token-arrêtée', 'exited');
@@ -202,3 +219,11 @@ test('l’interface rattache une tâche à une session active, sans jeton, et re
     });
     assert.equal(missing.statusCode, 404);
   }));
+
+test('le message tapé à l’agent tient sur une ligne et donne l’identifiant à clore', async () => {
+  const { claimMessage } = await import('../server/claim-routes.ts');
+  const message = claimMessage({ id: 'abc', text: 'Titre\n\n- point 1\n- point 2\n' });
+  assert.equal(message.includes('\n'), false);
+  assert.match(message, /« Titre · - point 1 · - point 2 »/);
+  assert.match(message, /cerebro-backlog --done abc/);
+});

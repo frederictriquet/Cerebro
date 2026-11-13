@@ -4182,3 +4182,18 @@ a.btn:hover {
   max-width: 170px;
   min-width: 0;
 }
+
+/* Panneau « Backlog » de la vue session : tâches confiées, texte dépliable. */
+.session-backlog ul {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.session-backlog summary {
+  cursor: pointer;
+}
+.session-backlog .task-text {
+  margin: 6px 0 0;
+}

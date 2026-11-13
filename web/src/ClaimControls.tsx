@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { claimTasksForSession } from './api.ts';
 import { claimableTask, taskLabel } from './backlog/tasks.ts';
-import { errorMessage, sessionTitle } from './format.ts';
+import { errorMessage, sessionTitle, TASK_STATUS_LABEL } from './format.ts';
+import { href } from './route.ts';
 import { useStore } from './store.tsx';
 import type { Session, Task } from '../../shared/types.ts';
 
@@ -19,7 +20,7 @@ function ClaimPicker({
   opener: string;
   placeholder: string;
   options: { value: string; label: string }[];
-  onClaim: (value: string) => Promise<void>;
+  onClaim: (value: string) => Promise<boolean>;
   onError: (message: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -37,9 +38,11 @@ function ClaimPicker({
     setBusy(true);
     onError(null);
     try {
-      await onClaim(value);
+      const notified = await onClaim(value);
       setOpen(false);
       setValue('');
+      if (!notified)
+        onError('Tâche rattachée, mais le message n’a pas pu être tapé dans la session : prévenez l’agent vous-même.');
     } catch (err) {
       onError(errorMessage(err, 'Rattachement impossible'));
     } finally {
@@ -98,5 +101,36 @@ export function ClaimTaskButton({ session, onError }: { session: Session; onErro
       onClaim={(taskId) => claimTasksForSession(session.id, [taskId])}
       onError={onError}
     />
+  );
+}
+
+/** Tâches du backlog confiées à la session (lancées depuis le backlog ou rattachées), pour la pastille d'en-tête. */
+export function useSessionBacklogTasks(sessionId: string): Task[] {
+  const { tasks } = useStore();
+  return tasks.filter((t) => t.sessionId === sessionId);
+}
+
+/** Panneau de la pastille « Backlog » : chaque tâche avec son statut, son texte dépliable et le lien au projet. */
+export function SessionBacklogPanel({ session, tasks }: { session: Session; tasks: Task[] }) {
+  return (
+    <div className="session-backlog">
+      <p className="meta">
+        Tâches du backlog confiées à cette session. Elles se gèrent dans l’onglet Backlog du{' '}
+        <a href={href(`#/p/${encodeURIComponent(session.projectId)}`)}>projet</a>.
+      </p>
+      <ul>
+        {tasks.map((task) => (
+          <li key={task.id}>
+            <details>
+              <summary>
+                <span className={`pill task-status ${task.status}`}>{TASK_STATUS_LABEL[task.status]}</span>{' '}
+                {taskLabel(task, 120)}
+              </summary>
+              <pre className="task-text">{task.text}</pre>
+            </details>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

@@ -106,6 +106,12 @@ et détaillés sans être ajoutés une seconde fois au total. Un journal absent 
 « Tokens indisponibles ». Un relevé incomplet est signalé, notamment pour Grok
 dont le journal global peut être purgé indépendamment des sessions.
 
+Pour agréger les journaux bruts de Claude Code d’une autre machine (sessions
+supprimées ou lancées hors Cerebro et sous-agents compris), `GET /api/transcripts`
+liste les fichiers `.jsonl` sous `<racine claude>/projects` (`{ path, size, mtimeMs }`)
+et `GET /api/transcripts/file?path=<chemin relatif>` en diffuse le contenu brut, avec
+le même contrôle d’accès que `/api/sessions`.
+
 ## Configuration
 
 | Variable | Valeur par défaut | Rôle |
@@ -501,6 +507,9 @@ depuis la pastille **Sous-tâches** dans son en-tête. Le panneau affiche la lis
 complète, les statuts et les notes, et permet de créer, modifier ou supprimer un
 élément. Il se rafraîchit toutes les trois secondes. Ce suivi est indépendant du
 backlog du projet : il ne lance aucune session et ne clôture aucune tâche du backlog.
+Le bouton ▷ d'une sous-tâche à faire ou bloquée tape dans le terminal la consigne
+de la traiter maintenant ; il n'est actif qu'une fois le tour de l'agent terminé,
+et le statut reste à l'agent.
 
 Les agents reçoivent la consigne de l'alimenter pour les travaux comportant
 plusieurs étapes, de l'actualiser pendant le travail et de le relire après une
@@ -574,6 +583,13 @@ mettre ses findings dans le backlog, puis les traiter séparément.
   `cerebro-backlog --claim <id>...` (tâche, ou epic pour ses tâches ouvertes) :
   elles passent « démarrées » dans cette session, `--done <id>` les clôt et
   `--release <id>` rend au backlog celles rattachées par erreur.
+
+  Depuis l'interface, « Rattacher à une session… » (ligne de tâche du backlog)
+  et « Rattacher une tâche… » (vue session) confient une tâche à une session
+  active. Cerebro l'ajoute aux sous-tâches de la session et tape dans son
+  terminal un message avec le texte de la tâche et la commande `--done` à
+  lancer. Une session qui attend une réponse ou une autorisation refuse le
+  rattachement. La pastille **Backlog** de l'en-tête liste les tâches confiées.
 
   Pour signaler depuis une session un besoin qui relève d'un autre projet
   (typiquement une limite de Cerebro repérée en travaillant sur un autre

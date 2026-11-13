@@ -1,5 +1,5 @@
 import { ResizeIcon } from './SessionIcons.tsx';
-import { ClaimTaskButton } from './ClaimControls.tsx';
+import { ClaimTaskButton, SessionBacklogPanel, useSessionBacklogTasks } from './ClaimControls.tsx';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useLatest } from './use-latest.ts';
 import { FindingsNotice, FindingsPanel } from './Findings.tsx';
@@ -36,7 +36,7 @@ import { SessionEpicBadge } from './SessionEpicBadge.tsx';
 import { parseSavedReports, type SavedReport } from '../../shared/backlog.ts';
 import { parseProvenance, type Provenance } from '../../shared/git.ts';
 
-type SessionDrawer = 'provenance' | 'findings' | 'tasks' | null;
+type SessionDrawer = 'provenance' | 'findings' | 'tasks' | 'backlog' | null;
 
 function useFindingsReports(sessionId: string) {
   const [reports, setReports] = useState<SavedReport[]>([]);
@@ -411,6 +411,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const findings = useFindingsReports(sessionId);
   const sessionTasks = useSessionTasks(sessionId);
   const taskState = sessionTasksState(sessionTasks.tasks);
+  const backlogTasks = useSessionBacklogTasks(sessionId);
   const [drawer, setDrawer] = useState<SessionDrawer>(null);
   const showDrawer = (next: SessionDrawer): void => {
     const route = parseHash(window.location.hash);
@@ -506,22 +507,35 @@ export function SessionView({ sessionId }: { sessionId: string }) {
                 </>
               }
               afterStatus={
-                <button
-                  type="button"
-                  className={`pill pill-toggle session-tasks-indicator${drawer === 'tasks' ? ' active' : ''}`}
-                  data-state={sessionTasks.error ? 'empty' : taskState}
-                  aria-expanded={drawer === 'tasks'}
-                  title={`${sessionTasks.error ? 'Suivi indisponible' : SESSION_TASKS_STATE_LABEL[taskState]} · nombre terminé / total`}
-                  aria-label={`Sous-tâches : ${sessionTasks.error ? 'suivi indisponible' : SESSION_TASKS_STATE_LABEL[taskState]}`}
-                  onClick={() => toggleDrawer('tasks')}
-                >
-                  Sous-tâches
-                  {sessionTasks.loaded
-                    ? ` · ${sessionTasks.tasks.filter((task) => task.status === 'done').length}/${sessionTasks.tasks.length}`
-                    : ''}
-                  {sessionTasks.tasks.some((task) => task.status === 'blocked') ? ' · blocage' : ''}
-                  {sessionTasks.error ? ' · indisponible' : ''}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className={`pill pill-toggle session-tasks-indicator${drawer === 'tasks' ? ' active' : ''}`}
+                    data-state={sessionTasks.error ? 'empty' : taskState}
+                    aria-expanded={drawer === 'tasks'}
+                    title={`${sessionTasks.error ? 'Suivi indisponible' : SESSION_TASKS_STATE_LABEL[taskState]} · nombre terminé / total`}
+                    aria-label={`Sous-tâches : ${sessionTasks.error ? 'suivi indisponible' : SESSION_TASKS_STATE_LABEL[taskState]}`}
+                    onClick={() => toggleDrawer('tasks')}
+                  >
+                    Sous-tâches
+                    {sessionTasks.loaded
+                      ? ` · ${sessionTasks.tasks.filter((task) => task.status === 'done').length}/${sessionTasks.tasks.length}`
+                      : ''}
+                    {sessionTasks.tasks.some((task) => task.status === 'blocked') ? ' · blocage' : ''}
+                    {sessionTasks.error ? ' · indisponible' : ''}
+                  </button>
+                  {backlogTasks.length > 0 ? (
+                    <button
+                      type="button"
+                      className={`pill pill-toggle${drawer === 'backlog' ? ' active' : ''}`}
+                      aria-expanded={drawer === 'backlog'}
+                      title="Tâches du backlog confiées à cette session · nombre terminé / total"
+                      onClick={() => toggleDrawer('backlog')}
+                    >
+                      Backlog · {backlogTasks.filter((task) => task.status === 'done').length}/{backlogTasks.length}
+                    </button>
+                  ) : null}
+                </>
               }
             >
               <SessionEpicBadge session={session} />
@@ -602,7 +616,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       <ErrorBoundary zone="Fils Slack surveillés" resetKey={session.id}>
         <SlackWatches sessions={[session]} showSession={false} />
       </ErrorBoundary>
-      {drawer === 'tasks' || drawer === 'provenance' ? (
+      {drawer === 'tasks' || drawer === 'provenance' || drawer === 'backlog' ? (
         <section className="session-drawer">
           <button
             type="button"
@@ -614,7 +628,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           </button>
           <ErrorBoundary zone="Panneau" resetKey={`${session.id}:${drawer}`}>
             {drawer === 'tasks' ? (
-              <SessionTasksPanel key={session.id} {...sessionTasks} />
+              <SessionTasksPanel key={session.id} {...sessionTasks} sessionStatus={session.status} />
+            ) : drawer === 'backlog' ? (
+              <SessionBacklogPanel session={session} tasks={backlogTasks} />
             ) : (
               <ProvenancePanel {...provenance} />
             )}

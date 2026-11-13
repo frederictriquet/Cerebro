@@ -485,10 +485,15 @@ export async function delegateItem(kind: 'tasks' | 'epics', id: string, projectI
   });
 }
 
-/** Rattache des tâches du backlog à une session en cours : elles passent « démarrées » dans cette session. */
-export async function claimTasksForSession(sessionId: string, ids: string[]): Promise<void> {
-  await api(`/api/sessions/${encodeURIComponent(sessionId)}/claim`, {
+/**
+ * Rattache des tâches du backlog à une session en cours : elles passent « démarrées » dans cette session,
+ * deviennent ses sous-tâches et un message en prévient l'agent. Rend false si ce message n'a pas pu être tapé.
+ */
+const parseClaimResult = parser(object<{ notified: boolean }>({ notified: boolean }));
+export async function claimTasksForSession(sessionId: string, ids: string[]): Promise<boolean> {
+  const { notified } = await apiParsed(apiPath`/api/sessions/${sessionId}/claim`, parseClaimResult, {
     method: 'POST',
     body: JSON.stringify({ ids }),
   });
+  return notified;
 }

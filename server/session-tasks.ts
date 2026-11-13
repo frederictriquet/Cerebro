@@ -9,6 +9,31 @@ type TaskFields = Pick<SessionTask, 'title' | 'status' | 'note'>;
 const SELECT = `SELECT id, session_id AS sessionId, title, status, note,
   created_at AS createdAt, updated_at AS updatedAt FROM session_tasks`;
 
+/** Ajoute une sous-tâche au suivi d'une session (titre déjà validé : 1 à 500 caractères). */
+export function insertSessionTask(
+  db: CerebroDatabase,
+  sessionId: string,
+  fields: { title: string; status?: SessionTaskStatus; note?: string },
+): SessionTask {
+  const now = Date.now();
+  const task: SessionTask = {
+    id: randomUUID(),
+    sessionId,
+    title: fields.title,
+    status: fields.status ?? 'todo',
+    note: fields.note ?? '',
+    createdAt: now,
+    updatedAt: now,
+  };
+  db.connection
+    .prepare(
+      `INSERT INTO session_tasks (id, session_id, title, status, note, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(task.id, task.sessionId, task.title, task.status, task.note, task.createdAt, task.updatedAt);
+  return task;
+}
+
 function parseFields(raw: unknown, create: boolean): Partial<TaskFields> {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Objet JSON requis.');
   const body = raw as Record<string, unknown>;
@@ -39,7 +64,7 @@ export function listSessionTasks(db: CerebroDatabase, sessionId: string): Sessio
     .all(sessionId) as unknown as SessionTask[];
 }
 
-function getSessionTask(db: CerebroDatabase, sessionId: string, id: string): SessionTask | null {
+export function getSessionTask(db: CerebroDatabase, sessionId: string, id: string): SessionTask | null {
   return (
     (db.connection.prepare(`${SELECT} WHERE session_id = ? AND id = ?`).get(sessionId, id) as unknown as SessionTask) ??
     null
@@ -74,22 +99,11 @@ export function registerSessionTaskRoutes(
       const parsed = await badRequest.orError(reply, () => parseFields(request.body, true));
       if (!parsed.ok) return parsed.reply;
       const fields = parsed.value;
-      const task: SessionTask = {
-        id: randomUUID(),
-        sessionId: request.params.id,
-        title: fields.title!,
-        status: fields.status ?? 'todo',
-        note: fields.note ?? '',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-      db.connection
-        .prepare(
-          `INSERT INTO session_tasks (id, session_id, title, status, note, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(task.id, task.sessionId, task.title, task.status, task.note, task.createdAt, task.updatedAt);
-      return reply.code(201).send(task);
+      return reply
+        .code(201)
+        .send(
+          insertSessionTask(db, request.params.id, { title: fields.title!, status: fields.status, note: fields.note }),
+        );
     });
     app.patch<{ Params: Params }>(`${base}/:taskId`, options, async (request, reply) => {
       const current = getSessionTask(db, request.params.id, request.params.taskId);
@@ -115,4 +129,15 @@ export function registerSessionTaskRoutes(
         : reply.code(404).send({ error: 'Sous-tâche introuvable dans cette session.' });
     });
   }
+}
+
+// Tapé dans le terminal : une seule ligne, un retour à la ligne enverrait le message en plusieurs morceaux.
+export function sessionTaskPrompt(task: Pick<SessionTask, 'id' | 'title' | 'note'>): string {
+  const note = task.note.trim().replace(/\s*\n+\s*/g, ' · ');
+  return (
+    `[Cerebro] Traite maintenant la sous-tâche « ${task.title} » (id ${task.id}).` +
+    (note ? ` Note : « ${note} ».` : '') +
+    ` Passe-la en in_progress avec cerebro-tasks update ${task.id} --status in_progress,` +
+    ' puis en done une fois terminée et vérifiée.'
+  );
 }
