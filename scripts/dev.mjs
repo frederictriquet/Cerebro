@@ -36,7 +36,11 @@ function log(name, line) {
 
 function start(name) {
   const { cmd, args } = procs[name];
-  const child = spawn(cmd, args, { cwd: root, env: { ...process.env, FORCE_COLOR: '1' } });
+  const child = spawn(cmd, args, {
+    cwd: root,
+    env: { ...process.env, FORCE_COLOR: '1' },
+    stdio: name === 'server' ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['pipe', 'pipe', 'pipe'],
+  });
   for (const stream of [child.stdout, child.stderr]) {
     let pending = '';
     stream.on('data', (chunk) => {
@@ -62,12 +66,55 @@ function start(name) {
 function kill(child) {
   return new Promise((done) => {
     if (child.exitCode !== null || child.signalCode !== null) return done();
-    const force = setTimeout(() => child.kill('SIGKILL'), 3000);
+    const force = setTimeout(() => child.kill('SIGKILL'), 15_000);
     child.once('exit', () => {
       clearTimeout(force);
       done();
     });
     child.kill('SIGTERM');
+  });
+}
+
+function waitReadyToRestart(child) {
+  if (!child || !child.connected || child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
+  }
+  return new Promise((done) => {
+    let settled = false;
+    let acked = false;
+    let ackTimer = null;
+    let safetyTimer = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(ackTimer);
+      clearTimeout(safetyTimer);
+      child.off('message', onMessage);
+      child.off('exit', finish);
+      child.off('disconnect', finish);
+      done();
+    };
+    const onMessage = (msg) => {
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'restart-ack' && !acked) {
+        acked = true;
+        clearTimeout(ackTimer);
+        if (!msg.busy) return finish();
+        log('server', '\x1b[33mrestart différé (opération Git en cours…)\x1b[0m');
+        safetyTimer = setTimeout(finish, 90_000);
+        return;
+      }
+      if (msg.type === 'restart-ready') finish();
+    };
+    child.on('message', onMessage);
+    child.once('exit', finish);
+    child.once('disconnect', finish);
+    ackTimer = setTimeout(finish, 500);
+    try {
+      child.send({ type: 'prepare-restart' });
+    } catch {
+      finish();
+    }
   });
 }
 
@@ -90,20 +137,36 @@ function startServer() {
 }
 
 let restartTimer = null;
-let restarting = Promise.resolve();
+let pendingFile = null;
+let restartRunning = false;
 function scheduleRestart(file) {
   // Any change of the burst counts, not only the last file named in the restart line.
   if (DATABASE_CODE.test(file)) backupDue = true;
+  pendingFile = file;
   clearTimeout(restartTimer);
   restartTimer = setTimeout(() => {
-    restarting = restarting.then(async () => {
-      if (stopping) return;
-      log('server', `\x1b[32mrestart (${file})\x1b[0m`);
-      const child = children.server;
-      child.restarting = true;
-      await kill(child);
-      if (!stopping) startServer();
-    });
+    if (restartRunning || stopping) return;
+    restartRunning = true;
+    void (async () => {
+      try {
+        while (pendingFile && !stopping) {
+          const target = pendingFile;
+          pendingFile = null;
+          const child = children.server;
+          await waitReadyToRestart(child);
+          if (stopping) break;
+          // Fold any additional file saves recorded while waiting for the current Git operation to finish.
+          const reason = pendingFile ?? target;
+          pendingFile = null;
+          log('server', `\x1b[32mrestart (${reason})\x1b[0m`);
+          child.restarting = true;
+          await kill(child);
+          if (!stopping) startServer();
+        }
+      } finally {
+        restartRunning = false;
+      }
+    })();
   }, 150);
 }
 

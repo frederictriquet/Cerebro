@@ -7,6 +7,7 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type WebSocket from 'ws';
 import { AutoPush } from './auto-push.ts';
+import { attachDevRestartChannel } from './dev-restart.ts';
 import { AutoFetch } from './git-fetch.ts';
 import { EpicRunner } from './epic-runner.ts';
 import { CommandExecutor } from './commands.ts';
@@ -168,7 +169,9 @@ export async function buildServer(
   registerRemoteGateway(app, peers);
   registerVscodeRelay(app, vscode);
 
+  let detachDevRestart: () => void = () => {};
   app.addHook('onClose', async () => {
+    detachDevRestart();
     clearInterval(purgeTimer);
     eventHeartbeat.stop();
     peers.stop();
@@ -179,6 +182,8 @@ export async function buildServer(
     await autoFetch.stop();
     await vscode.stop();
     await automaticCommits.shutdown();
+    await pushes.shutdown();
+    await pulls.shutdown();
     await councils.shutdown();
     await worktrees.shutdown();
     await epicRunner.shutdown();
@@ -189,6 +194,17 @@ export async function buildServer(
 
   const worktrees = registerWorktreeRoutes(app, db, services);
   const automaticCommits = registerAutomaticCommitRoutes(app, db, worktrees, services);
+  detachDevRestart = attachDevRestartChannel(process, {
+    isBusy: () => services.gate.busy || pushes.busy || pulls.busy || automaticCommits.busyCritical,
+    waitForIdle: async () => {
+      await Promise.all([
+        services.gate.waitForIdle(),
+        pushes.shutdown(),
+        pulls.shutdown(),
+        automaticCommits.waitForCritical(),
+      ]);
+    },
+  });
   registerPersonaRoutes(app, db);
   const councils = registerCouncilRoutes(app, db, catalog);
   sessions.withProjectDeletion = (id, remove) => councils.withProjectDeletion(id, remove);

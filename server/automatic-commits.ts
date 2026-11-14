@@ -293,7 +293,18 @@ export class AutomaticCommits {
         );
         this.save(operation);
         while (operation.pushOperation.status === 'running') {
-          await new Promise((resolve) => setTimeout(resolve, 200));
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(() => {
+              off();
+              resolve();
+            }, 200);
+            const off = this.services.pushes.onComplete((_path, finished) => {
+              if (finished.id !== operation.pushOperation?.id) return;
+              clearTimeout(timer);
+              off();
+              resolve();
+            });
+          });
           const latest = await this.services.pushes.current(operation.path);
           if (!latest || latest.id !== operation.pushOperation.id)
             throw new Error('Le résultat du push n’est plus disponible ; vérifiez les remotes.');
@@ -319,6 +330,20 @@ export class AutomaticCommits {
       operation.finishedAt = Date.now();
       this.save(operation);
       this.onComplete(operation);
+    }
+  }
+  get busyCritical(): boolean {
+    return [...this.active.values()].some(
+      (item) => item.operation.phase === 'committing' || item.operation.phase === 'pushing',
+    );
+  }
+  async waitForCritical(): Promise<void> {
+    while (this.busyCritical) {
+      const tasks = [...this.active.values()]
+        .filter((item) => item.operation.phase === 'committing' || item.operation.phase === 'pushing')
+        .map((item) => item.done);
+      if (!tasks.length) break;
+      await Promise.allSettled(tasks);
     }
   }
   async shutdown(): Promise<void> {

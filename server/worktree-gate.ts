@@ -30,7 +30,17 @@ const overlaps = (left: string, right: string): boolean => pathWithin(left, righ
 /** Leases held on workspaces by Git operations; one instance is shared by every service of a server. */
 export class WorktreeGate {
   private readonly leases = new Set<Lease>();
+  private readonly idleWaiters = new Set<() => void>();
 
+  get busy(): boolean {
+    return this.leases.size > 0;
+  }
+  waitForIdle(): Promise<void> {
+    if (!this.leases.size) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.idleWaiters.add(resolve);
+    });
+  }
   private leaseFor(path: string): Lease | undefined {
     if (!this.leases.size) return undefined;
     const absolute = canonicalWorktreePath(path);
@@ -53,6 +63,11 @@ export class WorktreeGate {
     this.leases.add(lease);
     return () => {
       if (!this.leases.delete(lease)) return;
+      if (!this.leases.size) {
+        const waiters = [...this.idleWaiters];
+        this.idleWaiters.clear();
+        for (const wake of waiters) wake();
+      }
       // Called from the callers' finally: a failing delivery must neither skip the next ones nor mask their error.
       for (const send of lease.queued) {
         try {

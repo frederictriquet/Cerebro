@@ -97,7 +97,7 @@ async function assertSafeToRebaseOnPush(root: string, db?: CerebroDatabase): Pro
 /** Push operations of a server, at most one running per repository. */
 export class GitPushes {
   private readonly listeners = new Set<(path: string, operation: PushOperation) => void>();
-  private readonly active = new Map<string, PushOperation>();
+  private readonly active = new Map<string, { op: PushOperation; done: Promise<void> }>();
   private readonly latest = new Map<string, PushOperation>();
   private readonly gate: WorktreeGate;
   private readonly db?: CerebroDatabase;
@@ -116,6 +116,16 @@ export class GitPushes {
     this.resolveConflicts = resolver;
   }
 
+  get busy(): boolean {
+    return this.active.size > 0;
+  }
+
+  async shutdown(): Promise<void> {
+    while (this.active.size > 0) {
+      await Promise.allSettled([...this.active.values()].map((item) => item.done));
+    }
+  }
+
   onComplete(listener: (path: string, operation: PushOperation) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -130,7 +140,7 @@ export class GitPushes {
     const key = await keyFor(path);
     this.gate.assertAvailable(path);
     const existing = this.active.get(key);
-    if (existing) return existing;
+    if (existing) return existing.op;
     const op: PushOperation = {
       id: randomUUID(),
       branch: null,
@@ -144,9 +154,10 @@ export class GitPushes {
       resolvedFiles: [],
       syncOutput: '',
     };
-    this.active.set(key, op);
     this.latest.set(key, op);
-    void execute(path, op, options, this.gate, this.db, this.catalog, (ctx, sig) => this.resolveConflicts(ctx, sig))
+    const done = execute(path, op, options, this.gate, this.db, this.catalog, (ctx, sig) =>
+      this.resolveConflicts(ctx, sig),
+    )
       .catch((cause: unknown) => {
         op.error = errorMessage(cause);
         op.status = 'failed';
@@ -166,6 +177,7 @@ export class GitPushes {
           }
         }
       });
+    this.active.set(key, { op, done });
     return op;
   }
 }

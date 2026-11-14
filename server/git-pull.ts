@@ -34,7 +34,7 @@ function pullFailureMessage(output: string, stderr: string, code: number | null)
 /** Pull operations of a server (fast-forward when linear, automatic rebase + AI conflict resolution when diverged). */
 export class GitPulls {
   private readonly listeners = new Set<(path: string, operation: PullOperation) => void>();
-  private readonly active = new Map<string, PullOperation>();
+  private readonly active = new Map<string, { op: PullOperation; done: Promise<void> }>();
   private readonly latest = new Map<string, PullOperation>();
   private readonly gate: WorktreeGate;
   private readonly pushes: GitPushes;
@@ -56,6 +56,16 @@ export class GitPulls {
     this.resolveConflicts = resolver;
   }
 
+  get busy(): boolean {
+    return this.active.size > 0;
+  }
+
+  async shutdown(): Promise<void> {
+    while (this.active.size > 0) {
+      await Promise.allSettled([...this.active.values()].map((item) => item.done));
+    }
+  }
+
   onComplete(listener: (path: string, operation: PullOperation) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -69,7 +79,7 @@ export class GitPulls {
   async start(path: string): Promise<PullOperation> {
     const [key, root, push] = await Promise.all([keyFor(path), repositoryRoot(path), this.pushes.current(path)]);
     const existing = this.active.get(key);
-    if (existing) return existing;
+    if (existing) return existing.op;
     if (push?.status === 'running') {
       throw new Error('Un push est en cours : attendez sa fin avant de tirer.');
     }
@@ -89,9 +99,8 @@ export class GitPulls {
       rebased: false,
       resolvedFiles: [],
     };
-    this.active.set(key, op);
     this.latest.set(key, op);
-    void execute(root, op, this.db, this.catalog, (ctx, sig) => this.resolveConflicts(ctx, sig))
+    const done = execute(root, op, this.db, this.catalog, (ctx, sig) => this.resolveConflicts(ctx, sig))
       .catch((cause: unknown) => {
         op.error = errorMessage(cause);
         op.status = 'failed';
@@ -111,6 +120,7 @@ export class GitPulls {
           }
         }
       });
+    this.active.set(key, { op, done });
     return op;
   }
 }
