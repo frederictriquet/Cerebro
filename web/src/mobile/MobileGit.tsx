@@ -179,7 +179,7 @@ export function ProjectGit({ project }: { project: Project }) {
         <AutomaticCommitDialog projectId={project.id} push={project.autoPush} strategy={open} onClose={close} />
       ) : null}
       {open === 'pull' ? <PullDialog projectId={project.id} onSettled={() => void refresh()} onClose={close} /> : null}
-      {open === 'push' ? <PushDialog projectId={project.id} onClose={close} /> : null}
+      {open === 'push' ? <PushDialog projectId={project.id} onSettled={() => void refresh()} onClose={close} /> : null}
     </section>
   );
 }

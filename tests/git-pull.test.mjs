@@ -119,23 +119,99 @@ test('fast-forward pull updates HEAD, index and worktree, and repeat pull report
     assert.equal(again.afterHead, remoteHead);
   }));
 
-test('divergent branches fail cleanly without merge or rebase state, even with pull.rebase=true', async () =>
+test('divergent branches rebase automatically without conflict, resolve conflicts via AI, and roll back cleanly when insoluble', async () =>
   fixture(async ({ repo, peer, pulls }) => {
+    // 1. Clean divergence (disjoint files): rebased automatically without calling AI.
+    let aiCalls = 0;
+    pulls.resolveConflicts = async () => {
+      aiCalls++;
+      throw new Error('IA non attendue sans conflit');
+    };
     writeFileSync(join(peer, 'remote-only'), 'remote\n');
     git(peer, 'add', 'remote-only');
     git(peer, 'commit', '-m', 'remote commit');
+    const remoteCommit = git(peer, 'rev-parse', 'HEAD');
     git(peer, 'push');
 
     writeFileSync(join(repo, 'local-only'), 'local\n');
     git(repo, 'add', 'local-only');
     git(repo, 'commit', '-m', 'local commit');
-    git(repo, 'config', 'pull.rebase', 'true');
-    const before = integrity(repo);
 
-    const op = await wait(await pulls.start(repo));
-    assert.equal(op.status, 'failed');
-    assert.match(op.error ?? '', /Avance rapide impossible/);
-    assert.deepEqual(integrity(repo), before);
+    const cleanRebase = sharedGit.parsePullOperation(await wait(await pulls.start(repo)));
+    assert.equal(cleanRebase.status, 'succeeded', JSON.stringify(cleanRebase));
+    assert.equal(cleanRebase.rebased, true);
+    assert.deepEqual(cleanRebase.resolvedFiles, []);
+    assert.equal(aiCalls, 0);
+    assert.equal(readFileSync(join(repo, 'remote-only'), 'utf8'), 'remote\n');
+    assert.equal(readFileSync(join(repo, 'local-only'), 'utf8'), 'local\n');
+    assert.equal(git(repo, 'merge-base', '--is-ancestor', remoteCommit, 'HEAD'), '');
+    assert.equal(existsSync(join(repo, '.git/MERGE_HEAD')), false);
+    assert.equal(existsSync(join(repo, '.git/rebase-merge')), false);
+
+    // Sync local commit back to origin so peer and repo share the new baseline.
+    git(repo, 'push');
+    git(peer, 'pull', '--ff-only');
+
+    // 2. Real text conflict on the same line: resolved automatically by the configured AI resolver.
+    writeFileSync(join(peer, 'file'), 'ligne-distante\n');
+    git(peer, 'commit', '-am', 'modification distante');
+    git(peer, 'push');
+
+    writeFileSync(join(repo, 'file'), 'ligne-locale\n');
+    git(repo, 'commit', '-am', 'modification locale');
+
+    pulls.resolveConflicts = async (context) => {
+      aiCalls++;
+      assert.equal(context.branch, 'main');
+      assert.equal(context.replayedCommit.subject, 'modification locale');
+      assert.equal(context.files.length, 1);
+      assert.equal(context.files[0].path, 'file');
+      const working = context.files[0].workingContent ?? '';
+      assert.match(working, /<<<<<<< HEAD/);
+      return {
+        resolved: true,
+        summary: 'Conserver les deux modifications',
+        reason: '',
+        files: [
+          {
+            path: 'file',
+            action: 'edit',
+            content: null,
+            replacements: [{ oldText: working, newText: 'ligne-distante\nligne-locale\n' }],
+          },
+        ],
+      };
+    };
+
+    const resolvedPull = sharedGit.parsePullOperation(await wait(await pulls.start(repo)));
+    assert.equal(resolvedPull.status, 'succeeded', JSON.stringify(resolvedPull));
+    assert.equal(resolvedPull.rebased, true);
+    assert.deepEqual(resolvedPull.resolvedFiles, ['file']);
+    assert.equal(aiCalls, 1);
+    assert.equal(readFileSync(join(repo, 'file'), 'utf8'), 'ligne-distante\nligne-locale\n');
+
+    git(repo, 'push');
+    git(peer, 'pull', '--ff-only');
+
+    // 3. Insoluble conflict (AI declines or leaves markers): repository stays completely untouched.
+    writeFileSync(join(peer, 'file'), 'contradiction-remote\n');
+    git(peer, 'commit', '-am', 'règle distante');
+    git(peer, 'push');
+
+    writeFileSync(join(repo, 'file'), 'contradiction-locale\n');
+    git(repo, 'commit', '-am', 'règle locale');
+    const beforeInsoluble = integrity(repo);
+
+    pulls.resolveConflicts = async () => ({
+      resolved: false,
+      summary: '',
+      reason: 'les deux règles métier se contredisent.',
+      files: [],
+    });
+    const failedPull = sharedGit.parsePullOperation(await wait(await pulls.start(repo)));
+    assert.equal(failedPull.status, 'failed');
+    assert.match(failedPull.error ?? '', /les deux règles métier se contredisent/);
+    assert.deepEqual(integrity(repo), beforeInsoluble);
     assert.equal(existsSync(join(repo, '.git/MERGE_HEAD')), false);
     assert.equal(existsSync(join(repo, '.git/rebase-merge')), false);
   }));
@@ -480,6 +556,23 @@ test('desktop GitActions, PullDialog and mobile ProjectGit reflect repository st
   });
   assert.match(upToDateDialog, /Déjà à jour\./);
 
+  const rebasedDialog = await renderPullDialog({
+    id: 'op-3',
+    branch: 'main',
+    upstream: 'origin/main',
+    beforeHead: '11111111aaaa',
+    afterHead: '33333333cccc',
+    status: 'succeeded',
+    startedAt: 1,
+    finishedAt: 2,
+    error: null,
+    exitCode: 0,
+    output: 'Rebase automatique\n',
+    rebased: true,
+    resolvedFiles: ['app.ts'],
+  });
+  assert.match(rebasedDialog, /Projet mis à jour \(rebase et conflits résolus par l’IA\)\./);
+
   // Pull-needed visual indicators on desktop (GitActions, GitStatus, ProjectTabs) and mobile (MobileGit, ProjectList, MobileShell).
   const behindCleanHtml = renderToStaticMarkup(
     react.createElement(GitActions, {
@@ -493,7 +586,7 @@ test('desktop GitActions, PullDialog and mobile ProjectGit reflect repository st
   assert.match(behindCleanHtml, /git-behind">▸ ↓ 2 commits à tirer<\/button>/);
   assert.match(
     behindCleanHtml,
-    /<button type="button" class="btn primary git-pull-needed" title="Tirer 2 commits depuis l’upstream \(avance rapide\)">Pull<span class="git-pull-badge">↓2<\/span><\/button>/,
+    /<button type="button" class="btn primary git-pull-needed" title="Tirer 2 commits depuis l’upstream">Pull<span class="git-pull-badge">↓2<\/span><\/button>/,
   );
 
   const behindDirtyHtml = renderToStaticMarkup(
@@ -517,7 +610,8 @@ test('desktop GitActions, PullDialog and mobile ProjectGit reflect repository st
       pendingCommits: null,
     }),
   );
-  assert.match(behindDivergedHtml, /les branches divergent, l’avance rapide échouera/);
+  assert.match(behindDivergedHtml, /Tirer 2 commits et rebaser automatiquement 1 commit local/);
+  assert.match(behindDivergedHtml, /Rebaser sur l’upstream \(2 commits à tirer\) puis pousser vers les remotes/);
 
   const mobileBehindClean = await renderMobile({ ...cleanGit, behind: 2 });
   assert.match(mobileBehindClean, /<span class="m-git-behind">↓ 2 commits à tirer<\/span>/);

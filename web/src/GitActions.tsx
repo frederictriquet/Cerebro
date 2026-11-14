@@ -60,10 +60,15 @@ export function GitActions({
         ? `${pullBlocked} (${plural(behind, 'commit')} à tirer)`
         : pullBlocked
       : pullDiverged
-        ? `${plural(behind, 'commit')} à tirer et ${plural(ahead, 'commit')} à pousser : les branches divergent, l’avance rapide échouera`
+        ? `Tirer ${plural(behind, 'commit')} et rebaser automatiquement ${plural(ahead, 'commit')} ${ahead > 1 ? 'locaux' : 'local'}`
         : pullNeeded
-          ? `Tirer ${plural(behind, 'commit')} depuis l’upstream (avance rapide)`
-          : 'Tirer les commits de l’upstream (avance rapide)';
+          ? `Tirer ${plural(behind, 'commit')} depuis l’upstream`
+          : 'Tirer les commits de l’upstream';
+  const pushTitle =
+    pushBlocked ??
+    (pullDiverged
+      ? `Rebaser sur l’upstream (${plural(behind, 'commit')} à tirer) puis pousser vers les remotes`
+      : 'Pousser les commits locaux vers les remotes');
 
   return (
     <>
@@ -115,7 +120,7 @@ export function GitActions({
           className="btn"
           onClick={() => setOpen('push')}
           disabled={pushBlocked !== null}
-          title={pushBlocked ?? 'Pousser les commits locaux vers les remotes'}
+          title={pushTitle}
         >
           Push
         </button>
@@ -126,7 +131,7 @@ export function GitActions({
         <AutomaticCommitDialog projectId={projectId} push={autoPush} strategy={open} onClose={close} />
       ) : null}
       {open === 'pull' ? <PullDialog projectId={projectId} onSettled={onRefresh} onClose={close} /> : null}
-      {open === 'push' ? <PushDialog projectId={projectId} onClose={close} /> : null}
+      {open === 'push' ? <PushDialog projectId={projectId} onSettled={onRefresh} onClose={close} /> : null}
     </>
   );
 }
@@ -234,16 +239,20 @@ export function PullDialog({
         <p className="automatic-commit-status">
           <ActivityStatus active={running}>
             {operation?.status === 'succeeded'
-              ? updated
-                ? 'Projet mis à jour.'
-                : 'Déjà à jour.'
+              ? operation.resolvedFiles && operation.resolvedFiles.length > 0
+                ? 'Projet mis à jour (rebase et conflits résolus par l’IA).'
+                : operation.rebased
+                  ? 'Projet mis à jour (rebase automatique).'
+                  : updated
+                    ? 'Projet mis à jour.'
+                    : 'Déjà à jour.'
               : operation?.status === 'failed'
                 ? 'Le pull a échoué.'
                 : error
                   ? operation
                     ? 'Suivi du pull interrompu.'
                     : 'Le pull n’a pas pu démarrer.'
-                  : 'Pull depuis l’upstream…'}
+                  : 'Synchronisation depuis l’upstream…'}
           </ActivityStatus>
         </p>
         {operation?.branch ? (
@@ -279,20 +288,43 @@ export function PullDialog({
   );
 }
 
-export function PushDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+export function PushDialog({
+  projectId,
+  onSettled,
+  onClose,
+}: {
+  projectId: string;
+  onSettled?: () => void;
+  onClose: () => void;
+}) {
   const [operation, setOperation] = useState<PushOperation | null>(null);
   const [error, setError] = useState<string | null>(null);
   const start = useRef<Promise<PushOperation> | null>(null);
+  const settled = useRef(false);
+  const onSettledRef = useRef(onSettled);
+  useEffect(() => {
+    onSettledRef.current = onSettled;
+  }, [onSettled]);
+  const apply = useCallback((value: PushOperation | null): void => {
+    setOperation(value);
+    if (value?.finishedAt) {
+      markOperationSeen(value.id);
+      if (!settled.current) {
+        settled.current = true;
+        onSettledRef.current?.();
+      }
+    }
+  }, []);
   useEffect(() => {
     let disposed = false;
     // Reuse the same request in React StrictMode; a double submission returns the running operation.
-    start.current ??= apiParsed(`/api/projects/${projectId}/git/push`, parsePushOperation, {
+    start.current ??= apiParsed(apiPath`/api/projects/${projectId}/git/push`, parsePushOperation, {
       method: 'POST',
       body: JSON.stringify({ allowDirty: true }),
     });
     void start.current.then(
       (value) => {
-        if (!disposed) setOperation(value);
+        if (!disposed) apply(value);
       },
       (cause) => {
         if (!disposed) setError(errorMessage(cause));
@@ -301,39 +333,52 @@ export function PushDialog({ projectId, onClose }: { projectId: string; onClose:
     return () => {
       disposed = true;
     };
-  }, [projectId]);
+  }, [projectId, apply]);
   // Suivi tant que le push tourne ; une erreur de suivi l'interrompt.
   const load = useCallback(
-    () => apiParsed(`/api/projects/${projectId}/git/push`, parseOptionalPushOperation),
+    () => apiParsed(apiPath`/api/projects/${projectId}/git/push`, parseOptionalPushOperation),
     [projectId],
   );
   usePolling(load, 500, {
     enabled: operation?.status === 'running' && error === null,
     immediate: false,
-    onData: setOperation,
+    onData: apply,
     onError: (cause) => setError(errorMessage(cause)),
   });
   const running = !error && (!operation || operation.status === 'running');
+  const syncing =
+    running && Boolean(operation?.syncOutput) && operation!.remotes.every((remote) => remote.status === 'pending');
+  const rebased = operation?.rebasedFrom != null && operation.head != null && operation.rebasedFrom !== operation.head;
+  const headLabel = rebased
+    ? `${operation.rebasedFrom!.slice(0, 8)} → ${operation.head!.slice(0, 8)}`
+    : operation?.head?.slice(0, 8);
+  const hasDetails = Boolean(operation?.syncOutput) || Boolean(operation?.remotes.some((remote) => remote.output));
   return (
     <Modal title="Push" onClose={onClose}>
       <div className="automatic-commit">
         <p className="automatic-commit-status">
           <ActivityStatus active={running}>
             {operation?.status === 'succeeded'
-              ? 'Push terminé.'
+              ? operation.resolvedFiles && operation.resolvedFiles.length > 0
+                ? 'Push terminé (rebase et conflits résolus par l’IA).'
+                : operation.rebasedFrom
+                  ? 'Push terminé (après rebase automatique).'
+                  : 'Push terminé.'
               : operation?.status === 'failed'
                 ? 'Le push a échoué.'
                 : error
                   ? operation
                     ? 'Suivi du push interrompu.'
                     : 'Le push n’a pas pu démarrer.'
-                  : 'Push vers les remotes…'}
+                  : syncing
+                    ? 'Synchronisation avec l’upstream puis push…'
+                    : 'Push vers les remotes…'}
           </ActivityStatus>
         </p>
         {operation?.branch ? (
           <p className="meta">
             Branche {operation.branch}
-            {operation.head ? ` · ${operation.head.slice(0, 8)}` : ''}
+            {headLabel ? ` · ${headLabel}` : ''}
           </p>
         ) : null}
         {operation?.error ? (
@@ -351,15 +396,23 @@ export function PushDialog({ projectId, onClose }: { projectId: string; onClose:
             {remote.remote} : {REMOTE_STATUS[remote.status]}
           </p>
         ))}
-        {operation?.remotes.some((remote) => remote.output) ? (
+        {hasDetails ? (
           <details>
             <summary>Détails de l’opération</summary>
-            {operation.remotes.map((remote) => (
-              <div key={remote.remote}>
-                <strong>{remote.remote}</strong>
-                <pre>{remote.output}</pre>
+            {operation?.syncOutput ? (
+              <div>
+                <strong>rebase</strong>
+                <pre>{operation.syncOutput}</pre>
               </div>
-            ))}
+            ) : null}
+            {operation?.remotes
+              .filter((remote) => remote.output)
+              .map((remote) => (
+                <div key={remote.remote}>
+                  <strong>{remote.remote}</strong>
+                  <pre>{remote.output}</pre>
+                </div>
+              ))}
           </details>
         ) : null}
         <div className="row-actions">

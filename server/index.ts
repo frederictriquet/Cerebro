@@ -259,13 +259,18 @@ export async function buildServer(
       if (source) project = db.getProject(source.projectId) ?? undefined;
     }
     if (!project) return;
+    const pushNote = operation.resolvedFiles?.length
+      ? ` (rebase auto, conflits résolus : ${operation.resolvedFiles.join(', ')})`
+      : operation.rebasedFrom
+        ? ' (après rebase auto)'
+        : '';
     notifier.operations.record({
       id: operation.id,
       projectId: project.id,
       sessionId: source?.id ?? null,
       kind: 'push',
       ok: operation.status === 'succeeded',
-      summary: operation.error ?? operation.remotes.map((r) => `${r.remote} : ${r.status}`).join(' ; '),
+      summary: operation.error ?? `${operation.remotes.map((r) => `${r.remote} : ${r.status}`).join(' ; ')}${pushNote}`,
       startedAt: operation.startedAt,
       finishedAt: operation.finishedAt ?? Date.now(),
     });
@@ -274,9 +279,14 @@ export async function buildServer(
     if (operation.status === 'succeeded') broadcast({ type: 'git-sync' });
     const project = db.listProjects().find((p) => resolve(p.path) === resolve(path));
     if (!project) return;
+    const pullNote = operation.resolvedFiles?.length
+      ? `, rebase et conflits résolus (${operation.resolvedFiles.join(', ')})`
+      : operation.rebased
+        ? ', rebase auto'
+        : '';
     const updated =
       operation.beforeHead && operation.afterHead && operation.beforeHead !== operation.afterHead
-        ? `${operation.branch ?? 'HEAD'} mis à jour (${operation.beforeHead.slice(0, 8)} → ${operation.afterHead.slice(0, 8)})`
+        ? `${operation.branch ?? 'HEAD'} mis à jour (${operation.beforeHead.slice(0, 8)} → ${operation.afterHead.slice(0, 8)}${pullNote})`
         : `${operation.branch ?? 'HEAD'} déjà à jour`;
     notifier.operations.record({
       id: operation.id,

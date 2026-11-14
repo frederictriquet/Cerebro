@@ -170,3 +170,100 @@ test('a throwing completion listener is logged and does not stop the next listen
       process.off('unhandledRejection', onUnhandled);
     }
   }));
+
+test('non-fast-forward push automatically rebases onto upstream, resolves conflicts via AI, and preserves uncommitted edits', async () =>
+  fixture(async ({ repo, remote }) => {
+    const origin = remote('origin');
+    const backup = remote('backup');
+    const localPushes = new GitPushes(new WorktreeGate());
+    assert.equal((await wait(await localPushes.start(repo))).status, 'succeeded');
+
+    // Peer clone pushes a commit to origin while repo creates a local commit + keeps an uncommitted edit.
+    const peer = mkdtempSync(join(tmpdir(), 'cerebro-push-peer-'));
+    try {
+      execFileSync('git', ['clone', '-b', 'main', origin, peer], { stdio: 'ignore' });
+      git(peer, 'config', 'user.email', 'peer@example.com');
+      git(peer, 'config', 'user.name', 'Peer');
+      writeFileSync(join(peer, 'remote-feature.txt'), 'from-peer\n');
+      git(peer, 'add', 'remote-feature.txt');
+      git(peer, 'commit', '-m', 'peer commit');
+      const peerTip = git(peer, 'rev-parse', 'HEAD');
+      git(peer, 'push', 'origin', 'main');
+
+      writeFileSync(join(repo, 'local-feature.txt'), 'from-local\n');
+      git(repo, 'add', 'local-feature.txt');
+      git(repo, 'commit', '-m', 'local commit');
+      const beforeHead = git(repo, 'rev-parse', 'HEAD');
+      writeFileSync(join(repo, 'file'), 'brouillon non commité\n');
+
+      // 1. Clean divergence + allowDirty: rebases onto origin/main, keeps dirty `file`, and publishes to both remotes.
+      const cleanOp = await wait(await localPushes.start(repo, { allowDirty: true }));
+      assert.equal(cleanOp.status, 'succeeded', JSON.stringify(cleanOp));
+      assert.equal(cleanOp.rebasedFrom, beforeHead);
+      assert.notEqual(cleanOp.head, beforeHead);
+      assert.equal(git(repo, 'merge-base', '--is-ancestor', peerTip, 'HEAD'), '');
+      assert.equal(readFileSync(join(repo, 'remote-feature.txt'), 'utf8'), 'from-peer\n');
+      assert.equal(readFileSync(join(repo, 'local-feature.txt'), 'utf8'), 'from-local\n');
+      assert.equal(readFileSync(join(repo, 'file'), 'utf8'), 'brouillon non commité\n');
+      for (const target of [origin, backup]) assert.equal(git(target, 'rev-parse', 'main'), cleanOp.head);
+
+      // Restore clean `file` and sync peer.
+      git(repo, 'checkout', '--', 'file');
+      git(peer, 'pull', '--ff-only');
+
+      // 2. Divergent commits touching the same line: AI resolves conflict during push, then push succeeds.
+      writeFileSync(join(peer, 'file'), 'version-peer\n');
+      git(peer, 'commit', '-am', 'peer edit file');
+      git(peer, 'push', 'origin', 'main');
+
+      writeFileSync(join(repo, 'file'), 'version-locale\n');
+      git(repo, 'commit', '-am', 'local edit file');
+
+      localPushes.resolveConflicts = async (context) => {
+        assert.equal(context.branch, 'main');
+        return {
+          resolved: true,
+          summary: 'Combiner peer et local',
+          reason: '',
+          files: [
+            {
+              path: 'file',
+              action: 'write',
+              content: 'version-peer\nversion-locale\n',
+              replacements: [],
+            },
+          ],
+        };
+      };
+
+      const resolvedOp = await wait(await localPushes.start(repo, { allowDirty: true }));
+      assert.equal(resolvedOp.status, 'succeeded', JSON.stringify(resolvedOp));
+      assert.deepEqual(resolvedOp.resolvedFiles, ['file']);
+      assert.equal(readFileSync(join(repo, 'file'), 'utf8'), 'version-peer\nversion-locale\n');
+      assert.equal(git(origin, 'rev-parse', 'main'), resolvedOp.head);
+
+      // 3. Insoluble conflict during push: leaves repo untouched and reports AI reason.
+      git(peer, 'pull', '--ff-only');
+      writeFileSync(join(peer, 'file'), 'peer-contradiction\n');
+      git(peer, 'commit', '-am', 'peer contradiction');
+      git(peer, 'push', 'origin', 'main');
+
+      writeFileSync(join(repo, 'file'), 'local-contradiction\n');
+      git(repo, 'commit', '-am', 'local contradiction');
+      const snap = integrity(repo);
+
+      localPushes.resolveConflicts = async () => ({
+        resolved: false,
+        summary: '',
+        reason: 'arbitrage fonctionnel requis.',
+        files: [],
+      });
+
+      const failedOp = await wait(await localPushes.start(repo, { allowDirty: true }));
+      assert.equal(failedOp.status, 'failed');
+      assert.match(failedOp.error ?? '', /arbitrage fonctionnel requis/);
+      assert.deepEqual(integrity(repo), snap);
+    } finally {
+      rmSync(peer, { recursive: true, force: true });
+    }
+  }));

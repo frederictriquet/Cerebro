@@ -60,10 +60,10 @@ export function CommitSettingsDialog({
           />
         </section>
         <section className="commit-settings-section" aria-labelledby="commit-settings-resolution">
-          <h3 id="commit-settings-resolution">Résolution des fichiers à examiner</h3>
+          <h3 id="commit-settings-resolution">Résolution des fichiers à examiner et des conflits</h3>
           <p>
-            « Résoudre avec l’IA » lance une session dans la copie de travail pour séparer le contenu de départ du
-            travail de la conversation, sur les fichiers que le retrait automatique laisse à examiner.
+            Utilisé pour résoudre automatiquement les conflits lors d’un pull ou d’un push rebasé, ainsi que par «
+            Résoudre avec l’IA » dans les copies de travail (séparation du contenu de départ et conflits de copie).
           </p>
           <LlmSelector
             agents={agents}

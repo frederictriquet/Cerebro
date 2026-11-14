@@ -22,8 +22,8 @@ export interface Services {
 
 export function createServices(db: CerebroDatabase, catalog = new Catalog()): Services {
   const gate = new WorktreeGate();
-  const pushes = new GitPushes(gate);
-  const pulls = new GitPulls(gate, pushes, db);
+  const pushes = new GitPushes(gate, db, catalog);
+  const pulls = new GitPulls(gate, pushes, db, catalog);
   const git = new GitPlanner(gate, pushes);
   return {
     gate,

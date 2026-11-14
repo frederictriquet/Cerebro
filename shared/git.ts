@@ -75,6 +75,9 @@ export interface PushOperation {
   finishedAt: number | null;
   error: string | null;
   remotes: PushRemoteResult[];
+  rebasedFrom?: string | null;
+  resolvedFiles?: string[];
+  syncOutput?: string;
 }
 export interface PullOperation {
   id: string;
@@ -88,6 +91,8 @@ export interface PullOperation {
   error: string | null;
   exitCode: number | null;
   output: string;
+  rebased?: boolean;
+  resolvedFiles?: string[];
 }
 
 export interface PreparedReview {
@@ -235,6 +240,9 @@ const pushOperationSchema = object<PushOperation>({
       output: string,
     }),
   ),
+  rebasedFrom: optional(nullable(string)),
+  resolvedFiles: optional(strings),
+  syncOutput: optional(string),
 });
 
 const workspaceMode = literal('isolated', 'shared', 'unknown');
@@ -283,6 +291,8 @@ const pullOperationSchema = object<PullOperation>({
   error: nullable(string),
   exitCode: nullable(number),
   output: string,
+  rebased: optional(boolean),
+  resolvedFiles: optional(strings),
 });
 
 export const parsePushOperation = parser(pushOperationSchema);
