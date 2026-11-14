@@ -202,6 +202,20 @@ function AutomaticCommitRun({
                 <code>{commit.hash.slice(0, 8)}</code> {commit.title}
               </span>
             ))}
+            {operation.pushOperation?.rebasedFrom ? (
+              <span className="meta">
+                Rebase automatique sur l’upstream : <code>{operation.pushOperation.rebasedFrom.slice(0, 8)}</code>
+                {operation.pushOperation.head ? (
+                  <>
+                    {' → '}
+                    <code>{operation.pushOperation.head.slice(0, 8)}</code>
+                  </>
+                ) : null}
+                {operation.pushOperation.resolvedFiles?.length
+                  ? ` (${operation.pushOperation.resolvedFiles.length} conflit(s) résolu(s) par l’IA : ${operation.pushOperation.resolvedFiles.join(', ')})`
+                  : ''}
+              </span>
+            ) : null}
           </div>
         ) : null}
         {stopped ? (
@@ -264,6 +278,12 @@ function AutomaticCommitRun({
             <summary>Détails de l’opération</summary>
             <p className="path">{operation.path}</p>
             {operation.files.length ? <pre>{operation.files.join('\n')}</pre> : null}
+            {operation.pushOperation?.syncOutput ? (
+              <div>
+                <strong>Synchronisation upstream</strong>
+                <pre>{operation.pushOperation.syncOutput}</pre>
+              </div>
+            ) : null}
             {operation.pushOperation?.remotes.map((remote) => (
               <div key={remote.remote}>
                 <strong>{remote.remote}</strong>

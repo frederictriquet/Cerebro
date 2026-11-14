@@ -763,3 +763,54 @@ test('a copy holding only content inherited from the project says there is nothi
     assert.match(result.exclusions[0].reason, /inchangé depuis/);
     assert.equal(f.calls, 0);
   }));
+test('automatic commit and push rebases cleanly onto a diverged upstream and resolves conflicts via AI', async () =>
+  fixture(async (f) => {
+    const remote = join(f.directory, 'remote.git');
+    git(f.directory, 'init', '--bare', remote);
+    git(f.repo, 'remote', 'add', 'origin', remote);
+    writeFileSync(join(f.repo, 'spec.md'), 'spec-v1\n');
+    git(f.repo, 'add', 'spec.md');
+    git(f.repo, 'commit', '-m', 'add spec');
+    git(f.repo, 'push', '-u', 'origin', 'main');
+
+    // Peer pushes an upstream commit touching both `spec.md` (untouched locally) and `file` (conflicting locally).
+    const peer = join(f.directory, 'peer');
+    git(f.directory, 'clone', '-b', 'main', remote, peer);
+    git(peer, 'config', 'user.email', 'peer@example.com');
+    git(peer, 'config', 'user.name', 'Peer');
+    writeFileSync(join(peer, 'spec.md'), 'spec-v2-from-remote\n');
+    writeFileSync(join(peer, 'file'), 'remote-line\n');
+    git(peer, 'add', '.');
+    git(peer, 'commit', '-m', 'remote update');
+    git(peer, 'push', 'origin', 'main');
+
+    // Local changes committed via GitPlanner (which rewrites .git/index via read-tree -m with zeroed stat cache).
+    writeFileSync(join(f.repo, 'file'), 'local-line\n');
+    writeFileSync(join(f.repo, 'feature.txt'), 'new-feature\n');
+    let resolverCalls = 0;
+    f.services.pushes.resolveConflicts = async (ctx) => {
+      resolverCalls++;
+      assert.deepEqual(
+        ctx.files.map((item) => item.path),
+        ['file'],
+      );
+      return {
+        resolved: true,
+        reason: null,
+        summary: 'keep remote and local lines',
+        files: [{ path: 'file', action: 'write', replacements: null, content: 'remote-line\nlocal-line\n' }],
+      };
+    };
+
+    const result = await f.finish(await f.manager.start(f.context, randomUUID(), true));
+    assert.equal(result.status, 'succeeded', result.error);
+    assert.equal(resolverCalls, 1);
+    assert.equal(result.pushOperation.status, 'succeeded');
+    assert.ok(result.pushOperation.rebasedFrom);
+    assert.deepEqual(result.pushOperation.resolvedFiles, ['file']);
+    assert.equal(git(remote, 'rev-parse', 'main'), git(f.repo, 'rev-parse', 'HEAD'));
+    assert.equal(readFileSync(join(f.repo, 'spec.md'), 'utf8'), 'spec-v2-from-remote\n');
+    assert.equal(readFileSync(join(f.repo, 'file'), 'utf8'), 'remote-line\nlocal-line\n');
+    assert.equal(readFileSync(join(f.repo, 'feature.txt'), 'utf8'), 'new-feature\n');
+    assert.equal(git(f.repo, 'status', '--porcelain=v1'), '');
+  }));

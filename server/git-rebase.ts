@@ -482,6 +482,21 @@ const REBASE_ENV = (): Record<string, string> =>
     GIT_SEQUENCE_EDITOR: 'true',
   });
 
+function readTreeFailureMessage(stderr: string): string {
+  if (/index\.lock/i.test(stderr)) {
+    return 'Une autre opération Git verrouille l’index (index.lock) ; réessayez dans un instant.';
+  }
+  const untracked = /Untracked working tree file '([^']+)' would be overwritten/i.exec(stderr);
+  if (untracked) {
+    return `Le fichier local non suivi « ${untracked[1]} » entrerait en collision avec une mise à jour distante : déplacez, commitez ou supprimez-le avant de synchroniser.`;
+  }
+  const entry = /Entry '([^']+)'/i.exec(stderr);
+  if (entry) {
+    return `Des modifications locales non commitées sur « ${entry[1]} » touchent un fichier mis à jour sur le remote : commitez ou annulez-les avant de synchroniser.`;
+  }
+  return 'Des modifications locales non commitées touchent des fichiers mis à jour sur le remote : commitez ou annulez-les avant de synchroniser.';
+}
+
 const REBASE_GIT_CONFIG = [
   '-c',
   'commit.gpgsign=false',
@@ -608,14 +623,28 @@ export async function rebaseOntoUpstream(options: RebaseOntoUpstreamOptions): Pr
       );
     }
 
+    // `GitPlanner` replaces `.git/index` via `read-tree -m` (zeroed stat metadata), and plumbing `read-tree -m -u`
+    // does not auto-refresh the index before checking `ce_match_stat`. Refreshing first avoids false-positive
+    // "Entry '...' not uptodate" refusals on clean tracked files; exit code 1 just means unrelated files are dirty.
+    const refreshed = await runGitProcess(['-C', root, 'update-index', '-q', '--refresh'], {
+      env: gitEnv(),
+      kind: 'write',
+    });
+    if (refreshed.code !== 0 && refreshed.code !== 1) {
+      const detail = refreshed.stderr.toString('utf8').trim();
+      if (detail) emit(`${detail}\n`);
+      throw new Error(
+        detail ? readTreeFailureMessage(detail) : 'Impossible de rafraîchir l’index Git avant la synchronisation.',
+      );
+    }
+
     try {
       await runGit(root, ['read-tree', '-m', '-u', beforeHead, afterHead], { kind: 'write' });
     } catch (cause) {
       if (cause instanceof GitError) {
-        throw new Error(
-          'Des modifications locales non commitées touchent des fichiers mis à jour sur le remote : commitez ou annulez-les avant de synchroniser.',
-          { cause },
-        );
+        const stderr = cause.stderr.trim();
+        if (stderr) emit(`${stderr}\n`);
+        throw new Error(readTreeFailureMessage(stderr), { cause });
       }
       throw cause;
     }
