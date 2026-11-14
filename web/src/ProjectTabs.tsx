@@ -7,7 +7,7 @@ import { useStore } from './store.tsx';
 import { useAsyncAction } from './async-action.ts';
 
 export function ProjectTabs({ route }: { route: Route }) {
-  const { projects, sessions, reorderProjects } = useStore();
+  const { projects, sessions, reorderProjects, projectBehind } = useStore();
   const [showNew, setShowNew] = useState(false);
   const draggedId = useRef<string | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
@@ -92,6 +92,8 @@ export function ProjectTabs({ route }: { route: Route }) {
             ? `${plural(alerts, 'session demande', 'sessions demandent')} votre attention` +
               (questions > 0 ? ` (${plural(questions, 'question')})` : '')
             : undefined;
+        const behind = projectBehind?.[project.id] ?? 0;
+        const pullLabel = behind > 0 ? `${plural(behind, 'commit')} à tirer` : undefined;
         return (
           <a
             key={project.id}
@@ -99,7 +101,7 @@ export function ProjectTabs({ route }: { route: Route }) {
             style={project.color ? ({ '--project-color': project.color } as CSSProperties) : undefined}
             href={href(`#/p/${project.id}`)}
             aria-current={active ? 'page' : undefined}
-            title={`${project.path}${alertLabel ? `\n${alertLabel}` : ''}`}
+            title={[project.path, alertLabel, pullLabel].filter(Boolean).join('\n')}
             draggable={false}
             onDragOver={(event) => {
               if (draggedId.current === null || saving) return;
@@ -162,6 +164,11 @@ export function ProjectTabs({ route }: { route: Route }) {
               </span>
             ) : null}
             <span className="project-tab-name">{project.name}</span>
+            {behind > 0 ? (
+              <span className="project-tab-pull" role="status" aria-label={pullLabel}>
+                ↓{behind}
+              </span>
+            ) : null}
             <span
               className="project-tab-count"
               aria-label={`${sessionCount} ${sessionCount > 1 ? 'sessions' : 'session'}`}

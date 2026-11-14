@@ -1482,6 +1482,28 @@ textarea {
   font-weight: 600;
 }
 
+.project-tab-pull {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-pill);
+  color: var(--accent);
+  background: var(--bg);
+  font-size: 10px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+
+.project-tab.active .project-tab-pull,
+.project-tab.colored .project-tab-pull {
+  color: var(--on-primary);
+  border-color: var(--accent);
+  background: rgba(11, 13, 17, 0.72);
+}
+
 .project-tab-count {
   min-width: 18px;
   padding: 0 5px;
@@ -2128,7 +2150,8 @@ label.block {
 }
 
 .project-head-details .btn,
-.project-head-details .git-dirty {
+.project-head-details .git-dirty,
+.project-head-details .git-behind {
   white-space: nowrap;
 }
 
@@ -2256,6 +2279,39 @@ label.block {
 
 .git-toggle.git-dirty:hover {
   text-decoration: underline;
+}
+
+/* Le compteur des commits distants à tirer ressort en accent, déplié ou survolé. */
+.git-toggle.git-behind {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.git-toggle.git-behind:hover {
+  text-decoration: underline;
+}
+
+.git-pull-needed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.git-pull-badge {
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: rgba(11, 13, 17, 0.55);
+  color: var(--on-primary);
+  font-size: 11px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+
+.btn:not(.primary) .git-pull-badge {
+  border: 1px solid var(--accent);
+  background: var(--bg);
+  color: var(--accent);
 }
 
 .git-preview {

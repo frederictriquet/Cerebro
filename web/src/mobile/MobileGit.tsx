@@ -3,7 +3,7 @@
  * GitActions) ; les infobulles du desktop deviennent du texte visible, un téléphone n'affiche pas les `title`.
  * Code review et aperçu des commits à pousser restent sur la version complète.
  */
-import { useCallback, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { api, apiPath } from '../api.ts';
 import { useAsyncAction } from '../async-action.ts';
 import { AutomaticCommitDialog } from '../AutomaticCommitDialog.tsx';
@@ -59,6 +59,7 @@ function AutoPushToggle({ project }: { project: Project }) {
 
 /** Section Git de la page projet : état du dossier du projet, commit automatique, pull, push et push auto. */
 export function ProjectGit({ project }: { project: Project }) {
+  const { gitSyncVersion = 0, reportProjectBehind } = useStore();
   const [git, setGit] = useState<GitInfo | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [open, setOpen] = useState<'single' | 'atomic' | 'pull' | 'push' | null>(null);
@@ -68,10 +69,17 @@ export function ProjectGit({ project }: { project: Project }) {
   const refresh = usePolling(fetcher, GIT_POLL_MS, {
     onData: (value) => {
       setGit(value);
+      reportProjectBehind?.(project.id, value.branch !== null ? (value.behind ?? 0) : 0);
       setReadError(null);
     },
     onError: (cause) => setReadError(errorMessage(cause)),
   });
+  const seenSync = useRef(gitSyncVersion);
+  useEffect(() => {
+    if (seenSync.current === gitSyncVersion) return;
+    seenSync.current = gitSyncVersion;
+    void refresh();
+  }, [gitSyncVersion, refresh]);
   // Compteurs à jour dès la fermeture, sans attendre le prochain relevé.
   const close = (): void => {
     setOpen(null);
@@ -100,6 +108,7 @@ export function ProjectGit({ project }: { project: Project }) {
     const hasChanges = git.dirty > 0;
     const dirtyLabel = plural(git.dirty, 'fichier modifié', 'fichiers modifiés', { zeroPlural: true });
     const ahead = git.ahead ?? 0;
+    const behind = git.behind ?? 0;
     const pullBlocked = pullBlockedReason(git);
     const pushBlocked = pushBlockedReason(git);
     const reasons = [
@@ -125,6 +134,7 @@ export function ProjectGit({ project }: { project: Project }) {
           ) : (
             <span>{dirtyLabel}</span>
           )}
+          {behind > 0 ? <span className="m-git-behind">↓ {plural(behind, 'commit')} à tirer</span> : null}
           {ahead > 0 ? <span>{plural(ahead, 'commit')} à pousser</span> : null}
           {git.branch !== null && !git.hasUpstream ? <span>pas d’upstream</span> : null}
         </div>
@@ -141,8 +151,13 @@ export function ProjectGit({ project }: { project: Project }) {
           <button type="button" className="m-button" disabled={!hasChanges} onClick={() => setOpen('atomic')}>
             Un commit par intention
           </button>
-          <button type="button" className="m-button" disabled={pullBlocked !== null} onClick={() => setOpen('pull')}>
-            Pull
+          <button
+            type="button"
+            className={behind > 0 && pullBlocked === null ? 'm-button primary' : 'm-button'}
+            disabled={pullBlocked !== null}
+            onClick={() => setOpen('pull')}
+          >
+            {behind > 0 ? `Pull (↓${behind})` : 'Pull'}
           </button>
           <button type="button" className="m-button" disabled={pushBlocked !== null} onClick={() => setOpen('push')}>
             Push

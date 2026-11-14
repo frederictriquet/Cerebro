@@ -7,6 +7,7 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type WebSocket from 'ws';
 import { AutoPush } from './auto-push.ts';
+import { AutoFetch } from './git-fetch.ts';
 import { EpicRunner } from './epic-runner.ts';
 import { CommandExecutor } from './commands.ts';
 import { registerWorktreeRoutes } from './worktree-routes.ts';
@@ -45,6 +46,7 @@ import { registerGlobalBacklogRoutes } from './global-backlog-routes.ts';
 import { registerHookRoutes } from './hook-routes.ts';
 import { registerSystemRoutes } from './system-routes.ts';
 import { registerTranscriptRoutes } from './transcript-routes.ts';
+import { registerWeeklyMetricsRoutes } from './weekly-metrics.ts';
 
 const HISTORY_RETENTION_MS = 30 * 86_400_000;
 
@@ -87,7 +89,7 @@ function requestQueryToken(query: unknown): string | undefined {
  * `refreshCatalog`: discover the installed CLIs' models now and hourly, until the server closes.
  */
 export async function buildServer(
-  options: { catalog?: Catalog; refreshCatalog?: boolean } = {},
+  options: { catalog?: Catalog; refreshCatalog?: boolean; autoFetch?: boolean } = {},
 ): Promise<FastifyInstance> {
   ensureDataDirs();
   const app = Fastify({ logger: LOGGER_OPTIONS, forceCloseConnections: true });
@@ -174,6 +176,7 @@ export async function buildServer(
     unsubscribePush();
     unsubscribePull();
     autoPush.stop();
+    await autoFetch.stop();
     await vscode.stop();
     await automaticCommits.shutdown();
     await councils.shutdown();
@@ -247,6 +250,7 @@ export async function buildServer(
     if (run.status !== 'blocked') void worktrees.resumeAutomaticCleanup(run.projectId);
   };
   const unsubscribePush = pushes.onComplete((path, operation) => {
+    if (operation.status === 'succeeded') broadcast({ type: 'git-sync' });
     if (automaticCommits.list().some((commit) => commit.pushOperation?.id === operation.id)) return;
     let project = db.listProjects().find((p) => resolve(p.path) === resolve(path));
     let source: Session | undefined;
@@ -267,6 +271,7 @@ export async function buildServer(
     });
   });
   const unsubscribePull = pulls.onComplete((path, operation) => {
+    if (operation.status === 'succeeded') broadcast({ type: 'git-sync' });
     const project = db.listProjects().find((p) => resolve(p.path) === resolve(path));
     if (!project) return;
     const updated =
@@ -288,6 +293,8 @@ export async function buildServer(
     automaticCommits.list().some((commit) => commit.status === 'running' && resolve(commit.path) === resolve(path)),
   );
   autoPush.start();
+  const autoFetch = new AutoFetch(db, pulls, pushes, () => broadcast({ type: 'git-sync' }));
+  autoFetch.start({ immediate: options.autoFetch ?? options.refreshCatalog ?? false });
   epicRunner.initialize();
   sessions.onSessionReleased = (id, root) => {
     void worktrees.releaseSession(id, root);
@@ -343,6 +350,7 @@ export async function buildServer(
     git,
     pushes,
     pulls,
+    autoFetch,
     reviews,
     sessionGit,
     epicWorkspaces,
@@ -350,6 +358,7 @@ export async function buildServer(
   });
   registerSessionTaskRoutes(app, db, context.sessionTokenValid);
   registerTranscriptRoutes(app);
+  registerWeeklyMetricsRoutes(app);
   registerSystemRoutes(context);
   registerProjectRoutes(context);
   registerSessionRoutes(context);

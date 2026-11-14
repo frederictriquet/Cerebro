@@ -15,6 +15,7 @@ import {
 } from './notify.ts';
 import { attentionCounts, errorMessage } from './format.ts';
 import { lastKnownData, rememberData, sortSessions, upsertById, upsertSession } from './machine-data.ts';
+import { usePolling } from './polling.tsx';
 import { openReconnectingSocket } from './reconnectingSocket.ts';
 import { parseMachine } from './route.ts';
 import {
@@ -22,6 +23,7 @@ import {
   parseEpic,
   parseEventsMessage,
   parseProject,
+  parseProjectGitMap,
   parseProjectList,
   parseSession,
   parseSessionList,
@@ -64,6 +66,11 @@ export interface Store {
   peersVersion: number;
   // Incrémenté à chaque changement des surveillances Slack (ajout, retrait, lecture, expiration).
   slackWatchesVersion: number;
+  // Incrémenté quand un remote ou un pull/push fait bouger l'état Git distant d'un projet.
+  gitSyncVersion: number;
+  // Commits distants absents localement (`behind`) par identifiant de projet.
+  projectBehind: Record<string, number>;
+  reportProjectBehind: (projectId: string, behind: number) => void;
   muted: boolean;
   setMuted: (value: boolean) => void;
   desktopNotif: boolean;
@@ -147,6 +154,17 @@ const runListeners = new Set<(event: RunEvent) => void>();
 
 // Polling de secours des runs face à une machine de même majeure antérieure à leurs événements.
 const RUN_FALLBACK_POLL_MS = 5000;
+const PROJECT_GIT_POLL_MS = 30_000;
+
+function sameBehindMap(a: Record<string, number>, b: Record<string, number>): boolean {
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
 
 // Avancement des runs d'epic et de commande, diffusé par /ws/events : remplace leur polling (sauf runPollMs).
 // Les événements manqués pendant une déconnexion se rattrapent en rechargeant quand `connected` repasse à vrai.
@@ -179,6 +197,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [runEvents, setRunEvents] = useState<boolean | null>(null);
   const [peersVersion, setPeersVersion] = useState(0);
   const [slackWatchesVersion, setSlackWatchesVersion] = useState(0);
+  const [gitSyncVersion, setGitSyncVersion] = useState(0);
+  const [projectBehind, setProjectBehind] = useState<Record<string, number>>({});
+  const reportProjectBehind = useCallback((projectId: string, behind: number) => {
+    setProjectBehind((prev) => ((prev[projectId] ?? 0) === behind ? prev : { ...prev, [projectId]: behind }));
+  }, []);
+  const loadProjectBehind = useCallback(async () => parseProjectGitMap(await api('/api/projects/git')), []);
+  const refreshProjectBehind = usePolling(loadProjectBehind, PROJECT_GIT_POLL_MS, {
+    enabled: hasData && projects.length > 0,
+    immediate: false,
+    onData: (map) => {
+      if (map) setProjectBehind((prev) => (sameBehindMap(prev, map) ? prev : map));
+    },
+    onError: () => {
+      /* machine sans cet endpoint ou momentanément injoignable : garder le dernier état */
+    },
+  });
+  const projectIdsKey = projects.map((project) => project.id).join('\0');
+  useEffect(() => {
+    if (hasData && projects.length > 0) void refreshProjectBehind();
+  }, [hasData, projects.length, projectIdsKey, gitSyncVersion, refreshProjectBehind]);
   const [muted, setMutedState] = useState<boolean>(() => readMuted());
   const mutedRef = useLatest(muted);
 
@@ -286,6 +324,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           case 'slack-watches':
             setSlackWatchesVersion((n) => n + 1);
             break;
+          case 'git-sync':
+            setGitSyncVersion((n) => n + 1);
+            break;
           case 'alert':
             setSessions((list) => upsertSession(list, msg.session));
             // Session réellement regardée (affichée et fenêtre focalisée) : l'alerte est vue. Sinon
@@ -328,6 +369,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const deleteProject = useCallback(async (id: string): Promise<void> => {
     await api(apiPath`/api/projects/${id}`, { method: 'DELETE' });
     setProjects((list) => list.filter((p) => p.id !== id));
+    setProjectBehind((prev) => {
+      if (!(id in prev)) return prev;
+      const { [id]: _removed, ...rest } = prev;
+      return rest;
+    });
   }, []);
 
   const reorderProjects = useCallback(async (ids: string[]): Promise<void> => {
@@ -652,6 +698,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       runPollMs,
       peersVersion,
       slackWatchesVersion,
+      gitSyncVersion,
+      projectBehind,
+      reportProjectBehind,
       muted,
       setMuted,
       desktopNotif,
@@ -705,6 +754,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       runPollMs,
       peersVersion,
       slackWatchesVersion,
+      gitSyncVersion,
+      projectBehind,
+      reportProjectBehind,
       muted,
       setMuted,
       desktopNotif,

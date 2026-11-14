@@ -105,6 +105,10 @@
 }
 
 .m-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   flex: 1 1 0;
   min-height: 48px;
   padding: 0 8px;
@@ -114,6 +118,18 @@
   color: var(--muted);
   font-size: 15px;
   cursor: pointer;
+}
+
+.m-tab-pull {
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
 }
 
 .m-tab[aria-selected='true'] {
@@ -271,6 +287,12 @@
 
 .m-card-reason.idle {
   color: var(--idle);
+}
+
+.m-pull-needed,
+.m-git-behind {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .m-form {

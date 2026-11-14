@@ -44,6 +44,7 @@ import {
   type SessionDefaults,
 } from '../../shared/types.ts';
 import { parseMachine } from './route.ts';
+import { parseWeeklyMetricsReport, type WeeklyMetricsReport } from '../../shared/weekly-metrics.ts';
 
 const unauthorizedListeners = new Set<() => void>();
 let unauthorized = false;
@@ -271,6 +272,10 @@ export function getUsage(): Promise<AgentUsage[]> {
 
 export function getSessionTokenUsage(): Promise<SessionTokenUsage[]> {
   return apiParsed('/api/usage/tokens', parseSessionTokenUsages);
+}
+
+export function getWeeklyMetrics(): Promise<WeeklyMetricsReport> {
+  return apiParsed('/api/weekly-metrics', parseWeeklyMetricsReport);
 }
 
 export function getUpdates(): Promise<AgentUpdate[]> {

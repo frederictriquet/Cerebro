@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import type { Catalog } from './catalog.ts';
 import { validateCouncilSettings } from './council.ts';
 import { assertNoGitOperation } from './git-plan.ts';
-import { gitSummary } from './git-summary.ts';
+import { gitBehind, gitSummary } from './git-summary.ts';
 import { reviewInstructions } from './review.ts';
 import { projectSlackSettingsFrom } from './slack-state.ts';
 import {
@@ -76,6 +76,7 @@ export function registerProjectRoutes(ctx: RouteContext): void {
     git,
     pushes,
     pulls,
+    autoFetch,
     reviews,
     broadcast,
     requireProject,
@@ -87,6 +88,20 @@ export function registerProjectRoutes(ctx: RouteContext): void {
   const broadcastProjects = (): void => broadcast({ type: 'projects', projects: db.listProjects() });
 
   app.get('/api/projects', async () => db.listProjects());
+
+  app.get('/api/projects/git', async () => {
+    const projects = db.listProjects();
+    const out: Record<string, { behind: number }> = {};
+    const concurrency = 8;
+    for (let i = 0; i < projects.length; i += concurrency) {
+      const batch = projects.slice(i, i + concurrency);
+      const counts = await Promise.all(batch.map((project) => gitBehind(project.path)));
+      for (let j = 0; j < batch.length; j++) {
+        out[batch[j].id] = { behind: counts[j] };
+      }
+    }
+    return out;
+  });
 
   app.put('/api/projects/order', async (request, reply) => {
     const ids = asRecord(request.body)?.ids;
@@ -141,6 +156,8 @@ export function registerProjectRoutes(ctx: RouteContext): void {
       body.workspaceMode === 'shared' ? 'shared' : 'isolated',
     );
     broadcastProjects();
+    autoFetch.poke();
+    broadcast({ type: 'git-sync' });
     void peers.sync();
     return reply.code(201).send(project);
   });
@@ -267,6 +284,10 @@ export function registerProjectRoutes(ctx: RouteContext): void {
     // Un renommage compte comme une apparition : la machine qui renomme prend la main sur Slack.
     if (updated.name !== project.name) peers.renamed(project.id);
     else if (updated.path !== project.path) void peers.sync();
+    if (updated.path !== project.path) {
+      autoFetch.poke();
+      broadcast({ type: 'git-sync' });
+    }
     broadcastProjects();
     return reply.send(updated);
   });
@@ -359,7 +380,8 @@ export function registerProjectRoutes(ctx: RouteContext): void {
   app.get<{ Params: { id: string } }>('/api/projects/:id/git', async (request, reply) => {
     const project = requireProject(request, reply);
     if (project === null) return reply;
-    return reply.send(await gitSummary(project.path, asRecord(request.query)?.commits === 'true'));
+    const query = asRecord(request.query);
+    return reply.send(await gitSummary(project.path, query?.commits === 'true', query?.incoming === 'true'));
   });
 
   app.post<{ Params: { id: string } }>('/api/projects/:id/vscode', async (request, reply) => {

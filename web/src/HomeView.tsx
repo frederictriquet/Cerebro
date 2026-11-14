@@ -1,6 +1,7 @@
 import { GlobalBacklog } from './backlog/GlobalBacklog.tsx';
 import { Worktrees } from './worktrees/Worktrees.tsx';
 import { LlmUsageStats } from './LlmUsageStats.tsx';
+import { WeeklyMetrics } from './WeeklyMetrics.tsx';
 import { CouncilLaunch } from './CouncilLaunch.tsx';
 import { useState } from 'react';
 import { NewProjectForm } from './NewProjectForm.tsx';
@@ -111,9 +112,14 @@ export function HomeView() {
             </ErrorBoundary>
           </section>
         ) : (
-          <ErrorBoundary zone="Statistiques">
-            <LlmUsageStats sessions={sessions} now={now} />
-          </ErrorBoundary>
+          <>
+            <ErrorBoundary zone="Statistiques">
+              <LlmUsageStats sessions={sessions} now={now} />
+            </ErrorBoundary>
+            <ErrorBoundary zone="Analyse hebdomadaire">
+              <WeeklyMetrics />
+            </ErrorBoundary>
+          </>
         )}
       </div>
     </div>

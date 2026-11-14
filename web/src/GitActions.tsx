@@ -8,7 +8,7 @@ import { useStore } from './store.tsx';
 import { pullBlockedReason, pushBlockedReason, type GitInfo } from '../../shared/types.ts';
 import './automatic-commits.css';
 import { AutomaticCommitDialog } from './AutomaticCommitDialog.tsx';
-import { errorMessage } from './format.ts';
+import { errorMessage, plural } from './format.ts';
 import { usePolling } from './polling.tsx';
 import {
   parseOptionalPullOperation,
@@ -28,6 +28,7 @@ export function GitActions({
   projectId,
   git,
   changes,
+  incomingCommits,
   pendingCommits,
   onRefresh,
 }: {
@@ -35,6 +36,7 @@ export function GitActions({
   git: GitInfo;
   // Compteur des fichiers modifiés, fourni par GitStatus qui en gère le dépliage.
   changes: ReactNode;
+  incomingCommits?: ReactNode;
   pendingCommits: ReactNode;
   onRefresh?: () => void;
 }) {
@@ -45,9 +47,23 @@ export function GitActions({
     onRefresh?.();
   };
   const hasChanges = git.dirty > 0;
+  const behind = git.behind ?? 0;
+  const ahead = git.ahead ?? 0;
+  const pullNeeded = behind > 0;
+  const pullDiverged = pullNeeded && ahead > 0;
   const pullBlocked = pullBlockedReason(git);
   const pushBlocked = pushBlockedReason(git);
   const autoPush = projects.find((project) => project.id === projectId)?.autoPush === true;
+  const pullTitle =
+    pullBlocked !== null
+      ? pullNeeded
+        ? `${pullBlocked} (${plural(behind, 'commit')} à tirer)`
+        : pullBlocked
+      : pullDiverged
+        ? `${plural(behind, 'commit')} à tirer et ${plural(ahead, 'commit')} à pousser : les branches divergent, l’avance rapide échouera`
+        : pullNeeded
+          ? `Tirer ${plural(behind, 'commit')} depuis l’upstream (avance rapide)`
+          : 'Tirer les commits de l’upstream (avance rapide)';
 
   return (
     <>
@@ -79,16 +95,20 @@ export function GitActions({
         ))}
       </span>
       <span className="git-actions git-actions-publish" role="group" aria-label="Synchronisation avec les remotes">
+        {incomingCommits}
         {pendingCommits}
         {git.branch !== null && !git.hasUpstream ? <span className="meta">pas d’upstream</span> : null}
         <button
           type="button"
-          className="btn"
+          className={
+            pullNeeded ? (pullBlocked === null ? 'btn primary git-pull-needed' : 'btn git-pull-needed') : 'btn'
+          }
           onClick={() => setOpen('pull')}
           disabled={pullBlocked !== null}
-          title={pullBlocked ?? 'Tirer les commits de l’upstream (avance rapide)'}
+          title={pullTitle}
         >
           Pull
+          {pullNeeded ? <span className="git-pull-badge">↓{behind}</span> : null}
         </button>
         <button
           type="button"

@@ -4,7 +4,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, mock, test } from 'node:test';
-import { parseGitInfo, pullBlockedReason, pushBlockedReason } from '../shared/types.ts';
+import {
+  parseEventsMessage,
+  parseGitInfo,
+  parseProjectGitMap,
+  pullBlockedReason,
+  pushBlockedReason,
+} from '../shared/types.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'cerebro-git-summary-'));
 process.env.HOME = root;
@@ -14,7 +20,7 @@ delete process.env.CEREBRO_BIND_TOKEN;
 delete process.env.CEREBRO_SLACK_TOKEN;
 delete process.env.CEREBRO_SLACK_USER;
 // Imported after the environment: Git helpers load the configuration, which reads the data directory's env file.
-const { gitSummary } = await import('../server/git-summary.ts');
+const { gitBehind, gitSummary } = await import('../server/git-summary.ts');
 after(() => {
   mock.restoreAll();
   rmSync(root, { recursive: true, force: true });
@@ -64,11 +70,18 @@ test('unpushed preview uses the upstream range, shows newest first, and preserve
   writeFileSync(join(repo, 'new'), 'untracked\n');
   const index = readFileSync(join(repo, '.git/index'));
   const refs = git(repo, 'show-ref');
-  const summary = parseGitInfo(await gitSummary(repo, true));
+  const summary = parseGitInfo(await gitSummary(repo, true, true));
   assert.equal(summary.ahead, 3);
+  assert.equal(summary.behind, 1);
+  assert.equal(await gitBehind(repo), 1);
   assert.equal(summary.dirty, 2);
   assert.deepEqual(summary.dirtyFiles, { paths: ['file', 'new'], truncated: false });
   assert.equal(summary.pendingCommits.upstream, 'origin/main');
+  assert.equal(summary.incomingCommits.upstream, 'origin/main');
+  assert.deepEqual(
+    summary.incomingCommits.commits.map((c) => c.subject),
+    ['Changement distant'],
+  );
   assert.deepEqual(
     summary.pendingCommits.commits.map((c) => c.hash),
     hashes.reverse(),
@@ -84,12 +97,16 @@ test('unpushed preview uses the upstream range, shows newest first, and preserve
   assert.equal(readFileSync(join(repo, 'file'), 'utf8'), 'unstaged\n');
   assert.equal(readFileSync(join(repo, 'new'), 'utf8'), 'untracked\n');
   assert.equal((await gitSummary(repo)).pendingCommits, undefined);
+  assert.equal((await gitSummary(repo)).incomingCommits, undefined);
   git(repo, 'push', 'origin', 'main:preview'); // Does not move the upstream reference.
   assert.equal((await gitSummary(repo, true)).ahead, 3);
   git(repo, 'update-ref', 'refs/remotes/origin/main', hashes[0]);
-  const pushed = await gitSummary(repo, true);
+  const pushed = await gitSummary(repo, true, true);
   assert.equal(pushed.ahead, 0);
+  assert.equal(pushed.behind, 0);
+  assert.equal(await gitBehind(repo), 0);
   assert.deepEqual(pushed.pendingCommits.commits, []);
+  assert.deepEqual(pushed.incomingCommits.commits, []);
 });
 
 test('preview is bounded while the full count remains available', async () => {
@@ -130,12 +147,18 @@ test('missing repository, unborn branch and missing upstream never invent commit
     dirtyFiles: { paths: [], truncated: false },
     staged: 0,
     ahead: 0,
+    behind: 0,
     hasCommits: false,
     hasUpstream: false,
   });
+  assert.equal(await gitBehind(repo), 0);
+  assert.equal(await gitBehind(directory), 0);
+  assert.equal(await gitBehind(join(root, 'missing')), 0);
   base(repo);
   const summary = await gitSummary(repo, true);
   assert.equal(summary.ahead, null);
+  assert.equal(summary.behind, null);
+  assert.equal(await gitBehind(repo), 0);
   assert.equal(summary.hasCommits, true);
   assert.equal(summary.hasUpstream, false);
   assert.equal(summary.pendingCommits, undefined);
@@ -147,6 +170,12 @@ test('missing repository, unborn branch and missing upstream never invent commit
     hasCommits: true,
     hasUpstream: true,
   });
+  assert.deepEqual(parseProjectGitMap({ a: { behind: 2 }, b: { behind: 0 }, broken: { behind: -1 } }), {
+    a: 2,
+    b: 0,
+  });
+  assert.equal(parseProjectGitMap(null), null);
+  assert.deepEqual(parseEventsMessage({ type: 'git-sync' }), { type: 'git-sync' });
 });
 
 test('dirty file list names each counted path once, unquoted, and a malformed list does not hide the summary', async () => {

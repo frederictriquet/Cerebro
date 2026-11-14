@@ -8,7 +8,7 @@
  * téléphone, par POST /api/sessions/:id/resize, qu'aux moments décidés dans SessionScreen.tsx.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { formatDateTime, sessionTitle } from '../format.ts';
+import { formatDateTime, plural, sessionTitle } from '../format.ts';
 import { MachineSwitcher } from '../MachineSwitcher.tsx';
 import { replaceRoute, useRoute, type Route } from '../route.ts';
 import { useStore } from '../store.tsx';
@@ -51,6 +51,8 @@ function useRouteTitle(route: Route): string {
 }
 
 function HomeScreen({ tab, onTab }: { tab: HomeTab; onTab: (tab: HomeTab) => void }) {
+  const { projects, projectBehind } = useStore();
+  const pullProjects = projects.filter((project) => (projectBehind?.[project.id] ?? 0) > 0).length;
   const current = HOME_TABS.find((candidate) => candidate.id === tab) ?? HOME_TABS[0];
   return (
     <>
@@ -67,6 +69,11 @@ function HomeScreen({ tab, onTab }: { tab: HomeTab; onTab: (tab: HomeTab) => voi
             onClick={() => onTab(candidate.id)}
           >
             {candidate.label}
+            {candidate.id === 'projects' && pullProjects > 0 ? (
+              <span className="m-tab-pull" aria-label={`${plural(pullProjects, 'projet')} à mettre à jour`}>
+                ↓{pullProjects}
+              </span>
+            ) : null}
           </button>
         ))}
       </div>

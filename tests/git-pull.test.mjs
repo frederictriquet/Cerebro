@@ -479,4 +479,189 @@ test('desktop GitActions, PullDialog and mobile ProjectGit reflect repository st
     output: 'Already up to date.\n',
   });
   assert.match(upToDateDialog, /Déjà à jour\./);
+
+  // Pull-needed visual indicators on desktop (GitActions, GitStatus, ProjectTabs) and mobile (MobileGit, ProjectList, MobileShell).
+  const behindCleanHtml = renderToStaticMarkup(
+    react.createElement(GitActions, {
+      projectId: 'p1',
+      git: { ...cleanGit, behind: 2 },
+      changes: '0 fichiers',
+      incomingCommits: react.createElement('button', { className: 'git-toggle git-behind' }, '▸ ↓ 2 commits à tirer'),
+      pendingCommits: null,
+    }),
+  );
+  assert.match(behindCleanHtml, /git-behind">▸ ↓ 2 commits à tirer<\/button>/);
+  assert.match(
+    behindCleanHtml,
+    /<button type="button" class="btn primary git-pull-needed" title="Tirer 2 commits depuis l’upstream \(avance rapide\)">Pull<span class="git-pull-badge">↓2<\/span><\/button>/,
+  );
+
+  const behindDirtyHtml = renderToStaticMarkup(
+    react.createElement(GitActions, {
+      projectId: 'p1',
+      git: { ...cleanGit, behind: 3, dirty: 1 },
+      changes: '1 fichier',
+      pendingCommits: null,
+    }),
+  );
+  assert.match(
+    behindDirtyHtml,
+    /<button type="button" class="btn git-pull-needed" disabled="" title="Modifications en attente : commitez ou annulez-les avant de tirer \(3 commits à tirer\)">Pull<span class="git-pull-badge">↓3<\/span><\/button>/,
+  );
+
+  const behindDivergedHtml = renderToStaticMarkup(
+    react.createElement(GitActions, {
+      projectId: 'p1',
+      git: { ...cleanGit, behind: 2, ahead: 1 },
+      changes: '0 fichiers',
+      pendingCommits: null,
+    }),
+  );
+  assert.match(behindDivergedHtml, /les branches divergent, l’avance rapide échouera/);
+
+  const mobileBehindClean = await renderMobile({ ...cleanGit, behind: 2 });
+  assert.match(mobileBehindClean, /<span class="m-git-behind">↓ 2 commits à tirer<\/span>/);
+  assert.match(mobileBehindClean, /<button type="button" class="m-button primary">Pull \(↓2\)<\/button>/);
+
+  const mobileBehindDirty = await renderMobile({ ...cleanGit, behind: 2, dirty: 1 });
+  assert.match(mobileBehindDirty, /<span class="m-git-behind">↓ 2 commits à tirer<\/span>/);
+  assert.match(mobileBehindDirty, /<button type="button" class="m-button" disabled="">Pull \(↓2\)<\/button>/);
+
+  const tabStore = {
+    projects: [
+      { id: 'p-behind', name: 'En retard', path: '/behind', color: null },
+      { id: 'p-ok', name: 'À jour', path: '/ok', color: '#3b82f6' },
+    ],
+    sessions: [],
+    tasks: [],
+    hasData: true,
+    projectBehind: { 'p-behind': 4, 'p-ok': 0 },
+    reorderProjects: async () => {},
+  };
+  const { ProjectTabs } = await (
+    await compile('ProjectTabs.tsx')
+  )({
+    react,
+    'react/jsx-runtime': jsx,
+    './Dialog.tsx': { Modal: stub },
+    './format.ts': format,
+    './NewProjectForm.tsx': { NewProjectForm: stub },
+    './route.ts': { href: (path) => path },
+    './store.tsx': { useStore: () => tabStore },
+    './async-action.ts': asyncAction,
+  });
+  const tabsHtml = renderToStaticMarkup(react.createElement(ProjectTabs, { route: { kind: 'home' } }));
+  assert.match(tabsHtml, /<span class="project-tab-pull" role="status" aria-label="4 commits à tirer">↓4<\/span>/);
+  assert.doesNotMatch(tabsHtml, /↓0/);
+
+  const { ProjectList } = await (
+    await compile('mobile/ProjectList.tsx')
+  )({
+    react,
+    'react/jsx-runtime': jsx,
+    '../format.ts': format,
+    '../route.ts': { href: (path) => path },
+    '../store.tsx': { useStore: () => tabStore },
+  });
+  const listHtml = renderToStaticMarkup(react.createElement(ProjectList));
+  assert.match(listHtml, /<span class="m-pull-needed">↓ 4 commits à tirer<\/span>/);
+  assert.doesNotMatch(listHtml, /0 commit/);
 });
+
+test('AutoFetch refreshes remote tracking refs silently, deduplicates shared repositories, and /api/projects/git reports behind counts', async () =>
+  fixture(async ({ root, repo, peer, pushes, pulls }) => {
+    const { AutoFetch } = await import('../server/git-fetch.ts');
+    const { SessionManager } = await import('../server/sessions.ts');
+    const { UpdateManager } = await import('../server/updates.ts');
+    const { PeerSync } = await import('../server/peers.ts');
+    const { buildServer } = await import('../server/index.ts');
+
+    mock.method(UpdateManager.prototype, 'start', () => {});
+    mock.method(PeerSync.prototype, 'sync', async function () {
+      this.markReady();
+      this.markSynced();
+    });
+    mock.method(SessionManager.prototype, 'launch', async () => {
+      throw new Error('Unexpected agent');
+    });
+
+    const plainDir = mkdtempSync(join(root, 'plain-'));
+    let mainId;
+    let plainId;
+
+    // Direct AutoFetch unit check: silent when up to date, notifies once when upstream advances, leaves worktree/FETCH_HEAD untouched.
+    const db = new CerebroDatabase();
+    try {
+      mainId = db.createProject('Principal', repo, 'isolated').id;
+      db.createProject('Doublon même dépôt', repo, 'isolated');
+      plainId = db.createProject('Hors Git', plainDir, 'isolated').id;
+      let notifications = 0;
+      const autoFetch = new AutoFetch(db, pulls, pushes, () => {
+        notifications++;
+      });
+
+      await autoFetch.tick();
+      assert.equal(notifications, 0);
+
+      writeFileSync(join(peer, 'file'), 'remote-1\n');
+      git(peer, 'commit', '-am', 'Commit distant 1');
+      writeFileSync(join(peer, 'file'), 'remote-2\n');
+      git(peer, 'commit', '-am', 'Commit distant 2');
+      const remoteTip = git(peer, 'rev-parse', 'HEAD');
+      git(peer, 'push');
+
+      // Local repo has not fetched yet: dirty a local untracked file to prove AutoFetch never touches the worktree or FETCH_HEAD.
+      writeFileSync(join(repo, 'untracked-local.txt'), 'keep\n');
+      await autoFetch.tick();
+      assert.equal(notifications, 1);
+      assert.equal(git(repo, 'rev-parse', 'refs/remotes/origin/main'), remoteTip);
+      assert.equal(existsSync(join(repo, '.git/FETCH_HEAD')), false);
+      assert.equal(readFileSync(join(repo, 'file'), 'utf8'), 'initial\n');
+      assert.equal(readFileSync(join(repo, 'untracked-local.txt'), 'utf8'), 'keep\n');
+
+      // Subsequent tick with no new remote commits emits no duplicate notification.
+      await autoFetch.tick();
+      assert.equal(notifications, 1);
+      rmSync(join(repo, 'untracked-local.txt'));
+      await autoFetch.stop();
+    } finally {
+      db.close();
+    }
+
+    // HTTP API check: GET /api/projects/git, GET /api/projects/:id/git?incoming=true, then POST /api/projects/:id/git/pull resets behind to 0.
+    const app = await buildServer();
+    try {
+      const behindBefore = sharedTypes.parseProjectGitMap(
+        (await app.inject({ method: 'GET', url: '/api/projects/git' })).json(),
+      );
+      assert.equal(behindBefore[mainId], 2);
+      assert.equal(behindBefore[plainId], 0);
+
+      const detail = sharedTypes.parseGitInfo(
+        (await app.inject({ method: 'GET', url: `/api/projects/${mainId}/git?incoming=true` })).json(),
+      );
+      assert.equal(detail.behind, 2);
+      assert.deepEqual(
+        detail.incomingCommits.commits.map((c) => c.subject),
+        ['Commit distant 2', 'Commit distant 1'],
+      );
+
+      const started = await app.inject({ method: 'POST', url: `/api/projects/${mainId}/git/pull` });
+      assert.equal(started.statusCode, 202);
+      let current = sharedGit.parseOptionalPullOperation(started.json());
+      while (current && current.finishedAt === null) {
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        current = sharedGit.parseOptionalPullOperation(
+          (await app.inject({ method: 'GET', url: `/api/projects/${mainId}/git/pull` })).json(),
+        );
+      }
+      assert.equal(current?.status, 'succeeded');
+
+      const behindAfter = sharedTypes.parseProjectGitMap(
+        (await app.inject({ method: 'GET', url: '/api/projects/git' })).json(),
+      );
+      assert.equal(behindAfter[mainId], 0);
+    } finally {
+      await app.close();
+    }
+  }));

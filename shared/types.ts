@@ -406,6 +406,12 @@ export interface AgentInfo {
   defaultModel: string | null;
 }
 
+export interface GitCommitPreview {
+  upstream: string;
+  commits: { hash: string; subject: string; author: string }[];
+  truncated: boolean;
+}
+
 export interface GitInfo {
   // False only outside any Git work tree; `error` reports a repository whose state could not be read.
   repository: boolean;
@@ -417,14 +423,14 @@ export interface GitInfo {
   // Fichiers déjà dans l'index : le commit automatique refuse de partir. Absent sur une instance antérieure.
   staged?: number;
   ahead: number | null;
+  // Commits sur l'upstream absents localement (`HEAD..@{upstream}`) ; absent sur une instance antérieure.
+  behind?: number | null;
   hasCommits: boolean;
   hasUpstream: boolean;
-  pendingCommits?: {
-    upstream: string;
-    commits: { hash: string; subject: string; author: string }[];
-    truncated: boolean;
-  };
+  pendingCommits?: GitCommitPreview;
   pendingCommitsError?: string;
+  incomingCommits?: GitCommitPreview;
+  incomingCommitsError?: string;
 }
 
 export type EventsMessage =
@@ -441,6 +447,7 @@ export type EventsMessage =
   | { type: 'findings-available'; session: Session }
   | { type: 'peers' }
   | { type: 'slack-watches' }
+  | { type: 'git-sync' }
   | { type: 'epic-run'; run: EpicRun }
   | { type: 'command-run'; run: Omit<CommandRun, 'output'> };
 
@@ -955,6 +962,28 @@ export function parseSessionList(v: unknown): Session[] {
   return parseItems(v, parseSession);
 }
 
+function parseCommitPreview(preview: unknown): GitCommitPreview | undefined | 'invalid' {
+  if (
+    !isRecord(preview) ||
+    typeof preview.upstream !== 'string' ||
+    typeof preview.truncated !== 'boolean' ||
+    !Array.isArray(preview.commits)
+  )
+    return undefined;
+  const commits: GitCommitPreview['commits'] = [];
+  for (const commit of preview.commits) {
+    if (
+      !isRecord(commit) ||
+      typeof commit.hash !== 'string' ||
+      typeof commit.subject !== 'string' ||
+      typeof commit.author !== 'string'
+    )
+      return 'invalid';
+    commits.push({ hash: commit.hash, subject: commit.subject, author: commit.author });
+  }
+  return { upstream: preview.upstream, truncated: preview.truncated, commits };
+}
+
 export function parseGitInfo(v: unknown): GitInfo | null {
   if (!isRecord(v)) return null;
   let branch: string | null;
@@ -966,6 +995,11 @@ export function parseGitInfo(v: unknown): GitInfo | null {
   if (v.ahead === null) ahead = null;
   else if (typeof v.ahead === 'number' && Number.isFinite(v.ahead)) ahead = v.ahead;
   else return null;
+  let behind: number | null | undefined;
+  if (v.behind === undefined) behind = undefined;
+  else if (v.behind === null) behind = null;
+  else if (typeof v.behind === 'number' && Number.isFinite(v.behind)) behind = v.behind;
+  else return null;
   // Serveurs antérieurs : ne pas déduire de ahead=null qu'il y a des commits à publier.
   if (v.hasCommits !== undefined && typeof v.hasCommits !== 'boolean') return null;
   if (v.hasUpstream !== undefined && typeof v.hasUpstream !== 'boolean') return null;
@@ -975,28 +1009,12 @@ export function parseGitInfo(v: unknown): GitInfo | null {
   // Serveurs antérieurs : seul le dépôt absent renvoyait une branche nulle.
   const repository = v.repository ?? branch !== null;
   const error = typeof v.error === 'string' ? v.error : undefined;
-  let pendingCommits: GitInfo['pendingCommits'];
-  const preview = v.pendingCommits;
-  if (
-    isRecord(preview) &&
-    typeof preview.upstream === 'string' &&
-    typeof preview.truncated === 'boolean' &&
-    Array.isArray(preview.commits)
-  ) {
-    const commits: NonNullable<GitInfo['pendingCommits']>['commits'] = [];
-    for (const commit of preview.commits) {
-      if (
-        !isRecord(commit) ||
-        typeof commit.hash !== 'string' ||
-        typeof commit.subject !== 'string' ||
-        typeof commit.author !== 'string'
-      )
-        return null;
-      commits.push({ hash: commit.hash, subject: commit.subject, author: commit.author });
-    }
-    pendingCommits = { upstream: preview.upstream, truncated: preview.truncated, commits };
-  }
+  const pendingCommits = parseCommitPreview(v.pendingCommits);
+  if (pendingCommits === 'invalid') return null;
   const pendingCommitsError = typeof v.pendingCommitsError === 'string' ? v.pendingCommitsError : undefined;
+  const incomingCommits = parseCommitPreview(v.incomingCommits);
+  if (incomingCommits === 'invalid') return null;
+  const incomingCommitsError = typeof v.incomingCommitsError === 'string' ? v.incomingCommitsError : undefined;
   // Une liste mal formée est ignorée : le compteur et le reste de l'état Git restent affichés.
   const files = v.dirtyFiles;
   const dirtyFiles =
@@ -1015,11 +1033,25 @@ export function parseGitInfo(v: unknown): GitInfo | null {
     ...(dirtyFiles ? { dirtyFiles } : {}),
     ...(staged !== undefined ? { staged } : {}),
     ahead,
+    ...(behind !== undefined ? { behind } : {}),
     hasCommits,
     hasUpstream,
     ...(pendingCommits ? { pendingCommits } : {}),
     ...(pendingCommitsError ? { pendingCommitsError } : {}),
+    ...(incomingCommits ? { incomingCommits } : {}),
+    ...(incomingCommitsError ? { incomingCommitsError } : {}),
   };
+}
+
+/** Réponse de GET /api/projects/git : compteur `behind` par identifiant de projet. */
+export function parseProjectGitMap(v: unknown): Record<string, number> | null {
+  if (!isRecord(v)) return null;
+  const out: Record<string, number> = {};
+  for (const [id, entry] of Object.entries(v)) {
+    if (isRecord(entry) && typeof entry.behind === 'number' && Number.isSafeInteger(entry.behind) && entry.behind >= 0)
+      out[id] = entry.behind;
+  }
+  return out;
 }
 
 // Raison affichée sur le bouton Push désactivé ; null quand un push peut aboutir.
@@ -1125,6 +1157,8 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
       return { type: 'peers' };
     case 'slack-watches':
       return { type: 'slack-watches' };
+    case 'git-sync':
+      return { type: 'git-sync' };
     // Runs d'epic et de commande : le serveur et cette interface partagent leur type.
     case 'epic-run':
       return isRecord(v.run) &&
