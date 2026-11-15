@@ -88,6 +88,7 @@ export interface Store {
   setSessionProtected: (id: string, value: boolean) => Promise<void>;
   setSessionPinned: (id: string, value: boolean) => Promise<void>;
   setProjectPinned: (id: string, value: boolean) => Promise<void>;
+  setProjectPaused: (id: string, value: boolean) => Promise<void>;
   purgeProjectSessions: (projectId: string) => Promise<void>;
   /** Supprime les sessions non protégées d'un epic. */
   deleteEpicSessions: (epicId: string) => Promise<void>;
@@ -203,8 +204,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setProjectBehind((prev) => ((prev[projectId] ?? 0) === behind ? prev : { ...prev, [projectId]: behind }));
   }, []);
   const loadProjectBehind = useCallback(async () => parseProjectGitMap(await api('/api/projects/git')), []);
+  const activeProjectIdsKey = projects
+    .filter((project) => !project.paused)
+    .map((project) => project.id)
+    .join('\0');
   const refreshProjectBehind = usePolling(loadProjectBehind, PROJECT_GIT_POLL_MS, {
-    enabled: hasData && projects.length > 0,
+    enabled: hasData && activeProjectIdsKey.length > 0,
     immediate: false,
     onData: (map) => {
       if (map) setProjectBehind((prev) => (sameBehindMap(prev, map) ? prev : map));
@@ -213,10 +218,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       /* machine sans cet endpoint ou momentanément injoignable : garder le dernier état */
     },
   });
-  const projectIdsKey = projects.map((project) => project.id).join('\0');
   useEffect(() => {
-    if (hasData && projects.length > 0) void refreshProjectBehind();
-  }, [hasData, projects.length, projectIdsKey, gitSyncVersion, refreshProjectBehind]);
+    if (!hasData) return;
+    if (activeProjectIdsKey.length > 0) void refreshProjectBehind();
+    else setProjectBehind((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+  }, [hasData, activeProjectIdsKey, gitSyncVersion, refreshProjectBehind]);
   const [muted, setMutedState] = useState<boolean>(() => readMuted());
   const mutedRef = useLatest(muted);
 
@@ -420,14 +426,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => window.clearTimeout(timer);
   }, [watchingAgents, agentsAvailable, agentsRefreshing, refreshAgents]);
 
-  const createSession = useCallback(async (projectId: string, spec: Partial<SessionDefaults>): Promise<Session> => {
-    const session = await apiParsed(apiPath`/api/projects/${projectId}/sessions`, parseSession, {
-      method: 'POST',
-      body: JSON.stringify(spec),
-    });
-    setSessions((list) => upsertSession(list, session));
-    return session;
+  const markProjectActive = useCallback((projectId: string): void => {
+    setProjects((list) =>
+      list.some((project) => project.id === projectId && project.paused)
+        ? list.map((project) => (project.id === projectId ? { ...project, paused: false } : project))
+        : list,
+    );
   }, []);
+
+  const createSession = useCallback(
+    async (projectId: string, spec: Partial<SessionDefaults>): Promise<Session> => {
+      const session = await apiParsed(apiPath`/api/projects/${projectId}/sessions`, parseSession, {
+        method: 'POST',
+        body: JSON.stringify(spec),
+      });
+      setSessions((list) => upsertSession(list, session));
+      markProjectActive(session.projectId);
+      return session;
+    },
+    [markProjectActive],
+  );
 
   // Seule cette session est remplacée : les autres gardent l'état, peut-être plus récent, du flux /ws/events.
   const refreshSession = useCallback(async (id: string): Promise<void> => {
@@ -451,11 +469,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [refreshSession],
   );
 
-  const resumeSession = useCallback(async (id: string): Promise<Session> => {
-    const session = await apiParsed(apiPath`/api/sessions/${id}/resume`, parseSession, { method: 'POST' });
-    setSessions((list) => upsertSession(list, session));
-    return session;
-  }, []);
+  const resumeSession = useCallback(
+    async (id: string): Promise<Session> => {
+      const session = await apiParsed(apiPath`/api/sessions/${id}/resume`, parseSession, { method: 'POST' });
+      setSessions((list) => upsertSession(list, session));
+      markProjectActive(session.projectId);
+      return session;
+    },
+    [markProjectActive],
+  );
 
   const deleteSession = useCallback(async (id: string): Promise<void> => {
     await api(apiPath`/api/sessions/${id}`, { method: 'DELETE' });
@@ -509,6 +531,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const list = await apiParsed(apiPath`/api/projects/${id}/pin`, parse, {
       method: 'PATCH',
       body: JSON.stringify({ pinned: value }),
+    });
+    setProjects(list);
+  }, []);
+
+  const setProjectPaused = useCallback(async (id: string, value: boolean): Promise<void> => {
+    const parse = (raw: unknown): Project[] | null => (Array.isArray(raw) ? parseProjectList(raw) : null);
+    const list = await apiParsed(apiPath`/api/projects/${id}/pause`, parse, {
+      method: 'PATCH',
+      body: JSON.stringify({ paused: value }),
     });
     setProjects(list);
   }, []);
@@ -594,18 +625,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setEpics((list) => list.filter((epic) => !deletedEpics.has(epic.id)));
   }, []);
 
-  const startTask = useCallback(async (id: string, spec: SessionDefaults): Promise<Session> => {
-    const raw = await api(apiPath`/api/tasks/${id}/start`, {
-      method: 'POST',
-      body: JSON.stringify(spec),
-    });
-    const session = parseSession(isRecord(raw) ? raw.session : null);
-    if (!session) throw new Error('Réponse session invalide');
-    const task = parseTask(isRecord(raw) ? raw.task : null);
-    setSessions((list) => upsertSession(list, session));
-    if (task) setTasks((list) => upsertById(list, task));
-    return session;
-  }, []);
+  const startTask = useCallback(
+    async (id: string, spec: SessionDefaults): Promise<Session> => {
+      const raw = await api(apiPath`/api/tasks/${id}/start`, {
+        method: 'POST',
+        body: JSON.stringify(spec),
+      });
+      const session = parseSession(isRecord(raw) ? raw.session : null);
+      if (!session) throw new Error('Réponse session invalide');
+      const task = parseTask(isRecord(raw) ? raw.task : null);
+      setSessions((list) => upsertSession(list, session));
+      markProjectActive(session.projectId);
+      if (task) setTasks((list) => upsertById(list, task));
+      return session;
+    },
+    [markProjectActive],
+  );
 
   const startCommandTask = useCallback(async (id: string): Promise<void> => {
     const raw = await api(apiPath`/api/tasks/${id}/start`, { method: 'POST' });
@@ -655,14 +690,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return task;
   }, []);
 
-  const startEpicReview = useCallback(async (epicId: string, spec: SessionDefaults): Promise<Session> => {
-    const session = await apiParsed(apiPath`/api/epics/${epicId}/review`, parseSession, {
-      method: 'POST',
-      body: JSON.stringify(spec),
-    });
-    setSessions((list) => upsertSession(list, session));
-    return session;
-  }, []);
+  const startEpicReview = useCallback(
+    async (epicId: string, spec: SessionDefaults): Promise<Session> => {
+      const session = await apiParsed(apiPath`/api/epics/${epicId}/review`, parseSession, {
+        method: 'POST',
+        body: JSON.stringify(spec),
+      });
+      setSessions((list) => upsertSession(list, session));
+      markProjectActive(session.projectId);
+      return session;
+    },
+    [markProjectActive],
+  );
 
   // Le serveur range les findings retenus dans un epic, existant ou nouveau, et rend l'epic et ses tâches créées.
   const importFindings = useCallback(
@@ -716,6 +755,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setSessionProtected,
       setSessionPinned,
       setProjectPinned,
+      setProjectPaused,
       purgeProjectSessions,
       deleteEpicSessions,
       markSeen,
@@ -772,6 +812,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setSessionProtected,
       setSessionPinned,
       setProjectPinned,
+      setProjectPaused,
       purgeProjectSessions,
       deleteEpicSessions,
       markSeen,

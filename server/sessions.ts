@@ -1,6 +1,16 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { appendFileSync, closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createConnection } from 'node:net';
 import type { Socket } from 'node:net';
 import { delimiter, join } from 'node:path';
@@ -215,6 +225,8 @@ export class SessionManager {
   private shuttingDown = false;
   /** The session's process really stopped, or the session was deleted: its isolated copy may now be unused. */
   onSessionReleased: (id: string, workspaceRoot: string | null) => void = () => {};
+  /** A paused project was automatically resumed because a session started on it. */
+  onProjectResumed: (projectId: string) => void = () => {};
   /** Stop project-scoped background work and prevent new starts until removal finishes. */
   withProjectDeletion: (id: string, remove: () => Promise<void>) => Promise<void> = async (_id, remove) => remove();
   /** Holder start deadlines: `soft` alone when the holder process is gone, `hard` while it is still alive. */
@@ -324,8 +336,9 @@ export class SessionManager {
     // A context inside an existing copy (next epic step) reuses it instead of copying the copy.
     const joined =
       context || current.workspaceMode === 'shared' || !contextPath ? null : workspaceAt(this.db, contextPath);
+    const activeProject = this.resumePausedProject(current);
     return this.launch(
-      { ...current, path },
+      { ...activeProject, path },
       {
         agent: defaults.agent,
         mode: defaults.mode,
@@ -338,6 +351,15 @@ export class SessionManager {
         context,
       },
     );
+  }
+
+  private resumePausedProject(project: Project): Project {
+    if (!this.db.getProject(project.id)?.paused) return project;
+    const projects = this.db.setProjectPaused(project.id, false);
+    if (projects === null) return project;
+    this.emit({ type: 'projects', projects });
+    this.onProjectResumed(project.id);
+    return projects.find((candidate) => candidate.id === project.id) ?? { ...project, paused: false };
   }
 
   rememberDefaults(projectId: string, overrides: Partial<SessionDefaults>): SessionDefaults {
@@ -359,8 +381,9 @@ export class SessionManager {
     const workspace = workspaceFor(this.db, id);
     // A removed copy is recreated from its branch once the session is starting, out of reach of the automatic cleanup.
     if (!workspace?.removedAt) this.services.gate.assertAvailable(workspace?.path ?? project.path);
+    const activeProject = this.resumePausedProject(project);
     const tuning = { model: oldSession.model, effort: oldSession.effort };
-    return this.launch(project, {
+    return this.launch(activeProject, {
       agent: oldSession.agent,
       mode: oldSession.mode,
       tuning,
@@ -418,6 +441,7 @@ export class SessionManager {
       if (updated === null) throw new Error('Session introuvable');
       session = updated;
     }
+    this.resumePausedProject(project);
     this.emit({ type: 'session', session });
 
     const configPath = holderPaths(SESSIONS_DIR, id).config;
@@ -514,7 +538,7 @@ export class SessionManager {
           ? await this.stopStartingHolder(holderProcess, () => holderExited)
           : true;
       const message = `Connexion au holder impossible après ${waitedSeconds} secondes${
-        stillRunning ? (stopped ? ' : holder arrêté' : " : holder toujours actif, arrêt impossible") : ''
+        stillRunning ? (stopped ? ' : holder arrêté' : ' : holder toujours actif, arrêt impossible') : ''
       }`;
       this.logHolderError(id, new Error(message));
       this.appendTerminalError(id, `Échec du lancement de la session. ${message}.`);

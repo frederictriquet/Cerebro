@@ -277,6 +277,8 @@ export function GlobalBacklog() {
   };
 
   const target = projects.some((p) => p.id === storedTarget) ? storedTarget : '';
+  const activeProjects = projects.filter((project) => !project.paused);
+  const pausedProjects = projects.filter((project) => project.paused);
   const epics = data?.epics ?? [];
   const tasks = data?.tasks ?? [];
   const epicIds = new Set(epics.map((e) => e.id));
@@ -319,11 +321,20 @@ export function GlobalBacklog() {
             }}
           >
             <option value="">Choisir un projet…</option>
-            {projects.map((project) => (
+            {activeProjects.map((project) => (
               <option key={project.id} value={project.id}>
                 {project.name}
               </option>
             ))}
+            {pausedProjects.length > 0 ? (
+              <optgroup label="En pause">
+                {pausedProjects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
           </select>
         </label>
       </div>

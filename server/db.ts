@@ -78,6 +78,7 @@ interface ProjectRow {
   auto_push: number;
   regenerable_paths: string | null;
   pinned: number;
+  paused: number;
   created_at: number;
 }
 
@@ -249,6 +250,7 @@ function projectFromRow(row: ProjectRow): Project {
     autoPush: row.auto_push === 1,
     regenerablePaths: row.regenerable_paths ? JSON.parse(row.regenerable_paths) : [],
     pinned: row.pinned === 1,
+    paused: row.paused === 1,
   };
 }
 
@@ -519,6 +521,7 @@ export class CerebroDatabase {
     this.addColumnIfMissing('projects', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
     // Un seul projet épinglé par machine.
     this.connection.exec('CREATE UNIQUE INDEX IF NOT EXISTS projects_pinned ON projects(pinned) WHERE pinned = 1');
+    this.addColumnIfMissing('projects', 'paused', 'INTEGER NOT NULL DEFAULT 0');
     this.connection.exec('CREATE TABLE IF NOT EXISTS automatic_commits (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
     this.connection.exec(
       'CREATE TABLE IF NOT EXISTS automatic_commit_requests (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, scope TEXT NOT NULL, push INTEGER NOT NULL)',
@@ -780,6 +783,7 @@ export class CerebroDatabase {
       autoPush: false,
       regenerablePaths: [],
       pinned: false,
+      paused: false,
       createdAt: Date.now(),
     };
     this.connection
@@ -835,14 +839,31 @@ export class CerebroDatabase {
   }
 
   /**
-   * Épingle (ou désépingle) un projet ; épingler retire l'épingle de l'autre projet de la machine.
-   * Retourne la liste des projets, ou null si le projet est introuvable.
+   * Épingle (ou désépingle) un projet ; épingler retire l'épingle de l'autre projet de la machine
+   * et sort le projet de pause. Retourne la liste des projets, ou null si le projet est introuvable.
    */
   setProjectPinned(id: string, value: boolean): Project[] | null {
     return this.transaction(() => {
       if (this.getProject(id) === null) return null;
-      if (value) this.connection.prepare('UPDATE projects SET pinned = 0 WHERE pinned = 1 AND id != ?').run(id);
-      this.connection.prepare('UPDATE projects SET pinned = ? WHERE id = ?').run(value ? 1 : 0, id);
+      if (value) {
+        this.connection.prepare('UPDATE projects SET pinned = 0 WHERE pinned = 1 AND id != ?').run(id);
+        this.connection.prepare('UPDATE projects SET pinned = 1, paused = 0 WHERE id = ?').run(id);
+      } else {
+        this.connection.prepare('UPDATE projects SET pinned = 0 WHERE id = ?').run(id);
+      }
+      return this.listProjects();
+    });
+  }
+
+  /**
+   * Met en pause (ou reprend) un projet ; mettre en pause retire son épingle éventuelle.
+   * Retourne la liste des projets, ou null si le projet est introuvable.
+   */
+  setProjectPaused(id: string, value: boolean): Project[] | null {
+    return this.transaction(() => {
+      if (this.getProject(id) === null) return null;
+      if (value) this.connection.prepare('UPDATE projects SET paused = 1, pinned = 0 WHERE id = ?').run(id);
+      else this.connection.prepare('UPDATE projects SET paused = 0 WHERE id = ?').run(id);
       return this.listProjects();
     });
   }

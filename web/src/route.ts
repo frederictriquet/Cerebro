@@ -71,13 +71,19 @@ export function go(path: string): void {
  * Hash ouvert en basculant sur la machine `id` (null : locale) : son projet épinglé, sinon son accueil.
  * `projects` : dernier état connu de la machine, absent tant que sa surveillance n'a pas reçu de snapshot.
  */
-export function machineHash(id: string | null, projects?: readonly Pick<Project, 'id' | 'pinned'>[]): string {
+export function machineHash(
+  id: string | null,
+  projects?: readonly (Pick<Project, 'id' | 'pinned'> & { paused?: boolean })[],
+): string {
   const home = id === null || id === 'local' ? '#/' : `#/m/${id}/`;
-  const pinned = projects?.find((project) => project.pinned);
+  const pinned = projects?.find((project) => project.pinned && !project.paused);
   return pinned === undefined ? home : `${home}p/${encodeURIComponent(pinned.id)}`;
 }
 
-export function goMachine(id: string | null, projects?: readonly Pick<Project, 'id' | 'pinned'>[]): void {
+export function goMachine(
+  id: string | null,
+  projects?: readonly (Pick<Project, 'id' | 'pinned'> & { paused?: boolean })[],
+): void {
   assignHash(machineHash(id, projects));
 }
 

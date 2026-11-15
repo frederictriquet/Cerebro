@@ -283,6 +283,8 @@ export interface Project {
   regenerablePaths: string[];
   /** Projet ouvert en basculant sur cette machine depuis le sélecteur ; un seul par machine. */
   pinned: boolean;
+  /** Projet mis en pause : masqué des onglets actifs et exclu du git fetch périodique. */
+  paused: boolean;
   createdAt: number;
 }
 
@@ -743,6 +745,8 @@ export function parseProject(v: unknown): Project | null {
     regenerablePaths,
     // Absent des serveurs antérieurs à l'épingle des projets.
     pinned: v.pinned === true,
+    // Absent des serveurs antérieurs à la mise en pause des projets.
+    paused: v.paused === true,
     createdAt,
   };
 }

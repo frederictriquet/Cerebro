@@ -16,6 +16,7 @@ import { WorkspaceModeControl } from './WorkspaceModeControl.tsx';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { go, href } from './route.ts';
 import { useNow, usePolling } from './polling.tsx';
+import { ProjectPause } from './ProjectPause.tsx';
 import { ProjectPin } from './ProjectPin.tsx';
 import { useStore } from './store.tsx';
 import { ErrorBoundary } from './ErrorBoundary.tsx';
@@ -133,6 +134,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
               {project.name}
             </h1>
             <ProjectPin project={project} onError={setError} />
+            <ProjectPause project={project} onError={setError} />
             <span className="path">{project.path}</span>
             <SlackLead key={`slack-${project.id}`} projectId={project.id} />
           </div>

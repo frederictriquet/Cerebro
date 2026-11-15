@@ -344,6 +344,18 @@
   margin-bottom: 16px;
 }
 
+.m-project-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.m-paused-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .m-pin-button {
   display: inline-flex;
   align-items: center;

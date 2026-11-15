@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useAsyncAction } from '../async-action.ts';
 import { isAwaiting } from '../format.ts';
 import { PinIcon } from '../PinIcon.tsx';
+import { go } from '../route.ts';
 import { useStore } from '../store.tsx';
 import type { Project, Session } from '../../../shared/types.ts';
 import { LaunchForm } from './LaunchForm.tsx';
@@ -21,24 +22,52 @@ function SessionCards({ sessions }: { sessions: Session[] }) {
   );
 }
 
-/** Épingle du projet : basculer sur sa machine depuis le sélecteur ouvre ce projet. */
-function PinButton({ project }: { project: Project }) {
-  const { setProjectPinned } = useStore();
-  const { run, busy, error } = useAsyncAction((value: boolean) => setProjectPinned(project.id, value), {
+/** Épingle et mise en pause du projet. */
+function ProjectHeaderActions({ project }: { project: Project }) {
+  const { setProjectPinned, setProjectPaused } = useStore();
+  const {
+    run: runPin,
+    busy: pinBusy,
+    error: pinError,
+  } = useAsyncAction((value: boolean) => setProjectPinned(project.id, value), {
     fallback: 'Modification de l’épingle impossible',
   });
+  const {
+    run: runPause,
+    busy: pauseBusy,
+    error: pauseError,
+  } = useAsyncAction((value: boolean) => setProjectPaused(project.id, value), {
+    fallback: 'Modification de la mise en pause impossible',
+  });
+  const busy = pinBusy || pauseBusy;
+  const error = pinError ?? pauseError;
   return (
     <div className="m-pin">
-      <button
-        type="button"
-        className={`m-button m-pin-button${project.pinned ? ' active' : ''}`}
-        aria-pressed={project.pinned}
-        disabled={busy}
-        onClick={() => void run(!project.pinned)}
-      >
-        <PinIcon filled={project.pinned} />
-        Épingler ce projet
-      </button>
+      <div className="m-project-actions">
+        <button
+          type="button"
+          className={`m-button m-pin-button${project.pinned ? ' active' : ''}`}
+          aria-pressed={project.pinned}
+          disabled={busy}
+          onClick={() => void runPin(!project.pinned)}
+        >
+          <PinIcon filled={project.pinned} />
+          Épingler ce projet
+        </button>
+        <button
+          type="button"
+          className={`m-button m-pin-button${project.paused ? ' active' : ''}`}
+          disabled={busy}
+          onClick={() => {
+            const next = !project.paused;
+            void runPause(next).then((ok) => {
+              if (ok && next) go('#/');
+            });
+          }}
+        >
+          {project.paused ? 'Reprendre ce projet' : 'Mettre en pause'}
+        </button>
+      </div>
       {error === null ? null : (
         <p className="m-form-error" role="alert">
           {error}
@@ -67,7 +96,7 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
 
   return (
     <div className="m-content">
-      <PinButton project={project} />
+      <ProjectHeaderActions project={project} />
       <section className="m-section" aria-labelledby="m-sessions-title">
         <h2 className="m-section-title" id="m-sessions-title">
           Sessions

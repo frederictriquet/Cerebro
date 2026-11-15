@@ -1606,6 +1606,190 @@ textarea {
   animation: pulse 1.4s ease-in-out infinite;
 }
 
+.project-tab.paused {
+  border-style: dashed;
+  opacity: 0.88;
+}
+
+.paused-projects-wrap {
+  position: relative;
+  display: inline-flex;
+  align-self: stretch;
+}
+
+.project-tab-paused-btn {
+  justify-content: center;
+  gap: 6px;
+  min-width: 36px;
+  align-self: stretch;
+  font: inherit;
+  cursor: pointer;
+}
+
+.project-tab-paused-btn.open {
+  color: var(--text);
+  background: var(--bg-hover);
+  border-color: var(--focus-border);
+}
+
+.project-tab-paused-btn.drop-pause {
+  color: var(--on-primary);
+  background: var(--primary);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-ring);
+}
+
+.paused-projects-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  width: min(340px, calc(100vw - 24px));
+  max-height: min(420px, 70vh);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+
+.paused-projects-menu.align-right {
+  left: auto;
+  right: 0;
+}
+
+.paused-projects-search {
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.paused-projects-empty {
+  padding: 6px 4px;
+  font-size: 12px;
+}
+
+.paused-projects-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.paused-project-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--radius);
+  padding: 2px 4px 2px 2px;
+}
+
+.paused-project-row:hover {
+  background: var(--bg-hover);
+}
+
+.paused-project-link {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.paused-project-link:hover {
+  text-decoration: none;
+}
+
+.paused-project-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.paused-project-dot.none {
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+}
+
+.paused-project-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.paused-project-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paused-project-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.paused-project-resume {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.project-tab-context-menu {
+  position: fixed;
+  z-index: 40;
+  min-width: 168px;
+  padding: 4px;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.project-tab-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-tab-menu-item:hover:not(:disabled),
+.project-tab-menu-item:focus-visible {
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.project-pause-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  font-size: 12px;
+  border-style: dashed;
+  border-color: var(--focus-border);
+}
+
 /* Sessions du projet de la session ouverte : rangée secondaire sous les onglets de projets.
    position: relative fait rogner par la rangée les textes .sr-only (absolus) des pastilles hors champ,
    qui sinon élargissent la page. */

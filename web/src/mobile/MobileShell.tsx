@@ -52,7 +52,7 @@ function useRouteTitle(route: Route): string {
 
 function HomeScreen({ tab, onTab }: { tab: HomeTab; onTab: (tab: HomeTab) => void }) {
   const { projects, projectBehind } = useStore();
-  const pullProjects = projects.filter((project) => (projectBehind?.[project.id] ?? 0) > 0).length;
+  const pullProjects = projects.filter((project) => !project.paused && (projectBehind?.[project.id] ?? 0) > 0).length;
   const current = HOME_TABS.find((candidate) => candidate.id === tab) ?? HOME_TABS[0];
   return (
     <>

@@ -110,7 +110,7 @@ export class AutoFetch {
   }
 
   private async runTick(): Promise<void> {
-    const projects = this.db.listProjects();
+    const projects = this.db.listProjects().filter((project) => !project.paused);
     const tracked: TrackedProject[] = [];
     const targets = new Map<string, TrackedProject>();
 

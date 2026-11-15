@@ -90,7 +90,7 @@ export function registerProjectRoutes(ctx: RouteContext): void {
   app.get('/api/projects', async () => db.listProjects());
 
   app.get('/api/projects/git', async () => {
-    const projects = db.listProjects();
+    const projects = db.listProjects().filter((project) => !project.paused);
     const out: Record<string, { behind: number }> = {};
     const concurrency = 8;
     for (let i = 0; i < projects.length; i += concurrency) {
@@ -297,9 +297,32 @@ export function registerProjectRoutes(ctx: RouteContext): void {
     const body = asRecord(request.body);
     if (body === null || typeof body.pinned !== 'boolean')
       return error(reply, 400, 'Le champ pinned doit être un booléen');
+    const previous = db.getProject(request.params.id);
+    if (previous === null) return error(reply, 404, 'Projet introuvable');
     const projects = db.setProjectPinned(request.params.id, body.pinned);
     if (projects === null) return error(reply, 404, 'Projet introuvable');
     broadcast({ type: 'projects', projects });
+    if (previous.paused && body.pinned) {
+      autoFetch.poke();
+      broadcast({ type: 'git-sync' });
+    }
+    return reply.send(projects);
+  });
+
+  // La pause reste propre à cette machine : rien à synchroniser avec les pairs.
+  app.patch<{ Params: { id: string } }>('/api/projects/:id/pause', async (request, reply) => {
+    const body = asRecord(request.body);
+    if (body === null || typeof body.paused !== 'boolean')
+      return error(reply, 400, 'Le champ paused doit être un booléen');
+    const previous = db.getProject(request.params.id);
+    if (previous === null) return error(reply, 404, 'Projet introuvable');
+    const projects = db.setProjectPaused(request.params.id, body.paused);
+    if (projects === null) return error(reply, 404, 'Projet introuvable');
+    broadcast({ type: 'projects', projects });
+    if (previous.paused !== body.paused) {
+      if (!body.paused) autoFetch.poke();
+      broadcast({ type: 'git-sync' });
+    }
     return reply.send(projects);
   });
 

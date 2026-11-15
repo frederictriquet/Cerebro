@@ -325,6 +325,10 @@ export async function buildServer(
   sessions.onSessionReleased = (id, root) => {
     void worktrees.releaseSession(id, root);
   };
+  sessions.onProjectResumed = () => {
+    autoFetch.poke();
+    broadcast({ type: 'git-sync' });
+  };
   worktrees.onSessionsChanged = (ids) => {
     for (const id of ids) {
       const session = db.getSession(id);
