@@ -33,6 +33,9 @@ async function fixture(run) {
       db.updateSession(id, { status: 'exited', exitCode: 130 });
       return true;
     },
+    setReliableState(id, status, attentionReason) {
+      return db.updateSession(id, { status, attention: true, attentionReason });
+    },
   };
   let runner = new EpicRunner(db, sessions, commands, () => {}, workspaces);
   const task = (name, execution = { type: 'llm' }) => db.createTask(project.id, name, null, epic.id, execution);
@@ -137,7 +140,7 @@ test('restart and interrupted/idle LLM turns never imply done; --done equivalent
     await f.until(() => f.latest().status === 'failed');
     assert.equal(f.db.getTask(a.id).status, 'started');
   }));
-test('external prerequisites and backlog mutations block explicitly; stop/resume is deliberate', async () =>
+test('external prerequisites block explicitly; backlog mutations replan automatically; stop/resume is deliberate', async () =>
   fixture(async (f) => {
     const external = f.db.createTask(f.project.id, 'external', null);
     const a = f.task('first');
@@ -146,15 +149,28 @@ test('external prerequisites and backlog mutations block explicitly; stop/resume
     f.db.updateTask(external.id, { status: 'done' });
     await f.runner.start(f.epic.id, DEFAULT_SESSION_DEFAULTS);
     await f.until(() => f.latest().status === 'waiting-validation');
-    f.task('new');
+    const added = f.task('new');
+    await f.until(() => f.latest().order.includes(added.id));
+    assert.equal(f.latest().status, 'waiting-validation');
+    assert.equal(f.latest().currentTaskId, a.id);
+    // An edited task is replanned too: the run follows its new dependencies.
+    const later = f.task('later');
+    f.db.setTaskDependencies(added.id, [later.id]);
+    const rank = (id) => f.latest().order.indexOf(id);
+    await f.until(() => rank(later.id) !== -1 && rank(later.id) < rank(added.id));
+    assert.equal(f.latest().status, 'waiting-validation');
+    // A plan that cannot be computed blocks with its reason until an explicit resume.
+    const pending = f.db.createTask(f.project.id, 'external again', null);
+    f.db.setTaskDependencies(later.id, [pending.id]);
     await f.until(() => f.latest().status === 'blocked');
-    assert.match(f.latest().error, /Composition/);
+    assert.match(f.latest().error, /hors epic/);
+    f.db.setTaskDependencies(later.id, []);
     f.runner.stop(f.latest().id);
     assert.equal(f.latest().status, 'stopped');
     await new Promise((r) => setTimeout(r, 10));
     f.runner.resume(f.latest().id, true);
     await f.until(() => f.latest().status === 'waiting-validation');
-    assert.equal(f.latest().order.length, 2);
+    assert.equal(f.latest().order.length, 3);
   }));
 test('server topological order detects cycles', () => {
   const a = { id: 'a', dependsOn: ['b'], status: 'todo' },
@@ -182,10 +198,8 @@ test('replanning includes added tasks but preserves explicit validation requirem
     await new Promise((r) => setTimeout(r, 5));
     assert.equal(f.latest().error, reason);
     const added = f.task('added while running');
-    await f.until(() => f.latest().status === 'blocked');
-    await new Promise((r) => setTimeout(r, 5));
-    f.runner.resume(f.latest().id, true);
-    await f.until(() => f.latest().status === 'waiting-validation');
+    await f.until(() => f.latest().order.includes(added.id));
+    assert.equal(f.latest().status, 'waiting-validation');
     assert.equal(f.latest().error, reason);
     assert.ok(f.latest().order.includes(added.id));
     assert.equal(f.latest().currentTaskId, a.id);
@@ -1021,4 +1035,59 @@ test('run changes are broadcast as epic-run events; ticks that change nothing ar
     } finally {
       await runner.shutdown();
     }
+  }));
+const runningLaunch = (f) => async (p, options) => {
+  const s = f.db.createSession(
+    { id: randomUUID(), projectId: p.id, ...options, title: 'work', status: 'running', agentSessionId: 'fake' },
+    'token',
+  );
+  f.launches.push(s);
+  return s;
+};
+test('auto validation ignores a session that only went quiet, and reports it until a real end of turn', async () =>
+  fixture(async (f) => {
+    const results = [];
+    f.runner.onResult = (run) => results.push({ status: run.status, error: run.error });
+    const a = f.task('work');
+    f.sessions.create = runningLaunch(f);
+    await f.runner.start(f.epic.id, DEFAULT_SESSION_DEFAULTS);
+    await f.until(() => !!f.latest().sessionId);
+    f.runner.setAutoValidate(f.latest().id, true);
+    // 20 s without output, e.g. an unrecognized dialog of the agent: nothing proves the task was handled.
+    f.db.updateSession(f.launches[0].id, { status: 'idle', attentionReason: 'Inactif (heuristique)' });
+    await f.until(() => f.latest().status === 'waiting-validation');
+    assert.equal(f.db.getTask(a.id).status, 'started');
+    assert.match(f.latest().error, /sans fin de tour signalée/);
+    assert.deepEqual(results, [{ status: 'waiting-validation', error: f.latest().error }]);
+    const flagged = f.db.getSession(f.launches[0].id);
+    assert.equal(flagged.attention, true);
+    assert.equal(flagged.attentionReason, f.latest().error);
+    // The agent was only thinking: its reported end of turn closes the step as before.
+    f.db.updateSession(f.launches[0].id, { status: 'idle', attentionReason: 'Tour terminé' });
+    await f.until(() => f.latest().status === 'succeeded');
+    assert.equal(f.latest().results[a.id], 'auto-validated');
+  }));
+test('auto validation does not accept a session that exited with code 0 without closing its task', async () =>
+  fixture(async (f) => {
+    const results = [];
+    f.runner.onResult = (run) => results.push(run.status);
+    const a = f.task('work');
+    f.sessions.create = runningLaunch(f);
+    await f.runner.start(f.epic.id, DEFAULT_SESSION_DEFAULTS);
+    await f.until(() => !!f.latest().sessionId);
+    f.runner.setAutoValidate(f.latest().id, true);
+    // « No, quit » on the agent's folder trust dialog ends it with code 0.
+    f.db.updateSession(f.launches[0].id, { status: 'exited', exitCode: 0 });
+    await f.until(() => f.latest().status === 'waiting-validation');
+    assert.equal(f.db.getTask(a.id).status, 'started');
+    assert.match(f.latest().error, /terminée sans clôturer/);
+    assert.deepEqual(results, ['waiting-validation']);
+    // The task is still open: resuming hands it back to the backlog and relaunches it.
+    const id = f.latest().id;
+    f.runner.stop(id);
+    await f.runner.shutdown();
+    await f.restart();
+    f.runner.resume(id);
+    await f.until(() => f.launches.length === 2);
+    assert.equal(f.db.getTask(a.id).sessionId, f.launches[1].id);
   }));

@@ -143,3 +143,55 @@ test('a full-screen TUI dialog drawn at the top is still detected', async () => 
   assert.equal(session.status, 'waiting');
   assert.equal(session.attentionReason, 'Do you trust the files in this folder?');
 });
+
+test('the grok folder trust dialog makes the session wait', async () => {
+  // Screen of Grok Build 1.0.77 launched in a folder it does not trust yet (full-screen TUI).
+  const { session, alerted } = await inspect(
+    'running',
+    [
+      ' master ~/C/Karine/Proj-Classe',
+      '',
+      'Do you trust the contents of this directory?',
+      '/Users/fred/Code/Karine/Proj-Classe',
+      'Grok Build may run or modify contents in this directory,',
+      'posing security risks.',
+      '',
+      'Yes, proceed                 y',
+      'No, quit                     n',
+      '',
+      'Grok Build  1.0.77 [stable]',
+    ],
+    { agent: 'grok', alternate: true },
+  );
+  assert.equal(session.status, 'waiting');
+  assert.equal(session.attentionReason, 'Do you trust the contents of this directory?');
+  assert.equal(alerted, true);
+});
+
+test('an end of turn reported after a flagged silent idle replaces its reason', async () => {
+  const { HEURISTIC_IDLE_REASON, UNCONFIRMED_IDLE_REASON } = await import('../server/sessions.ts');
+  const id = randomUUID();
+  db.createSession(
+    {
+      id,
+      projectId: project.id,
+      agent: 'grok',
+      mode: 'auto',
+      model: null,
+      effort: null,
+      prompt: '',
+      title: 'Silence',
+      status: 'running',
+      agentSessionId: null,
+    },
+    'token',
+  );
+  db.updateSession(id, { status: 'idle', attention: false, attentionReason: HEURISTIC_IDLE_REASON });
+  manager.setReliableState(id, 'idle', UNCONFIRMED_IDLE_REASON);
+  assert.equal(db.getSession(id).attention, true);
+  assert.equal(db.getSession(id).attentionReason, UNCONFIRMED_IDLE_REASON);
+  assert.equal(alerts.includes(id), true);
+  // The agent was only thinking: its Stop hook must read as a real end of turn.
+  manager.setReliableState(id, 'idle', 'Tour terminé');
+  assert.equal(db.getSession(id).attentionReason, 'Tour terminé');
+});

@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { CerebroDatabase } from './db.ts';
 import type { CommandExecutor } from './commands.ts';
-import type { SessionEvent, SessionManager } from './sessions.ts';
+import {
+  HEURISTIC_IDLE_REASON,
+  UNCONFIRMED_IDLE_REASON as SILENT_STEP_REASON,
+  type SessionEvent,
+  type SessionManager,
+} from './sessions.ts';
 import { workspaceFor } from './provenance.ts';
 import { EpicWorkspaceConflict, type EpicWorkspaces } from './epic-workspace.ts';
 import { epicReviewInstructions, epicReviewScope } from './epic-review.ts';
@@ -37,6 +42,11 @@ const headOf = async (path: string): Promise<string | null> => {
 };
 const askedQuestion = (session: { status: string; attentionReason: string | null }): boolean =>
   session.status === 'waiting' && !!session.attentionReason?.startsWith('Question : ');
+// A step whose session stopped without reporting an end of turn: an unrecognized dialog of the agent (folder trust,
+// login) or an agent that quit. Nothing proves the task was handled, so it is never validated automatically and the
+// user is notified, unlike an ordinary step awaiting validation whose session already alerted at the end of its turn.
+const EXITED_STEP_REASON = 'Session terminée sans clôturer sa tâche : « Reprendre et recalculer » la relance.';
+const UNCONFIRMED_STEP_REASONS = [SILENT_STEP_REASON, EXITED_STEP_REASON];
 const version = (t: Task): string =>
   createHash('sha256')
     .update(JSON.stringify([t.text, t.dependsOn.slice().sort(), t.execution, t.epicId]))
@@ -251,11 +261,10 @@ export class EpicRunner {
     const content = (r: EpicRunView): string => JSON.stringify({ ...r, updatedAt: 0 });
     if (!previous || content(withWorkspace(previous, workspace)) !== content(current))
       this.broadcast({ type: 'epic-run', run: current });
-    if (
-      ['failed', 'succeeded', 'blocked'].includes(run.status) &&
-      (previous?.status !== run.status || previous?.error !== run.error)
-    )
-      this.onResult(run);
+    const notable =
+      ['failed', 'succeeded', 'blocked'].includes(run.status) ||
+      (run.status === 'waiting-validation' && UNCONFIRMED_STEP_REASONS.includes(run.error ?? ''));
+    if (notable && (previous?.status !== run.status || previous?.error !== run.error)) this.onResult(run);
   }
   // Nobody awaits a tick: a transient SQLite failure is logged and retried on the next poke instead of rejecting.
   private persist(run: EpicRunRecord): boolean {
@@ -527,7 +536,7 @@ export class EpicRunner {
       this.halt(run, 'blocked', 'Epic supprimé.');
       return;
     }
-    if (!this.planUnchanged(run)) return;
+    this.refreshPlan(run);
     if (run.currentTaskId && !this.completeStep(run, this.db.getTask(run.currentTaskId)!)) return;
     const next = this.resolveStep(run);
     if (!next) return;
@@ -546,26 +555,25 @@ export class EpicRunner {
     run.blockReason = blockReason;
     this.save(run);
   }
-  // The order was computed from the epic's tasks as they were: any later change to them needs a resume with replan.
-  private planUnchanged(run: EpicRunView): boolean {
+  // The order was computed from the epic's tasks as they were: a later change to their composition, text, dependencies
+  // or executor replans the order from the current tasks. A plan that cannot be computed (cycle, unfinished prerequisite
+  // outside the epic, active step moved out of the epic) throws, and the run is blocked with that reason.
+  private refreshPlan(run: EpicRunView): void {
     const members = this.db.listTasks().filter((t) => t.epicId === run.epicId);
-    if (
+    const sameMembers =
       members
         .map((t) => t.id)
         .sort()
-        .join(',') !== run.members.slice().sort().join(',')
-    ) {
-      this.halt(run, 'blocked', 'Composition de l’epic modifiée : reprise avec recalcul nécessaire.');
-      return false;
-    }
-    for (const id of run.order) {
-      const task = this.db.getTask(id);
-      if (!task || version(task) !== run.versions[id]) {
-        this.halt(run, 'blocked', 'Tâche ou dépendances modifiées : reprise avec recalcul nécessaire.');
-        return false;
-      }
-    }
-    return true;
+        .join(',') === run.members.slice().sort().join(',');
+    const changed =
+      !sameMembers ||
+      run.order.some((id) => {
+        const task = this.db.getTask(id);
+        return !task || version(task) !== run.versions[id];
+      });
+    if (!changed) return;
+    this.replanOrder(run);
+    this.save(run);
   }
   // Follows the current step; true once it is closed and the run can move on to the next one.
   private completeStep(run: EpicRunView, task: Task): boolean {
@@ -638,10 +646,14 @@ export class EpicRunner {
         return false;
       }
     } else run.waitingSince = null;
-    const autoValidated =
-      task.status !== 'done' &&
-      run.autoValidate &&
-      (session.status === 'idle' || (session.status === 'exited' && session.exitCode === 0));
+    const silent =
+      session.status === 'idle' &&
+      (session.attentionReason === HEURISTIC_IDLE_REASON || session.attentionReason === SILENT_STEP_REASON);
+    // The fallback idle state raises no alert: flag the session so the step shows in « À traiter » and notifies.
+    if (silent && session.attentionReason === HEURISTIC_IDLE_REASON)
+      this.sessions.setReliableState(session.id, 'idle', SILENT_STEP_REASON);
+    // Only an end of turn reported by the agent counts: a quiet screen or an exit proves no work.
+    const autoValidated = task.status !== 'done' && run.autoValidate && session.status === 'idle' && !silent;
     if (autoValidated) this.changeTask(task.id, { status: 'done' });
     if (task.status !== 'done' && !autoValidated) {
       if (session.status === 'exited' && session.exitCode !== null && session.exitCode !== 0) {
@@ -652,6 +664,7 @@ export class EpicRunner {
       // Keep the agent's validation requirements instead of replacing them with the generic end-of-turn notice.
       const reason =
         (session.status !== 'waiting' ? run.validationReason : null) ??
+        (silent ? SILENT_STEP_REASON : session.status === 'exited' ? EXITED_STEP_REASON : null) ??
         session.attentionReason ??
         'Tour terminé sans clôture explicite de la tâche.';
       if (session.status === 'waiting') {

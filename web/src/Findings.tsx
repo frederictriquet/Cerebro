@@ -282,7 +282,7 @@ export function FindingsPanel({
               {sourceEpic && targetEpic?.id === sourceEpic.id ? (
                 <p className="hint">
                   Les nouvelles tâches attendront les étapes déjà présentes. Traitez ensuite l’epic pour poursuivre dans
-                  son worktree ; si une exécution est en cours, utilisez « Reprendre et recalculer ».
+                  son worktree ; une exécution en cours les intègre automatiquement.
                 </p>
               ) : null}
             </footer>

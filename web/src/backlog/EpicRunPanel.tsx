@@ -114,8 +114,8 @@ export function EpicRunPanel({
       {awaitingTaskId !== null ? (
         <p className="epic-run-reason">
           Étape à valider : {labelOf(awaitingTaskId)}. Vérifiez le résultat et les critères de la tâche, puis marquez
-          cette étape terminée pour poursuivre l’epic. Reprendre et recalculer actualise le plan, sans valider le
-          travail.
+          cette étape terminée pour poursuivre l’epic. Le plan suit seul les modifications de l’epic ; reprendre ne
+          valide pas le travail.
         </p>
       ) : null}
       {RUN_ACTIVE.includes(run.status) || RUN_RESUMABLE.includes(run.status) ? (

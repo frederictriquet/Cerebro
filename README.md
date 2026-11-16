@@ -637,8 +637,8 @@ tour LLM ne marque jamais une tâche terminée.
 - **Ajouter une étape de review** : ajoute à l'epic une dernière tâche
   « Code review du travail de l'epic » qui dépend de toutes les autres. Elle
   s'exécute comme une étape normale, dans le même worktree, et le serveur lui
-  ajoute le périmètre au lancement. Ajoutée pendant une exécution, elle bloque
-  l'epic jusqu'à « Reprendre » (recalcul), comme toute modification de sa
+  ajoute le périmètre au lancement. Ajoutée pendant une exécution, elle est
+  intégrée par le recalcul automatique du plan, comme toute modification de sa
   composition. Un epic n'en reçoit qu'une à la fois.
 
 Dans les deux cas, l'agent publie ses findings via `cerebro-findings`. Le panneau
@@ -649,9 +649,9 @@ premier import du rapport.
 
 Après une exécution terminée, **Poursuivre l’epic dans son worktree** traite les
 nouvelles tâches dans la copie et sur la branche existantes, avec le travail
-déjà réalisé. Si l'exécution est encore ouverte, utilisez **Reprendre et
-recalculer** ; les corrections attendent notamment la clôture de l'étape de
-review. Un worktree retiré ou introuvable empêche la poursuite. Un epic commencé
+déjà réalisé. Si l'exécution est encore ouverte, les nouvelles tâches sont
+intégrées automatiquement à son plan ; les corrections attendent notamment la
+clôture de l'étape de review. Un worktree retiré ou introuvable empêche la poursuite. Un epic commencé
 dans le dossier du projet continue dans ce dossier. Ce choix est conservé même
 si le réglage du projet change ensuite, pour le traitement global, les reviews
 et le bouton **Traiter** de chaque tâche. Le formulaire rappelle le dossier
@@ -1148,8 +1148,9 @@ les changements précédents sans les intégrer silencieusement au dépôt sourc
 
 Un échec arrête l'enchaînement, y compris vers les branches indépendantes. Les
 questions et validations restent visibles. Le panneau d'ordonnancement propose
-arrêt et reprise avec recalcul explicite. Une mutation du contenu, des dépendances
-ou de la composition de l'epic bloque la progression jusqu'à ce recalcul. Les
+arrêt et reprise. Une mutation du contenu, des dépendances ou de la composition
+de l'epic recalcule automatiquement l'ordre des étapes ; seul un plan impossible
+(cycle, prérequis hors epic non terminé) bloque jusqu'à « Reprendre et recalculer ». Les
 prérequis hors epic doivent être terminés. Les lancements concurrents et les
 lancements individuels de tâches réservées sont refusés. Après redémarrage, le
 serveur retrouve l'étape enregistrée ; un résultat de commande inconnu devient un

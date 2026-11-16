@@ -320,7 +320,7 @@ test('findings after a completed epic run continue in its original worktree, inc
     }),
   ));
 
-test('findings from an active review step require replanning and wait for the review to finish', async () =>
+test('findings from an active review step are replanned automatically and wait for the review to finish', async () =>
   fixture(async (f) =>
     withRunner(f, async (r) => {
       const review = f.db.createTask(f.project.id, reviewTaskText('Livraison'), null, r.epic.id);
@@ -330,11 +330,10 @@ test('findings from an active review step require replanning and wait for the re
       const workspace = workspaceFor(f.db, sessionId);
       const report = saveReport(f.db, sessionId, { title: 'Corrections', findings: [finding('a')] });
       const imported = importFindings(f.db, sessionId, report.id, ['a']);
-      await r.until(() => r.latest().status === 'blocked');
-      assert.match(r.latest().error, /Composition/);
+      await r.until(() => r.latest().order.includes(imported.tasks[0].id));
+      assert.equal(r.latest().status, 'waiting-validation');
       assert.equal(f.db.getTask(imported.tasks[0].id).status, 'todo');
       await r.restart();
-      r.runner.resume(r.latest().id, true);
       await r.until(() => r.latest().status === 'waiting-validation');
       assert.equal(r.latest().currentTaskId, review.id);
       assert.equal(r.launches.length, 1);

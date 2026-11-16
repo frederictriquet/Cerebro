@@ -106,11 +106,21 @@ interface Runtime {
 }
 
 const IDLE_DELAY_MS = 20_000;
+/** Reason of the fallback idle state: the screen went quiet, nothing reported an end of turn. */
+export const HEURISTIC_IDLE_REASON = 'Inactif (heuristique)';
+/**
+ * Reason given to a fallback idle state once an epic step is flagged as possibly stuck. Like the fallback reason,
+ * it is provisional: an end of turn reported afterwards replaces it.
+ */
+export const UNCONFIRMED_IDLE_REASON =
+  'Session inactive sans fin de tour signalée (dialogue de l’agent non reconnu ?) : vérifiez son terminal.';
 const SCREEN_CHECK_DELAY_MS = 2_000;
 const CATCH_UP_DELAY_MS = 4_000;
 // Interactive dialogs that hooks do not report (folder trust, y/n confirmations, numbered menus...).
 const PROMPT_PATTERNS = [
   /trust (this|the) (folder|directory|files)/i,
+  // Grok Build: « Do you trust the contents of this directory? ».
+  /trust the contents of this (folder|directory)/i,
   /do you want to (proceed|continue|make this edit|create|run|allow)/i,
   /enter to confirm/i,
   /enter continue/i,
@@ -779,7 +789,7 @@ export class SessionManager {
         const updated = this.db.updateSession(id, {
           status: 'idle',
           attention: false,
-          attentionReason: 'Inactif (heuristique)',
+          attentionReason: HEURISTIC_IDLE_REASON,
         });
         if (updated !== null) this.emit({ type: 'session', session: updated });
       }
@@ -906,7 +916,9 @@ export class SessionManager {
     }
     // Several signals often report the same transition (codex OSC 9 + notify, Claude Stop + idle_prompt):
     // only the first one alerts, the others just refine the reason.
-    const alreadySignaled = session.status === status && session.attention;
+    // A provisional reason (silent epic step) is not a signal: a real end of turn replaces it.
+    const alreadySignaled =
+      session.status === status && session.attention && session.attentionReason !== UNCONFIRMED_IDLE_REASON;
     const updated = this.db.updateSession(id, {
       status,
       attention: true,
