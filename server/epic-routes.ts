@@ -4,6 +4,7 @@ import { isActiveRun } from '../shared/backlog.ts';
 import type { Epic } from '../shared/types.ts';
 import { asRecord } from './util.ts';
 import { error } from './routes-util.ts';
+import { parseExtensionIds } from './extension-routes.ts';
 import { conflict, parseSessionDefaults, type RouteContext } from './route-context.ts';
 import { DUE_DATE_ERROR, MAX_TASK_LENGTH, parseDueDate } from './task-routes.ts';
 
@@ -179,12 +180,27 @@ export function registerEpicRoutes(ctx: RouteContext): void {
         'Epic (ou une de ses tâches) traité dans un autre projet : supprimez sa copie pour le traiter ici.',
       );
     const body = asRecord(request.body) ?? {};
+    if (body.singleSession !== undefined && typeof body.singleSession !== 'boolean')
+      return error(reply, 400, 'singleSession doit être un booléen');
     const options = parseSessionDefaults(catalog, db.getProject(epic.projectId)!.sessionDefaults, {
       ...body,
       prompt: typeof body.prompt === 'string' ? body.prompt : '',
     });
     if (!options) return error(reply, 400, 'Réglages de session invalides');
-    return conflict.attempt(reply, () => epicRunner.start(epic.id, options), 202);
+    let extensionIds: string[] | undefined;
+    if ('extensionIds' in body && body.extensionIds !== undefined) {
+      const parsed = parseExtensionIds(db, body.extensionIds);
+      if (!parsed.ok) return error(reply, 400, parsed.message);
+      extensionIds = parsed.ids;
+    }
+    return conflict.attempt(
+      reply,
+      () =>
+        epicRunner.start(epic.id, extensionIds === undefined ? options : { ...options, extensionIds }, {
+          singleSession: body.singleSession === true,
+        }),
+      202,
+    );
   });
   // Code review du travail d'une epic terminée, arrêtée ou échouée : une session rejoint le worktree des étapes.
   app.post<{ Params: { id: string } }>('/api/epics/:id/review', async (request, reply) => {
@@ -202,6 +218,12 @@ export function registerEpicRoutes(ctx: RouteContext): void {
       prompt: typeof body.prompt === 'string' ? body.prompt : '',
     });
     if (!defaults) return error(reply, 400, 'Réglages de session invalides');
+    let extensionIds: string[] | undefined;
+    if ('extensionIds' in body && body.extensionIds !== undefined) {
+      const parsed = parseExtensionIds(db, body.extensionIds);
+      if (!parsed.ok) return error(reply, 400, parsed.message);
+      extensionIds = parsed.ids;
+    }
     const reviewScope = await conflict.orError(reply, () => {
       const workspace = epicWorkspaces.current(epic.id);
       if (workspace) epicWorkspaces.assert(workspace);
@@ -219,6 +241,7 @@ export function registerEpicRoutes(ctx: RouteContext): void {
           title: `Review de l’epic « ${epic.title} »`.slice(0, 120),
           rememberDefaults: false,
           epicId: epic.id,
+          extensionIds,
         },
       );
       return reply.code(201).send(session);
@@ -249,5 +272,10 @@ export function registerEpicRoutes(ctx: RouteContext): void {
     const enabled = asRecord(request.body)?.enabled;
     if (typeof enabled !== 'boolean') return error(reply, 400, 'enabled doit être un booléen.');
     return conflict.attempt(reply, () => epicRunner.setAutoValidate(request.params.id, enabled));
+  });
+  app.patch<{ Params: { id: string } }>('/api/epic-runs/:id/single-session', async (request, reply) => {
+    const enabled = asRecord(request.body)?.enabled;
+    if (typeof enabled !== 'boolean') return error(reply, 400, 'enabled doit être un booléen.');
+    return conflict.attempt(reply, () => epicRunner.setSingleSession(request.params.id, enabled));
   });
 }

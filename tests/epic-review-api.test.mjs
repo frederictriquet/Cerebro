@@ -587,6 +587,37 @@ test('route errors carry the message without the Error: prefix', async () => {
     const stopped = await app.inject({ method: 'POST', url: `/api/epic-runs/${randomUUID()}/stop` });
     assert.equal(stopped.statusCode, 409);
     assert.deepEqual(stopped.json(), { error: 'Exécution introuvable.' });
+    const withTask = db.createEpic(p.id, 'Avec tâche', '', null);
+    db.createTask(p.id, 'Première étape', null, withTask.id);
+    const badStart = await app.inject({
+      method: 'POST',
+      url: `/api/epics/${withTask.id}/start`,
+      payload: { agent: 'codex', singleSession: 'yes' },
+    });
+    assert.equal(badStart.statusCode, 400);
+    assert.deepEqual(badStart.json(), { error: 'singleSession doit être un booléen' });
+    const okStart = await app.inject({
+      method: 'POST',
+      url: `/api/epics/${withTask.id}/start`,
+      payload: { agent: 'codex', singleSession: true },
+    });
+    assert.equal(okStart.statusCode, 202);
+    assert.equal(okStart.json().singleSession, true);
+    const runId = okStart.json().id;
+    const badPatch = await app.inject({
+      method: 'PATCH',
+      url: `/api/epic-runs/${runId}/single-session`,
+      payload: { enabled: 'no' },
+    });
+    assert.equal(badPatch.statusCode, 400);
+    const toggled = await app.inject({
+      method: 'PATCH',
+      url: `/api/epic-runs/${runId}/single-session`,
+      payload: { enabled: false },
+    });
+    assert.equal(toggled.statusCode, 200);
+    assert.equal(toggled.json().singleSession, false);
+    await app.inject({ method: 'POST', url: `/api/epic-runs/${runId}/stop` });
   } finally {
     await app.close();
   }

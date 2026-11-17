@@ -42,6 +42,7 @@ function historyContexts(db: CerebroDatabase, epicId: string, inventory: () => I
         workspace?: WorkspaceContext | null;
         contextRoot: string;
         sessionId: string | null;
+        epicSessionId?: string | null;
         commandRunId: string | null;
         status: string;
         results: Record<string, string>;
@@ -49,7 +50,8 @@ function historyContexts(db: CerebroDatabase, epicId: string, inventory: () => I
   );
   const contexts: WorkspaceContext[] = [];
   for (const run of runs) {
-    const session = run.sessionId ? sessionContext(db, run.sessionId) : null;
+    const activeSessionId = run.sessionId ?? run.epicSessionId ?? null;
+    const session = activeSessionId ? sessionContext(db, activeSessionId) : null;
     const established = !!run.commandRunId || Object.keys(run.results).length > 0 || run.status === 'succeeded';
     const owner =
       session ??

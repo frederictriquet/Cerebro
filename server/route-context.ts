@@ -29,6 +29,7 @@ import {
 } from '../shared/types.ts';
 import type { CommitResult } from '../shared/git.ts';
 import { asRecord } from './util.ts';
+import { parseExtensionIds } from './extension-routes.ts';
 import { error, routeErrors, type Outcome } from './routes-util.ts';
 
 // Erreurs métier connues : session protégée (409), council (son code) ; 500 pour les autres.
@@ -137,6 +138,13 @@ export function createRouteContext(services: RouteServices) {
     await catalog.ready();
     const defaults = parseSessionDefaults(catalog, project.sessionDefaults, rawBody);
     if (defaults === null) return error(reply, 400, 'Paramètres de session invalides pour cet agent');
+    const body = asRecord(rawBody);
+    let extensionIds: string[] | undefined;
+    if (body !== null && 'extensionIds' in body && body.extensionIds !== undefined) {
+      const parsedExtensions = parseExtensionIds(db, body.extensionIds);
+      if (!parsedExtensions.ok) return error(reply, 400, parsedExtensions.message);
+      extensionIds = parsedExtensions.ids;
+    }
     const remembered = remember === undefined ? null : parseSessionDefaults(catalog, project.sessionDefaults, remember);
     try {
       const session = await sessions.create(project, defaults, {
@@ -145,6 +153,7 @@ export function createRouteContext(services: RouteServices) {
         title,
         rememberDefaults: remember === undefined,
         rememberPrompt: false,
+        extensionIds,
       });
       if (remembered !== null) {
         const { prompt: _prompt, ...settings } = remembered;

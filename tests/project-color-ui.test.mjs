@@ -63,6 +63,7 @@ const stub = () => null;
 const store = {
   projects,
   sessions,
+  extensions: [],
   connected: true,
   muted: false,
   setMuted() {},
@@ -91,6 +92,7 @@ const { Sidebar } = await (
   'react/jsx-runtime': jsx,
   './AdvisorSettings.tsx': { AdvisorPanel: stub, useAdvisor: () => ({ model: null, setModel() {} }) },
   './AgentLabel.tsx': { AgentLabel: ({ agent }) => agent },
+  './ExtensionsDialog.tsx': { ExtensionsDialog: stub },
   './api.ts': {
     acquireGeneralSlack: async () => {},
     getGeneralSlack: async () => null,

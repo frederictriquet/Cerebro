@@ -59,3 +59,7 @@ export function controlEpicRun(run: EpicRun, action: 'stop' | 'resume'): Promise
 export function setEpicRunAutoValidation(runId: string, enabled: boolean): Promise<unknown> {
   return api(apiPath`/api/epic-runs/${runId}/auto-validation`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
 }
+
+export function setEpicRunSingleSession(runId: string, enabled: boolean): Promise<unknown> {
+  return api(apiPath`/api/epic-runs/${runId}/single-session`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
+}

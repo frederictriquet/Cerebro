@@ -618,7 +618,11 @@ Un epic regroupe des tâches liées à un même sujet : elles s'affichent dans u
 bloc commun, numérotées dans l'ordre de leurs dépendances, avec l'avancement.
 « Traiter l'epic » démarre l'ordonnanceur serveur : il lance une seule étape à la
 fois, via son exécuteur LLM ou sa commande configurée. Chaque tâche attend son
-critère de clôture explicite avant la suivante. Le lancement est refusé si un
+critère de clôture explicite avant la suivante. Par défaut, chaque étape LLM ouvre
+sa propre session ; la case **Même session LLM pour tout l’epic** (dans la modale
+de lancement ou le panneau d'ordonnancement) conserve au contraire la même
+conversation d'une étape à l'autre, hors éventuelle étape finale de review qui
+reste isolée. Le lancement est refusé si un
 prérequis hors epic n'est pas terminé ou si une exécution traite déjà ses tâches.
 Le panneau de suivi permet d'arrêter ou de reprendre l'enchaînement ; une fin de
 tour LLM ne marque jamais une tâche terminée.
@@ -1145,6 +1149,12 @@ qu'une validation métier. L'interface permet ce choix à la création. Après u
 étape LLM réussie, les étapes suivantes héritent de son espace isolé (copié pour
 une autre session LLM, utilisé directement pour une commande), afin de retrouver
 les changements précédents sans les intégrer silencieusement au dépôt source.
+Lorsque l'option **Même session LLM** (`singleSession:true`) est activée au
+lancement ou en cours d'exécution, la première étape LLM reçoit la vue d'ensemble
+de l'epic et sa conversation reste ouverte (`idle`) une fois l'étape validée :
+l'ordonnanceur y envoie chaque étape LLM suivante (y compris après une commande
+intercalée), sans fermer le terminal avant la fin de l'epic. Une étape finale de
+review conserve néanmoins une session dédiée pour garder un regard neuf.
 
 Un échec arrête l'enchaînement, y compris vers les branches indépendantes. Les
 questions et validations restent visibles. Le panneau d'ordonnancement propose
@@ -1603,3 +1613,25 @@ participants de ce brouillon sont conservés par session dans le navigateur.
 - Un council en cours lors d'un arrêt ou d'un redémarrage du serveur est marqué
   interrompu, avec les avis déjà obtenus ; il n'est jamais rejoué automatiquement.
 - Supprimer un projet supprime ses councils.
+
+## Fonctionnalités supplémentaires par projet (serveurs MCP)
+
+Un serveur MCP utile sur certains projets seulement (par exemple `https://mcp.data.gouv.fr/mcp`)
+peut être déclaré **une seule fois** dans le catalogue de la machine — via la pastille
+**MCP** de la barre latérale ou depuis l'onglet **Réglages** d'un projet — sans encombrer
+le contexte des autres projets :
+
+- **Catalogue global** : accepte les serveurs MCP distants en Streamable HTTP (URL et
+  en-têtes optionnels) et les serveurs locaux `stdio` (commande, arguments et variables
+  d'environnement). Les valeurs d'en-têtes et de variables d'environnement restent stockées
+  uniquement côté serveur et ne sont jamais renvoyées au navigateur.
+- **Activation par projet ou à la demande** : l'onglet **Réglages** d'un projet définit les
+  serveurs MCP activés par défaut pour ses sessions. Dès qu'au moins un serveur figure au
+  catalogue, le formulaire de lancement propose aussi une rangée **MCP** permettant de cocher
+  ou décocher un serveur ponctuellement pour la session lancée sans modifier le défaut du
+  projet ; la sélection est conservée sur la session pour ses reprises (`resume`).
+- **Injection sans polluer Git** : au lancement et à la reprise, Cerebro passe les serveurs
+  sélectionnés à Claude (`--mcp-config`), Codex (`-c mcp_servers.*` et variables d'en-têtes
+  dans le PTY), Gemini/`agy` (plugin isolé de session via `--add-dir`) et Grok (`GROK_HOME`
+  et socket de session isolés), sans jamais écrire de fichier dans le dépôt du projet. Les
+  fichiers temporaires de session (`0600`) sont supprimés dès la fin du processus.

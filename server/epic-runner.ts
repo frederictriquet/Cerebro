@@ -1,21 +1,24 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import type { CerebroDatabase } from './db.ts';
 import type { CommandExecutor } from './commands.ts';
+import { ATTACHMENTS_DIR } from './config.ts';
 import {
   HEURISTIC_IDLE_REASON,
   UNCONFIRMED_IDLE_REASON as SILENT_STEP_REASON,
   type SessionEvent,
   type SessionManager,
 } from './sessions.ts';
+import { delay } from './session-input.ts';
 import { workspaceFor } from './provenance.ts';
 import { EpicWorkspaceConflict, type EpicWorkspaces } from './epic-workspace.ts';
 import { epicReviewInstructions, epicReviewScope } from './epic-review.ts';
 import { isReviewTask } from '../shared/epic-review.ts';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { git } from './git.ts';
 import { canonicalWorktreePath } from './worktree-gate.ts';
 import { errorMessage } from './util.ts';
-import type { Epic, SessionDefaults, Task } from '../shared/types.ts';
+import type { Epic, Session, Task } from '../shared/types.ts';
 import type { WorkspaceContext } from '../shared/git.ts';
 import { isActiveRun, type CommandRun, type EpicRun } from '../shared/backlog.ts';
 /** An epic run as stored in `epic_runs`: the shared contract without the fields computed when it is read. */
@@ -81,6 +84,7 @@ const workspaceTrace = (run: EpicRunRecord): string =>
     run.workspace ?? null,
     run.contextRoot,
     run.sessionId,
+    run.epicSessionId ?? null,
     run.commandRunId,
     Object.keys(run.results).length > 0,
     run.status === 'succeeded',
@@ -108,6 +112,8 @@ export class EpicRunner {
   onResult: (run: EpicRunRecord) => void = () => {};
   // A session often waits briefly at launch (accepted startup prompt, false positive of the screen heuristic): only a lasting wait blocks the run.
   waitingGraceMs = 12_000;
+  // Delay between typing a follow-up step prompt into a shared session and submitting Enter.
+  inputDelayMs = 150;
   // Safety net for history changes that reach the database without an event.
   workspaceTtlMs = 30_000;
   private db: CerebroDatabase;
@@ -234,7 +240,10 @@ export class EpicRunner {
   ): void {
     const previous = this.stored(run.id);
     // A setting can change while an asynchronous launch holds an older copy of the run.
-    if (!updateSettings) run.autoValidate = previous?.autoValidate ?? run.autoValidate ?? false;
+    if (!updateSettings) {
+      run.autoValidate = previous?.autoValidate ?? run.autoValidate ?? false;
+      run.singleSession = previous?.singleSession ?? run.singleSession ?? false;
+    }
     run.updatedAt = Date.now();
     // Computed when read, never stored.
     const { workspaceConflict, workspaceError, ...record } = run;
@@ -292,7 +301,11 @@ export class EpicRunner {
     return { epic, members, order: taskOrder(open, all) };
   }
   // Serialized with the epic's other workspace operations: no concurrent start, folder choice or step launch can slip in while HEAD is read.
-  start(epicId: string, options: SessionDefaults): Promise<EpicRunRecord> {
+  start(
+    epicId: string,
+    options: EpicRun['options'],
+    settings: { singleSession?: boolean } = {},
+  ): Promise<EpicRunRecord> {
     return this.workspaces.withPreparation(epicId, async () => {
       const runs = this.list(epicId);
       if (runs.some(isActiveRun)) throw new Error('Epic déjà en cours : utilisez reprendre ou arrêter.');
@@ -319,6 +332,8 @@ export class EpicRunner {
         results: {},
         currentTaskId: null,
         sessionId: null,
+        epicSessionId: null,
+        singleSession: settings.singleSession === true,
         commandRunId: null,
         stepStartedAt: 0,
         contextRoot,
@@ -368,6 +383,28 @@ export class EpicRunner {
     this.poke();
     return this.resolved(run);
   }
+  setSingleSession(id: string, enabled: boolean): EpicRunView {
+    const run = this.stored(id);
+    if (!run) throw new Error('Exécution introuvable.');
+    if (!isActiveRun(run)) throw new Error('Cette exécution n’est plus en cours.');
+    run.singleSession = enabled;
+    if (enabled) {
+      const currentTask = run.currentTaskId ? this.db.getTask(run.currentTaskId) : null;
+      if (!run.epicSessionId && run.sessionId && currentTask && !isReviewTask(currentTask)) {
+        const active = this.db.getSession(run.sessionId);
+        if (active && active.status !== 'exited') run.epicSessionId = active.id;
+      }
+    } else {
+      if (run.epicSessionId && run.epicSessionId !== run.sessionId) {
+        const shared = this.db.getSession(run.epicSessionId);
+        if (shared && shared.status !== 'exited') this.sessions.kill(shared.id);
+      }
+      run.epicSessionId = null;
+    }
+    this.save(run, true);
+    this.poke();
+    return this.resolved(run);
+  }
   stop(id: string): EpicRunView {
     const run = this.stored(id);
     if (!run) throw new Error('Exécution introuvable.');
@@ -376,6 +413,7 @@ export class EpicRunner {
     this.save(run);
     if (run.commandRunId) this.commands.stop(run.commandRunId);
     if (run.sessionId) this.sessions.kill(run.sessionId);
+    if (run.epicSessionId && run.epicSessionId !== run.sessionId) this.sessions.kill(run.epicSessionId);
     return this.resolved(run);
   }
   selectWorkspace(epicId: string, path: string): WorkspaceContext {
@@ -407,6 +445,14 @@ export class EpicRunner {
     this.invalidateWorkspaces(epicId);
     for (const run of runs)
       if (run.status === 'blocked' && run.error?.includes('Cet epic a utilisé plusieurs dossiers de travail')) {
+        if (run.epicSessionId) {
+          const shared = this.db.getSession(run.epicSessionId);
+          const sharedWorkspace = shared ? workspaceFor(this.db, shared.id) : null;
+          if (sharedWorkspace && canonicalWorktreePath(sharedWorkspace.path) !== canonicalWorktreePath(context.path)) {
+            if (shared && shared.status !== 'exited') this.sessions.kill(shared.id);
+            run.epicSessionId = null;
+          }
+        }
         run.workspace = context;
         run.contextRoot = context.path;
         run.workspaceConflict = false;
@@ -526,8 +572,12 @@ export class EpicRunner {
   }
   // The step's session no longer holds the run: it stopped waiting, or its task is done and it is not asking an explicit question.
   private waitOver(run: EpicRunRecord): boolean {
+    const shared =
+      run.singleSession && !run.sessionId && run.epicSessionId ? this.db.getSession(run.epicSessionId) : null;
+    if (shared) return shared.status !== 'waiting';
     const session = run.sessionId ? this.db.getSession(run.sessionId) : null;
     if (!session || session.status !== 'waiting') return true;
+    if (run.singleSession && session.id === run.epicSessionId) return false;
     return this.db.getTask(run.currentTaskId ?? '')?.status === 'done' && !askedQuestion(session);
   }
   private async tick(run: EpicRunView): Promise<void> {
@@ -676,21 +726,37 @@ export class EpicRunner {
       }
       return false;
     }
-    // Once the step is declared done, only an explicit question holds it: a lasting screen-detected wait no longer matters.
-    if (askedQuestion(session)) {
-      this.halt(run, 'blocked', 'Une question de la session reste en attente.', 'session-waiting');
+    const keepSession = Boolean(run.singleSession && session.id === run.epicSessionId);
+    // Once the step is declared done, an explicit question holds it, and a shared epic session must also be free of any open dialog before receiving the next step.
+    if (askedQuestion(session) || (keepSession && session.status === 'waiting')) {
+      this.halt(
+        run,
+        'blocked',
+        askedQuestion(session)
+          ? 'Une question de la session reste en attente.'
+          : (session.attentionReason ?? 'La session de l’epic attend une confirmation avant l’étape suivante.'),
+        'session-waiting',
+      );
       return false;
     }
     run.contextRoot = workspaceFor(this.db, session.id)?.path ?? run.contextRoot;
     run.results[task.id] = autoValidated ? 'auto-validated' : 'declared-done';
-    // The step is closed and its turn is over: free the terminal so finished steps do not pile up. The workspace stays for the next step.
-    if (session.status !== 'exited') this.sessions.kill(session.id);
+    // The step is closed and its turn is over: free the terminal unless singleSession keeps it for the next steps.
+    if (!keepSession && session.status !== 'exited') this.sessions.kill(session.id);
     return true;
   }
   // The next task whose prerequisites are done; null when the run succeeded or cannot advance.
   private resolveStep(run: EpicRunView): Task | null {
     const pending = run.order.map((id) => this.db.getTask(id)!).filter((t) => t.status !== 'done');
     if (!pending.length) {
+      if (run.epicSessionId) {
+        const shared = this.db.getSession(run.epicSessionId);
+        const epic = this.db.getEpic(run.epicId);
+        if (shared) {
+          if (epic) this.sessions.rename?.(shared.id, `Epic « ${epic.title} » · session commune`.slice(0, 120));
+          if (shared.status !== 'exited') this.sessions.kill(shared.id);
+        }
+      }
       run.status = 'succeeded';
       run.error = null;
       this.save(run);
@@ -701,9 +767,32 @@ export class EpicRunner {
       this.halt(run, 'blocked', 'Aucune tâche éligible : dépendance non satisfaite.');
       return null;
     }
-    if (this.commands.active(next.id) || (next.sessionId && this.db.getSession(next.sessionId)?.status !== 'exited')) {
+    const busyElsewhere =
+      this.commands.active(next.id) ||
+      (next.sessionId &&
+        !(run.singleSession && next.sessionId === run.epicSessionId) &&
+        this.db.getSession(next.sessionId)?.status !== 'exited');
+    if (busyElsewhere) {
       this.halt(run, 'blocked', 'La tâche suivante possède déjà une exécution active.');
       return null;
+    }
+    if (run.singleSession && !isReviewTask(next) && next.execution.type !== 'command' && run.epicSessionId) {
+      const shared = this.db.getSession(run.epicSessionId);
+      if (shared && shared.status !== 'exited') {
+        if (shared.status === 'running' || shared.status === 'starting') {
+          this.save(run);
+          return null;
+        }
+        if (shared.status === 'waiting') {
+          this.halt(
+            run,
+            'blocked',
+            shared.attentionReason ?? 'La session de l’epic attend une réponse avant l’étape suivante.',
+            'session-waiting',
+          );
+          return null;
+        }
+      }
     }
     return next;
   }
@@ -729,20 +818,28 @@ export class EpicRunner {
   }
   private async launchSession(run: EpicRunView, epic: Epic, next: Task): Promise<void> {
     const project = this.db.getProject(run.projectId)!;
+    const stepNumber = run.order.indexOf(next.id) + 1;
     const title =
-      `Epic « ${epic.title} » · étape ${run.order.indexOf(next.id) + 1}/${run.order.length} : ${next.text.split('\n')[0]}`.slice(
-        0,
-        120,
-      );
+      `Epic « ${epic.title} » · étape ${stepNumber}/${run.order.length} : ${next.text.split('\n')[0]}`.slice(0, 120);
+    const isReview = isReviewTask(next);
+    const shared = run.singleSession && !isReview && run.epicSessionId ? this.db.getSession(run.epicSessionId) : null;
+    if (shared && shared.status !== 'exited') {
+      await this.reuseEpicSession(run, epic, next, shared, title, stepNumber);
+      return;
+    }
     // The review step is told what the previous steps changed; a scope that cannot be prepared leaves the agent to find it.
-    const review = isReviewTask(next)
+    const review = isReview
       ? `\n\n${epicReviewInstructions(epic.title, await epicReviewScope(this.db, run).catch(() => null))}`
       : '';
-    const prompt = `[CEREBRO_EPIC_STEP ${run.id} ${next.id}]\nTraite uniquement cette étape de l’epic « ${epic.title} ».\n${epic.description}\n\n${next.text}${review}\n\nIdentifiant : ${next.id}\nRéalise et vérifie cette tâche, puis exécute cerebro-backlog --done ${next.id} uniquement si elle est terminée. En cas d’échec utilise cerebro-backlog --fail <id> "raison" ; en cas de blocage utilise --block ; pour une validation nécessaire utilise --await-validation. Explique le résultat et termine ton tour. Le serveur pilote l’enchaînement : ne traite aucune autre tâche.\n\nInstructions supplémentaires : ${run.options.prompt}`;
+    const prompt =
+      run.singleSession && !isReview
+        ? this.initialSingleSessionPrompt(run, epic, next)
+        : `[CEREBRO_EPIC_STEP ${run.id} ${next.id}]\nTraite uniquement cette étape de l’epic « ${epic.title} ».\n${epic.description}\n\n${next.text}${review}\n\nIdentifiant : ${next.id}\nRéalise et vérifie cette tâche, puis exécute cerebro-backlog --done ${next.id} uniquement si elle est terminée. En cas d’échec utilise cerebro-backlog --fail <id> "raison" ; en cas de blocage utilise --block ; pour une validation nécessaire utilise --await-validation. Explique le résultat et termine ton tour. Le serveur pilote l’enchaînement : ne traite aucune autre tâche.\n\nInstructions supplémentaires : ${run.options.prompt}`;
     this.changeTask(next.id, { status: 'started', sessionId: null });
+    const { extensionIds, ...launchDefaults } = run.options;
     const session = await this.sessions.create(
       project,
-      { ...run.options, prompt },
+      { ...launchDefaults, prompt },
       {
         validate: async () => {
           const latest = this.stored(run.id);
@@ -751,6 +848,7 @@ export class EpicRunner {
           const pending = this.db.listSessions().find((s) => s.prompt === prompt);
           if (pending) {
             run.sessionId = pending.id;
+            if (!isReview && (latest.singleSession ?? run.singleSession)) run.epicSessionId = pending.id;
             this.changeTask(next.id, { sessionId: pending.id });
             const workspace = workspaceFor(this.db, pending.id);
             if (workspace) {
@@ -767,10 +865,103 @@ export class EpicRunner {
         title,
         rememberDefaults: false,
         epicId: epic.id,
+        extensionIds,
       },
     );
     run.sessionId = session.id;
+    if (!isReview && (this.stored(run.id)?.singleSession ?? run.singleSession)) run.epicSessionId = session.id;
     this.changeTask(next.id, { sessionId: session.id });
+  }
+  private initialSingleSessionPrompt(run: EpicRunView, epic: Epic, next: Task): string {
+    const overview = run.order
+      .map((id, index) => {
+        const item = this.db.getTask(id);
+        const firstLine =
+          item?.text
+            .split('\n')
+            .find((line) => line.trim() !== '')
+            ?.trim() ?? id;
+        const tag = id === next.id ? 'étape courante' : item?.status === 'done' ? 'terminée' : 'à venir';
+        return `${index + 1}. [${tag}] ${firstLine.slice(0, 120)}`;
+      })
+      .join('\n');
+    return (
+      `[CEREBRO_EPIC_STEP ${run.id} ${next.id}]\n` +
+      `Cette session traite les étapes LLM de l’epic « ${epic.title} » l’une après l’autre.\n` +
+      `${epic.description}\n\n` +
+      `Vue d’ensemble des étapes de l’epic :\n${overview}\n\n` +
+      `Pour ce tour, traite uniquement l’étape courante ci-dessous ; le serveur t’enverra la suivante dans cette même conversation dès que celle-ci sera clôturée.\n\n` +
+      `${next.text}\n\n` +
+      `Identifiant : ${next.id}\n` +
+      `Réalise et vérifie cette tâche, puis exécute cerebro-backlog --done ${next.id} uniquement si elle est terminée. ` +
+      'En cas d’échec utilise cerebro-backlog --fail <id> "raison" ; en cas de blocage utilise --block ; pour une validation nécessaire utilise --await-validation. ' +
+      `Explique le résultat et termine ton tour. Le serveur pilote l’enchaînement : ne traite aucune autre tâche avant qu’elle ne te soit envoyée.\n\n` +
+      `Instructions supplémentaires : ${run.options.prompt}`
+    );
+  }
+  private async reuseEpicSession(
+    run: EpicRunView,
+    epic: Epic,
+    next: Task,
+    shared: Session,
+    title: string,
+    stepNumber: number,
+  ): Promise<void> {
+    await this.workspaces.withPreparation(run.epicId, async () => {
+      const workspace = this.workspaces.current(run.epicId) ?? workspaceFor(this.db, shared.id);
+      if (workspace) {
+        this.workspaces.assert({ path: workspace.path, mode: workspace.mode });
+        run.workspace = this.workspaces.remember(run.epicId, { path: workspace.path, mode: workspace.mode });
+        run.contextRoot = workspace.path;
+      }
+      const latest = this.stored(run.id);
+      if (this.closed || !latest || latest.status === 'stopped')
+        throw new Error('Epic arrêté avant l’envoi de l’étape suivante.');
+      this.sessions.rename?.(shared.id, title);
+      this.changeTask(next.id, { status: 'started', sessionId: shared.id });
+      const message = this.followUpStepPrompt(run, epic, next, stepNumber);
+      const sent = await this.sendStepPrompt(shared.id, message, run.id);
+      if (!sent) {
+        this.changeTask(next.id, { status: 'todo', sessionId: null });
+        this.clearStep(run);
+        const after = this.stored(run.id);
+        if (this.closed || !after || after.status === 'stopped') return;
+        throw new Error('Impossible d’envoyer l’étape suivante à la session de l’epic.');
+      }
+      this.sessions.setRunning?.(shared.id);
+      run.sessionId = shared.id;
+    });
+  }
+  // Typed into a live PTY: must stay on a single line and well under OS PTY input buffer limits.
+  private followUpStepPrompt(run: EpicRunView, epic: Epic, next: Task, stepNumber: number): string {
+    const closing =
+      `Identifiant : ${next.id}. Réalise et vérifie uniquement cette étape, puis exécute cerebro-backlog --done ${next.id} ` +
+      `uniquement si elle est terminée (en cas d’échec : cerebro-backlog --fail ${next.id} "raison" ; blocage : --block ; ` +
+      'validation requise : --await-validation), explique le résultat et termine ton tour.';
+    const inline = next.text.trim().replace(/\s*\n+\s*/g, ' · ');
+    const direct =
+      `[CEREBRO_EPIC_STEP ${run.id} ${next.id}] Étape suivante (${stepNumber}/${run.order.length}) de l’epic « ${epic.title} » : ` +
+      `« ${inline} ». ${closing}`;
+    if (Buffer.byteLength(direct, 'utf8') <= 1800) return direct;
+    const dir = join(ATTACHMENTS_DIR, `project-${run.projectId}`, `epic-run-${run.id}`);
+    const file = join(dir, `step-${stepNumber}-${next.id}.md`);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      file,
+      `# Epic « ${epic.title} » — Étape ${stepNumber}/${run.order.length}\n\nIdentifiant : ${next.id}\n\n${next.text}\n`,
+      { mode: 0o600 },
+    );
+    return (
+      `[CEREBRO_EPIC_STEP ${run.id} ${next.id}] Étape suivante (${stepNumber}/${run.order.length}) de l’epic « ${epic.title} » ` +
+      `(consigne complète enregistrée dans ${file} : lis d’abord ce fichier intégralement). ${closing}`
+    );
+  }
+  private async sendStepPrompt(sessionId: string, text: string, runId: string): Promise<boolean> {
+    if (!this.sessions.writeInput(sessionId, text)) return false;
+    if (this.inputDelayMs > 0) await delay(this.inputDelayMs);
+    const latest = this.stored(runId);
+    if (this.closed || !latest || latest.status === 'stopped') return false;
+    return this.sessions.writeInput(sessionId, '\r');
   }
   // A stop can arrive while the holder is starting. Preserve it and stop the new operation too.
   private abortIfStopped(run: EpicRunView): void {
@@ -782,6 +973,7 @@ export class EpicRunner {
     if (this.closed || latest?.status === 'stopped') {
       if (run.commandRunId) this.commands.stop(run.commandRunId);
       if (run.sessionId) this.sessions.kill(run.sessionId);
+      if (run.epicSessionId && run.epicSessionId !== run.sessionId) this.sessions.kill(run.epicSessionId);
       run.status = 'stopped';
     }
     this.save(run);
@@ -790,6 +982,7 @@ export class EpicRunner {
   private abandon(run: EpicRunView): void {
     if (run.commandRunId) this.commands.stop(run.commandRunId);
     if (run.sessionId) this.sessions.kill(run.sessionId);
+    if (run.epicSessionId && run.epicSessionId !== run.sessionId) this.sessions.kill(run.epicSessionId);
     const task = run.currentTaskId ? this.db.getTask(run.currentTaskId) : null;
     if (task && task.status !== 'done') this.changeTask(task.id, { status: 'todo', sessionId: null });
   }

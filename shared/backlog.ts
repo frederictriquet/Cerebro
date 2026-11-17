@@ -1,6 +1,6 @@
 // Backlog contracts read by the web UI: epic runs and their copy, review findings, project commands, session tasks.
 import { array, boolean, literal, nullable, number, object, optional, parser, record, string } from './parse.ts';
-import { AGENTS, EFFORTS, MODES, type SessionDefaults } from './types.ts';
+import { AGENTS, EFFORTS, MODES, type SessionLaunchSpec } from './types.ts';
 import { workspaceContextSchema, type WorkspaceContext } from './git.ts';
 
 export interface EpicRun {
@@ -17,7 +17,7 @@ export interface EpicRun {
   commandRunId: string | null;
   stepStartedAt: number;
   contextRoot: string;
-  options: SessionDefaults;
+  options: SessionLaunchSpec;
   error: string | null;
   startedAt: number;
   updatedAt: number;
@@ -26,6 +26,10 @@ export interface EpicRun {
   // Explicit criteria reported by the current step, retained through blocking and replanning.
   validationReason?: string | null;
   autoValidate?: boolean;
+  // Reuse the same LLM session across non-review steps of the run instead of opening one per step.
+  singleSession?: boolean;
+  // Shared LLM session retained across steps (including across an intermediate command step) when singleSession is on.
+  epicSessionId?: string | null;
   // Why a blocked run is blocked: 'session-waiting' clears by itself once the step's session stops waiting or its task is done; any other block needs an explicit resume.
   blockReason?: 'session-waiting' | null;
   // HEAD of the project folder when the run started: base of the epic review when work is not isolated in a worktree.
@@ -134,12 +138,13 @@ const epicRun = object<EpicRun>({
   commandRunId: nullable(string),
   stepStartedAt: number,
   contextRoot: string,
-  options: object<SessionDefaults>({
+  options: object<SessionLaunchSpec>({
     agent: literal(...AGENTS),
     mode: literal(...MODES),
     model: nullable(string),
     effort: nullable(literal(...EFFORTS)),
     prompt: string,
+    extensionIds: optional(strings),
   }),
   error: nullable(string),
   startedAt: number,
@@ -147,6 +152,8 @@ const epicRun = object<EpicRun>({
   waitingSince: optional(nullable(number)),
   validationReason: optional(nullable(string)),
   autoValidate: optional(boolean),
+  singleSession: optional(boolean),
+  epicSessionId: optional(nullable(string)),
   blockReason: optional(nullable(literal('session-waiting'))),
   baseHead: optional(nullable(string)),
   workspace: optional(nullable(workspaceContextSchema)),

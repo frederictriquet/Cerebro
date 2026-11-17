@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { AgentLabel } from './AgentLabel.tsx';
 import { AttentionDetail } from './AttentionDetail.tsx';
+import { SessionExtensionsPill } from './ExtensionControls.tsx';
 import { FindingsLink } from './FindingsLink.tsx';
 import { STATUS_LABEL, type DisplayStatus } from './format.ts';
 import type { Session } from '../../shared/types.ts';
@@ -34,6 +35,7 @@ export function SessionMeta({
       <span className={`pill status ${status}`}>{STATUS_LABEL[status]}</span>
       {afterStatus}
       <WorktreeLabel worktree={session.worktree} />
+      <SessionExtensionsPill extensionIds={session.extensionIds} />
       {children}
     </>
   );

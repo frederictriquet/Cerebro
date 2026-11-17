@@ -14,6 +14,7 @@ import { CommandExecutor } from './commands.ts';
 import { registerWorktreeRoutes } from './worktree-routes.ts';
 import { registerAutomaticCommitRoutes } from './automatic-commit-routes.ts';
 import { registerPersonaRoutes } from './persona-routes.ts';
+import { registerExtensionRoutes } from './extension-routes.ts';
 import { registerCouncilRoutes } from './council-routes.ts';
 import type { Catalog } from './catalog.ts';
 import { BIND_TOKEN, ensureDataDirs, HOST, PORT, ROOT } from './config.ts';
@@ -390,6 +391,7 @@ export async function buildServer(
   registerTranscriptRoutes(app);
   registerWeeklyMetricsRoutes(app);
   registerSystemRoutes(context);
+  registerExtensionRoutes(context);
   registerProjectRoutes(context);
   registerSessionRoutes(context);
   registerTaskRoutes(context);
@@ -409,6 +411,7 @@ export async function buildServer(
       sessions: db.listSessions(),
       tasks: db.listTasks(),
       epics: db.listEpics(),
+      extensions: db.listExtensions(),
       // Annonce les événements epic-run et command-run : sans ce champ (instance antérieure), l'UI les relit périodiquement.
       runEvents: true,
     });

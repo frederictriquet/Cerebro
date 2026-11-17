@@ -1,6 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLatest } from './use-latest.ts';
-import { api, apiParsed, apiPath, wsUrl } from './api.ts';
+import {
+  api,
+  apiParsed,
+  apiPath,
+  createExtension as apiCreateExtension,
+  deleteExtension as apiDeleteExtension,
+  updateExtension as apiUpdateExtension,
+  wsUrl,
+} from './api.ts';
 import {
   armNotificationPermission,
   playAlert,
@@ -32,7 +40,10 @@ import {
   type AgentInfo,
   type Epic,
   type EventsMessage,
+  type Extension,
+  type ExtensionInput,
   type SessionDefaults,
+  type SessionLaunchSpec,
   type Project,
   type Session,
   type Task,
@@ -47,6 +58,7 @@ export interface Store {
   sessions: Session[];
   tasks: Task[];
   epics: Epic[];
+  extensions: Extension[];
   agents: AgentInfo[];
   refreshAgents: () => Promise<void>;
   agentsRefreshing: boolean;
@@ -78,8 +90,11 @@ export interface Store {
   createProject: (name: string, path: string) => Promise<Project>;
   deleteProject: (id: string) => Promise<void>;
   reorderProjects: (ids: string[]) => Promise<void>;
+  createExtension: (input: ExtensionInput) => Promise<Extension>;
+  updateExtension: (id: string, input: ExtensionInput) => Promise<Extension>;
+  deleteExtension: (id: string) => Promise<void>;
   // Champs omis : le serveur reprend les réglages par défaut du projet.
-  createSession: (projectId: string, spec: Partial<SessionDefaults>) => Promise<Session>;
+  createSession: (projectId: string, spec: Partial<SessionLaunchSpec>) => Promise<Session>;
   killSession: (id: string) => Promise<void>;
   /** Relit une session sur le serveur, quand le temps réel a pu manquer sa fin. */
   refreshSession: (id: string) => Promise<void>;
@@ -104,16 +119,16 @@ export interface Store {
   updateTask: (id: string, patch: TaskPatch) => Promise<Task>;
   deleteTask: (id: string) => Promise<void>;
   deleteCompletedBacklog: (projectId: string) => Promise<void>;
-  startTask: (id: string, spec: SessionDefaults) => Promise<Session>;
+  startTask: (id: string, spec: SessionLaunchSpec) => Promise<Session>;
   /** Lance une tâche « commande » : aucune session, le serveur démarre la commande configurée. */
   startCommandTask: (id: string) => Promise<void>;
   createEpic: (projectId: string, title: string, description?: string, dueDate?: string | null) => Promise<Epic>;
   updateEpic: (id: string, patch: { title?: string; description?: string; dueDate?: string | null }) => Promise<Epic>;
   deleteEpic: (id: string) => Promise<void>;
   /** Sans `spec`, l'epic ne compte que des tâches « commande » : aucun réglage de session. */
-  startEpic: (id: string, spec?: SessionDefaults) => Promise<EpicRun>;
+  startEpic: (id: string, spec?: SessionLaunchSpec & { singleSession?: boolean }) => Promise<EpicRun>;
   addEpicReviewTask: (epicId: string) => Promise<Task>;
-  startEpicReview: (epicId: string, spec: SessionDefaults) => Promise<Session>;
+  startEpicReview: (epicId: string, spec: SessionLaunchSpec) => Promise<Session>;
   importFindings: (sessionId: string, reportId: string, selected: string[], epicId: string | null) => Promise<void>;
 }
 
@@ -142,6 +157,7 @@ export interface ProjectPatch {
   workspaceMode?: import('../../shared/types.ts').WorkspaceMode;
   autoPush?: boolean;
   regenerablePaths?: string[];
+  extensionIds?: string[];
   // null : le projet revient aux réglages globaux du council.
   councilSettings?: import('../../shared/types.ts').CouncilSettings | null;
   // null : le projet revient aux réglages Slack de la machine.
@@ -190,6 +206,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<Session[]>(cached?.sessions ?? []);
   const [tasks, setTasks] = useState<Task[]>(cached?.tasks ?? []);
   const [epics, setEpics] = useState<Epic[]>(cached?.epics ?? []);
+  const [extensions, setExtensions] = useState<Extension[]>(cached?.extensions ?? []);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [connected, setConnected] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -246,8 +263,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   // Pas avant les premières données : des listes vides passeraient pour l'état de la machine.
   useEffect(() => {
-    if (hasData) rememberData(machineKey, { projects, sessions, tasks, epics });
-  }, [machineKey, hasData, projects, sessions, tasks, epics]);
+    if (hasData) rememberData(machineKey, { projects, sessions, tasks, epics, extensions });
+  }, [machineKey, hasData, projects, sessions, tasks, epics, extensions]);
 
   useEffect(() => {
     const { total, waiting, pendingFindings } = attentionCounts(sessions);
@@ -299,6 +316,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             setSessions(sortSessions(msg.sessions));
             setTasks(msg.tasks);
             setEpics(msg.epics);
+            setExtensions(msg.extensions);
             setRunEvents(msg.runEvents);
             setLoaded(true);
             setHasData(true);
@@ -323,6 +341,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             break;
           case 'projects':
             setProjects(msg.projects);
+            break;
+          case 'extensions':
+            setExtensions(msg.extensions);
             break;
           case 'peers':
             setPeersVersion((n) => n + 1);
@@ -390,6 +411,34 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setProjects(parseProjectList(raw));
   }, []);
 
+  const createExtension = useCallback(async (input: ExtensionInput): Promise<Extension> => {
+    const created = await apiCreateExtension(input);
+    setExtensions((list) =>
+      [...upsertById(list, created)].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
+    );
+    return created;
+  }, []);
+
+  const updateExtension = useCallback(async (id: string, input: ExtensionInput): Promise<Extension> => {
+    const updated = await apiUpdateExtension(id, input);
+    setExtensions((list) =>
+      [...upsertById(list, updated)].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
+    );
+    return updated;
+  }, []);
+
+  const deleteExtension = useCallback(async (id: string): Promise<void> => {
+    await apiDeleteExtension(id);
+    setExtensions((list) => list.filter((ext) => ext.id !== id));
+    setProjects((list) =>
+      list.map((project) =>
+        project.extensionIds.includes(id)
+          ? { ...project, extensionIds: project.extensionIds.filter((item) => item !== id) }
+          : project,
+      ),
+    );
+  }, []);
+
   const [agentsRefreshing, setAgentsRefreshing] = useState(false);
   const [agentsRefreshError, setAgentsRefreshError] = useState<string | null>(null);
   // Rafraîchissement en cours : les appels concurrents le partagent au lieu d'en lancer un autre.
@@ -435,7 +484,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const createSession = useCallback(
-    async (projectId: string, spec: Partial<SessionDefaults>): Promise<Session> => {
+    async (projectId: string, spec: Partial<SessionLaunchSpec>): Promise<Session> => {
       const session = await apiParsed(apiPath`/api/projects/${projectId}/sessions`, parseSession, {
         method: 'POST',
         body: JSON.stringify(spec),
@@ -626,7 +675,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const startTask = useCallback(
-    async (id: string, spec: SessionDefaults): Promise<Session> => {
+    async (id: string, spec: SessionLaunchSpec): Promise<Session> => {
       const raw = await api(apiPath`/api/tasks/${id}/start`, {
         method: 'POST',
         body: JSON.stringify(spec),
@@ -677,12 +726,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setEpics((list) => list.filter((e) => e.id !== id));
   }, []);
 
-  const startEpic = useCallback(async (id: string, spec?: SessionDefaults): Promise<EpicRun> => {
-    return apiParsed(apiPath`/api/epics/${id}/start`, parseEpicRun, {
-      method: 'POST',
-      body: JSON.stringify(spec ?? {}),
-    });
-  }, []);
+  const startEpic = useCallback(
+    async (id: string, spec?: SessionLaunchSpec & { singleSession?: boolean }): Promise<EpicRun> => {
+      return apiParsed(apiPath`/api/epics/${id}/start`, parseEpicRun, {
+        method: 'POST',
+        body: JSON.stringify(spec ?? {}),
+      });
+    },
+    [],
+  );
 
   const addEpicReviewTask = useCallback(async (epicId: string): Promise<Task> => {
     const task = await apiParsed(apiPath`/api/epics/${epicId}/review-task`, parseTask, { method: 'POST' });
@@ -691,7 +743,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const startEpicReview = useCallback(
-    async (epicId: string, spec: SessionDefaults): Promise<Session> => {
+    async (epicId: string, spec: SessionLaunchSpec): Promise<Session> => {
       const session = await apiParsed(apiPath`/api/epics/${epicId}/review`, parseSession, {
         method: 'POST',
         body: JSON.stringify(spec),
@@ -726,6 +778,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       sessions,
       tasks,
       epics,
+      extensions,
       agents,
       refreshAgents,
       agentsRefreshing,
@@ -747,6 +800,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       createProject,
       deleteProject,
       reorderProjects,
+      createExtension,
+      updateExtension,
+      deleteExtension,
       createSession,
       killSession,
       refreshSession,
@@ -783,6 +839,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       sessions,
       tasks,
       epics,
+      extensions,
       agents,
       refreshAgents,
       agentsRefreshing,
@@ -804,6 +861,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       createProject,
       deleteProject,
       reorderProjects,
+      createExtension,
+      updateExtension,
+      deleteExtension,
       createSession,
       killSession,
       refreshSession,

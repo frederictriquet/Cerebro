@@ -264,6 +264,7 @@ export function registerSessionRoutes(ctx: RouteContext): void {
           title: `Contenu de départ · ${conversation?.title ?? basename(view.path)}`.slice(0, 120),
           rememberDefaults: false,
           workspace: { mode: 'isolated', path: view.path },
+          extensionIds: [],
         },
       );
       return reply.code(201).send(session);
@@ -333,6 +334,7 @@ export function registerSessionRoutes(ctx: RouteContext): void {
           title: `Conflits · ${conversation?.title ?? basename(view.path)}`.slice(0, 120),
           rememberDefaults: false,
           workspace: { mode: 'isolated', path: view.path },
+          extensionIds: [],
         },
       );
       worktrees.rememberResolver(id, session.id, context.mergeHead);

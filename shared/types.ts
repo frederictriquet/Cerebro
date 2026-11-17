@@ -46,6 +46,11 @@ export interface SessionDefaults {
   prompt: string;
 }
 
+// Paramètres d'un lancement : les défauts mémorisables du projet + une sélection ponctuelle éventuelle d'extensions.
+export interface SessionLaunchSpec extends SessionDefaults {
+  extensionIds?: string[];
+}
+
 export const DEFAULT_SESSION_DEFAULTS: Readonly<SessionDefaults> = {
   agent: 'claude',
   mode: 'auto',
@@ -281,12 +286,69 @@ export interface Project {
    * the copy deletes them like the regenerable folders at its root.
    */
   regenerablePaths: string[];
+  /** Identifiants des extensions (serveurs MCP…) activées par défaut pour les sessions de ce projet. */
+  extensionIds: string[];
   /** Projet ouvert en basculant sur cette machine depuis le sélecteur ; un seul par machine. */
   pinned: boolean;
   /** Projet mis en pause : masqué des onglets actifs et exclu du git fetch périodique. */
   paused: boolean;
   createdAt: number;
 }
+
+/**
+ * Transport d'un serveur MCP exposé à l'interface : seuls les noms d'en-têtes et de variables d'environnement sont
+ * diffusés, jamais leurs valeurs secrètes.
+ */
+export type McpTransport =
+  | { type: 'http'; url: string; headerNames: string[] }
+  | { type: 'stdio'; command: string; args: string[]; envNames: string[] };
+
+/**
+ * En création ou modification : une valeur `string` définit ou remplace le secret, `null` conserve la valeur déjà
+ * enregistrée pour cette clé, et l'absence de la clé la retire.
+ */
+export type SecretEntriesInput = Record<string, string | null>;
+
+export type McpTransportInput =
+  | { type: 'http'; url: string; headers?: SecretEntriesInput }
+  | { type: 'stdio'; command: string; args?: string[]; env?: SecretEntriesInput };
+
+/**
+ * Fonctionnalité supplémentaire déclarée une fois pour toutes sur la machine et activable par projet ou par session.
+ * Union discriminée par `kind` (aujourd'hui `'mcp'`), prête à accueillir d'autres types (instructions, skills…).
+ */
+export interface McpExtension {
+  id: string;
+  kind: 'mcp';
+  name: string;
+  description: string;
+  transport: McpTransport;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type Extension = McpExtension;
+
+export interface McpExtensionInput {
+  kind: 'mcp';
+  name: string;
+  description?: string;
+  transport: McpTransportInput;
+}
+
+export type ExtensionInput = McpExtensionInput;
+
+export const EXTENSION_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
+export const MAX_EXTENSION_NAME_LENGTH = 64;
+export const MAX_EXTENSION_DESCRIPTION_LENGTH = 300;
+export const MAX_MCP_URL_LENGTH = 2048;
+export const MAX_MCP_COMMAND_LENGTH = 1024;
+export const MAX_MCP_ARGS = 64;
+export const MAX_MCP_ARG_LENGTH = 2048;
+export const MAX_MCP_HEADERS = 20;
+export const MAX_MCP_ENV_VARS = 50;
+export const MAX_MCP_SECRET_NAME_LENGTH = 128;
+export const MAX_MCP_SECRET_VALUE_LENGTH = 4096;
 
 export interface QuestionOption {
   label: string;
@@ -338,6 +400,8 @@ export interface Session {
   epic: SessionEpic | null;
   // Findings publiés qui n’ont pas encore été importés dans le backlog.
   pendingFindings: number;
+  // Identifiants des extensions activées pour cette session (reprises comprises).
+  extensionIds: string[];
 }
 
 export interface SessionEpic {
@@ -437,7 +501,15 @@ export interface GitInfo {
 
 export type EventsMessage =
   // runEvents : l'instance diffuse epic-run et command-run (absent sur une instance antérieure).
-  | { type: 'snapshot'; projects: Project[]; sessions: Session[]; tasks: Task[]; epics: Epic[]; runEvents: boolean }
+  | {
+      type: 'snapshot';
+      projects: Project[];
+      sessions: Session[];
+      tasks: Task[];
+      epics: Epic[];
+      extensions: Extension[];
+      runEvents: boolean;
+    }
   | { type: 'session'; session: Session }
   | { type: 'session-deleted'; id: string }
   | { type: 'task'; task: Task }
@@ -445,6 +517,7 @@ export type EventsMessage =
   | { type: 'epic'; epic: Epic }
   | { type: 'epic-deleted'; id: string }
   | { type: 'projects'; projects: Project[] }
+  | { type: 'extensions'; extensions: Extension[] }
   | { type: 'alert'; session: Session }
   | { type: 'findings-available'; session: Session }
   | { type: 'peers' }
@@ -729,6 +802,9 @@ export function parseProject(v: unknown): Project | null {
   const regenerablePaths = Array.isArray(v.regenerablePaths)
     ? v.regenerablePaths.filter((item): item is string => typeof item === 'string')
     : [];
+  const extensionIds = Array.isArray(v.extensionIds)
+    ? v.extensionIds.filter((item): item is string => typeof item === 'string')
+    : [];
   return {
     id,
     name,
@@ -743,12 +819,57 @@ export function parseProject(v: unknown): Project | null {
     // Absent des serveurs antérieurs au push automatique.
     autoPush: v.autoPush === true,
     regenerablePaths,
+    extensionIds,
     // Absent des serveurs antérieurs à l'épingle des projets.
     pinned: v.pinned === true,
     // Absent des serveurs antérieurs à la mise en pause des projets.
     paused: v.paused === true,
     createdAt,
   };
+}
+
+function parseMcpTransport(v: unknown): McpTransport | null {
+  if (!isRecord(v)) return null;
+  if (v.type === 'http') {
+    const url = asString(v.url);
+    if (url === null) return null;
+    const headerNames = Array.isArray(v.headerNames)
+      ? v.headerNames.filter((item): item is string => typeof item === 'string')
+      : [];
+    return { type: 'http', url, headerNames };
+  }
+  if (v.type === 'stdio') {
+    const command = asString(v.command);
+    if (command === null) return null;
+    const args = Array.isArray(v.args) ? v.args.filter((item): item is string => typeof item === 'string') : [];
+    const envNames = Array.isArray(v.envNames)
+      ? v.envNames.filter((item): item is string => typeof item === 'string')
+      : [];
+    return { type: 'stdio', command, args, envNames };
+  }
+  return null;
+}
+
+export function parseExtension(v: unknown): Extension | null {
+  if (!isRecord(v) || v.kind !== 'mcp') return null;
+  const id = asString(v.id);
+  const name = asString(v.name);
+  const transport = parseMcpTransport(v.transport);
+  if (id === null || name === null || transport === null) return null;
+  const createdAt = asNumber(v.createdAt) ?? 0;
+  return {
+    id,
+    kind: 'mcp',
+    name,
+    description: asString(v.description) ?? '',
+    transport,
+    createdAt,
+    updatedAt: asNumber(v.updatedAt) ?? createdAt,
+  };
+}
+
+export function parseExtensionList(v: unknown): Extension[] {
+  return parseItems(v, parseExtension);
 }
 
 function parseQuestion(v: unknown): AgentQuestion | null {
@@ -854,6 +975,9 @@ export function parseSession(v: unknown): Session | null {
       typeof v.pendingFindings === 'number' && Number.isSafeInteger(v.pendingFindings) && v.pendingFindings >= 0
         ? v.pendingFindings
         : 0,
+    extensionIds: Array.isArray(v.extensionIds)
+      ? v.extensionIds.filter((item): item is string => typeof item === 'string')
+      : [],
   };
 }
 
@@ -1124,6 +1248,7 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
         sessions: parseSessionList(v.sessions),
         tasks: parseTaskList(v.tasks),
         epics: parseEpicList(v.epics),
+        extensions: parseExtensionList(v.extensions),
         runEvents: v.runEvents === true,
       };
     case 'session': {
@@ -1152,6 +1277,8 @@ export function parseEventsMessage(v: unknown): EventsMessage | null {
     }
     case 'projects':
       return { type: 'projects', projects: parseProjectList(v.projects) };
+    case 'extensions':
+      return { type: 'extensions', extensions: parseExtensionList(v.extensions) };
     case 'alert':
     case 'findings-available': {
       const session = parseSession(v.session);

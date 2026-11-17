@@ -25,6 +25,8 @@ import {
   type CouncilSettings,
   type Effort,
   type Epic,
+  type Extension,
+  type McpTransport,
   type Mode,
   type Persona,
   type PersonaInput,
@@ -77,6 +79,7 @@ interface ProjectRow {
   workspace_mode: WorkspaceMode;
   auto_push: number;
   regenerable_paths: string | null;
+  extension_ids: string | null;
   pinned: number;
   paused: number;
   created_at: number;
@@ -106,6 +109,7 @@ interface SessionRow {
   epic_id: string | null;
   resolved_epic_title: string | null;
   pending_findings: number;
+  extension_ids: string | null;
 }
 
 interface TaskRow {
@@ -232,6 +236,103 @@ function personaFromRow(row: PersonaRow): Persona {
   };
 }
 
+export type StoredMcpTransport =
+  | { type: 'http'; url: string; headers: Record<string, string> }
+  | { type: 'stdio'; command: string; args: string[]; env: Record<string, string> };
+
+export interface StoredMcpExtension {
+  id: string;
+  kind: 'mcp';
+  name: string;
+  description: string;
+  transport: StoredMcpTransport;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type StoredExtension = StoredMcpExtension;
+
+interface ExtensionRow {
+  id: string;
+  kind: string;
+  name: string;
+  description: string;
+  config: string;
+  created_at: number;
+  updated_at: number;
+}
+
+function parseStoredStringRecord(raw: unknown): Record<string, string> {
+  if (!isRecord(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === 'string') out[key] = value;
+  }
+  return out;
+}
+
+function storedExtensionFromRow(row: ExtensionRow): StoredExtension | null {
+  if (row.kind !== 'mcp') return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.config);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+  let transport: StoredMcpTransport;
+  if (parsed.type === 'http' && typeof parsed.url === 'string') {
+    transport = { type: 'http', url: parsed.url, headers: parseStoredStringRecord(parsed.headers) };
+  } else if (parsed.type === 'stdio' && typeof parsed.command === 'string') {
+    const args = Array.isArray(parsed.args)
+      ? parsed.args.filter((item): item is string => typeof item === 'string')
+      : [];
+    transport = { type: 'stdio', command: parsed.command, args, env: parseStoredStringRecord(parsed.env) };
+  } else {
+    return null;
+  }
+  return {
+    id: row.id,
+    kind: 'mcp',
+    name: row.name,
+    description: row.description,
+    transport,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function toPublicExtension(stored: StoredExtension): Extension {
+  const transport: McpTransport =
+    stored.transport.type === 'http'
+      ? { type: 'http', url: stored.transport.url, headerNames: Object.keys(stored.transport.headers) }
+      : {
+          type: 'stdio',
+          command: stored.transport.command,
+          args: stored.transport.args,
+          envNames: Object.keys(stored.transport.env),
+        };
+  return {
+    id: stored.id,
+    kind: 'mcp',
+    name: stored.name,
+    description: stored.description,
+    transport,
+    createdAt: stored.createdAt,
+    updatedAt: stored.updatedAt,
+  };
+}
+
+function parseStringIds(raw: string | null): string[] {
+  if (raw === null) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 function projectFromRow(row: ProjectRow): Project {
   return {
     id: row.id,
@@ -249,6 +350,7 @@ function projectFromRow(row: ProjectRow): Project {
     workspaceMode: row.workspace_mode ?? 'isolated',
     autoPush: row.auto_push === 1,
     regenerablePaths: row.regenerable_paths ? JSON.parse(row.regenerable_paths) : [],
+    extensionIds: parseStringIds(row.extension_ids),
     pinned: row.pinned === 1,
     paused: row.paused === 1,
   };
@@ -314,6 +416,7 @@ function sessionFromRow(row: SessionRow): Session {
     worktree: worktreeFromWorkspace(row.workspace),
     epic: row.epic_id && row.resolved_epic_title !== null ? { id: row.epic_id, title: row.resolved_epic_title } : null,
     pendingFindings: row.pending_findings,
+    extensionIds: parseStringIds(row.extension_ids),
   };
 }
 
@@ -484,6 +587,7 @@ export class CerebroDatabase {
     this.addColumnIfMissing('sessions', 'hook_token', 'TEXT');
     // Questions, outil à autoriser ou dernier message du tour, en JSON (AttentionDetail).
     this.addColumnIfMissing('sessions', 'attention_detail', 'TEXT');
+    this.addColumnIfMissing('sessions', 'extension_ids', 'TEXT');
     for (const column of ['model', 'effort']) this.addColumnIfMissing('sessions', column, 'TEXT');
     const epicColumns = ['epic_id', 'epic_title'];
     if (epicColumns.some((name) => !this.hasColumn('sessions', name))) {
@@ -518,6 +622,7 @@ export class CerebroDatabase {
     }
     this.addColumnIfMissing('projects', 'resolution_settings', 'TEXT');
     this.addColumnIfMissing('projects', 'regenerable_paths', 'TEXT');
+    this.addColumnIfMissing('projects', 'extension_ids', 'TEXT');
     this.addColumnIfMissing('projects', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
     // Un seul projet épinglé par machine.
     this.connection.exec('CREATE UNIQUE INDEX IF NOT EXISTS projects_pinned ON projects(pinned) WHERE pinned = 1');
@@ -533,6 +638,15 @@ export class CerebroDatabase {
     this.connection
       .exec(`CREATE TABLE IF NOT EXISTS personas (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
       prompt TEXT NOT NULL, builtin INTEGER NOT NULL DEFAULT 0, created_at INTEGER, updated_at INTEGER)`);
+    this.connection.exec(`CREATE TABLE IF NOT EXISTS extensions (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      description TEXT NOT NULL DEFAULT '',
+      config TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`);
     this.addColumnIfMissing('personas', 'needs', "TEXT NOT NULL DEFAULT '[]'");
     this.seedPersonas();
     this.convertLegacyCouncilSettings();
@@ -782,6 +896,7 @@ export class CerebroDatabase {
       workspaceMode,
       autoPush: false,
       regenerablePaths: [],
+      extensionIds: [],
       pinned: false,
       paused: false,
       createdAt: Date.now(),
@@ -811,6 +926,7 @@ export class CerebroDatabase {
         | 'workspaceMode'
         | 'autoPush'
         | 'regenerablePaths'
+        | 'extensionIds'
       >
     >,
   ): Project | null {
@@ -819,7 +935,7 @@ export class CerebroDatabase {
     const next = { ...current, ...changes };
     this.connection
       .prepare(
-        'UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, resolution_settings = ?, council_settings = ?, slack_settings = ?, workspace_mode = ?, auto_push = ?, regenerable_paths = ? WHERE id = ?',
+        'UPDATE projects SET name = ?, path = ?, color = ?, session_defaults = ?, commit_settings = ?, resolution_settings = ?, council_settings = ?, slack_settings = ?, workspace_mode = ?, auto_push = ?, regenerable_paths = ?, extension_ids = ? WHERE id = ?',
       )
       .run(
         next.name,
@@ -833,6 +949,7 @@ export class CerebroDatabase {
         next.workspaceMode,
         next.autoPush ? 1 : 0,
         JSON.stringify(next.regenerablePaths),
+        JSON.stringify(next.extensionIds),
         id,
       );
     return next;
@@ -920,6 +1037,117 @@ export class CerebroDatabase {
 
   setAdvisorModel(model: string | null): void {
     this.putSetting('claude_advisor', model);
+  }
+
+  listStoredExtensions(): StoredExtension[] {
+    const rows = this.connection
+      .prepare('SELECT * FROM extensions ORDER BY name COLLATE NOCASE ASC, created_at ASC, rowid ASC')
+      .all() as unknown as ExtensionRow[];
+    return rows.flatMap((row) => {
+      const parsed = storedExtensionFromRow(row);
+      return parsed === null ? [] : [parsed];
+    });
+  }
+
+  listExtensions(): Extension[] {
+    return this.listStoredExtensions().map(toPublicExtension);
+  }
+
+  getStoredExtension(id: string): StoredExtension | null {
+    const row = this.connection.prepare('SELECT * FROM extensions WHERE id = ?').get(id) as ExtensionRow | undefined;
+    return row === undefined ? null : storedExtensionFromRow(row);
+  }
+
+  getExtension(id: string): Extension | null {
+    const stored = this.getStoredExtension(id);
+    return stored === null ? null : toPublicExtension(stored);
+  }
+
+  findExtensionByName(name: string): StoredExtension | null {
+    const row = this.connection.prepare('SELECT * FROM extensions WHERE name = ? COLLATE NOCASE').get(name) as
+      ExtensionRow | undefined;
+    return row === undefined ? null : storedExtensionFromRow(row);
+  }
+
+  /** Extensions existantes correspondant à `ids`, dans leur ordre et sans doublon. */
+  getStoredExtensionsByIds(ids: readonly string[]): StoredExtension[] {
+    if (ids.length === 0) return [];
+    const byId = new Map(this.listStoredExtensions().map((item) => [item.id, item]));
+    const seen = new Set<string>();
+    const out: StoredExtension[] = [];
+    for (const id of ids) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const found = byId.get(id);
+      if (found !== undefined) out.push(found);
+    }
+    return out;
+  }
+
+  createExtension(input: { kind: 'mcp'; name: string; description: string; transport: StoredMcpTransport }): Extension {
+    const now = Date.now();
+    const stored: StoredExtension = {
+      id: randomUUID(),
+      kind: input.kind,
+      name: input.name,
+      description: input.description,
+      transport: input.transport,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.connection
+      .prepare(
+        'INSERT INTO extensions (id, kind, name, description, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        stored.id,
+        stored.kind,
+        stored.name,
+        stored.description,
+        JSON.stringify(stored.transport),
+        stored.createdAt,
+        stored.updatedAt,
+      );
+    return toPublicExtension(stored);
+  }
+
+  updateExtension(
+    id: string,
+    input: { kind: 'mcp'; name: string; description: string; transport: StoredMcpTransport },
+  ): Extension | null {
+    const current = this.getStoredExtension(id);
+    if (current === null) return null;
+    const next: StoredExtension = {
+      ...current,
+      kind: input.kind,
+      name: input.name,
+      description: input.description,
+      transport: input.transport,
+      updatedAt: Date.now(),
+    };
+    this.connection
+      .prepare('UPDATE extensions SET kind = ?, name = ?, description = ?, config = ?, updated_at = ? WHERE id = ?')
+      .run(next.kind, next.name, next.description, JSON.stringify(next.transport), next.updatedAt, id);
+    return toPublicExtension(next);
+  }
+
+  /** Supprime l'extension du catalogue et la retire des sélections par défaut des projets. */
+  deleteExtension(id: string): boolean {
+    return this.transaction(() => {
+      const deleted = Number(this.connection.prepare('DELETE FROM extensions WHERE id = ?').run(id).changes) > 0;
+      if (!deleted) return false;
+      const rows = this.connection
+        .prepare('SELECT id, extension_ids FROM projects WHERE extension_ids IS NOT NULL')
+        .all() as { id: string; extension_ids: string }[];
+      const update = this.connection.prepare('UPDATE projects SET extension_ids = ? WHERE id = ?');
+      for (const row of rows) {
+        const ids = parseStringIds(row.extension_ids);
+        if (ids.includes(id)) {
+          update.run(JSON.stringify(ids.filter((item) => item !== id)), row.id);
+        }
+      }
+      return true;
+    });
   }
 
   listPersonas(): Persona[] {
@@ -1063,7 +1291,7 @@ export class CerebroDatabase {
     input: Pick<
       Session,
       'id' | 'projectId' | 'agent' | 'mode' | 'model' | 'effort' | 'prompt' | 'title' | 'status' | 'agentSessionId'
-    >,
+    > & { extensionIds?: string[] },
     hookToken: string,
     epicId: string | null = null,
   ): Session {
@@ -1071,6 +1299,7 @@ export class CerebroDatabase {
     if (epicId !== null && (!epic || epic.projectId !== input.projectId))
       throw new Error('Epic introuvable dans ce projet');
     const now = Date.now();
+    const extensionIds = input.extensionIds ? [...new Set(input.extensionIds)] : [];
     const session: Session = {
       ...input,
       attention: false,
@@ -1084,14 +1313,15 @@ export class CerebroDatabase {
       worktree: null,
       epic: epic ? { id: epic.id, title: epic.title } : null,
       pendingFindings: 0,
+      extensionIds,
     };
     this.connection
       .prepare(
         `
       INSERT INTO sessions (
         id, project_id, agent, mode, prompt, title, status, attention,
-        attention_reason, agent_session_id, exit_code, hook_token, created_at, updated_at, model, effort, epic_id, epic_title
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        attention_reason, agent_session_id, exit_code, hook_token, created_at, updated_at, model, effort, epic_id, epic_title, extension_ids
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       )
       .run(
@@ -1113,6 +1343,7 @@ export class CerebroDatabase {
         session.effort,
         session.epic?.id ?? null,
         session.epic?.title ?? null,
+        JSON.stringify(session.extensionIds),
       );
     return session;
   }

@@ -108,9 +108,9 @@ export function getGeminiSessionInjection(): { injectSteps: object[] } {
  * is trusted, since agy would otherwise ask for each new worktree (trusting a parent does not cover it), which also
  * enables that project's own agy hooks.
  */
-export function workspaceArgs(agent: Agent, cwd: string): string[] {
+export function workspaceArgs(agent: Agent, cwd: string, extraTrustedDirs: readonly string[] = []): string[] {
   if (agent !== 'gemini') return [];
-  return ['--settings', JSON.stringify({ notifications: true, trustedWorkspaces: [cwd] })];
+  return ['--settings', JSON.stringify({ notifications: true, trustedWorkspaces: [cwd, ...extraTrustedDirs] })];
 }
 
 // Top-level `developer_instructions` of the user's Codex config: our `-c` override replaces it,

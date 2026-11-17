@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useAsyncAction } from './async-action.ts';
 import { CommitSettingsDialog } from './CommitSettingsDialog.tsx';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
+import { ProjectExtensionsSection } from './ExtensionControls.tsx';
 import { errorMessage } from './format.ts';
 import { PathInput } from './PathInput.tsx';
 import { ProjectSlackDialog } from './ProjectSlackDialog.tsx';
@@ -48,6 +49,11 @@ export function ProjectSettings({
       ) : null}
       {error ? <p className="form-error">{error}</p> : null}
       <ProjectForm key={project.id} project={project} onSaved={saved('Nom, chemin et couleur')} />
+      <ProjectExtensionsSection
+        key={`ext-${project.id}`}
+        project={project}
+        onSaved={saved('Fonctionnalités supplémentaires')}
+      />
       <ProjectSlackDialog key={`slack-${project.id}`} project={project} inline onClose={saved('Réglages Slack')} />
       <CommitSettingsDialog key={`llm-${project.id}`} project={project} inline onClose={saved('Réglages LLM')} />
       <section className="card settings-section" aria-label="Supprimer le projet">

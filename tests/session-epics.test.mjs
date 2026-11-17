@@ -170,6 +170,7 @@ test('legacy payloads use only unambiguous assigned tasks; stored origin takes p
 test('grouped titles remove only generated epic prefixes and preserve personal titles', () => {
   const session = { prompt: '[CEREBRO_EPIC_STEP run task]\nÉtape', title: 'Epic « Livraison » · étape 2/3 : Vérifier' };
   assert.equal(groupedSessionTitle(session), 'étape 2/3 : Vérifier');
+  assert.equal(groupedSessionTitle({ ...session, title: 'Epic « Livraison » · session commune' }), 'session commune');
   assert.equal(groupedSessionTitle({ ...session, title: 'Mon titre' }), 'Mon titre');
   assert.equal(groupedSessionTitle({ ...session, prompt: 'Demande libre' }), session.title);
 });

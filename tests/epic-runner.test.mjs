@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -11,6 +11,7 @@ const { DEFAULT_SESSION_DEFAULTS } = await import('../shared/types.ts');
 const { CommandExecutor } = await import('../server/commands.ts');
 const { WorktreeGate } = await import('../server/worktree-gate.ts');
 const { EpicWorkspaces } = await import('../server/epic-workspace.ts');
+const { reviewTaskText } = await import('../server/epic-review.ts');
 const { EpicRunner, taskOrder } = await import('../server/epic-runner.ts');
 async function fixture(run) {
   const db = new CerebroDatabase(':memory:');
@@ -20,6 +21,7 @@ async function fixture(run) {
   const commands = new CommandExecutor(db, gate);
   const workspaces = new EpicWorkspaces(db, gate);
   const launches = [];
+  const inputs = [];
   const sessions = {
     async create(p, options, { title = 'step' } = {}) {
       const session = db.createSession(
@@ -33,11 +35,29 @@ async function fixture(run) {
       db.updateSession(id, { status: 'exited', exitCode: 130 });
       return true;
     },
+    rename(id, title) {
+      return db.updateSession(id, { title });
+    },
+    setRunning(id) {
+      const current = db.getSession(id);
+      if (!current || current.status === 'exited') return null;
+      return db.updateSession(id, { status: 'running', attention: false, attentionReason: null });
+    },
+    writeInput(id, data) {
+      const current = db.getSession(id);
+      if (!current || current.status === 'exited') return false;
+      inputs.push({ id, data });
+      if (data.includes('\r') && (current.status === 'idle' || current.status === 'waiting')) {
+        db.updateSession(id, { status: 'running', attention: false, attentionReason: null });
+      }
+      return true;
+    },
     setReliableState(id, status, attentionReason) {
       return db.updateSession(id, { status, attention: true, attentionReason });
     },
   };
   let runner = new EpicRunner(db, sessions, commands, () => {}, workspaces);
+  runner.inputDelayMs = 0;
   const task = (name, execution = { type: 'llm' }) => db.createTask(project.id, name, null, epic.id, execution);
   const command = (script, completion = 'manual') => {
     const c = commands.configure(project.id, {
@@ -67,6 +87,7 @@ async function fixture(run) {
       sessions,
       workspaces,
       launches,
+      inputs,
       task,
       command,
       latest,
@@ -77,6 +98,7 @@ async function fixture(run) {
       restart: async () => {
         await runner.shutdown();
         runner = new EpicRunner(db, sessions, commands, () => {}, workspaces);
+        runner.inputDelayMs = 0;
       },
     });
   } finally {
@@ -1090,4 +1112,121 @@ test('auto validation does not accept a session that exited with code 0 without 
     f.runner.resume(id);
     await f.until(() => f.launches.length === 2);
     assert.equal(f.db.getTask(a.id).sessionId, f.launches[1].id);
+  }));
+test('singleSession reuses one LLM session across steps and commands, isolates final review, and closes on completion', async () =>
+  fixture(async (f) => {
+    const a = f.task('first step\nline two');
+    const b = f.task('interleaved check', f.command('console.log("ok")', 'exit-zero'));
+    const c = f.task('second llm step\nwith details');
+    const review = f.task(reviewTaskText(f.epic.title));
+    f.db.setTaskDependencies(b.id, [a.id]);
+    f.db.setTaskDependencies(c.id, [b.id]);
+    f.db.setTaskDependencies(review.id, [a.id, b.id, c.id]);
+
+    await f.runner.start(f.epic.id, DEFAULT_SESSION_DEFAULTS, { singleSession: true });
+    await f.until(() => f.latest().status === 'waiting-validation' && f.latest().currentTaskId === a.id);
+    assert.equal(f.launches.length, 1);
+    const sharedId = f.launches[0].id;
+    assert.equal(f.latest().singleSession, true);
+    assert.equal(f.latest().epicSessionId, sharedId);
+    assert.match(f.launches[0].prompt, /Vue d’ensemble des étapes de l’epic/);
+    assert.match(f.launches[0].prompt, /1\. \[étape courante\] first step/);
+
+    // Closing step 1 keeps the shared session alive across command step 2 and reuses it for LLM step 3.
+    f.db.updateTask(a.id, { status: 'done' });
+    await f.until(() => f.latest().currentTaskId === c.id && f.latest().sessionId === sharedId);
+    assert.equal(f.db.getTask(b.id).status, 'done');
+    assert.equal(f.launches.length, 1);
+    assert.equal(f.db.getTask(c.id).sessionId, sharedId);
+    assert.equal(f.db.getSession(sharedId).status, 'running');
+    assert.equal(f.db.getSession(sharedId).title, 'Epic « Epic » · étape 3/4 : second llm step');
+    const typed = f.inputs.filter((item) => item.id === sharedId && item.data !== '\r');
+    assert.equal(typed.length, 1);
+    assert.ok(!typed[0].data.includes('\n'));
+    assert.match(typed[0].data, new RegExp(`^\\[CEREBRO_EPIC_STEP ${f.latest().id} ${c.id}\\]`));
+    assert.match(typed[0].data, /second llm step · with details/);
+
+    // End of turn on step 3 + autoValidate advances to the dedicated review session without killing shared yet, then closes both at completion.
+    f.runner.setAutoValidate(f.latest().id, true);
+    f.db.updateSession(sharedId, { status: 'idle', attentionReason: 'Tour terminé' });
+    await f.until(() => f.latest().status === 'succeeded');
+    assert.equal(f.launches.length, 2);
+    assert.notEqual(f.launches[1].id, sharedId);
+    assert.equal(f.db.getTask(review.id).sessionId, f.launches[1].id);
+    assert.equal(f.db.getSession(sharedId).status, 'exited');
+    assert.equal(f.db.getSession(sharedId).title, 'Epic « Epic » · session commune');
+    assert.equal(f.db.getSession(f.launches[1].id).status, 'exited');
+  }));
+test('singleSession spills oversized follow-up prompts to an attachment file instead of overflowing PTY input', async () =>
+  fixture(async (f) => {
+    const a = f.task('short first');
+    const longBody = `big second\n${'x'.repeat(2500)}`;
+    const b = f.task(longBody);
+    f.db.setTaskDependencies(b.id, [a.id]);
+
+    await f.runner.start(f.epic.id, DEFAULT_SESSION_DEFAULTS, { singleSession: true });
+    await f.until(() => f.latest().status === 'waiting-validation' && f.latest().currentTaskId === a.id);
+    f.db.updateTask(a.id, { status: 'done' });
+    await f.until(() => f.latest().currentTaskId === b.id && f.latest().sessionId === f.launches[0].id);
+
+    const typed = f.inputs.find((item) => item.data !== '\r');
+    assert.ok(typed);
+    assert.ok(Buffer.byteLength(typed.data, 'utf8') < 1800);
+    assert.ok(!typed.data.includes('\n'));
+    const match = typed.data.match(/consigne complète enregistrée dans ([^ )]+)/);
+    assert.ok(match, typed.data);
+    assert.ok(existsSync(match[1]));
+    assert.match(readFileSync(match[1], 'utf8'), /x{2000}/);
+  }));
+test('singleSession never types into a waiting session, recovers if exited, and supports dynamic toggling and stop', async () =>
+  fixture(async (f) => {
+    const a = f.task('step 1');
+    const b = f.task('step 2');
+    const c = f.task('step 3', f.command('setTimeout(()=>{},5000)'));
+    const d = f.task('step 4');
+    f.db.setTaskDependencies(b.id, [a.id]);
+    f.db.setTaskDependencies(c.id, [b.id]);
+    f.db.setTaskDependencies(d.id, [c.id]);
+
+    // Start without singleSession, then enable it while step 1 is awaiting validation.
+    await f.runner.start(f.epic.id, DEFAULT_SESSION_DEFAULTS);
+    await f.until(() => f.latest().status === 'waiting-validation' && f.latest().currentTaskId === a.id);
+    const firstId = f.launches[0].id;
+    f.runner.setSingleSession(f.latest().id, true);
+    assert.equal(f.latest().singleSession, true);
+    assert.equal(f.latest().epicSessionId, firstId);
+
+    // If the shared session is waiting on a confirmation dialog when step 1 is marked done, block until cleared.
+    f.runner.waitingGraceMs = 0;
+    f.db.updateSession(firstId, { status: 'waiting', attentionReason: 'Confirmation requise' });
+    f.db.updateTask(a.id, { status: 'done' });
+    await f.until(() => f.latest().status === 'blocked' && f.latest().blockReason === 'session-waiting');
+    assert.equal(f.inputs.length, 0);
+    f.db.updateSession(firstId, { status: 'idle', attentionReason: null });
+    await f.until(() => f.latest().currentTaskId === b.id && f.latest().sessionId === firstId);
+    assert.equal(f.launches.length, 1);
+
+    // Stopping during a command step kills the idle shared session too; resuming after it exited opens a fresh shared session.
+    f.db.updateSession(firstId, { status: 'idle', attentionReason: 'Tour terminé' });
+    f.db.updateTask(b.id, { status: 'done' });
+    await f.until(() => f.latest().currentTaskId === c.id && f.latest().commandRunId !== null);
+    assert.equal(f.db.getSession(firstId).status, 'idle');
+    f.runner.stop(f.latest().id);
+    assert.equal(f.latest().status, 'stopped');
+    assert.equal(f.db.getSession(firstId).status, 'exited');
+    await new Promise((r) => setTimeout(r, 20));
+    f.db.updateTask(c.id, { execution: f.command('process.exit(0)', 'exit-zero') });
+    f.runner.resume(f.latest().id, true);
+    await f.until(() => f.latest().currentTaskId === d.id && f.latest().sessionId !== null && f.launches.length === 2);
+    const secondId = f.launches[1].id;
+    assert.equal(f.latest().epicSessionId, secondId);
+
+    // Disabling singleSession mid-run clears epicSessionId so the step closes its terminal when done.
+    f.runner.setSingleSession(f.latest().id, false);
+    assert.equal(f.latest().singleSession, false);
+    assert.equal(f.latest().epicSessionId, null);
+    f.db.updateSession(secondId, { status: 'idle', attentionReason: 'Tour terminé' });
+    f.db.updateTask(d.id, { status: 'done' });
+    await f.until(() => f.latest().status === 'succeeded');
+    assert.equal(f.db.getSession(secondId).status, 'exited');
   }));

@@ -58,8 +58,12 @@ export function dependencyOrder(tasks: Task[]): Task[] {
 }
 
 // Prompt de la session qui pilote l'epic : le serveur ordonne les tâches et confie chacune à sa propre étape.
-export function epicPrompt(epic: Epic): string {
-  return `Traiter l’epic « ${epic.title} ». Le serveur calcule l’ordre, lance chaque tâche et attend sa clôture explicite. Ne traite que l’étape confiée à chaque session.
+export function epicPrompt(epic: Epic, singleSession = false): string {
+  return `Traiter l’epic « ${epic.title} ». Le serveur calcule l’ordre, lance chaque tâche et attend sa clôture explicite. ${
+    singleSession
+      ? 'Traite uniquement l’étape demandée à chaque tour : la même session recevra les suivantes.'
+      : 'Ne traite que l’étape confiée à chaque session.'
+  }
 ${epic.description}`;
 }
 

@@ -16,6 +16,7 @@ import type { Socket } from 'node:net';
 import { delimiter, join } from 'node:path';
 import type { SerializeAddon } from '@xterm/addon-serialize';
 import { withoutCerebroVariables } from './agent-env.ts';
+import { cleanupSessionExtensions, prepareSessionExtensions } from './mcp.ts';
 import { secretMatches } from './secret-compare.ts';
 import { buildAgentCommand, workspaceArgs, type Tuning } from './agents.ts';
 import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
@@ -62,6 +63,8 @@ export interface CreateSessionOptions {
   epicId?: string | null;
   /** Explicit workspace to join, whatever the project's workspace preference. */
   workspace?: WorkspaceContext;
+  /** Extensions activées pour cette session ; par défaut, celles configurées sur le projet. */
+  extensionIds?: string[];
 }
 
 interface LaunchOptions {
@@ -78,6 +81,7 @@ interface LaunchOptions {
   title?: string;
   epicId?: string | null;
   context?: WorkspaceContext | null;
+  extensionIds?: string[];
 }
 
 interface Runtime {
@@ -347,6 +351,9 @@ export class SessionManager {
     const joined =
       context || current.workspaceMode === 'shared' || !contextPath ? null : workspaceAt(this.db, contextPath);
     const activeProject = this.resumePausedProject(current);
+    const selectedExtensionIds = this.db
+      .getStoredExtensionsByIds(options.extensionIds ?? current.extensionIds)
+      .map((ext) => ext.id);
     return this.launch(
       { ...activeProject, path },
       {
@@ -359,6 +366,7 @@ export class SessionManager {
         title,
         epicId,
         context,
+        extensionIds: selectedExtensionIds,
       },
     );
   }
@@ -400,6 +408,7 @@ export class SessionManager {
       prompt: '',
       resumeSessionId: oldSession.agentSessionId,
       existingId: oldSession.id,
+      extensionIds: oldSession.extensionIds,
     });
   }
 
@@ -416,12 +425,14 @@ export class SessionManager {
       title,
       epicId = null,
       context = null,
+      extensionIds = [],
     } = options;
     const id = existingId ?? randomUUID();
     if (this.deleting.has(id)) throw new Error('Suppression en cours pour cette session');
     const advisorModel = agent === 'claude' ? this.db.getAdvisorModel() : null;
     const command = buildAgentCommand(agent, mode, prompt, id, resumeSessionId, tuning, advisorModel);
     const token = this.db.getHookToken(id) ?? randomBytes(32).toString('hex');
+    const resolvedExtensions = this.db.getStoredExtensionsByIds(extensionIds);
     let session: Session;
     if (existingId === null) {
       session = this.db.createSession(
@@ -435,6 +446,7 @@ export class SessionManager {
           title: title ?? titleFor(agent, prompt),
           status: 'starting',
           agentSessionId: command.agentSessionId,
+          extensionIds: resolvedExtensions.map((ext) => ext.id),
         },
         token,
         epicId,
@@ -470,11 +482,17 @@ export class SessionManager {
       if (this.deleting.has(id) || this.db.getSession(id) === null)
         throw new Error('Session supprimée pendant son lancement');
       this.cleanupHolderArtifacts(id);
+      const prepared = prepareSessionExtensions(
+        agent,
+        this.db.getStoredExtensionsByIds(extensionIds),
+        SESSIONS_DIR,
+        id,
+      );
       const config: HolderConfig = {
         cmd: command.cmd,
-        args: [...workspaceArgs(agent, cwd), ...command.args],
+        args: [...workspaceArgs(agent, cwd, prepared.trustedDirs), ...prepared.args, ...command.args],
         cwd,
-        env: ptyEnvironment(id, token, agent),
+        env: { ...ptyEnvironment(id, token, agent), ...prepared.env },
         cols: 120,
         rows: 32,
       };
@@ -1351,6 +1369,7 @@ export class SessionManager {
     this.questions.delete(id);
     this.askedQuestions.delete(id);
     this.permissionRequests.delete(id);
+    cleanupSessionExtensions(SESSIONS_DIR, id);
     const updated = this.db.updateSession(id, {
       status: 'exited',
       exitCode,
@@ -1414,6 +1433,7 @@ export class SessionManager {
     removeFile(paths.config);
     removeFile(paths.socket);
     removeFile(paths.exit);
+    cleanupSessionExtensions(SESSIONS_DIR, id);
   }
 
   private cleanupAllArtifacts(id: string): void {

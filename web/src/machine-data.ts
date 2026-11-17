@@ -1,4 +1,4 @@
-import type { Epic, EventsMessage, Project, Session, Task } from '../../shared/types.ts';
+import type { Epic, EventsMessage, Extension, Project, Session, Task } from '../../shared/types.ts';
 
 /** Listes qu'une machine diffuse par /ws/events. */
 export interface MachineData {
@@ -6,6 +6,7 @@ export interface MachineData {
   sessions: Session[];
   tasks: Task[];
   epics: Epic[];
+  extensions: Extension[];
 }
 
 // L'activité (statut, titre, attention) ne déplace pas une session.
@@ -36,7 +37,13 @@ export function upsertSession(list: Session[], session: Session): Session[] {
  */
 export function applyEventsMessage(data: MachineData | null, msg: EventsMessage): MachineData | null {
   if (msg.type === 'snapshot') {
-    return { projects: msg.projects, sessions: sortSessions(msg.sessions), tasks: msg.tasks, epics: msg.epics };
+    return {
+      projects: msg.projects,
+      sessions: sortSessions(msg.sessions),
+      tasks: msg.tasks,
+      epics: msg.epics,
+      extensions: msg.extensions,
+    };
   }
   if (data === null) return null;
   switch (msg.type) {
@@ -56,6 +63,8 @@ export function applyEventsMessage(data: MachineData | null, msg: EventsMessage)
       return { ...data, epics: data.epics.filter((e) => e.id !== msg.id) };
     case 'projects':
       return { ...data, projects: msg.projects };
+    case 'extensions':
+      return { ...data, extensions: msg.extensions };
     default:
       return data;
   }

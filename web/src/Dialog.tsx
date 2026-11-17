@@ -12,7 +12,7 @@ import {
 import { useLatest } from './use-latest.ts';
 import { NewSessionForm } from './NewSessionForm.tsx';
 import { useStore } from './store.tsx';
-import type { Agent, SessionDefaults } from '../../shared/types.ts';
+import type { Agent, SessionLaunchSpec } from '../../shared/types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
 import { apiParsed, uploadProjectImage } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
@@ -157,6 +157,7 @@ export function LaunchDialog({
 export function LaunchSessionDialog({
   submitLabel,
   epicId,
+  children,
   ...props
 }: {
   title: string;
@@ -165,7 +166,8 @@ export function LaunchSessionDialog({
   promptFor?: (agent: Agent) => string;
   submitLabel?: string;
   epicId?: string | null;
-  onLaunch: (spec: SessionDefaults) => Promise<void>;
+  children?: ReactNode;
+  onLaunch: (spec: SessionLaunchSpec) => Promise<void>;
   onClose: () => void;
 }) {
   const load = useCallback(() => apiParsed(`/api/epics/${epicId}/workspace`, parseOptionalWorkspaceContext), [epicId]);
@@ -184,6 +186,7 @@ export function LaunchSessionDialog({
           modifie pas.
         </p>
       ) : null}
+      {children}
     </LaunchDialog>
   );
 }

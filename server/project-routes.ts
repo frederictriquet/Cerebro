@@ -18,6 +18,7 @@ import {
 } from '../shared/types.ts';
 import { asRecord } from './util.ts';
 import { error } from './routes-util.ts';
+import { parseExtensionIds } from './extension-routes.ts';
 import { orError, parseSessionDefaults, type RouteContext } from './route-context.ts';
 import { normalizeRegenerablePath } from '../shared/worktrees.ts';
 
@@ -188,6 +189,7 @@ export function registerProjectRoutes(ctx: RouteContext): void {
         | 'workspaceMode'
         | 'autoPush'
         | 'regenerablePaths'
+        | 'extensionIds'
       >
     > = {};
     if ('workspaceMode' in body) {
@@ -208,6 +210,11 @@ export function registerProjectRoutes(ctx: RouteContext): void {
       if (invalid !== undefined)
         return error(reply, 400, `Chemin régénérable invalide : « ${invalid} » (chemin relatif à la copie attendu)`);
       changes.regenerablePaths = [...new Set(paths as string[])];
+    }
+    if ('extensionIds' in body) {
+      const parsed = parseExtensionIds(db, body.extensionIds);
+      if (!parsed.ok) return error(reply, 400, parsed.message);
+      changes.extensionIds = parsed.ids;
     }
     if ('name' in body) {
       if (typeof body.name !== 'string' || body.name.trim() === '')

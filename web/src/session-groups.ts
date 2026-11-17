@@ -49,6 +49,6 @@ export function groupedSessionTitle(session: Session): string {
   const title = sessionTitle(session.title);
   // Le nom de l'epic est déjà dans l'en-tête. Ne raccourcir que les titres générés.
   return session.prompt.startsWith('[CEREBRO_EPIC_STEP ')
-    ? title.replace(/^Epic « .* » · (?=étape \d+\/\d+ :)/, '')
+    ? title.replace(/^Epic « .* » · (?=(?:étape \d+\/\d+ :|session commune$))/, '')
     : title;
 }

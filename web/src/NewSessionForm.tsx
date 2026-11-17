@@ -12,6 +12,7 @@ import {
 import { uploadProjectImage } from './api.ts';
 import { AttachmentStrip, restoredAttachment, useAttachedField } from './attachments.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
+import { ExtensionLaunchPicker } from './ExtensionControls.tsx';
 import { LlmSelector, llmChoices } from './LlmSelector.tsx';
 import { readDraft, writeDraft } from './drafts.ts';
 import { errorMessage, MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from './format.ts';
@@ -25,6 +26,7 @@ import {
   type Effort,
   type ModeChoice,
   type SessionDefaults,
+  type SessionLaunchSpec,
 } from '../../shared/types.ts';
 import { isSubmitShortcut, SUBMIT_HINT } from './keys.ts';
 
@@ -77,11 +79,12 @@ export function NewSessionForm({
   // Page projet : les choix tiennent sur une ligne, suivis de `extraChoices` (dossier de travail).
   oneLine?: boolean;
   extraChoices?: ReactNode;
-  onLaunch: (spec: SessionDefaults) => Promise<void>;
+  onLaunch: (spec: SessionLaunchSpec) => Promise<void>;
   onCancel?: () => void;
 }) {
-  const { agents, projects, updateProject } = useStore();
+  const { agents, extensions, projects, updateProject } = useStore();
   const project = projects.find((p) => p.id === projectId);
+  const projectExtensionIds = useMemo(() => project?.extensionIds ?? [], [project?.extensionIds]);
   const launchLabel = submitLabel ?? `Lancer ${WORKSPACE_TARGET[project?.workspaceMode ?? 'isolated']}`;
   const defaults = project?.sessionDefaults ?? DEFAULT_SESSION_DEFAULTS;
   const available = agents.filter((a) => a.available);
@@ -90,6 +93,8 @@ export function NewSessionForm({
   // null : default model of the agent, resolved as shown by LlmSelector and launched by parseTuning.
   const [model, setModel] = useState<string | null>(defaults.model);
   const [effort, setEffort] = useState<Effort | null>(defaults.effort);
+  const [extensionIds, setExtensionIds] = useState<string[]>(projectExtensionIds);
+  const [extensionsEdited, setExtensionsEdited] = useState(false);
   const [draft] = useState(() => (draftKey === undefined ? null : readDraft(draftKey)));
   const [prompt, setPrompt] = useState(() => draft?.prompt ?? promptFor?.(agent) ?? initialPrompt ?? defaults.prompt);
   const [promptEdited, setPromptEdited] = useState(draft !== null);
@@ -201,7 +206,16 @@ export function NewSessionForm({
 
   useEffect(() => {
     setError(null);
+    setExtensionsEdited(false);
+    setExtensionIds(project?.extensionIds ?? []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seul le changement de projet réinitialise la sélection.
   }, [projectId]);
+
+  const projectExtensionKey = projectExtensionIds.join('\0');
+  useEffect(() => {
+    if (!extensionsEdited && !busy) setExtensionIds(projectExtensionIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resynchronise tant que la sélection n'est pas retouchée.
+  }, [projectExtensionKey, extensionsEdited, busy]);
 
   useEffect(() => {
     if (autoFocus) promptRef.current?.focus();
@@ -213,13 +227,24 @@ export function NewSessionForm({
     setBusy(true);
     try {
       await saveQueue.current;
-      const spec = { agent, mode, model, effort, prompt: images.expand(prompt) };
+      const knownIds = new Set(extensions.map((ext) => ext.id));
+      const activeExtensionIds = extensionIds.filter((id) => knownIds.has(id));
+      const spec: SessionLaunchSpec = {
+        agent,
+        mode,
+        model,
+        effort,
+        prompt: images.expand(prompt),
+        extensionIds: activeExtensionIds,
+      };
       await onLaunch(spec);
       const draftFailure = draftKey === undefined ? null : writeDraft(draftKey, { prompt: '', images: [] });
       // Modale refermée par son lancement : rien à réinitialiser.
       if (!mounted.current) return;
       setDraftError(draftFailure);
       setPrompt('');
+      setExtensionsEdited(false);
+      setExtensionIds(projectExtensionIds);
       // Garder la main sur le champ : les défauts mémorisés contiennent encore le dernier
       // prompt saisi. L'effacer aussi évite de le restaurer au prochain montage.
       setPromptEdited(true);
@@ -285,6 +310,15 @@ export function NewSessionForm({
             }}
           />
         </div>
+        <ExtensionLaunchPicker
+          projectExtensionIds={projectExtensionIds}
+          value={extensionIds}
+          disabled={busy}
+          onChange={(next) => {
+            setExtensionsEdited(true);
+            setExtensionIds(next);
+          }}
+        />
         {extraChoices}
       </LlmSelector>
       <label className="block">

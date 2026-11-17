@@ -1,8 +1,9 @@
 import { AdvisorPanel, useAdvisor } from './AdvisorSettings.tsx';
 import { AgentLabel } from './AgentLabel.tsx';
+import { ExtensionsDialog } from './ExtensionsDialog.tsx';
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { acquireGeneralSlack, getGeneralSlack, getSlackStatus, updateSlackSettings } from './api.ts';
-import { errorMessage, needsAttention, relativeTime, sessionTitle } from './format.ts';
+import { errorMessage, needsAttention, plural, relativeTime, sessionTitle } from './format.ts';
 import { AppVersion, MachineSwitcher } from './MachineSwitcher.tsx';
 import { href, type Route } from './route.ts';
 import { useNow } from './polling.tsx';
@@ -19,11 +20,12 @@ import type { GeneralSlackStatus, SlackSettings, SlackStatus } from '../../share
 import { attentionTone, SessionAttention } from './SessionMeta.tsx';
 
 export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () => void }) {
-  const { sessions, connected, muted, setMuted, desktopNotif, setDesktopNotif } = useStore();
+  const { sessions, extensions, connected, muted, setMuted, desktopNotif, setDesktopNotif } = useStore();
   const now = useNow();
   const [slack, setSlack] = useState<SlackStatus | null>(null);
   const [showSlack, setShowSlack] = useState(false);
   const [showAdvisor, setShowAdvisor] = useState(false);
+  const [showExtensions, setShowExtensions] = useState(false);
   const advisor = useAdvisor();
 
   const attention = sessions.filter(needsAttention);
@@ -138,6 +140,19 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
       {showAdvisor && advisor.model !== undefined ? (
         <AdvisorPanel model={advisor.model} onChange={advisor.setModel} />
       ) : null}
+
+      <section className="side-section side-advisor">
+        <button
+          type="button"
+          className={`slack-pill advisor-pill ${extensions.length > 0 ? 'on' : ''}`}
+          title="Catalogue des fonctionnalités supplémentaires (serveurs MCP) activables par projet ou au lancement"
+          onClick={() => setShowExtensions(true)}
+        >
+          MCP
+        </button>
+        <span className="meta">{extensions.length === 0 ? 'aucun' : plural(extensions.length, 'configuré')}</span>
+      </section>
+      {showExtensions ? <ExtensionsDialog onClose={() => setShowExtensions(false)} /> : null}
 
       <UsageGauges />
       <AppVersion />

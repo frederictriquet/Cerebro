@@ -29,6 +29,8 @@ import {
   parseCouncilRun,
   parseCouncilRunList,
   parseCouncilSettings,
+  parseExtension,
+  parseExtensionList,
   parsePersona,
   parsePersonaList,
   parseSession,
@@ -37,11 +39,13 @@ import {
   type CouncilOutcome,
   type CouncilRun,
   type CouncilSettings,
+  type Extension,
+  type ExtensionInput,
   type Participant,
   type Persona,
   type PersonaInput,
   type Session,
-  type SessionDefaults,
+  type SessionLaunchSpec,
 } from '../../shared/types.ts';
 import { parseMachine } from './route.ts';
 import { parseWeeklyMetricsReport, type WeeklyMetricsReport } from '../../shared/weekly-metrics.ts';
@@ -330,6 +334,25 @@ export async function deletePersona(id: string): Promise<void> {
   await api(`/api/personas/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+export async function listExtensions(): Promise<Extension[]> {
+  return parseExtensionList(await api('/api/extensions'));
+}
+
+export function createExtension(input: ExtensionInput): Promise<Extension> {
+  return apiParsed('/api/extensions', parseExtension, { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function updateExtension(id: string, input: ExtensionInput): Promise<Extension> {
+  return apiParsed(`/api/extensions/${encodeURIComponent(id)}`, parseExtension, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteExtension(id: string): Promise<void> {
+  await api(`/api/extensions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export function getCouncilSettings(): Promise<CouncilSettings> {
   return apiParsed('/api/council/settings', parseCouncilSettings);
 }
@@ -402,7 +425,7 @@ export function councilExportUrl(id: string): string {
 }
 
 // Session qui prend la suite d'un council terminé ; `projectId` sert seulement pour un council hors projet.
-export function startCouncilSession(councilId: string, projectId: string, launch: SessionDefaults): Promise<Session> {
+export function startCouncilSession(councilId: string, projectId: string, launch: SessionLaunchSpec): Promise<Session> {
   return apiParsed(apiPath`/api/councils/${councilId}/session`, parseSession, {
     method: 'POST',
     body: JSON.stringify({ projectId, launch }),

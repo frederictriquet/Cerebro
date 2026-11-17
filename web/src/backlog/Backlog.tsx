@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import type { Epic, Task } from '../../../shared/types.ts';
+import { useCallback, useState } from 'react';
+import type { Epic, SessionDefaults, Task } from '../../../shared/types.ts';
 import { DelayedActionButton } from '../DelayedActionButton.tsx';
 import { LaunchSessionDialog } from '../Dialog.tsx';
 import { errorMessage } from '../format.ts';
@@ -7,7 +7,7 @@ import { useStore } from '../store.tsx';
 import { BacklogContext, type BacklogScope } from './context.ts';
 import { byDueDate } from './due.ts';
 import { EpicBlock } from './EpicBlock.tsx';
-import { taskLabel } from './tasks.ts';
+import { epicPrompt, taskLabel } from './tasks.ts';
 import { TaskComposer } from './TaskComposer.tsx';
 import { TaskRow } from './TaskRow.tsx';
 
@@ -134,10 +134,9 @@ export function Backlog({ projectId }: { projectId: string }) {
           />
         ) : null}
         {startingEpic ? (
-          <LaunchSessionDialog
-            title={`Traiter l'epic : ${startingEpic.epic.title.slice(0, 80)}`}
+          <StartEpicDialog
             projectId={projectId}
-            epicId={startingEpic.epic.id}
+            epic={startingEpic.epic}
             initialPrompt={startingEpic.prompt}
             onClose={() => setStartingEpic(null)}
             onLaunch={async (spec) => {
@@ -148,5 +147,41 @@ export function Backlog({ projectId }: { projectId: string }) {
         ) : null}
       </section>
     </BacklogContext.Provider>
+  );
+}
+
+function StartEpicDialog({
+  projectId,
+  epic,
+  initialPrompt,
+  onClose,
+  onLaunch,
+}: {
+  projectId: string;
+  epic: Epic;
+  initialPrompt: string;
+  onClose: () => void;
+  onLaunch: (spec: SessionDefaults & { singleSession: boolean }) => Promise<void>;
+}) {
+  const [singleSession, setSingleSession] = useState(false);
+  const promptFor = useCallback(() => epicPrompt(epic, singleSession), [epic, singleSession]);
+  return (
+    <LaunchSessionDialog
+      title={`Traiter l'epic : ${epic.title.slice(0, 80)}`}
+      projectId={projectId}
+      epicId={epic.id}
+      initialPrompt={initialPrompt}
+      promptFor={promptFor}
+      onClose={onClose}
+      onLaunch={(spec) => onLaunch({ ...spec, singleSession })}
+    >
+      <label className="task-command-check">
+        <input type="checkbox" checked={singleSession} onChange={(event) => setSingleSession(event.target.checked)} />
+        <span>
+          Même session LLM pour tout l’epic — conserve la même conversation d’une étape à l’autre (l’éventuelle étape de
+          review reste dans une session dédiée).
+        </span>
+      </label>
+    </LaunchSessionDialog>
   );
 }

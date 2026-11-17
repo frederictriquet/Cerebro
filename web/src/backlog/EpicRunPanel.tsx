@@ -1,6 +1,12 @@
 import { useState } from 'react';
 import type { EpicRun } from '../../../shared/backlog.ts';
-import { controlEpicRun, markEpicRunSeen, RUN_ACTIVE, setEpicRunAutoValidation } from '../epic-runs.ts';
+import {
+  controlEpicRun,
+  markEpicRunSeen,
+  RUN_ACTIVE,
+  setEpicRunAutoValidation,
+  setEpicRunSingleSession,
+} from '../epic-runs.ts';
 import { EpicWorkspacePicker } from '../EpicWorkspacePicker.tsx';
 import { EPIC_RUN_STATUS_LABEL, errorMessage, pluralize } from '../format.ts';
 import { href } from '../route.ts';
@@ -46,6 +52,10 @@ export function EpicRunPanel({
     if (pending) return;
     perform(() => setEpicRunAutoValidation(run.id, enabled));
   };
+  const setSingleSession = (enabled: boolean): void => {
+    if (pending) return;
+    perform(() => setEpicRunSingleSession(run.id, enabled));
+  };
   const action = (name: 'stop' | 'resume' | 'validate'): void => {
     if (pending) return;
     if (name !== 'validate') {
@@ -58,6 +68,7 @@ export function EpicRunPanel({
   const needsAction = RUN_NEEDS_ACTION.includes(run.status);
   const awaitingTaskId = run.status === 'waiting-validation' ? run.currentTaskId : null;
   const awaitingValidation = awaitingTaskId !== null;
+  const activeSessionId = run.sessionId ?? (run.blockReason === 'session-waiting' ? (run.epicSessionId ?? null) : null);
   // Champs absents des machines distantes antérieures.
   const results = Object.entries(run.results ?? {});
   return (
@@ -72,6 +83,7 @@ export function EpicRunPanel({
           {results.length}/{run.order?.length ?? 0} {pluralize(results.length, 'résultat')}
         </summary>
         <p>Étape courante : {run.currentTaskId ? labelOf(run.currentTaskId) : 'aucune'}</p>
+        <p>Sessions LLM : {run.singleSession ? 'une seule session (hors review)' : 'une par étape'}</p>
         <p>Espace : {run.contextRoot}</p>
         {!needsAction && run.error ? <p>{run.error}</p> : null}
         {results.length > 0 ? (
@@ -85,18 +97,32 @@ export function EpicRunPanel({
         ) : null}
       </details>
       {RUN_ACTIVE.includes(run.status) ? (
-        <label className="epic-run-reason task-command-check">
-          <input
-            type="checkbox"
-            checked={run.autoValidate ?? false}
-            disabled={pending || run.workspaceConflict}
-            onChange={(event) => setAutoValidate(event.target.checked)}
-          />
-          <span>
-            Valider automatiquement — clôt les étapes en attente de validation, y compris l’étape actuelle, et poursuit
-            l’epic. Les échecs et les blocages restent à traiter.
-          </span>
-        </label>
+        <>
+          <label className="epic-run-reason task-command-check">
+            <input
+              type="checkbox"
+              checked={run.autoValidate ?? false}
+              disabled={pending || run.workspaceConflict}
+              onChange={(event) => setAutoValidate(event.target.checked)}
+            />
+            <span>
+              Valider automatiquement — clôt les étapes en attente de validation, y compris l’étape actuelle, et
+              poursuit l’epic. Les échecs et les blocages restent à traiter.
+            </span>
+          </label>
+          <label className="epic-run-reason task-command-check">
+            <input
+              type="checkbox"
+              checked={run.singleSession ?? false}
+              disabled={pending || run.workspaceConflict}
+              onChange={(event) => setSingleSession(event.target.checked)}
+            />
+            <span>
+              Même session LLM — conserve la même conversation d’une étape à l’autre (l’éventuelle étape de review reste
+              dans une session dédiée).
+            </span>
+          </label>
+        </>
       ) : null}
       {run.workspaceConflict ? (
         <EpicWorkspacePicker
@@ -120,8 +146,8 @@ export function EpicRunPanel({
       ) : null}
       {RUN_ACTIVE.includes(run.status) || RUN_RESUMABLE.includes(run.status) ? (
         <div className="row-actions">
-          {needsAction && run.sessionId ? (
-            <a className="btn" href={href(`#/s/${run.sessionId}`)}>
+          {needsAction && activeSessionId ? (
+            <a className="btn" href={href(`#/s/${activeSessionId}`)}>
               Ouvrir la session de l’étape
             </a>
           ) : null}
