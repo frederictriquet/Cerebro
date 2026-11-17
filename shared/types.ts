@@ -315,7 +315,7 @@ export type McpTransportInput =
 
 /**
  * Fonctionnalité supplémentaire déclarée une fois pour toutes sur la machine et activable par projet ou par session.
- * Union discriminée par `kind` (aujourd'hui `'mcp'`), prête à accueillir d'autres types (instructions, skills…).
+ * Union discriminée par `kind` (`'mcp'` pour un serveur MCP, `'skill'` pour un dossier de skill ou pack de skills).
  */
 export interface McpExtension {
   id: string;
@@ -327,7 +327,26 @@ export interface McpExtension {
   updatedAt: number;
 }
 
-export type Extension = McpExtension;
+export interface DiscoveredSkill {
+  name: string;
+  description: string;
+}
+
+export interface SkillExtension {
+  id: string;
+  kind: 'skill';
+  name: string;
+  description: string;
+  path: string;
+  /** Skills détectées sur le disque dans `path` (vide si le dossier est introuvable ou sans `SKILL.md`). */
+  skills: DiscoveredSkill[];
+  /** Vrai quand `path` n'existe plus sur le disque ou ne contient plus aucun `SKILL.md`. */
+  missing: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type Extension = McpExtension | SkillExtension;
 
 export interface McpExtensionInput {
   kind: 'mcp';
@@ -336,7 +355,14 @@ export interface McpExtensionInput {
   transport: McpTransportInput;
 }
 
-export type ExtensionInput = McpExtensionInput;
+export interface SkillExtensionInput {
+  kind: 'skill';
+  name: string;
+  description?: string;
+  path: string;
+}
+
+export type ExtensionInput = McpExtensionInput | SkillExtensionInput;
 
 export const EXTENSION_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 export const MAX_EXTENSION_NAME_LENGTH = 64;
@@ -349,6 +375,7 @@ export const MAX_MCP_HEADERS = 20;
 export const MAX_MCP_ENV_VARS = 50;
 export const MAX_MCP_SECRET_NAME_LENGTH = 128;
 export const MAX_MCP_SECRET_VALUE_LENGTH = 4096;
+export const MAX_SKILL_PATH_LENGTH = 4096;
 
 export interface QuestionOption {
   label: string;
@@ -850,22 +877,50 @@ function parseMcpTransport(v: unknown): McpTransport | null {
   return null;
 }
 
+function parseDiscoveredSkill(v: unknown): DiscoveredSkill | null {
+  if (!isRecord(v)) return null;
+  const name = asString(v.name);
+  if (name === null) return null;
+  return { name, description: asString(v.description) ?? '' };
+}
+
 export function parseExtension(v: unknown): Extension | null {
-  if (!isRecord(v) || v.kind !== 'mcp') return null;
+  if (!isRecord(v)) return null;
   const id = asString(v.id);
   const name = asString(v.name);
-  const transport = parseMcpTransport(v.transport);
-  if (id === null || name === null || transport === null) return null;
+  if (id === null || name === null) return null;
   const createdAt = asNumber(v.createdAt) ?? 0;
-  return {
-    id,
-    kind: 'mcp',
-    name,
-    description: asString(v.description) ?? '',
-    transport,
-    createdAt,
-    updatedAt: asNumber(v.updatedAt) ?? createdAt,
-  };
+  const updatedAt = asNumber(v.updatedAt) ?? createdAt;
+  const description = asString(v.description) ?? '';
+  if (v.kind === 'mcp') {
+    const transport = parseMcpTransport(v.transport);
+    if (transport === null) return null;
+    return {
+      id,
+      kind: 'mcp',
+      name,
+      description,
+      transport,
+      createdAt,
+      updatedAt,
+    };
+  }
+  if (v.kind === 'skill') {
+    const path = asString(v.path);
+    if (path === null) return null;
+    return {
+      id,
+      kind: 'skill',
+      name,
+      description,
+      path,
+      skills: parseItems(v.skills, parseDiscoveredSkill),
+      missing: v.missing === true,
+      createdAt,
+      updatedAt,
+    };
+  }
+  return null;
 }
 
 export function parseExtensionList(v: unknown): Extension[] {

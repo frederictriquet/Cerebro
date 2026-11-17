@@ -6,6 +6,7 @@ import {
   apiPath,
   createExtension as apiCreateExtension,
   deleteExtension as apiDeleteExtension,
+  listExtensions as apiListExtensions,
   updateExtension as apiUpdateExtension,
   wsUrl,
 } from './api.ts';
@@ -90,6 +91,7 @@ export interface Store {
   createProject: (name: string, path: string) => Promise<Project>;
   deleteProject: (id: string) => Promise<void>;
   reorderProjects: (ids: string[]) => Promise<void>;
+  refreshExtensions: () => Promise<void>;
   createExtension: (input: ExtensionInput) => Promise<Extension>;
   updateExtension: (id: string, input: ExtensionInput) => Promise<Extension>;
   deleteExtension: (id: string) => Promise<void>;
@@ -409,6 +411,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       body: JSON.stringify({ ids }),
     });
     setProjects(parseProjectList(raw));
+  }, []);
+
+  const refreshExtensions = useCallback(async (): Promise<void> => {
+    const fresh = await apiListExtensions();
+    setExtensions([...fresh].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })));
   }, []);
 
   const createExtension = useCallback(async (input: ExtensionInput): Promise<Extension> => {
@@ -800,6 +807,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       createProject,
       deleteProject,
       reorderProjects,
+      refreshExtensions,
       createExtension,
       updateExtension,
       deleteExtension,
@@ -861,6 +869,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       createProject,
       deleteProject,
       reorderProjects,
+      refreshExtensions,
       createExtension,
       updateExtension,
       deleteExtension,

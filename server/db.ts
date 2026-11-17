@@ -42,6 +42,7 @@ import {
 } from '../shared/types.ts';
 import type { GlobalBacklog, GlobalEpic, GlobalTask } from '../shared/backlog.ts';
 import type { TodoItem } from '../shared/todos.ts';
+import { inspectSkillDirectory, toPublicDiscoveredSkills, type StoredSkillExtension } from './skills.ts';
 import { isRecord } from './util.ts';
 
 export class SessionProtectionError extends Error {}
@@ -250,7 +251,13 @@ export interface StoredMcpExtension {
   updatedAt: number;
 }
 
-export type StoredExtension = StoredMcpExtension;
+export type { StoredSkillExtension };
+
+export type StoredExtension = StoredMcpExtension | StoredSkillExtension;
+
+export type StoredExtensionInput =
+  | { kind: 'mcp'; name: string; description: string; transport: StoredMcpTransport }
+  | { kind: 'skill'; name: string; description: string; path: string };
 
 interface ExtensionRow {
   id: string;
@@ -272,7 +279,6 @@ function parseStoredStringRecord(raw: unknown): Record<string, string> {
 }
 
 function storedExtensionFromRow(row: ExtensionRow): StoredExtension | null {
-  if (row.kind !== 'mcp') return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(row.config);
@@ -280,29 +286,57 @@ function storedExtensionFromRow(row: ExtensionRow): StoredExtension | null {
     return null;
   }
   if (!isRecord(parsed)) return null;
-  let transport: StoredMcpTransport;
-  if (parsed.type === 'http' && typeof parsed.url === 'string') {
-    transport = { type: 'http', url: parsed.url, headers: parseStoredStringRecord(parsed.headers) };
-  } else if (parsed.type === 'stdio' && typeof parsed.command === 'string') {
-    const args = Array.isArray(parsed.args)
-      ? parsed.args.filter((item): item is string => typeof item === 'string')
-      : [];
-    transport = { type: 'stdio', command: parsed.command, args, env: parseStoredStringRecord(parsed.env) };
-  } else {
-    return null;
+  if (row.kind === 'mcp') {
+    let transport: StoredMcpTransport;
+    if (parsed.type === 'http' && typeof parsed.url === 'string') {
+      transport = { type: 'http', url: parsed.url, headers: parseStoredStringRecord(parsed.headers) };
+    } else if (parsed.type === 'stdio' && typeof parsed.command === 'string') {
+      const args = Array.isArray(parsed.args)
+        ? parsed.args.filter((item): item is string => typeof item === 'string')
+        : [];
+      transport = { type: 'stdio', command: parsed.command, args, env: parseStoredStringRecord(parsed.env) };
+    } else {
+      return null;
+    }
+    return {
+      id: row.id,
+      kind: 'mcp',
+      name: row.name,
+      description: row.description,
+      transport,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
   }
-  return {
-    id: row.id,
-    kind: 'mcp',
-    name: row.name,
-    description: row.description,
-    transport,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+  if (row.kind === 'skill' && typeof parsed.path === 'string' && parsed.path !== '') {
+    return {
+      id: row.id,
+      kind: 'skill',
+      name: row.name,
+      description: row.description,
+      path: parsed.path,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+  return null;
 }
 
 export function toPublicExtension(stored: StoredExtension): Extension {
+  if (stored.kind === 'skill') {
+    const inspected = inspectSkillDirectory(stored.path);
+    return {
+      id: stored.id,
+      kind: 'skill',
+      name: stored.name,
+      description: stored.description,
+      path: stored.path,
+      skills: toPublicDiscoveredSkills(inspected.skills),
+      missing: !inspected.exists || inspected.skills.length === 0,
+      createdAt: stored.createdAt,
+      updatedAt: stored.updatedAt,
+    };
+  }
   const transport: McpTransport =
     stored.transport.type === 'http'
       ? { type: 'http', url: stored.transport.url, headerNames: Object.keys(stored.transport.headers) }
@@ -1084,50 +1118,66 @@ export class CerebroDatabase {
     return out;
   }
 
-  createExtension(input: { kind: 'mcp'; name: string; description: string; transport: StoredMcpTransport }): Extension {
+  createExtension(input: StoredExtensionInput): Extension {
     const now = Date.now();
-    const stored: StoredExtension = {
-      id: randomUUID(),
-      kind: input.kind,
-      name: input.name,
-      description: input.description,
-      transport: input.transport,
-      createdAt: now,
-      updatedAt: now,
-    };
+    const id = randomUUID();
+    const stored: StoredExtension =
+      input.kind === 'mcp'
+        ? {
+            id,
+            kind: 'mcp',
+            name: input.name,
+            description: input.description,
+            transport: input.transport,
+            createdAt: now,
+            updatedAt: now,
+          }
+        : {
+            id,
+            kind: 'skill',
+            name: input.name,
+            description: input.description,
+            path: input.path,
+            createdAt: now,
+            updatedAt: now,
+          };
+    const configJson = JSON.stringify(stored.kind === 'mcp' ? stored.transport : { path: stored.path });
     this.connection
       .prepare(
         'INSERT INTO extensions (id, kind, name, description, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
-      .run(
-        stored.id,
-        stored.kind,
-        stored.name,
-        stored.description,
-        JSON.stringify(stored.transport),
-        stored.createdAt,
-        stored.updatedAt,
-      );
+      .run(stored.id, stored.kind, stored.name, stored.description, configJson, stored.createdAt, stored.updatedAt);
     return toPublicExtension(stored);
   }
 
-  updateExtension(
-    id: string,
-    input: { kind: 'mcp'; name: string; description: string; transport: StoredMcpTransport },
-  ): Extension | null {
+  updateExtension(id: string, input: StoredExtensionInput): Extension | null {
     const current = this.getStoredExtension(id);
     if (current === null) return null;
-    const next: StoredExtension = {
-      ...current,
-      kind: input.kind,
-      name: input.name,
-      description: input.description,
-      transport: input.transport,
-      updatedAt: Date.now(),
-    };
+    const updatedAt = Date.now();
+    const next: StoredExtension =
+      input.kind === 'mcp'
+        ? {
+            id: current.id,
+            kind: 'mcp',
+            name: input.name,
+            description: input.description,
+            transport: input.transport,
+            createdAt: current.createdAt,
+            updatedAt,
+          }
+        : {
+            id: current.id,
+            kind: 'skill',
+            name: input.name,
+            description: input.description,
+            path: input.path,
+            createdAt: current.createdAt,
+            updatedAt,
+          };
+    const configJson = JSON.stringify(next.kind === 'mcp' ? next.transport : { path: next.path });
     this.connection
       .prepare('UPDATE extensions SET kind = ?, name = ?, description = ?, config = ?, updated_at = ? WHERE id = ?')
-      .run(next.kind, next.name, next.description, JSON.stringify(next.transport), next.updatedAt, id);
+      .run(next.kind, next.name, next.description, configJson, next.updatedAt, id);
     return toPublicExtension(next);
   }
 

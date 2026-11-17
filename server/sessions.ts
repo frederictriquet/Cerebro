@@ -17,10 +17,11 @@ import { delimiter, join } from 'node:path';
 import type { SerializeAddon } from '@xterm/addon-serialize';
 import { withoutCerebroVariables } from './agent-env.ts';
 import { cleanupSessionExtensions, prepareSessionExtensions } from './mcp.ts';
+import { assertValidSkillExtensions } from './skills.ts';
 import { secretMatches } from './secret-compare.ts';
 import { buildAgentCommand, workspaceArgs, type Tuning } from './agents.ts';
 import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
-import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError } from './db.ts';
+import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError, type StoredSkillExtension } from './db.ts';
 import type { AgentQuestion } from './questions.ts';
 import { archiveSessionWorktree, restoreSessionWorktree } from './worktrees.ts';
 import { createWorkspace, createWorkspaceInContext, joinWorkspace, workspaceAt, workspaceFor } from './provenance.ts';
@@ -433,6 +434,7 @@ export class SessionManager {
     const command = buildAgentCommand(agent, mode, prompt, id, resumeSessionId, tuning, advisorModel);
     const token = this.db.getHookToken(id) ?? randomBytes(32).toString('hex');
     const resolvedExtensions = this.db.getStoredExtensionsByIds(extensionIds);
+    assertValidSkillExtensions(resolvedExtensions.filter((ext): ext is StoredSkillExtension => ext.kind === 'skill'));
     let session: Session;
     if (existingId === null) {
       session = this.db.createSession(

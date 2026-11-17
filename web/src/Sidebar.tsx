@@ -145,12 +145,12 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
         <button
           type="button"
           className={`slack-pill advisor-pill ${extensions.length > 0 ? 'on' : ''}`}
-          title="Catalogue des fonctionnalités supplémentaires (serveurs MCP) activables par projet ou au lancement"
+          title="Catalogue des fonctionnalités supplémentaires (serveurs MCP, skills) activables par projet ou au lancement"
           onClick={() => setShowExtensions(true)}
         >
-          MCP
+          Extensions
         </button>
-        <span className="meta">{extensions.length === 0 ? 'aucun' : plural(extensions.length, 'configuré')}</span>
+        <span className="meta">{extensions.length === 0 ? 'aucune' : plural(extensions.length, 'configurée')}</span>
       </section>
       {showExtensions ? <ExtensionsDialog onClose={() => setShowExtensions(false)} /> : null}
 

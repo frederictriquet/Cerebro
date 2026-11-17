@@ -1614,24 +1614,29 @@ participants de ce brouillon sont conservés par session dans le navigateur.
   interrompu, avec les avis déjà obtenus ; il n'est jamais rejoué automatiquement.
 - Supprimer un projet supprime ses councils.
 
-## Fonctionnalités supplémentaires par projet (serveurs MCP)
+## Fonctionnalités supplémentaires par projet (serveurs MCP et skills)
 
-Un serveur MCP utile sur certains projets seulement (par exemple `https://mcp.data.gouv.fr/mcp`)
-peut être déclaré **une seule fois** dans le catalogue de la machine — via la pastille
-**MCP** de la barre latérale ou depuis l'onglet **Réglages** d'un projet — sans encombrer
-le contexte des autres projets :
+Un serveur MCP (par exemple `https://mcp.data.gouv.fr/mcp`) ou un dossier de skills utile sur
+certains projets seulement peut être déclaré **une seule fois** dans le catalogue de la machine — via
+la pastille **Extensions** de la barre latérale ou depuis l'onglet **Réglages** d'un projet — sans
+encombrer le contexte des autres projets :
 
-- **Catalogue global** : accepte les serveurs MCP distants en Streamable HTTP (URL et
-  en-têtes optionnels) et les serveurs locaux `stdio` (commande, arguments et variables
-  d'environnement). Les valeurs d'en-têtes et de variables d'environnement restent stockées
-  uniquement côté serveur et ne sont jamais renvoyées au navigateur.
+- **Catalogue global** : accepte les **serveurs MCP** distants en Streamable HTTP (URL et en-têtes
+  optionnels) ou locaux `stdio` (commande, arguments et variables d'environnement — les valeurs
+  secrètes restent stockées uniquement côté serveur), ainsi que les **dossiers locaux de skills**
+  contenant directement un fichier `SKILL.md` (skill unique) ou plusieurs sous-dossiers
+  `<nom>/SKILL.md` (pack de skills, avec leurs éventuels `scripts/` et `references/`), situés hors
+  des répertoires globaux auto-chargés par les CLIs. Si un dossier de skills est déplacé ou supprimé,
+  Cerebro l'indique (`Dossier introuvable`) sans perdre son rattachement aux projets.
 - **Activation par projet ou à la demande** : l'onglet **Réglages** d'un projet définit les
-  serveurs MCP activés par défaut pour ses sessions. Dès qu'au moins un serveur figure au
-  catalogue, le formulaire de lancement propose aussi une rangée **MCP** permettant de cocher
-  ou décocher un serveur ponctuellement pour la session lancée sans modifier le défaut du
-  projet ; la sélection est conservée sur la session pour ses reprises (`resume`).
-- **Injection sans polluer Git** : au lancement et à la reprise, Cerebro passe les serveurs
-  sélectionnés à Claude (`--mcp-config`), Codex (`-c mcp_servers.*` et variables d'en-têtes
-  dans le PTY), Gemini/`agy` (plugin isolé de session via `--add-dir`) et Grok (`GROK_HOME`
-  et socket de session isolés), sans jamais écrire de fichier dans le dépôt du projet. Les
-  fichiers temporaires de session (`0600`) sont supprimés dès la fin du processus.
+  extensions activées par défaut pour ses sessions. Dès qu'au moins une entrée figure au catalogue,
+  le formulaire de lancement propose aussi une rangée **Extensions** permettant de cocher ou décocher
+  une extension ponctuellement pour la session lancée sans modifier le défaut du projet ; la sélection
+  est conservée sur la session pour ses reprises (`resume`).
+- **Injection sans polluer Git** : au lancement et à la reprise, Cerebro monte uniquement les
+  extensions sélectionnées dans `~/.cerebro/sessions/<id>.ext/` pour Claude (`--mcp-config` et
+  `--plugin-dir`), Codex (`-c mcp_servers.*` et `CODEX_HOME` isolé partageant les sessions et bases
+  SQLite de `~/.codex`), Gemini/`agy` (`--add-dir` avec `.agents/plugins/` et `.agents/skills/`) et
+  Grok (`GROK_HOME` et socket de session isolés), sans jamais écrire de fichier dans le dépôt du
+  projet. Les artefacts temporaires de session (`0700`/`0600`) sont supprimés dès la fin du processus,
+  tandis que les dossiers sources de skills restent intacts.

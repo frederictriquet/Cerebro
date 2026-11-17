@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -33,6 +34,7 @@ const { buildServer } = await import('../server/index.ts');
 const { cleanupSessionExtensions, prepareSessionExtensions, sessionExtensionsDir } = await import('../server/mcp.ts');
 const { PeerSync } = await import('../server/peers.ts');
 const { SessionManager } = await import('../server/sessions.ts');
+const { collectSessionSkills, inspectSkillDirectory, parseSkillFrontmatter } = await import('../server/skills.ts');
 const { UpdateManager } = await import('../server/updates.ts');
 const { parseEventsMessage, parseExtensionList, parseProject, parseSession } = await import('../shared/types.ts');
 const { applyEventsMessage } = await import('../web/src/machine-data.ts');
@@ -544,4 +546,279 @@ test('layout CSS des extensions : case à cocher et métadonnées alignées en l
   const headRule = css.match(/\.project-extensions-head\s*\{[^}]*\}/)?.[0] ?? '';
   assert.match(headRule, /justify-content:\s*space-between/);
   assert.match(headRule, /align-items:\s*center/);
+});
+
+test('skills : parsing frontmatter YAML, détection skill unique / pack et injection multi-agents sans polluer Git', () => {
+  const parsedFolded = parseSkillFrontmatter(
+    `---\nname: sirene-api\ndescription: >-\n  Interroge l'API Sirene\n  de l'INSEE.\n---\n# Corps\n`,
+  );
+  assert.deepEqual(parsedFolded, {
+    name: 'sirene-api',
+    description: "Interroge l'API Sirene de l'INSEE.",
+  });
+
+  const skillsRepo = join(root, 'personal-skills');
+  const packDir = join(skillsRepo, 'open-data-pack');
+  mkdirSync(join(packDir, 'sirene', 'scripts'), { recursive: true });
+  mkdirSync(join(packDir, 'geo-adresse', 'references'), { recursive: true });
+  mkdirSync(join(packDir, '.git'), { recursive: true });
+  mkdirSync(join(packDir, 'node_modules', 'ignored-pkg'), { recursive: true });
+  writeFileSync(
+    join(packDir, 'sirene', 'SKILL.md'),
+    '---\nname: sirene\ndescription: Recherche entreprises INSEE\n---\nVoir scripts/check.mjs\n',
+  );
+  writeFileSync(join(packDir, 'sirene', 'scripts', 'check.mjs'), 'export const ok = true;\n');
+  writeFileSync(
+    join(packDir, 'geo-adresse', 'SKILL.md'),
+    '---\nname: geo-adresse\ndescription: >-\n  Géocodage BAN\n  adresse.data.gouv.fr\n---\nVoir references/ban.md\n',
+  );
+  writeFileSync(join(packDir, 'geo-adresse', 'references', 'ban.md'), '# BAN\n');
+  writeFileSync(join(packDir, 'node_modules', 'ignored-pkg', 'SKILL.md'), '---\nname: nope\ndescription: nope\n---\n');
+
+  const packInspected = inspectSkillDirectory(packDir);
+  assert.equal(packInspected.exists, true);
+  assert.deepEqual(
+    packInspected.skills.map((s) => ({ slug: s.slug, name: s.name, description: s.description })),
+    [
+      { slug: 'geo-adresse', name: 'geo-adresse', description: 'Géocodage BAN adresse.data.gouv.fr' },
+      { slug: 'sirene', name: 'sirene', description: 'Recherche entreprises INSEE' },
+    ],
+  );
+
+  const singleDir = join(skillsRepo, 'rgaa-audit');
+  mkdirSync(singleDir, { recursive: true });
+  writeFileSync(join(singleDir, 'SKILL.md'), '---\nname: rgaa-audit\ndescription: Audit RGAA 4.1\n---\nContenu\n');
+  const singleInspected = inspectSkillDirectory(singleDir);
+  assert.equal(singleInspected.skills.length, 1);
+  assert.equal(singleInspected.skills[0].slug, 'rgaa-audit');
+
+  // Collision de slug entre deux packs distincts + déduplication d'un même dossier pointé deux fois.
+  const altSireneDir = join(skillsRepo, 'other-pack', 'sirene');
+  mkdirSync(altSireneDir, { recursive: true });
+  writeFileSync(join(altSireneDir, 'SKILL.md'), '---\nname: sirene\ndescription: Autre Sirene\n---\n');
+  const collected = collectSessionSkills([
+    { id: '1', kind: 'skill', name: 'pack1', description: '', path: packDir, createdAt: 1, updatedAt: 1 },
+    { id: '2', kind: 'skill', name: 'dup', description: '', path: join(packDir, 'sirene'), createdAt: 1, updatedAt: 1 },
+    {
+      id: '3',
+      kind: 'skill',
+      name: 'pack2',
+      description: '',
+      path: join(skillsRepo, 'other-pack'),
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  ]);
+  assert.deepEqual(
+    collected.map((s) => s.slug),
+    ['geo-adresse', 'sirene', 'pack2-sirene'],
+  );
+
+  // Vérification de l'injection combinée (MCP + skills) sur les 4 agents.
+  const projectRepo = join(root, 'clean-skill-repo');
+  mkdirSync(projectRepo, { recursive: true });
+  writeFileSync(join(projectRepo, 'README.md'), '# Projet propre\n');
+
+  const grokHome = join(root, 'grok-skills-unit');
+  mkdirSync(join(grokHome, 'skills', 'global-grok-skill'), { recursive: true });
+  writeFileSync(join(grokHome, 'skills', 'global-grok-skill', 'SKILL.md'), '---\nname: global\ndescription: g\n---\n');
+  writeFileSync(join(grokHome, 'config.toml'), 'theme = "dark"\n');
+
+  const codexHome = join(root, 'codex-skills-unit');
+  mkdirSync(join(codexHome, 'skills', 'graphify'), { recursive: true });
+  writeFileSync(join(codexHome, 'skills', 'graphify', 'SKILL.md'), '---\nname: graphify\ndescription: g\n---\n');
+  writeFileSync(join(codexHome, 'auth.json'), '{"token":"codex-init"}', { mode: 0o600 });
+  writeFileSync(join(codexHome, 'state_5.sqlite'), 'sqlite-bytes');
+
+  const sessionsDir = join(root, 'sessions-skills-unit');
+  mkdirSync(sessionsDir, { recursive: true });
+
+  const combined = [
+    {
+      id: 'ext-mcp',
+      kind: 'mcp',
+      name: 'data-gouv',
+      description: '',
+      transport: { type: 'http', url: 'https://mcp.data.gouv.fr/mcp', headers: {} },
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    {
+      id: 'ext-pack',
+      kind: 'skill',
+      name: 'open-data',
+      description: '',
+      path: packDir,
+      createdAt: 2,
+      updatedAt: 2,
+    },
+  ];
+
+  // 1) Claude : --mcp-config + --plugin-dir contenant .claude-plugin/plugin.json et symlinks skills/*.
+  const claudePrep = prepareSessionExtensions('claude', combined, sessionsDir, 'sk-claude', grokHome, codexHome);
+  assert.ok(claudePrep.args.includes('--mcp-config'));
+  const pluginDirIdx = claudePrep.args.indexOf('--plugin-dir');
+  assert.notEqual(pluginDirIdx, -1);
+  const claudePluginDir = claudePrep.args[pluginDirIdx + 1];
+  assert.equal(existsSync(join(claudePluginDir, '.claude-plugin', 'plugin.json')), true);
+  assert.equal(lstatSync(join(claudePluginDir, 'skills', 'sirene')).isSymbolicLink(), true);
+  assert.equal(existsSync(join(claudePluginDir, 'skills', 'sirene', 'scripts', 'check.mjs')), true);
+
+  // 2) Codex : CODEX_HOME isolé + --no-daemon + sqlite_home/log_dir pointant vers codexHome, sans copier state_5.sqlite.
+  const codexPrep = prepareSessionExtensions('codex', combined, sessionsDir, 'sk-codex', grokHome, codexHome);
+  assert.ok(codexPrep.args.includes('--no-daemon'));
+  assert.ok(codexPrep.args.includes(`sqlite_home=${JSON.stringify(codexHome)}`));
+  assert.ok(codexPrep.args.some((arg) => arg.startsWith('mcp_servers.data-gouv=')));
+  const isolatedCodex = codexPrep.env.CODEX_HOME;
+  assert.ok(isolatedCodex);
+  assert.equal(existsSync(join(isolatedCodex, 'state_5.sqlite')), false);
+  assert.equal(lstatSync(join(isolatedCodex, 'sessions')).isSymbolicLink(), true);
+  assert.equal(existsSync(join(isolatedCodex, 'skills', 'graphify', 'SKILL.md')), true);
+  assert.equal(lstatSync(join(isolatedCodex, 'skills', 'sirene')).isSymbolicLink(), true);
+  assert.equal(existsSync(join(codexHome, 'skills', 'sirene')), false, 'global ~/.codex/skills must stay untouched');
+  // Simulate atomic OAuth refresh inside isolated CODEX_HOME before cleanup.
+  rmSync(join(isolatedCodex, 'auth.json'));
+  writeFileSync(join(isolatedCodex, 'auth.json'), '{"token":"codex-refreshed"}', { mode: 0o600 });
+
+  // 3) Gemini (agy) : .agents/skills/<slug> matérialisé (avec scripts/ et references/) à côté du plugin MCP.
+  const geminiPrep = prepareSessionExtensions('gemini', combined, sessionsDir, 'sk-gemini', grokHome, codexHome);
+  const agyDir = geminiPrep.args[1];
+  assert.equal(lstatSync(join(agyDir, '.agents', 'skills', 'sirene')).isSymbolicLink(), false);
+  assert.equal(existsSync(join(agyDir, '.agents', 'skills', 'sirene', 'scripts', 'check.mjs')), true);
+  assert.equal(existsSync(join(agyDir, '.agents', 'skills', 'geo-adresse', 'references', 'ban.md')), true);
+  assert.equal(existsSync(join(agyDir, '.agents', 'plugins', 'cerebro-mcp', 'mcp_config.json')), true);
+
+  // 4) Grok : GROK_HOME isolé préservant global-grok-skill sans polluer ~/.grok/skills.
+  const grokPrep = prepareSessionExtensions('grok', [combined[1]], sessionsDir, 'sk-grok', grokHome, codexHome);
+  const isolatedGrok = grokPrep.env.GROK_HOME;
+  assert.equal(lstatSync(join(isolatedGrok, 'skills')).isSymbolicLink(), false);
+  assert.equal(existsSync(join(isolatedGrok, 'skills', 'global-grok-skill', 'SKILL.md')), true);
+  assert.equal(lstatSync(join(isolatedGrok, 'skills', 'sirene')).isSymbolicLink(), true);
+  assert.equal(existsSync(join(grokHome, 'skills', 'sirene')), false, 'global ~/.grok/skills must stay untouched');
+  assert.equal(readFileSync(join(isolatedGrok, 'config.toml'), 'utf8'), 'theme = "dark"\n');
+
+  // Cleanup removes session mounts, keeps refreshed Codex auth.json, and leaves skill sources & project repo intact.
+  for (const sid of ['sk-claude', 'sk-codex', 'sk-gemini', 'sk-grok']) {
+    cleanupSessionExtensions(sessionsDir, sid, grokHome, codexHome);
+    assert.equal(existsSync(sessionExtensionsDir(sessionsDir, sid)), false);
+  }
+  assert.equal(readFileSync(join(codexHome, 'auth.json'), 'utf8'), '{"token":"codex-refreshed"}');
+  assert.equal(existsSync(join(packDir, 'sirene', 'scripts', 'check.mjs')), true);
+  assert.deepEqual(readdirSync(projectRepo), ['README.md']);
+});
+
+test('API extensions skills : validation chemins, détection live dossier déplacé (missing) et reprise après correction', async (t) => {
+  const app = await buildServer({ catalog });
+  t.after(async () => {
+    await app.close();
+  });
+
+  const projDir = join(root, 'proj-skills');
+  mkdirSync(projDir, { recursive: true });
+  const proj = (
+    await app.inject({ method: 'POST', url: '/api/projects', payload: { name: 'Projet Skills', path: projDir } })
+  ).json();
+
+  // Reject global auto-discovered agent skill folder (`~/.claude/skills/...`).
+  const globalClaudeSkill = join(root, '.claude', 'skills', 'bad');
+  mkdirSync(globalClaudeSkill, { recursive: true });
+  writeFileSync(join(globalClaudeSkill, 'SKILL.md'), '---\nname: bad\ndescription: global\n---\n');
+  const globalRes = await app.inject({
+    method: 'POST',
+    url: '/api/extensions',
+    payload: { kind: 'skill', name: 'bad-global', path: '~/.claude/skills/bad' },
+  });
+  assert.equal(globalRes.statusCode, 400);
+  assert.match(globalRes.json().error, /chargé globalement/);
+
+  // Reject folder without any SKILL.md.
+  const emptySkillDir = join(root, 'empty-skills');
+  mkdirSync(emptySkillDir, { recursive: true });
+  const emptyRes = await app.inject({
+    method: 'POST',
+    url: '/api/extensions',
+    payload: { kind: 'skill', name: 'empty', path: emptySkillDir },
+  });
+  assert.equal(emptyRes.statusCode, 400);
+  assert.match(emptyRes.json().error, /Aucun fichier SKILL\.md/);
+
+  // Create valid skill extension using `~/...` path.
+  const initialDir = join(root, 'mes-skills', 'data-pack');
+  mkdirSync(join(initialDir, 'sirene'), { recursive: true });
+  writeFileSync(join(initialDir, 'sirene', 'SKILL.md'), '---\nname: sirene\ndescription: API Sirene\n---\n');
+
+  const createRes = await app.inject({
+    method: 'POST',
+    url: '/api/extensions',
+    payload: {
+      kind: 'skill',
+      name: 'data-skills',
+      description: 'Skills Open Data',
+      path: '~/mes-skills/data-pack',
+    },
+  });
+  assert.equal(createRes.statusCode, 201);
+  const created = createRes.json();
+  assert.equal(created.kind, 'skill');
+  assert.equal(created.path, initialDir);
+  assert.equal(created.missing, false);
+  assert.deepEqual(created.skills, [{ name: 'sirene', description: 'API Sirene' }]);
+  assert.equal(parseExtensionList([created]).length, 1);
+
+  // Enable on project and launch a session.
+  await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${proj.id}`,
+    payload: { extensionIds: [created.id] },
+  });
+  const s1Res = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${proj.id}/sessions`,
+    payload: { agent: 'claude', prompt: 'Analyse Sirene' },
+  });
+  assert.equal(s1Res.statusCode, 201);
+  const s1 = s1Res.json();
+
+  // Move folder on disk: GET /api/extensions flags `missing: true`, project keeps its association,
+  // and launching/resuming fails cleanly with an explicit message without creating a dead session.
+  const movedDir = join(root, 'mes-skills', 'data-pack-moved');
+  renameSync(initialDir, movedDir);
+
+  const listWhileMissing = (await app.inject({ method: 'GET', url: '/api/extensions' })).json();
+  const missingEntry = listWhileMissing.find((e) => e.id === created.id);
+  assert.equal(missingEntry?.missing, true);
+  assert.deepEqual(missingEntry?.skills, []);
+
+  const sessionsBeforeFail = (await app.inject({ method: 'GET', url: '/api/sessions' })).json().length;
+  const failLaunch = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${proj.id}/sessions`,
+    payload: { agent: 'claude', prompt: 'Doit échouer proprement' },
+  });
+  assert.equal(failLaunch.statusCode, 500);
+  assert.match(failLaunch.json().error, /introuvable/);
+  const sessionsAfterFail = (await app.inject({ method: 'GET', url: '/api/sessions' })).json().length;
+  assert.equal(sessionsAfterFail, sessionsBeforeFail, 'failed pre-flight must not create an orphan session');
+
+  const failResume = await app.inject({ method: 'POST', url: `/api/sessions/${s1.id}/resume` });
+  assert.equal(failResume.statusCode, 409);
+  assert.match(failResume.json().error, /introuvable/);
+
+  // Update the path in catalog: same extension ID, project association intact, launch & resume work again.
+  const fixRes = await app.inject({
+    method: 'PUT',
+    url: `/api/extensions/${created.id}`,
+    payload: {
+      kind: 'skill',
+      name: 'data-skills',
+      description: 'Skills Open Data',
+      path: '~/mes-skills/data-pack-moved',
+    },
+  });
+  assert.equal(fixRes.statusCode, 200);
+  assert.equal(fixRes.json().missing, false);
+  assert.equal(fixRes.json().skills.length, 1);
+
+  const resumedAfterFix = await app.inject({ method: 'POST', url: `/api/sessions/${s1.id}/resume` });
+  assert.equal(resumedAfterFix.statusCode, 200);
 });
