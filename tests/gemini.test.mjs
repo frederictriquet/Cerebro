@@ -99,7 +99,8 @@ test('dossier de session agy : approuvé pour la session seulement, notification
   const [flag, settings] = workspaceArgs('gemini', '/data/workspaces/s1');
   assert.equal(flag, '--settings');
   assert.deepEqual(JSON.parse(settings), { notifications: true, trustedWorkspaces: ['/data/workspaces/s1'] });
-  for (const agent of ['claude', 'codex', 'grok']) assert.deepEqual(workspaceArgs(agent, '/x'), []);
+  for (const agent of ['claude', 'grok']) assert.deepEqual(workspaceArgs(agent, '/x'), []);
+  assert.deepEqual(workspaceArgs('codex', '/x'), ['-c', 'projects={"/x"={trust_level="trusted"}}']);
 });
 
 test('plugin agy : installé seulement si agy l’est, hooks inertes hors des sessions Cerebro', () => {

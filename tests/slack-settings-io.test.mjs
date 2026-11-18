@@ -156,7 +156,12 @@ test('watch settings have defaults, and invalid values are rejected', async () =
 test('invalid watch settings in slack.json fall back to their defaults one by one', () => {
   writeFileSync(
     file,
-    JSON.stringify({ watchDeliveryLive: [], watchDeliveryEnded: ['notify', 'dm'], watchIntervalSec: 2, watchTtlDays: 14 }),
+    JSON.stringify({
+      watchDeliveryLive: [],
+      watchDeliveryEnded: ['notify', 'dm'],
+      watchIntervalSec: 2,
+      watchTtlDays: 14,
+    }),
   );
   const status = create().status();
   assert.deepEqual(status.watchDeliveryLive, ['inject']);

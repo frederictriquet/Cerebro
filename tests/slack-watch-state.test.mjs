@@ -137,6 +137,10 @@ test('the user token transport only reads, and is disabled without CEREBRO_SLACK
 });
 
 test('agents never receive the user token', () => {
-  const env = withoutCerebroVariables({ PATH: '/bin', CEREBRO_SLACK_USER_TOKEN: 'xoxp-secret', CEREBRO_SLACK_TOKEN: 'x' });
+  const env = withoutCerebroVariables({
+    PATH: '/bin',
+    CEREBRO_SLACK_USER_TOKEN: 'xoxp-secret',
+    CEREBRO_SLACK_TOKEN: 'x',
+  });
   assert.deepEqual(env, { PATH: '/bin' });
 });

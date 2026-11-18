@@ -10,6 +10,7 @@ import {
   parseSessionTokenUsages,
   parseSlackStatus,
   parseSlackWatchList,
+  parseTrustFoldersSettings,
   type AdvisorSettings,
   type AgentUpdate,
   type AgentUsage,
@@ -21,6 +22,7 @@ import {
   type SlackSettings,
   type SlackStatus,
   type SlackWatchList,
+  type TrustFoldersSettings,
   type WatchDelivery,
 } from '../../shared/machine.ts';
 import { boolean, object, parser, string, type Parser } from '../../shared/parse.ts';
@@ -192,6 +194,17 @@ export function getAdvisor(): Promise<AdvisorSettings> {
 
 export function setAdvisor(model: string | null): Promise<AdvisorSettings> {
   return apiParsed('/api/advisor', parseAdvisorSettings, { method: 'PUT', body: JSON.stringify({ model }) });
+}
+
+export function getTrustFolders(): Promise<TrustFoldersSettings> {
+  return apiParsed('/api/trust-folders', parseTrustFoldersSettings);
+}
+
+export function setTrustFolders(enabled: boolean): Promise<TrustFoldersSettings> {
+  return apiParsed('/api/trust-folders', parseTrustFoldersSettings, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  });
 }
 
 export function getSlackStatus(): Promise<SlackStatus> {

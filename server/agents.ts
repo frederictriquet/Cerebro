@@ -5,6 +5,7 @@ import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { modeArgs, tuningArgs, type Tuning } from './agent-args.ts';
 import { readCodexString } from './codex-config.ts';
 import { HOOK_SCRIPT, SLACK_ENABLED, SLACK_WATCH_ENABLED } from './config.ts';
+import { tomlKey } from './mcp.ts';
 import { AGENT_COMMAND, AGENTS, type Agent, type Mode } from '../shared/types.ts';
 
 export type { Tuning } from './agent-args.ts';
@@ -103,14 +104,37 @@ export function getGeminiSessionInjection(): { injectSteps: object[] } {
 }
 
 /**
- * Arguments that depend on the folder the session runs in, known only once its workspace is ready. agy: session
- * settings, never saved. The bell and OSC 9 notification report its approval prompts, which no hook does; the folder
- * is trusted, since agy would otherwise ask for each new worktree (trusting a parent does not cover it), which also
- * enables that project's own agy hooks.
+ * Arguments that depend on the folder the session runs in, known only once its workspace is ready.
+ * - `gemini` (`agy`): session settings, never saved; `notifications: true` reports approval prompts over OSC 9, and
+ *   when `trustFolders` is enabled the workspace paths are added to `trustedWorkspaces` (alongside Cerebro's own
+ *   extension workspace `extraTrustedDirs`).
+ * - `codex`: when `trustFolders` is enabled, marks the workspace paths trusted via a session-only `-c projects={...}`
+ *   override, without writing `~/.codex/config.toml`.
  */
-export function workspaceArgs(agent: Agent, cwd: string, extraTrustedDirs: readonly string[] = []): string[] {
-  if (agent !== 'gemini') return [];
-  return ['--settings', JSON.stringify({ notifications: true, trustedWorkspaces: [cwd, ...extraTrustedDirs] })];
+export function workspaceArgs(
+  agent: Agent,
+  cwd: string,
+  extraTrustedDirs: readonly string[] = [],
+  trustFolders = true,
+  extraProjectDirs: readonly string[] = [],
+): string[] {
+  const projectDirs = trustFolders ? [...new Set([cwd, ...extraProjectDirs])] : [];
+  if (agent === 'gemini') {
+    const trustedWorkspaces = [...new Set([...projectDirs, ...extraTrustedDirs])];
+    return [
+      '--settings',
+      JSON.stringify({
+        notifications: true,
+        ...(trustedWorkspaces.length > 0 ? { trustedWorkspaces } : {}),
+      }),
+    ];
+  }
+  if (agent === 'codex') {
+    if (projectDirs.length === 0) return [];
+    const entries = projectDirs.map((dir) => `${tomlKey(dir)}={trust_level="trusted"}`);
+    return ['-c', `projects={${entries.join(',')}}`];
+  }
+  return [];
 }
 
 // Top-level `developer_instructions` of the user's Codex config: our `-c` override replaces it,

@@ -1073,6 +1073,16 @@ export class CerebroDatabase {
     this.putSetting('claude_advisor', model);
   }
 
+  // Approbation automatique des dossiers de session (claude, codex, grok, gemini), activée par défaut.
+  getTrustFolders(): boolean {
+    const stored = this.getSetting<unknown>('trust_folders');
+    return typeof stored === 'boolean' ? stored : true;
+  }
+
+  setTrustFolders(enabled: boolean): void {
+    this.putSetting('trust_folders', enabled);
+  }
+
   listStoredExtensions(): StoredExtension[] {
     const rows = this.connection
       .prepare('SELECT * FROM extensions ORDER BY name COLLATE NOCASE ASC, created_at ASC, rowid ASC')

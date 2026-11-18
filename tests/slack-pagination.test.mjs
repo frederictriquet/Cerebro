@@ -97,7 +97,13 @@ test('un message posté par le connecteur Slack de Claude au nom de l’utilisat
   dm = [
     { ts: ts(450), text: '[Cerebro test] Surveillance : ignorer', user: 'test', app_id: 'ACLAUDE', blocks: signed },
     { ts: ts(451), text: 'Demo: programmé', user: 'test', client_msg_id: 'x', blocks: signed },
-    { ts: ts(452), text: 'Demo: tapé', user: 'test', client_msg_id: 'y', blocks: [{ type: 'rich_text', elements: [] }] },
+    {
+      ts: ts(452),
+      text: 'Demo: tapé',
+      user: 'test',
+      client_msg_id: 'y',
+      blocks: [{ type: 'rich_text', elements: [] }],
+    },
   ];
   await notifier.poller.pollDm();
   assert.deepEqual(handled, ['Demo: tapé']);

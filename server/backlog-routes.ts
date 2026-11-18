@@ -38,7 +38,10 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
     if (named.length === 1) return { ok: true, value: (named[0] as Project).id };
     const names = (named.length > 1 ? named : projects).map((p) => `${p.name} (${p.id})`).join(', ');
     return named.length > 1
-      ? { ok: false, reply: error(reply, 400, `Plusieurs projets s'appellent ainsi, précisez l'identifiant : ${names}`) }
+      ? {
+          ok: false,
+          reply: error(reply, 400, `Plusieurs projets s'appellent ainsi, précisez l'identifiant : ${names}`),
+        }
       : { ok: false, reply: error(reply, 404, `Projet introuvable : ${wanted}. Projets : ${names}`) };
   };
 
@@ -46,9 +49,7 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
     const checked = tokenSession(request, reply);
     if (!checked.ok) return checked.reply;
     const session = checked.value;
-    return db
-      .listProjects()
-      .map(({ id, name }) => ({ id, name, current: id === session.projectId }));
+    return db.listProjects().map(({ id, name }) => ({ id, name, current: id === session.projectId }));
   });
 
   app.post<{ Params: { id: string } }>(
@@ -85,17 +86,15 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
     const session = checked.value;
     const target = targetProject(session, request, reply);
     if (!target.ok) return target.reply;
-    return projectTasks(target.value).map(
-      ({ id, status, text, dependsOn, epicId, sourceSessionId, sessionId }) => ({
-        id,
-        status,
-        text,
-        dependsOn,
-        epicId,
-        mine: sourceSessionId === session.id,
-        assigned: sessionId === session.id,
-      }),
-    );
+    return projectTasks(target.value).map(({ id, status, text, dependsOn, epicId, sourceSessionId, sessionId }) => ({
+      id,
+      status,
+      text,
+      dependsOn,
+      epicId,
+      mine: sourceSessionId === session.id,
+      assigned: sessionId === session.id,
+    }));
   });
 
   const projectEpic = (session: Session, epicId: string, reply: FastifyReply): Outcome<Epic> => {
@@ -134,7 +133,7 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
     const body = asRecord(request.body);
     // Dans un autre projet, la session ajoute sans réorganiser : pas de tâches existantes rangées dans l'epic.
     if (target.value !== session.projectId && Array.isArray(body?.taskIds) && body.taskIds.length > 0)
-      return error(reply, 400, "Dans un autre projet, un epic se crée vide ou avec ses nouvelles tâches (--new-epic)");
+      return error(reply, 400, 'Dans un autre projet, un epic se crée vide ou avec ses nouvelles tâches (--new-epic)');
     const result = createEpic(ctx, target.value, body, session.id);
     if (!result.ok) return error(reply, 400, result.message);
     const { id, title, description } = result.epic;
@@ -273,12 +272,7 @@ export function registerBacklogRoutes(ctx: RouteContext): void {
           // Les nouvelles tâches ne dépendent que de tâches existantes ou antérieures : pas de cycle possible.
           const tasks: Task[] = [];
           for (const { text, deps, epicId } of items) {
-            const task = db.createTask(
-              projectId,
-              text,
-              session.id,
-              epicId === undefined ? fallbackEpic : epicId,
-            );
+            const task = db.createTask(projectId, text, session.id, epicId === undefined ? fallbackEpic : epicId);
             const dependsOn = deps.map((dep) => (typeof dep === 'number' ? (tasks[dep - 1] as Task).id : dep));
             tasks.push(dependsOn.length === 0 ? task : (db.updateTask(task.id, { dependsOn }) ?? task));
           }

@@ -1,6 +1,7 @@
 import { AdvisorPanel, useAdvisor } from './AdvisorSettings.tsx';
 import { AgentLabel } from './AgentLabel.tsx';
 import { ExtensionsDialog } from './ExtensionsDialog.tsx';
+import { TrustFoldersPanel, useTrustFolders } from './TrustFoldersSettings.tsx';
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { acquireGeneralSlack, getGeneralSlack, getSlackStatus, updateSlackSettings } from './api.ts';
 import { errorMessage, needsAttention, plural, relativeTime, sessionTitle } from './format.ts';
@@ -25,8 +26,10 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
   const [slack, setSlack] = useState<SlackStatus | null>(null);
   const [showSlack, setShowSlack] = useState(false);
   const [showAdvisor, setShowAdvisor] = useState(false);
+  const [showTrustFolders, setShowTrustFolders] = useState(false);
   const [showExtensions, setShowExtensions] = useState(false);
   const advisor = useAdvisor();
+  const trustFolders = useTrustFolders();
 
   const attention = sessions.filter(needsAttention);
   const activeSessionId = route.kind === 'session' ? route.sessionId : null;
@@ -139,6 +142,24 @@ export function Sidebar({ route, onNavigate }: { route: Route; onNavigate: () =>
       </section>
       {showAdvisor && advisor.model !== undefined ? (
         <AdvisorPanel model={advisor.model} onChange={advisor.setModel} />
+      ) : null}
+
+      <section className="side-section side-advisor">
+        <button
+          type="button"
+          className={`slack-pill advisor-pill ${trustFolders.enabled ? 'on' : ''}`}
+          aria-expanded={showTrustFolders}
+          title="Approbation automatique du dossier de travail des sessions (Claude, Codex, Grok, Gemini)"
+          onClick={() => setShowTrustFolders(!showTrustFolders)}
+        >
+          Trust
+        </button>
+        <span className="meta">
+          {trustFolders.enabled === undefined ? '…' : trustFolders.enabled ? 'automatique' : 'manuel'}
+        </span>
+      </section>
+      {showTrustFolders && trustFolders.enabled !== undefined ? (
+        <TrustFoldersPanel enabled={trustFolders.enabled} onChange={trustFolders.setEnabled} />
       ) : null}
 
       <section className="side-section side-advisor">

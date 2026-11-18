@@ -61,13 +61,10 @@ test('une session ajoute et consulte dans le backlog d’un autre projet, sans y
       });
 
     const projects = (await send('GET', '/projects')).json();
-    assert.deepEqual(
-      projects.map(({ name, current }) => [name, current]).sort(),
-      [
-        ['Cerebro', false],
-        ['EDOP', true],
-      ],
-    );
+    assert.deepEqual(projects.map(({ name, current }) => [name, current]).sort(), [
+      ['Cerebro', false],
+      ['EDOP', true],
+    ]);
 
     const added = await send('POST', '?project=cerebro', {
       epic: { title: 'Limites vues depuis EDOP', description: 'contexte' },
@@ -89,7 +86,10 @@ test('une session ajoute et consulte dans le backlog d’un autre projet, sans y
 
     // Dépendance ou epic d'un autre projet : refusés.
     const own = db.createTask(home.id, 'Tâche EDOP', null);
-    assert.equal((await send('POST', '?project=Cerebro', { tasks: [{ text: 'x', dependsOn: [own.id] }] })).statusCode, 400);
+    assert.equal(
+      (await send('POST', '?project=Cerebro', { tasks: [{ text: 'x', dependsOn: [own.id] }] })).statusCode,
+      400,
+    );
     const homeEpic = db.createEpic(home.id, 'Epic EDOP', '', null);
     assert.equal((await send('POST', '?project=Cerebro', { epic: homeEpic.id, tasks: ['x'] })).statusCode, 400);
 

@@ -16,6 +16,7 @@ import type { Socket } from 'node:net';
 import { delimiter, join } from 'node:path';
 import type { SerializeAddon } from '@xterm/addon-serialize';
 import { withoutCerebroVariables } from './agent-env.ts';
+import { trustSessionFolders } from './folder-trust.ts';
 import { cleanupSessionExtensions, prepareSessionExtensions } from './mcp.ts';
 import { assertValidSkillExtensions } from './skills.ts';
 import { secretMatches } from './secret-compare.ts';
@@ -480,10 +481,12 @@ export class SessionManager {
     // Any failure before the holder spawn must end the session: left in 'starting' without runtime,
     // it could neither be stopped nor resumed.
     try {
-      const cwd = await preparation;
+      const { cwd, root } = await preparation;
       if (this.deleting.has(id) || this.db.getSession(id) === null)
         throw new Error('Session supprimée pendant son lancement');
       this.cleanupHolderArtifacts(id);
+      const trustFolders = this.db.getTrustFolders();
+      const projectTrustedDirs = trustFolders ? trustSessionFolders(agent, cwd, root) : [];
       const prepared = prepareSessionExtensions(
         agent,
         this.db.getStoredExtensionsByIds(extensionIds),
@@ -492,7 +495,11 @@ export class SessionManager {
       );
       const config: HolderConfig = {
         cmd: command.cmd,
-        args: [...workspaceArgs(agent, cwd, prepared.trustedDirs), ...prepared.args, ...command.args],
+        args: [
+          ...workspaceArgs(agent, cwd, prepared.trustedDirs, trustFolders, projectTrustedDirs),
+          ...prepared.args,
+          ...command.args,
+        ],
         cwd,
         env: { ...ptyEnvironment(id, token, agent), ...prepared.env },
         cols: 120,
@@ -594,7 +601,7 @@ export class SessionManager {
     joined: Workspace | null,
     epicId: string | null,
     validate?: () => Promise<void>,
-  ): Promise<string> {
+  ): Promise<{ cwd: string; root: string }> {
     if (existingId !== null)
       for (const restored of await restoreSessionWorktree(this.db, id)) {
         const session = restored === id ? null : this.db.getSession(restored);
@@ -609,6 +616,7 @@ export class SessionManager {
             ? await joinWorkspace(this.db, id, joined)
             : await createWorkspace(this.db, id, project);
     const cwd = workspace?.path ?? project.path;
+    const root = workspace?.root ?? cwd;
     if (workspace?.removedAt) throw new Error('Le worktree de cette conversation a été supprimé.');
     if (epicId && workspace)
       this.services.epicWorkspaces.remember(epicId, { path: workspace.path, mode: workspace.mode });
@@ -616,7 +624,7 @@ export class SessionManager {
     if (validate) await validate();
     this.services.gate.assertAvailable(cwd);
     if (!existsSync(cwd)) throw new Error(`Espace de session introuvable : ${cwd}`);
-    return cwd;
+    return { cwd, root };
   }
 
   private newRuntime(agent: Agent): Runtime {

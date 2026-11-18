@@ -91,6 +91,10 @@ const { Sidebar } = await (
   react,
   'react/jsx-runtime': jsx,
   './AdvisorSettings.tsx': { AdvisorPanel: stub, useAdvisor: () => ({ model: null, setModel() {} }) },
+  './TrustFoldersSettings.tsx': {
+    TrustFoldersPanel: stub,
+    useTrustFolders: () => ({ enabled: true, setEnabled() {} }),
+  },
   './AgentLabel.tsx': { AgentLabel: ({ agent }) => agent },
   './ExtensionsDialog.tsx': { ExtensionsDialog: stub },
   './api.ts': {

@@ -285,6 +285,13 @@ export function normalizeAdvisorModel(value: unknown): string | null | undefined
 
 export const parseAdvisorSettings = parser(object<AdvisorSettings>({ model: nullable(string) }));
 
+/** Réglage global d'approbation automatique des dossiers de session au lancement ou à la reprise. */
+export interface TrustFoldersSettings {
+  enabled: boolean;
+}
+
+export const parseTrustFoldersSettings = parser(object<TrustFoldersSettings>({ enabled: boolean }));
+
 export const parseGeneralSlackStatus = parser(
   object<GeneralSlackStatus>({
     shared: boolean,

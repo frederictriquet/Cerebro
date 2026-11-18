@@ -171,6 +171,15 @@ export function registerSystemRoutes(ctx: RouteContext): void {
     return reply.send({ model });
   });
 
+  // Approbation automatique des dossiers de session : vaut pour les lancements et reprises suivants, tous agents.
+  app.get('/api/trust-folders', async () => ({ enabled: db.getTrustFolders() }));
+  app.put('/api/trust-folders', async (request, reply) => {
+    const enabled = asRecord(request.body)?.enabled;
+    if (typeof enabled !== 'boolean') return error(reply, 400, 'enabled (booléen) attendu');
+    db.setTrustFolders(enabled);
+    return reply.send({ enabled });
+  });
+
   app.patch('/api/slack', async (request, reply) => {
     const body = asRecord(request.body);
     if (body === null) return error(reply, 400, 'Corps invalide');
