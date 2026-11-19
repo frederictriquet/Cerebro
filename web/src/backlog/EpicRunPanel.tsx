@@ -106,8 +106,8 @@ export function EpicRunPanel({
               onChange={(event) => setAutoValidate(event.target.checked)}
             />
             <span>
-              Valider automatiquement — clôt les étapes en attente de validation, y compris l’étape actuelle, et
-              poursuit l’epic. Les échecs et les blocages restent à traiter.
+              Valider automatiquement — clôt les étapes en attente de validation et poursuit l’epic. Une étape déclarée
+              terminée par l’agent déclenche l’étape suivante quel que soit ce réglage.
             </span>
           </label>
           <label className="epic-run-reason task-command-check">
@@ -142,6 +142,14 @@ export function EpicRunPanel({
           Étape à valider : {labelOf(awaitingTaskId)}. Vérifiez le résultat et les critères de la tâche, puis marquez
           cette étape terminée pour poursuivre l’epic. Le plan suit seul les modifications de l’epic ; reprendre ne
           valide pas le travail.
+        </p>
+      ) : null}
+      {RUN_RESUMABLE.includes(run.status) ? (
+        <p className="epic-run-reason">
+          Reprendre et recalculer réutilise le modèle de cette exécution.
+          {RUN_ACTIVE.includes(run.status)
+            ? ' Pour changer de modèle, arrêtez l’epic puis relancez-le depuis son en-tête.'
+            : null}
         </p>
       ) : null}
       {RUN_ACTIVE.includes(run.status) || RUN_RESUMABLE.includes(run.status) ? (
