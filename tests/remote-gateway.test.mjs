@@ -76,6 +76,12 @@ test('only interface routes are relayable, whatever their encoding', () => {
     'peer/notices',
     'peer/notices/n%20one/dismiss',
     'councils/c/images/1',
+    'todos',
+    'todos/t1',
+    'advisor',
+    'trust-folders',
+    'extensions',
+    'extensions/e1',
   ])
     assert.equal(relayableApiPath(rest), true, rest);
   for (const rest of [

@@ -54,12 +54,14 @@ function vscodeHeaders(request: FastifyRequest, remote: RemoteMachine, base: Out
 // (hook, notify, backlog, session-tasks), l'authentification et l'échange entre machines restent locales ;
 // une nouvelle route n'est relayée qu'une fois ajoutée ici.
 const RELAYED_API_ROUTES = new Set([
+  'advisor',
   'agents',
   'command-runs',
   'council',
   'councils',
   'epic-runs',
   'epics',
+  'extensions',
   'fs',
   'git',
   'operations',
@@ -69,6 +71,8 @@ const RELAYED_API_ROUTES = new Set([
   'sessions',
   'slack',
   'tasks',
+  'todos',
+  'trust-folders',
   'updates',
   'usage',
   'version',
