@@ -1,4 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { uploadProjectImage } from '../api.ts';
+import { AttachmentStrip, PhotoButtons, useAttachedField } from '../attachments.tsx';
 import { ChoiceGroup } from '../ChoiceGroup.tsx';
 import { ExtensionLaunchPicker } from '../ExtensionControls.tsx';
 import { errorMessage, MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from '../format.ts';
@@ -28,6 +30,18 @@ export function LaunchForm({ project }: { project: Project }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const available = agents.some((info) => info.available && info.agent === selection.agent);
+  // Prompt images: "[Image #N]" in the text, replaced at launch by the file's path on the server.
+  // [SPEC: vue mobile, images jointes]
+  const { images, attach, fieldProps, stripProps } = useAttachedField({
+    upload: (image) => uploadProjectImage(project.id, image),
+    text: prompt,
+    setText: (change) => {
+      setPrompt(change);
+      setError(null);
+    },
+    onError: setError,
+    disabled: busy,
+  });
   // Un autre projet ouvert : ses réglages remplacent ceux du précédent.
   useEffect(() => {
     setSelection({ agent: defaults.agent, model: defaults.model, effort: defaults.effort });
@@ -45,13 +59,17 @@ export function LaunchForm({ project }: { project: Project }) {
 
   const submit = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
-    if (busy || !available) return;
+    if (busy || !available || images.pending) return;
     setBusy(true);
     setError(null);
     try {
       const knownIds = new Set(extensions.map((ext) => ext.id));
       const activeIds = extensionIds.filter((id) => knownIds.has(id));
-      const session = await createSession(project.id, launchSpec({ ...selection, mode }, prompt, activeIds));
+      const session = await createSession(
+        project.id,
+        launchSpec({ ...selection, mode }, images.expand(prompt), activeIds),
+      );
+      images.reset();
       go(`#/s/${session.id}`);
     } catch (err) {
       setError(errorMessage(err, 'Lancement impossible'));
@@ -103,10 +121,18 @@ export function LaunchForm({ project }: { project: Project }) {
           value={prompt}
           placeholder="Prompt (facultatif)"
           aria-label="Prompt"
-          onChange={(event) => setPrompt(event.target.value)}
+          {...fieldProps}
         />
-        <button type="submit" className="m-button primary" disabled={busy || !available}>
-          {busy ? 'Lancement…' : `Lancer ${WORKSPACE_TARGET[project.workspaceMode]}`}
+        <div className="m-photo-row">
+          <PhotoButtons disabled={busy} onPick={(files) => files.forEach((file) => attach(file, null))} />
+        </div>
+        <AttachmentStrip {...stripProps} />
+        <button type="submit" className="m-button primary" disabled={busy || !available || images.pending}>
+          {busy
+            ? 'Lancement…'
+            : images.pending
+              ? 'Envoi des images…'
+              : `Lancer ${WORKSPACE_TARGET[project.workspaceMode]}`}
         </button>
         {error === null ? null : (
           <p className="m-form-error" role="alert">

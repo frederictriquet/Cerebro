@@ -6,7 +6,8 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { AgentLabel } from '../AgentLabel.tsx';
-import { api, apiPath } from '../api.ts';
+import { api, apiPath, uploadImage } from '../api.ts';
+import { AttachmentStrip, PhotoButtons, useAttachedField } from '../attachments.tsx';
 import { DelayedActionButton } from '../DelayedActionButton.tsx';
 import { displayStatus, errorMessage, isAwaiting, STATUS_LABEL } from '../format.ts';
 import { useNow, usePolling } from '../polling.tsx';
@@ -93,39 +94,81 @@ function ScreenText({ lines }: { lines: string[] }) {
   );
 }
 
-function InstructionForm({ send }: { send: (data: string, failure: string) => Promise<boolean> }) {
+/** Instruction for the agent, with images from the gallery or the camera. [SPEC: vue mobile, images jointes] */
+function InstructionForm({
+  sessionId,
+  send,
+}: {
+  sessionId: string;
+  send: (data: string, failure: string) => Promise<boolean>;
+}) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const mounted = useRef(true);
   const value = text.trimEnd();
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  // "[Image #N]" in the text; the file's path on the server replaces it when sending.
+  const { images, attach, fieldProps, stripProps } = useAttachedField({
+    upload: (image) => uploadImage(sessionId, image),
+    text,
+    setText: (change) => {
+      setText(change);
+      setNote(null);
+    },
+    onError: (message) => {
+      if (mounted.current) setNote(message);
+    },
+    disabled: sending,
+  });
 
   const onSubmit = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
-    if (sending || value.trim() === '') return;
+    if (sending || images.pending || value.trim() === '') return;
     setSending(true);
     try {
-      // Texte conservé si l'envoi échoue ; sans texte reçu, pas d'Entrée.
-      if (!(await send(value, 'Envoi impossible'))) return;
+      // Text and images are kept if sending fails; no Enter without the text.
+      if (!(await send(images.expand(value), 'Envoi impossible'))) return;
       setText('');
+      images.reset();
       await delay(ENTER_DELAY_MS);
       await send('\r', 'Texte envoyé, mais Entrée non envoyée');
     } finally {
-      setSending(false);
+      if (mounted.current) setSending(false);
     }
   };
 
   return (
-    <form className="m-instruction" onSubmit={(event) => void onSubmit(event)}>
-      <textarea
-        className="m-textarea"
-        rows={2}
-        value={text}
-        placeholder="Consigne pour l'agent"
-        aria-label="Consigne pour l'agent"
-        onChange={(event) => setText(event.target.value)}
-      />
-      <button type="submit" className="m-button primary" disabled={sending || value.trim() === ''}>
-        {sending ? 'Envoi…' : 'Envoyer'}
-      </button>
+    <form className="m-instruction-form" onSubmit={(event) => void onSubmit(event)}>
+      <div className="m-instruction">
+        <textarea
+          className="m-textarea"
+          rows={2}
+          value={text}
+          placeholder="Consigne pour l'agent"
+          aria-label="Consigne pour l'agent"
+          {...fieldProps}
+        />
+        <button type="submit" className="m-button primary" disabled={sending || images.pending || value.trim() === ''}>
+          {sending ? 'Envoi…' : images.pending ? 'Images…' : 'Envoyer'}
+        </button>
+      </div>
+      <div className="m-photo-row">
+        <PhotoButtons disabled={sending} onPick={(files) => files.forEach((file) => attach(file, null))} />
+      </div>
+      <AttachmentStrip {...stripProps} />
+      {note === null ? null : (
+        <p className="m-form-error" role="alert">
+          {note}
+        </p>
+      )}
     </form>
   );
 }
@@ -319,7 +362,7 @@ function SessionDetail({ session }: { session: Session }) {
               ),
             )}
           </div>
-          <InstructionForm send={send} />
+          <InstructionForm sessionId={id} send={send} />
         </>
       )}
       {/* En bas, près des touches : on y a déjà le pouce ; Arrêter reste différé de 5 s. */}

@@ -486,6 +486,15 @@ test('council API: attached images are uploaded, validated, owned by the run, pa
       ).statusCode,
       400,
     );
+    // Photo HEIC d'un téléphone : refusée avec le message du serveur, pas le 415 de Fastify.
+    response = await app.inject({
+      method: 'POST',
+      url: '/api/council/attachments',
+      payload: Buffer.from('heic'),
+      headers: { 'content-type': 'image/heic' },
+    });
+    assert.equal(response.statusCode, 400, response.body);
+    assert.match(response.json().error, /PNG, JPEG, GIF ou WebP/);
     const project = (await send('POST', '/api/projects', { name: 'Images', path: join(root, 'repo') })).json();
     response = await app.inject({
       method: 'POST',

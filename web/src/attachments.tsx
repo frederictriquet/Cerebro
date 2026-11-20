@@ -202,13 +202,15 @@ export function useAttachedFields<K extends string>({
 
   const attach = (key: K, image: File, field: TextField | null): void => {
     if (disabled) return;
-    const start = field?.selectionStart ?? texts[key].length;
+    const start = field?.selectionStart ?? null;
     const end = field?.selectionEnd ?? start;
     const token = images.add(image, (failed, message) => {
       removeEverywhere(failed);
       onError(message);
     });
-    edit(key, (text) => insertToken(text, start, end, token));
+    // Without a field, the token goes at the end of the current text, so several images attached in a row keep
+    // their order.
+    edit(key, (text) => insertToken(text, start ?? text.length, end ?? text.length, token));
   };
 
   const transfer = (key: K, data: DataTransfer | null, event: SyntheticEvent<TextField>): void => {
@@ -284,5 +286,75 @@ export function AttachmentStrip({ items, onRemove }: { items: Attachment[]; onRe
         </figure>
       ))}
     </div>
+  );
+}
+
+const PICKABLE_IMAGES = 'image/png,image/jpeg,image/gif,image/webp';
+
+function PhotoIcon({ camera }: { camera: boolean }) {
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      aria-hidden="true"
+    >
+      {camera ? (
+        <>
+          <path d="M4 7h3l2-3h6l2 3h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z" />
+          <circle cx="12" cy="13" r="4" />
+        </>
+      ) : (
+        <>
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <circle cx="9" cy="9" r="2" />
+          <path d="m21 15-5-5L5 21" />
+        </>
+      )}
+    </svg>
+  );
+}
+
+/**
+ * Mobile view buttons: pick images from the gallery (several at once) or take a photo. [SPEC: vue mobile, images jointes]
+ * The camera input must accept exactly `image/*`: Capacitor only tries the camera for that type, and falls back to the
+ * file picker when no camera app is visible to it (no `<queries>` entry for IMAGE_CAPTURE in the app manifest).
+ */
+export function PhotoButtons({ onPick, disabled = false }: { onPick: (files: File[]) => void; disabled?: boolean }) {
+  const galleryRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const pick = (event: ChangeEvent<HTMLInputElement>): void => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    if (files.length > 0) onPick(files);
+  };
+  return (
+    <>
+      <input ref={galleryRef} type="file" accept={PICKABLE_IMAGES} multiple hidden onChange={pick} />
+      <input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={pick} />
+      <button
+        type="button"
+        className="m-button m-icon-button"
+        aria-label="Joindre des images"
+        title="Joindre des images"
+        disabled={disabled}
+        onClick={() => galleryRef.current?.click()}
+      >
+        <PhotoIcon camera={false} />
+      </button>
+      <button
+        type="button"
+        className="m-button m-icon-button"
+        aria-label="Prendre une photo"
+        title="Prendre une photo"
+        disabled={disabled}
+        onClick={() => cameraRef.current?.click()}
+      >
+        <PhotoIcon camera />
+      </button>
+    </>
   );
 }

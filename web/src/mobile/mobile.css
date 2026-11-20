@@ -760,6 +760,54 @@
   max-height: 30dvh;
 }
 
+.m-instruction-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Gallery and camera buttons under the field, attached image thumbnails right below. */
+.m-photo-row {
+  display: flex;
+  gap: 8px;
+}
+
+.m-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  padding: 0;
+}
+
+/* Larger thumbnails and a finger-sized remove button. */
+.m-form .attachments,
+.m-instruction-form .attachments {
+  margin-top: 0;
+}
+
+.m-form .attachment,
+.m-instruction-form .attachment {
+  width: 88px;
+}
+
+.m-form .attachment img,
+.m-form .attachment-restored,
+.m-instruction-form .attachment img,
+.m-instruction-form .attachment-restored {
+  height: 66px;
+}
+
+.m-form .attachment button,
+.m-instruction-form .attachment button {
+  top: 2px;
+  right: 2px;
+  width: 32px;
+  height: 32px;
+  font-size: 18px;
+  line-height: 32px;
+}
+
 /* Lancement mobile : les choix du bureau, repliés sur plusieurs lignes, en cibles tactiles de 36 px. */
 .m-launch .tuning-row {
   margin-bottom: 0;

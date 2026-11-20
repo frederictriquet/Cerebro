@@ -446,10 +446,10 @@ export function registerSessionRoutes(ctx: RouteContext): void {
     return reply.code(204).send();
   });
 
-  app.addContentTypeParser(
-    Object.keys(IMAGE_EXTENSIONS),
-    { parseAs: 'buffer', bodyLimit: MAX_IMAGE_BYTES },
-    (_request, body, done) => done(null, body),
+  // Every image type is read, so that saveImage refuses an unsupported one (HEIC from a phone) with its own message
+  // rather than Fastify's 415 "Unsupported Media Type".
+  app.addContentTypeParser(/^image\//, { parseAs: 'buffer', bodyLimit: MAX_IMAGE_BYTES }, (_request, body, done) =>
+    done(null, body),
   );
 
   app.post<{ Params: { id: string } }>('/api/sessions/:id/attachments', async (request, reply) => {
