@@ -925,10 +925,11 @@ le modèle, l'effort et le mode de la session lancée par **Résoudre avec l'IA*
 (par défaut Claude en mode auto).
 
 Le serveur collecte HEAD, les diffs, l'index préexistant et les derniers messages.
-Les fichiers suspects, générés, binaires, contenant un secret reconnu ou dont
+Les fichiers suspects, générés, contenant un secret reconnu ou dont
 l'attribution à une session est incertaine sont écartés de l'automatisme et
-signalés. Ils ne sont pas envoyés au modèle. Le scanner ne prétend pas détecter
-tous les secrets. L'API de commit propre à une session historique refuse de deviner
+signalés. Ils ne sont pas envoyés au modèle. Les binaires éligibles entrent en
+entier dans le commit. Le modèle reçoit leur résumé Git et le scanner inspecte
+les lignes ajoutées des diffs texte. L'API de commit propre à une session historique refuse de deviner
 son périmètre ; la fenêtre permet alors de choisir explicitement l'action sur le
 projet entier, sans quitter la conversation.
 

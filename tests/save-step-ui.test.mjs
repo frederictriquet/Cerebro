@@ -94,13 +94,13 @@ const render = (view, showDetails = true) =>
 test('le travail de la conversation garde un examen manuel pour les fichiers que le commit automatique écarte', () => {
   const html = render(copy());
   assert.match(html, /Créer le commit/);
-  assert.match(html, /Il écarte aussi les fichiers qu’il ne peut pas inspecter/);
+  assert.match(html, /Les binaires sont inclus en entier/);
   assert.match(html, diffsButton);
 });
 
 test('le panneau des diffs reste replié tant que la copie n’est pas dépliée', () => {
   const html = render(copy(), false);
-  assert.match(html, /Il écarte aussi les fichiers qu’il ne peut pas inspecter/);
+  assert.match(html, /Pour les fichiers signalés/);
   assert.doesNotMatch(html, diffsButton);
 });
 

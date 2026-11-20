@@ -8,6 +8,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -182,7 +183,7 @@ test('a change during collection is refused with a plain message, without Git de
     const marker = join(bin, 'done');
     writeFileSync(
       join(bin, 'git'),
-      `#!/bin/sh\ncase " $* " in *" --binary "*" -- "*) [ -e '${marker}' ] || { touch '${marker}'; echo concurrent > '${join(repo, 'other')}'; } ;; esac\nexec '${real}' "$@"\n`,
+      `#!/bin/sh\ncase " $* " in *" --full-index "*" -- "*) [ -e '${marker}' ] || { touch '${marker}'; echo concurrent > '${join(repo, 'other')}'; } ;; esac\nexec '${real}' "$@"\n`,
     );
     chmodSync(join(bin, 'git'), 0o755);
     writeFileSync(join(repo, 'file'), 'planned\n');
@@ -234,14 +235,58 @@ test('unborn repository and exclusions/scanners are explicit', async () =>
     assert.equal(r.error, null, JSON.stringify(r));
     assert.deepEqual(r.exclusions, ['.env']);
   }, true));
-test('only real binary content gets the binary warning, not text mentioning the marker', async () =>
+test('only Git binary summaries mark a candidate as binary', async () =>
   fixture(async (repo) => {
-    writeFileSync(join(repo, 'file'), 'if (/GIT binary patch/.test(diff)) warn();\nGIT binary patch\n');
+    writeFileSync(join(repo, 'file'), 'Binary files a/file and b/file differ\nGIT binary patch\n');
     writeFileSync(join(repo, 'image.bin'), Buffer.from([0, 1, 2, 255, 0, 3]));
     const s = await planner.prepareCommit(repo);
-    const binary = (path) => s.files.find((f) => f.path === path).warnings.some((w) => /binaire/.test(w));
+    const binary = (path) => s.files.find((f) => f.path === path).binary;
     assert.equal(binary('file'), false);
     assert.equal(binary('image.bin'), true);
+  }));
+test('divergent binary versions are reported and the staged version is preserved', async () =>
+  fixture(async (repo) => {
+    const asset = join(repo, 'image.bin');
+    writeFileSync(asset, Buffer.from([0, 1]));
+    git(repo, 'add', 'image.bin');
+    git(repo, 'commit', '-qm', 'add image');
+    writeFileSync(asset, Buffer.from([0, 2]));
+    git(repo, 'add', 'image.bin');
+    const staged = git(repo, 'rev-parse', ':image.bin');
+    const head = git(repo, 'rev-parse', 'HEAD');
+    const working = Buffer.from([0, 3]);
+    writeFileSync(asset, working);
+
+    const s = await planner.prepareCommit(repo);
+    const result = await planner.executeCommitPlan(
+      repo,
+      plan(s, [{ message: 'update image', selection: [one('image.bin')] }]),
+    );
+    assert.match(result.error, /Deux versions du fichier binaire « image\.bin » sont en conflit/);
+    assert.deepEqual(result.commits, []);
+    assert.equal(git(repo, 'rev-parse', 'HEAD'), head);
+    assert.equal(git(repo, 'rev-parse', ':image.bin'), staged);
+    assert.deepEqual(readFileSync(asset), working);
+  }));
+test('a type change between a binary and a symlink stages the new type', async () =>
+  fixture(async (repo) => {
+    const asset = join(repo, 'image.bin');
+    writeFileSync(asset, Buffer.from([0, 1]));
+    git(repo, 'add', 'image.bin');
+    git(repo, 'commit', '-qm', 'add image');
+    for (const mode of ['120000', '100644']) {
+      rmSync(asset);
+      if (mode === '120000') symlinkSync('file', asset);
+      else writeFileSync(asset, Buffer.from([0, 2]));
+      const s = await planner.prepareCommit(repo);
+      const result = await planner.executeCommitPlan(
+        repo,
+        plan(s, [{ message: 'replace image', selection: [one('image.bin')] }]),
+      );
+      assert.equal(result.error, null, result.error);
+      assert.ok(git(repo, 'ls-tree', 'HEAD', '--', 'image.bin').startsWith(mode));
+      assert.equal(git(repo, 'status', '--porcelain'), '');
+    }
   }));
 test('multiple nonadjacent hunks in a single commit and duplicate execution refusal', async () =>
   fixture(async (repo) => {

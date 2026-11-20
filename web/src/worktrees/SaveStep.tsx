@@ -139,8 +139,9 @@ export function SaveStep({
             commit automatique ne prend que les fichiers dont l’origine est vérifiable.
           </p>
           <p className="meta">
-            Il écarte aussi les fichiers qu’il ne peut pas inspecter (fichier binaire, fichier généré, secret possible)
-            : lisez leur diff dans « Voir les diffs » puis cochez-les pour les commiter.
+            Les binaires sont inclus en entier. Pour les fichiers signalés, comme les fichiers générés ou les chemins
+            susceptibles de contenir un secret, utilisez « Voir les diffs » pour les examiner et confirmer leur
+            inclusion.
           </p>
           <button type="button" className="btn" disabled={commitBlocked} onClick={() => actions.commit(view)}>
             Créer le commit

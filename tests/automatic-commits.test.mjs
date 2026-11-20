@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import {
   promises as fsPromises,
   existsSync,
@@ -345,22 +345,59 @@ test('a reviewed diff lifts its warning only while unchanged, and never for a de
       /examinés invalide/,
     );
   }));
-test('a new binary file is set aside by default and committed byte for byte once reviewed', async () =>
+test('a large binary can be added, modified and deleted automatically with only a summary sent to the model', async () =>
   fixture(async (f) => {
-    const icon = Buffer.concat([Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'), Buffer.alloc(64, 0)]);
-    writeFileSync(join(f.repo, 'icon.png'), icon);
-    const blocked = await f.finish(await f.manager.start(f.context, randomUUID(), false));
-    assert.equal(blocked.status, 'blocked');
-    assert.deepEqual(blocked.exclusions, [
-      { path: 'icon.png', reason: 'Fichier binaire : contenu non inspecté par le scanner.' },
-    ]);
+    const asset = 'icon[512].png';
+    const icon = randomBytes(5 * 1024 * 1024);
+    icon[0] = 0;
+    writeFileSync(join(f.repo, '.env'), Buffer.from([0, 1]));
+    git(f.repo, 'add', '.env');
+    const unrelated = git(f.repo, 'rev-parse', ':.env');
+    f.manager.proposeCommits = async ({ files }) => {
+      assert.deepEqual(
+        files.map((file) => file.path),
+        [asset],
+      );
+      assert.equal(files[0].binary, true);
+      assert.deepEqual(files[0].hunks, []);
+      assert.match(files[0].diff, /^Binary files .* differ$/m);
+      assert.ok(files[0].diff.length < 1024);
+      return { commits: [{ message: 'update icon', paths: [asset] }] };
+    };
+    for (const action of ['add', 'modify', 'delete']) {
+      const location = join(f.repo, asset);
+      if (action === 'delete') rmSync(location);
+      else {
+        icon[1] ^= 0xff;
+        writeFileSync(location, icon);
+        if (action === 'modify') git(f.repo, '--literal-pathspecs', 'add', asset);
+      }
+      const result = await f.finish(await f.manager.start(f.context, randomUUID(), false));
+      assert.equal(result.status, 'succeeded', result.error);
+      assert.deepEqual(result.files, [asset]);
+      assert.match(result.exclusions[0].reason, /contenir des secrets/);
+      if (action === 'delete') assert.equal(git(f.repo, 'ls-tree', 'HEAD', '--', asset), '');
+      else assert.equal(git(f.repo, 'rev-parse', `HEAD:${asset}`), git(f.repo, 'hash-object', asset));
+      assert.equal(git(f.repo, 'rev-parse', ':.env'), unrelated);
+      assert.equal(git(f.repo, 'status', '--porcelain'), 'A  .env');
+    }
+  }));
+test('a binary with a path warning still needs a review of the same version', async () =>
+  fixture(async (f) => {
+    writeFileSync(join(f.repo, 'image.log'), Buffer.from([0, 1]));
     const shown = await f.services.git.prepareCommit(f.repo);
-    const reviewed = { snapshotId: shown.id, paths: ['icon.png'] };
-    const result = await f.finish(await f.manager.start(f.context, randomUUID(), false, reviewed));
-    assert.equal(result.status, 'succeeded');
-    assert.deepEqual(result.files, ['icon.png']);
-    assert.deepEqual(execFileSync('git', ['-C', f.repo, 'cat-file', 'blob', 'HEAD:icon.png']), icon);
-    assert.equal(git(f.repo, 'status', '--porcelain'), '');
+    writeFileSync(join(f.repo, 'image.log'), Buffer.from([0, 2]));
+    const reviewed = { snapshotId: shown.id, paths: ['image.log'] };
+    const stale = await f.finish(await f.manager.start(f.context, randomUUID(), false, reviewed));
+    assert.equal(stale.status, 'blocked');
+    assert.match(stale.exclusions[0].reason, /Modifié depuis votre examen/);
+    assert.equal(f.calls, 0);
+    const current = await f.services.git.prepareCommit(f.repo);
+    const result = await f.finish(
+      await f.manager.start(f.context, randomUUID(), false, { ...reviewed, snapshotId: current.id }),
+    );
+    assert.equal(result.status, 'succeeded', result.error);
+    assert.deepEqual(execFileSync('git', ['-C', f.repo, 'cat-file', 'blob', 'HEAD:image.log']), Buffer.from([0, 2]));
   }));
 test('a detected secret is committed only on its own override of the exact diff shown', async () =>
   fixture(async (f) => {
@@ -731,7 +768,7 @@ test('Grok structured output and text fallback still require a complete valid pr
 });
 test('a copy holding only content inherited from the project says there is nothing new to commit', async () =>
   fixture(async (f) => {
-    writeFileSync(join(f.repo, 'file'), 'uncommitted in the project\n');
+    writeFileSync(join(f.repo, 'inherited.png'), Buffer.from([0, 1]));
     const id = randomUUID();
     f.db.createSession(
       {
@@ -762,6 +799,14 @@ test('a copy holding only content inherited from the project says there is nothi
     assert.match(result.error, /Rien de nouveau à commiter/);
     assert.match(result.exclusions[0].reason, /inchangé depuis/);
     assert.equal(f.calls, 0);
+
+    const icon = Buffer.from([0, 2, 255]);
+    writeFileSync(join(workspace.root, 'new.png'), icon);
+    const committed = await f.finish(await f.manager.start(context, randomUUID(), false));
+    assert.equal(committed.status, 'succeeded', committed.error);
+    assert.deepEqual(committed.files, ['new.png']);
+    assert.deepEqual(execFileSync('git', ['-C', workspace.root, 'cat-file', 'blob', 'HEAD:new.png']), icon);
+    assert.equal(git(workspace.root, 'status', '--porcelain'), '?? inherited.png');
   }));
 test('automatic commit and push rebases cleanly onto a diverged upstream and resolves conflicts via AI', async () =>
   fixture(async (f) => {

@@ -18,7 +18,6 @@ import { dirname, join, resolve } from 'node:path';
 import type { GitPushes } from './git-push.ts';
 import { git as runGit, GitError, repositoryRoot, splitZ, type GitOptions } from './git.ts';
 import {
-  BINARY_WARNING,
   SECRET_WARNING,
   type CommitResult,
   type GitCandidate,
@@ -31,6 +30,7 @@ import { workspaceManifest } from './workspace-files.ts';
 
 const LIMIT = 4 * 1024 * 1024;
 const EMPTY = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+const DIFF_OPTIONS = ['--full-index', '--no-ext-diff', '--no-textconv'];
 const hash = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 export interface CommitSelection {
   path: string;
@@ -147,7 +147,7 @@ async function workHash(path: string): Promise<string> {
 }
 function hunks(diff: string): GitHunk[] {
   const start = diff.indexOf('\n@@ ');
-  if (start < 0 || /^(new file mode|deleted file mode|old mode|new mode|GIT binary patch)/m.test(diff)) return [];
+  if (start < 0 || /^(new file mode|deleted file mode|old mode|new mode)/m.test(diff)) return [];
   const prefix = diff.slice(0, start + 1);
   // The position keeps ids unique even if two hunks of a file had identical text.
   return diff
@@ -193,8 +193,6 @@ function scan(file: string, diff: string): { warnings: string[]; secrets: GitSec
     warnings.push('Fichier pouvant contenir des secrets : vérification explicite requise.');
   if (/(^|\/)(node_modules|dist|build|coverage|\.cache|tmp)(\/|$)|\.(log|tmp|bak|min\.js|map)$/.test(file))
     warnings.push('Fichier généré ou temporaire présumé : vérification explicite requise.');
-  // Anchored to Git's own header line: a text file that merely mentions it is not binary.
-  if (/^GIT binary patch$/m.test(diff)) warnings.push(BINARY_WARNING);
   return { warnings, secrets: found, blocked };
 }
 
@@ -290,6 +288,7 @@ async function mergedIndex(
   staged: string,
   index: string,
   dir: string,
+  binaryPaths: ReadonlySet<string>,
 ): Promise<void> {
   await git(path, ['read-tree', '-m', '--aggressive', base, selected, staged], { index });
   const unmerged = splitZ(await git(path, ['ls-files', '-u', '-z'], { index }));
@@ -316,6 +315,10 @@ async function mergedIndex(
       await git(path, ['update-index', '--add', '--cacheinfo', selectedEntry.mode, selectedEntry.oid, file], { index });
       continue;
     }
+    if (binaryPaths.has(file))
+      throw new Error(
+        `Deux versions du fichier binaire « ${file} » sont en conflit. Choisissez celle à indexer avant de relancer le commit.`,
+      );
     if (
       entries.length !== 3 ||
       entries.some((e) => e.mode !== '100644' && e.mode !== '100755') ||
@@ -328,7 +331,7 @@ async function mergedIndex(
       const content = await git(path, ['cat-file', 'blob', entries.find((e) => e.stage === stage)!.oid]);
       if (content.includes('\0') || content.includes('\ufffd'))
         throw new Error(
-          `Fusion binaire ou encodage non UTF-8 : sélectionnez le fichier entier après vérification de l’index (${file}).`,
+          `Les versions indexée et sélectionnée de « ${file} » ne peuvent pas être fusionnées (binaire ou encodage non UTF-8).`,
         );
       await writeFile(location, content);
       locations.push(location);
@@ -386,18 +389,8 @@ async function stagedTree(path: string, index: string, dir: string): Promise<str
   else await git(path, ['read-tree', '--empty'], { index: original });
   return (await git(path, ['write-tree'], { index: original })).trim();
 }
-/** Patch of a selection: the whole file, or its selected hunks in their original order. */
-function selectionPatch(
-  plan: CommitPlan,
-  snapshot: GitSnapshot,
-  selection: CommitSelection,
-  overridden: Set<string>,
-): string {
-  const file = snapshot.files.find((f) => f.path === selection.path);
-  if (!file) throw new Error(`Fichier absent de la sélection collectée : ${selection.path}`);
-  if (file.blocked && !overridden.has(file.path)) throw new Error(`${SECRET_EXCLUSION} (${file.path})`);
-  if (reviewWarnings(file).length && !plan.acknowledged.includes(file.path))
-    throw new Error(`Vérification explicite requise : ${file.path}`);
+/** Patch of a text selection: the whole file, or its selected hunks in their original order. */
+function selectionPatch(file: GitCandidate, selection: CommitSelection): string {
   if (selection.all) return file.diff;
   const hunks = selection.hunks!.map((id) => file.hunks.find((h) => h.id === id));
   if (hunks.some((h) => !h)) throw new Error(`Hunk inconnu : ${file.path}`);
@@ -408,9 +401,25 @@ function selectionPatch(
     .map((h) => h.patch)
     .join('');
 }
+
+/** Stage a whole binary and verify its blob and mode against the collected Git diff. */
+async function stageBinary(path: string, index: string, file: GitCandidate): Promise<void> {
+  // A type change (such as replacing a binary with a symlink) is shown as a deletion followed by an addition.
+  const after = file.diff.slice(file.diff.lastIndexOf('\ndiff --git ') + 1);
+  const header = /^index [a-f0-9]+\.\.([a-f0-9]+)(?: (\d+))?$/m.exec(after);
+  if (!header) throw new Error(`Diff binaire incomplet : ${file.path}`);
+  const [, oid, unchangedMode] = header;
+  const mode = unchangedMode ?? /^(?:new file mode|new mode) (\d+)$/m.exec(after)?.[1];
+  const expected = /^0+$/.test(oid) ? '' : `${mode} ${oid} 0\t${file.path}\0`;
+  // A temporary index based on HEAD may lack the mode recorded in the user's index.
+  const chmod = mode === '100755' ? ['--chmod=+x'] : mode === '100644' ? ['--chmod=-x'] : [];
+  await git(path, ['--literal-pathspecs', 'add', '--all', '--force', ...chmod, '--', file.path], { index });
+  const staged = await git(path, ['--literal-pathspecs', 'ls-files', '--stage', '-z', '--', file.path], { index });
+  if (staged !== expected) throw new Error(`Le fichier binaire a changé depuis la préparation : ${file.path}`);
+}
 /**
  * Builds every commit of the plan in temporary indexes, each on top of the previous one, and checks that the
- * preexisting index can be kept around them. Nothing in the repository changes.
+ * preexisting index can be kept around them. The real index and refs are left untouched.
  */
 async function prepareCommits(
   path: string,
@@ -422,21 +431,34 @@ async function prepareCommits(
 ): Promise<PreparedCommit[]> {
   let base = snapshot.head ?? EMPTY;
   let staged = await stagedTree(path, index, dir);
+  const files = new Map(snapshot.files.map((file) => [file.path, file]));
+  const binaryPaths = new Set(snapshot.files.filter((file) => file.binary).map((file) => file.path));
   const prepared: PreparedCommit[] = [];
   for (const [n, step] of plan.commits.entries()) {
     const temporary = join(dir, `commit-${n}`);
     await git(path, ['read-tree', base], { index: temporary });
-    for (const selection of step.selection)
+    for (const selection of step.selection) {
+      const file = files.get(selection.path);
+      if (!file) throw new Error(`Fichier absent de la sélection collectée : ${selection.path}`);
+      if (file.blocked && !overridden.has(file.path)) throw new Error(`${SECRET_EXCLUSION} (${file.path})`);
+      if (reviewWarnings(file).length && !plan.acknowledged.includes(file.path))
+        throw new Error(`Vérification explicite requise : ${file.path}`);
+      if (file.binary) {
+        if (!selection.all) throw new Error(`Sélectionnez le fichier binaire entier : ${file.path}`);
+        await stageBinary(path, temporary, file);
+        continue;
+      }
       // --3way rebases later hunks on the commits already prepared from this snapshot.
       await git(path, ['apply', '--cached', '--3way', '--whitespace=nowarn'], {
         index: temporary,
-        input: selectionPatch(plan, snapshot, selection, overridden),
+        input: selectionPatch(file, selection),
       });
+    }
     const tree = (await git(path, ['write-tree'], { index: temporary })).trim();
     const baseTree = (await git(path, ['rev-parse', `${base}^{tree}`])).trim();
     if (tree === baseTree) throw new Error('Commit vide dans le plan.');
     const merged = join(dir, `merged-${n}`);
-    await mergedIndex(path, base, tree, staged, merged, dir);
+    await mergedIndex(path, base, tree, staged, merged, dir, binaryPaths);
     prepared.push({ tree, index: temporary, merged, message: step.message });
     staged = (await git(path, ['write-tree'], { index: merged })).trim();
     base = tree;
@@ -543,19 +565,18 @@ export class GitPlanner {
       for (const file of paths) {
         // No git add: preparation must not even store secret blobs in Git's object database.
         const diff = untracked.has(file)
-          ? await git(
-              path,
-              ['diff', '--no-index', '--binary', '--no-ext-diff', '--no-textconv', '--', '/dev/null', file],
-              { index: temporaryIndex },
-            )
+          ? await git(path, ['diff', '--no-index', ...DIFF_OPTIONS, '--', '/dev/null', file === '-' ? './-' : file], {
+              index: temporaryIndex,
+            })
           : await git(
               path,
-              ['diff', '--binary', '--no-ext-diff', '--no-textconv', '--no-renames', before.head ?? EMPTY, '--', file],
+              ['--literal-pathspecs', 'diff', ...DIFF_OPTIONS, '--no-renames', before.head ?? EMPTY, '--', file],
               { index: temporaryIndex },
             );
         bytes += Buffer.byteLength(diff);
         if (bytes > LIMIT) throw new Error('Plan trop volumineux (4 Mio).');
-        files.push({ path: file, diff, hunks: hunks(diff), ...scan(file, diff) });
+        const binary = /^Binary files .* differ$/m.test(diff);
+        files.push({ path: file, diff, binary, hunks: binary ? [] : hunks(diff), ...scan(file, diff) });
       }
       const after = {
         branch: await branch(path),
@@ -578,11 +599,9 @@ export class GitPlanner {
         head: before.head,
         fingerprint: hash(JSON.stringify(before)),
         files,
-        stagedDiff: await git(
-          path,
-          ['diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv', before.head ?? EMPTY],
-          { index: temporaryIndex },
-        ),
+        stagedDiff: await git(path, ['diff', '--cached', ...DIFF_OPTIONS, before.head ?? EMPTY], {
+          index: temporaryIndex,
+        }),
         log: before.head ? await git(path, ['log', '-15', '--format=%h %s']) : '',
         createdAt: Date.now(),
       };
