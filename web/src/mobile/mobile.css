@@ -146,13 +146,6 @@
   overscroll-behavior: contain;
 }
 
-.m-screen-title {
-  margin: 0 0 12px;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--muted);
-}
-
 .m-error {
   flex: 0 0 auto;
   margin: 0;
@@ -340,31 +333,10 @@
   opacity: 0.6;
 }
 
-.m-pin {
-  margin-bottom: 16px;
-}
-
-.m-project-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
 .m-paused-section {
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.m-pin-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.m-pin-button.active {
-  border-color: var(--accent);
-  color: var(--accent);
 }
 
 .m-form-error {
@@ -694,7 +666,7 @@
   margin: 0;
 }
 
-.m-session > .m-screen-wrap {
+.m-session-terminal > .m-screen-wrap {
   position: relative;
   display: flex;
   flex: 1 1 auto;
@@ -827,4 +799,198 @@
 .m-launch .choice-group.compact .choice {
   min-height: 36px;
   font-size: 14px;
+}
+
+/* Onglets à balayage (SwipeTabs.tsx) : chaque panneau occupe la zone sous la barre d'onglets et défile seul ; les
+   panneaux inactifs restent montés, hors champ. pan-y laisse le défilement vertical au navigateur et le geste
+   horizontal à la page, y compris dans les zones qui défilent (écran du terminal, listes). [SPEC: vue mobile, onglets
+   à balayage] */
+.m-swipe {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.m-swipe-viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.m-swipe-viewport,
+.m-swipe-viewport * {
+  touch-action: pan-y pinch-zoom;
+}
+
+.m-swipe-panel {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  transition: transform 220ms ease;
+}
+
+.m-swipe-panel.dragging {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .m-swipe-panel {
+    transition: none;
+  }
+}
+
+.m-tab-count {
+  min-width: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--bg-2);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  box-sizing: border-box;
+}
+
+.m-tab-count.waiting {
+  border-color: var(--waiting);
+  background: var(--waiting);
+  color: var(--bg);
+}
+
+/* Action attendue par la session, nommée en haut à droite de sa carte. [SPEC: vue mobile, accueil] */
+.m-card-action {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 10px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
+  background: var(--bg-2);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.m-card-action.waiting {
+  color: var(--waiting);
+}
+
+.m-card-action.idle {
+  color: var(--idle);
+}
+
+/* Épingle et pause de la page projet, dans la barre du haut. [SPEC: vue mobile, page projet] */
+.m-icon-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.m-icon-action.active {
+  color: var(--accent);
+}
+
+.m-icon-action:disabled {
+  opacity: 0.6;
+}
+
+.m-wide {
+  width: 100%;
+}
+
+/* Écran de session : onglets pleine largeur, « Réponse » défile, « Terminal » garde une hauteur fixe pour que le
+   gabarit mesure la vraie taille du cadre. [SPEC: vue mobile, écran de session] */
+.m-session > .m-swipe {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.m-session .m-tabs {
+  margin: 0 -12px;
+}
+
+.m-reply {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.m-reply > * {
+  flex: 0 0 auto;
+}
+
+.m-reply-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.m-reply-title {
+  margin: 0;
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.m-reply-message {
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.m-session-terminal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.m-session-terminal > * {
+  flex: 0 0 auto;
+}
+
+/* Each group on one row: the first group has at most five keys, the other at most six. */
+.m-keys.now,
+.m-keys.other {
+  grid-template-columns: repeat(auto-fit, minmax(48px, 1fr));
+}
+
+.m-keys.now .m-button.m-key {
+  border-color: var(--primary-border);
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.m-keys.other .m-button.m-key {
+  min-height: 36px;
+  color: var(--muted);
+}
+
+/* pan-y blocks horizontal panning under the panels: Markdown code wraps instead of scrolling sideways, and a wide
+   table keeps its own horizontal scroll (a drag on it scrolls the table, not the tabs). [SPEC: vue mobile, onglets
+   à balayage] */
+.m-swipe-viewport .md pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.m-swipe-viewport .md .md-table,
+.m-swipe-viewport .md .md-table * {
+  touch-action: pan-x pan-y pinch-zoom;
 }

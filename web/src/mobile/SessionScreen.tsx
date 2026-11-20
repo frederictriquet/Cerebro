@@ -6,6 +6,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { AgentLabel } from '../AgentLabel.tsx';
+import { AttentionDetail, EpicStepValidation } from '../AttentionDetail.tsx';
 import { api, apiPath, uploadImage } from '../api.ts';
 import { AttachmentStrip, PhotoButtons, useAttachedField } from '../attachments.tsx';
 import { DelayedActionButton } from '../DelayedActionButton.tsx';
@@ -15,9 +16,12 @@ import { go, href } from '../route.ts';
 import { attentionTone } from '../SessionMeta.tsx';
 import { StatusDot } from '../StatusDot.tsx';
 import { useStore } from '../store.tsx';
+import { Markdown } from '../Markdown.tsx';
 import { useLatest } from '../use-latest.ts';
 import { parseScreenLines, type Session } from '../../../shared/types.ts';
+import { quickKeyGroups, type QuickKey } from './keys.ts';
 import { SessionCommit } from './MobileGit.tsx';
+import { SwipeTabs, type SwipeTab } from './SwipeTabs.tsx';
 
 const SCREEN_LINES = 120;
 const SCREEN_POLL_MS = 2000;
@@ -33,18 +37,7 @@ const PROBE_TEXT = '0123456789';
 const MIN_COLS = 20;
 const MIN_ROWS = 5;
 
-const QUICK_KEYS: readonly { label: string; data: string; name?: string; confirm?: boolean }[] = [
-  { label: 'Entrée', data: '\r' },
-  { label: 'Échap', data: '\x1b' },
-  { label: '↑', data: '\x1b[A', name: 'Flèche haut' },
-  { label: '↓', data: '\x1b[B', name: 'Flèche bas' },
-  { label: '1', data: '1' },
-  { label: '2', data: '2' },
-  { label: '3', data: '3' },
-  { label: 'y', data: 'y' },
-  { label: 'n', data: 'n' },
-  { label: 'Ctrl+C', data: '\x03', confirm: true },
-];
+type SessionTab = 'reply' | 'terminal';
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -191,6 +184,12 @@ function SessionDetail({ session }: { session: Session }) {
   // rapetisse pas à chaque saisie.
   const maxRows = useRef(0);
   const claimed = useRef('');
+  const detail = session.attentionDetail;
+  // A question or a permission is answered in « Réponse » only while the agent waits for it.
+  const pending = session.status === 'waiting' && (detail?.kind === 'questions' || detail?.kind === 'permission');
+  const hasReply = pending || detail?.kind === 'turn';
+  // [SPEC: vue mobile, écran de session] Opens on « Réponse » when there is something to read or answer there.
+  const [tab, setTab] = useState<SessionTab>(() => (exited || hasReply ? 'reply' : 'terminal'));
 
   useEffect(() => {
     mounted.current = true;
@@ -299,30 +298,32 @@ function SessionDetail({ session }: { session: Session }) {
     }
   };
 
-  return (
-    <div className="m-session">
-      <div className="m-session-meta">
-        <span className="m-session-status">
-          <StatusDot status={status} />
-          {STATUS_LABEL[status]}
-        </span>
-        {project === undefined ? null : <a href={href(`#/p/${project.id}`)}>{project.name}</a>}
-        <AgentLabel agent={session.agent} />
-      </div>
-      {isAwaiting(session) && session.attentionReason ? (
-        <p className={`m-card-reason ${attentionTone(session)}`}>{session.attentionReason}</p>
-      ) : null}
-      {error === null ? null : (
-        <p className="m-form-error" role="alert">
-          {error}
-        </p>
-      )}
-      {exited ? (
-        <p className="m-session-ended" role="status">
-          Session terminée{session.exitCode === null ? '' : ` (code ${session.exitCode})`}. « Reprendre » la relance.
-        </p>
-      ) : null}
-      {readError === null ? null : <p className="m-form-error">Lecture de l'écran impossible : {readError}</p>}
+  const keyButton = (key: QuickKey, tone: 'now' | 'other') =>
+    key.confirm === true ? (
+      <DelayedActionButton
+        key={key.label}
+        className={`m-button m-key ${tone}`}
+        cancelLabel="Annuler"
+        title={`Envoie ${key.label} après 5 s (second tap pour annuler)`}
+        onAction={() => press(key.data)}
+      >
+        {key.label}
+      </DelayedActionButton>
+    ) : (
+      <button
+        key={key.label}
+        type="button"
+        className={`m-button m-key ${tone}`}
+        aria-label={key.name}
+        onClick={() => press(key.data)}
+      >
+        {key.label}
+      </button>
+    );
+  const keys = quickKeyGroups(session);
+
+  const terminal = (
+    <>
       <div className="m-screen-wrap">
         {exited ? null : (
           <pre ref={probeRef} className="m-screen m-screen-probe" aria-hidden="true">
@@ -335,37 +336,49 @@ function SessionDetail({ session }: { session: Session }) {
           <p className="m-hint">{lines === null ? "Chargement de l'écran…" : "Écran vide pour l'instant."}</p>
         )}
       </div>
-      {exited ? null : (
+      {exited ? null : keys.now.length === 0 ? (
+        <div className="m-keys" role="group" aria-label="Touches rapides">
+          {keys.other.map((key) => keyButton(key, 'other'))}
+        </div>
+      ) : (
         <>
-          <div className="m-keys" role="group" aria-label="Touches rapides">
-            {QUICK_KEYS.map((key) =>
-              key.confirm === true ? (
-                <DelayedActionButton
-                  key={key.label}
-                  className="m-button m-key"
-                  cancelLabel="Annuler"
-                  title={`Envoie ${key.label} après 5 s (second tap pour annuler)`}
-                  onAction={() => press(key.data)}
-                >
-                  {key.label}
-                </DelayedActionButton>
-              ) : (
-                <button
-                  key={key.label}
-                  type="button"
-                  className="m-button m-key"
-                  aria-label={key.name}
-                  onClick={() => press(key.data)}
-                >
-                  {key.label}
-                </button>
-              ),
-            )}
+          <div className="m-keys now" role="group" aria-label="Touches utiles maintenant">
+            {keys.now.map((key) => keyButton(key, 'now'))}
           </div>
-          <InstructionForm sessionId={id} send={send} />
+          <div className="m-keys other" role="group" aria-label="Autres touches">
+            {keys.other.map((key) => keyButton(key, 'other'))}
+          </div>
         </>
       )}
-      {/* En bas, près des touches : on y a déjà le pouce ; Arrêter reste différé de 5 s. */}
+    </>
+  );
+
+  const reply = (
+    <>
+      {pending ? (
+        <section
+          className="m-reply-block"
+          aria-label={detail?.kind === 'questions' ? "Question de l'agent" : undefined}
+        >
+          {detail?.kind === 'questions' ? <h2 className="m-reply-title">Question de l’agent</h2> : null}
+          <AttentionDetail session={session} reason={session.attentionReason} withKeys explicitKeys />
+        </section>
+      ) : null}
+      {detail?.kind === 'turn' ? (
+        <section className="m-reply-block" aria-label="Dernier message de l'agent">
+          <h2 className="m-reply-title">Dernier message de l’agent</h2>
+          <Markdown className="m-reply-message" text={detail.message} />
+          {session.epic === null ? null : <EpicStepValidation session={session} epicId={session.epic.id} />}
+        </section>
+      ) : null}
+      {hasReply ? null : (
+        <p className="m-hint">
+          {exited
+            ? 'Aucun message à afficher.'
+            : 'Rien à lire ici pour l’instant : l’écran de l’agent est dans l’onglet Terminal.'}
+        </p>
+      )}
+      {/* Arrêter reste différé de 5 s. */}
       <div className="m-session-actions">
         <SessionCommit key={id} session={session} />
         {exited ? (
@@ -393,11 +406,48 @@ function SessionDetail({ session }: { session: Session }) {
           </DelayedActionButton>
         )}
       </div>
+    </>
+  );
+
+  const tabs: SwipeTab<SessionTab>[] = [
+    { id: 'reply', label: 'Réponse', content: reply, className: 'm-reply' },
+    { id: 'terminal', label: 'Terminal', content: terminal, className: 'm-session-terminal' },
+  ];
+
+  return (
+    <div className="m-session">
+      <div className="m-session-meta">
+        <span className="m-session-status">
+          <StatusDot status={status} />
+          {STATUS_LABEL[status]}
+        </span>
+        {project === undefined ? null : <a href={href(`#/p/${project.id}`)}>{project.name}</a>}
+        <AgentLabel agent={session.agent} />
+      </div>
+      {isAwaiting(session) && session.attentionReason ? (
+        <p className={`m-card-reason ${attentionTone(session)}`}>{session.attentionReason}</p>
+      ) : null}
+      {error === null ? null : (
+        <p className="m-form-error" role="alert">
+          {error}
+        </p>
+      )}
+      {exited ? (
+        <p className="m-session-ended" role="status">
+          Session terminée{session.exitCode === null ? '' : ` (code ${session.exitCode})`}. « Reprendre » la relance.
+        </p>
+      ) : null}
+      {readError === null ? null : <p className="m-form-error">Lecture de l'écran impossible : {readError}</p>}
+      <SwipeTabs label="Session" idPrefix="m-session" tabs={tabs} value={tab} onChange={setTab} />
+      {exited ? null : <InstructionForm sessionId={id} send={send} />}
     </div>
   );
 }
 
-/** Écran d'une session : état, commit / push, dernières lignes du terminal, touches rapides et consigne. */
+/**
+ * Écran d'une session : état, onglets « Réponse » (question, autorisation ou dernier message, commit / push, arrêt) et
+ * « Terminal » (écran et touches), consigne fixée en bas. [SPEC: vue mobile, écran de session]
+ */
 export function SessionScreen({ sessionId }: { sessionId: string }) {
   const { sessions, loaded } = useStore();
   const session = sessions.find((candidate) => candidate.id === sessionId);

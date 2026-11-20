@@ -79,10 +79,7 @@ export function LaunchForm({ project }: { project: Project }) {
   };
 
   return (
-    <section className="m-section" aria-labelledby="m-launch-title">
-      <h2 className="m-section-title" id="m-launch-title">
-        Nouvelle session
-      </h2>
+    <section className="m-section" aria-label="Nouvelle session">
       <form className="m-form m-launch" onSubmit={(event) => void submit(event)}>
         <LlmSelector agents={agents} value={selection} disabled={busy} onChange={setSelection}>
           <div className="tuning">

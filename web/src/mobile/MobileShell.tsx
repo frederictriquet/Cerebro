@@ -16,9 +16,10 @@ import { mobileBack, trackMobileHistory } from './back.ts';
 import { CouncilScreen } from './CouncilScreen.tsx';
 import { CouncilsTab } from './CouncilsTab.tsx';
 import { ProjectList } from './ProjectList.tsx';
-import { ProjectScreen } from './ProjectScreen.tsx';
+import { ProjectHeaderActions, ProjectScreen, type ProjectTab } from './ProjectScreen.tsx';
 import { forgetFullVersion, openFullVersion, pinnedProjectHash } from './redirect.ts';
 import { SessionScreen } from './SessionScreen.tsx';
+import { SwipeTabs, type SwipeTab } from './SwipeTabs.tsx';
 import { TodoTab } from './TodoTab.tsx';
 import './mobile.css';
 
@@ -27,12 +28,6 @@ const BUILD_LABEL =
   __CEREBRO_BUILD__ === null ? 'dev' : `${__CEREBRO_BUILD__.sha} · ${formatDateTime(__CEREBRO_BUILD__.at)}`;
 
 type HomeTab = 'todo' | 'projects' | 'councils';
-
-const HOME_TABS: readonly { id: HomeTab; label: string }[] = [
-  { id: 'todo', label: 'À traiter' },
-  { id: 'projects', label: 'Projets' },
-  { id: 'councils', label: 'Councils' },
-];
 
 function useRouteTitle(route: Route): string {
   const { projects, sessions } = useStore();
@@ -50,39 +45,27 @@ function useRouteTitle(route: Route): string {
   }
 }
 
+/** Accueil : onglets « À traiter », « Projets » et « Councils », changés au tap ou au balayage. [SPEC: vue mobile, accueil] */
 function HomeScreen({ tab, onTab }: { tab: HomeTab; onTab: (tab: HomeTab) => void }) {
   const { projects, projectBehind } = useStore();
   const pullProjects = projects.filter((project) => !project.paused && (projectBehind?.[project.id] ?? 0) > 0).length;
-  const current = HOME_TABS.find((candidate) => candidate.id === tab) ?? HOME_TABS[0];
-  return (
-    <>
-      <div className="m-tabs" role="tablist" aria-label="Accueil">
-        {HOME_TABS.map((candidate) => (
-          <button
-            key={candidate.id}
-            type="button"
-            role="tab"
-            id={`m-tab-${candidate.id}`}
-            aria-selected={candidate.id === tab}
-            aria-controls="m-tab-panel"
-            className="m-tab"
-            onClick={() => onTab(candidate.id)}
-          >
-            {candidate.label}
-            {candidate.id === 'projects' && pullProjects > 0 ? (
-              <span className="m-tab-pull" aria-label={`${plural(pullProjects, 'projet')} à mettre à jour`}>
-                ↓{pullProjects}
-              </span>
-            ) : null}
-          </button>
-        ))}
-      </div>
-      <section className="m-content" role="tabpanel" id="m-tab-panel" aria-labelledby={`m-tab-${current.id}`}>
-        <h2 className="m-screen-title">{current.label}</h2>
-        {current.id === 'projects' ? <ProjectList /> : current.id === 'councils' ? <CouncilsTab /> : <TodoTab />}
-      </section>
-    </>
-  );
+  const tabs: SwipeTab<HomeTab>[] = [
+    { id: 'todo', label: 'À traiter', content: <TodoTab />, className: 'm-content' },
+    {
+      id: 'projects',
+      label: 'Projets',
+      badge:
+        pullProjects > 0 ? (
+          <span className="m-tab-pull" aria-label={`${plural(pullProjects, 'projet')} à mettre à jour`}>
+            ↓{pullProjects}
+          </span>
+        ) : undefined,
+      content: <ProjectList />,
+      className: 'm-content',
+    },
+    { id: 'councils', label: 'Councils', content: <CouncilsTab />, className: 'm-content' },
+  ];
+  return <SwipeTabs label="Accueil" idPrefix="m-home" tabs={tabs} value={tab} onChange={onTab} />;
 }
 
 /**
@@ -109,7 +92,12 @@ export function MobileShell() {
   usePinnedProjectOnOpen();
   // Onglet de l'accueil : retrouvé en revenant d'une session ou d'un projet.
   const [homeTab, setHomeTab] = useState<HomeTab>('todo');
+  // Onglet de chaque page projet : retrouvé en revenant d'une session lancée depuis « Lancer » ou « Backlog ».
+  const [projectTabs, setProjectTabs] = useState<Readonly<Record<string, ProjectTab>>>({});
   const [fullVersionError, setFullVersionError] = useState<string | null>(null);
+  const [projectActionError, setProjectActionError] = useState<string | null>(null);
+  const projectId = route.kind === 'project' ? route.projectId : null;
+  useEffect(() => setProjectActionError(null), [projectId]);
 
   // Ouvrir la vue mobile annule un choix antérieur de la version complète : `/` redirige de nouveau ce téléphone.
   // Un échec d'effacement est journalisé par writeStored ; le stockage qui le cause empêche aussi de relire le choix.
@@ -129,6 +117,7 @@ export function MobileShell() {
         )}
         <h1 className="m-title">{title}</h1>
         {route.kind === 'home' ? <span className="m-build">{BUILD_LABEL}</span> : null}
+        {projectId === null ? null : <ProjectHeaderActions projectId={projectId} onError={setProjectActionError} />}
         <a
           className="m-full-version"
           href="/"
@@ -147,11 +136,20 @@ export function MobileShell() {
           Version complète indisponible : le choix n'a pas pu être enregistré ({fullVersionError}).
         </p>
       )}
+      {projectActionError === null ? null : (
+        <p className="m-error" role="alert">
+          {projectActionError}
+        </p>
+      )}
       <main className="m-main">
         {route.kind === 'home' ? (
           <HomeScreen tab={homeTab} onTab={setHomeTab} />
         ) : route.kind === 'project' ? (
-          <ProjectScreen projectId={route.projectId} />
+          <ProjectScreen
+            projectId={route.projectId}
+            tab={projectTabs[route.projectId] ?? 'sessions'}
+            onTab={(next) => setProjectTabs((current) => ({ ...current, [route.projectId]: next }))}
+          />
         ) : route.kind === 'council' ? (
           <CouncilScreen key={route.councilId} councilId={route.councilId} />
         ) : (

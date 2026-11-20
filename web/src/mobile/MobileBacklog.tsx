@@ -56,10 +56,7 @@ export function MobileBacklog({ project }: { project: Project }) {
   };
 
   return (
-    <section className="m-section" aria-labelledby="m-backlog-title">
-      <h2 className="m-section-title" id="m-backlog-title">
-        Backlog ({open.length})
-      </h2>
+    <section className="m-section" aria-label={`Backlog (${open.length})`}>
       {groups.length === 0 ? <p className="m-hint">Aucune tâche ouverte.</p> : null}
       {groups.map((group) => (
         <div key={group.key} className="m-epic">

@@ -170,10 +170,7 @@ export function ProjectGit({ project }: { project: Project }) {
   }
 
   return (
-    <section className="m-section" aria-labelledby="m-git-title">
-      <h2 className="m-section-title" id="m-git-title">
-        Git
-      </h2>
+    <section className="m-section" aria-label="Git">
       {body}
       {open === 'single' || open === 'atomic' ? (
         <AutomaticCommitDialog projectId={project.id} push={project.autoPush} strategy={open} onClose={close} />

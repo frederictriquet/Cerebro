@@ -13,11 +13,14 @@ export function AttentionDetail({
   session,
   reason,
   withKeys = false,
+  explicitKeys = false,
 }: {
   session: Session;
   reason: string | null;
   // Entrée et Échap sous une autorisation : file « À traiter » et mobile, où la ligne ne les porte pas.
   withKeys?: boolean;
+  // Mobile view: the keys also say what they do (« Accepter (Entrée) »). [SPEC: vue mobile, accueil]
+  explicitKeys?: boolean;
 }) {
   const detail = session.attentionDetail;
   const tone = session.status === 'waiting' ? 'waiting' : 'idle';
@@ -31,7 +34,9 @@ export function AttentionDetail({
           Autorisation demandée{detail.tool ? ` : ${detail.tool}` : ''}
         </p>
         {detail.summary ? <pre className="attention-command">{detail.summary}</pre> : null}
-        {withKeys && session.status === 'waiting' ? <PermissionKeys sessionId={session.id} /> : null}
+        {withKeys && session.status === 'waiting' ? (
+          <PermissionKeys sessionId={session.id} explicit={explicitKeys} />
+        ) : null}
       </div>
     );
   }
@@ -120,7 +125,7 @@ function QuestionsForm({ session, questions }: { session: Session; questions: Ag
 }
 
 /** Étape d'epic terminée par cette session et en attente de validation : se valide depuis la liste. */
-function EpicStepValidation({ session, epicId }: { session: Session; epicId: string }) {
+export function EpicStepValidation({ session, epicId }: { session: Session; epicId: string }) {
   const { updateTask } = useStore();
   const { run, refresh } = useEpicRun(epicId);
   const [pending, setPending] = useState(false);
@@ -146,7 +151,7 @@ function EpicStepValidation({ session, epicId }: { session: Session; epicId: str
 }
 
 /** Entrée accepte la proposition sélectionnée du dialogue d'autorisation, Échap le refuse. */
-function PermissionKeys({ sessionId }: { sessionId: string }) {
+function PermissionKeys({ sessionId, explicit }: { sessionId: string; explicit: boolean }) {
   const { sendSessionInput } = useStore();
   const [error, setError] = useState<string | null>(null);
   const send = (data: string): void => {
@@ -157,10 +162,10 @@ function PermissionKeys({ sessionId }: { sessionId: string }) {
     <>
       <span className="row-actions">
         <button type="button" className="btn" onClick={() => send('\r')}>
-          Entrée
+          {explicit ? 'Accepter (Entrée)' : 'Entrée'}
         </button>
         <button type="button" className="btn" onClick={() => send('\x1b')}>
-          Échap
+          {explicit ? 'Refuser (Échap)' : 'Échap'}
         </button>
       </span>
       {error ? <p className="form-error">{error}</p> : null}

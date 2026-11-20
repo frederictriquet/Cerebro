@@ -15,3 +15,19 @@ export function todoSessions<T extends Pick<Session, 'attention' | 'status'>>(
   );
   return { awaiting, running };
 }
+
+/** Action a session in « À traiter » waits for, named on its card, or null when it waits for nothing. */
+export type ExpectedAction = 'Répondre' | 'Autoriser' | 'Relire';
+
+/**
+ * [SPEC: vue mobile, accueil] A waiting session asks for an answer, or for a permission when its detail says so; a
+ * finished turn that keeps the attention asks to be read. Epic validation is not derived here: it depends on the epic
+ * run, and the button under the card already names it.
+ */
+export function expectedAction(
+  session: Pick<Session, 'attention' | 'status' | 'attentionDetail'>,
+): ExpectedAction | null {
+  if (!isAwaiting(session)) return null;
+  if (session.status !== 'waiting') return 'Relire';
+  return session.attentionDetail?.kind === 'permission' ? 'Autoriser' : 'Répondre';
+}

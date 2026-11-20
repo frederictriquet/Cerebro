@@ -27,7 +27,8 @@ function stringField(payload: HookPayload, ...names: string[]): string | null {
 
 // Assez pour lire une commande ou un message dans une liste, sans transporter un rapport entier.
 const SUMMARY_MAX = 400;
-const TURN_MESSAGE_MAX = 600;
+// The mobile session screen shows the whole last message in its « Réponse » tab. [SPEC: vue mobile, écran de session]
+const TURN_MESSAGE_MAX = 4000;
 
 function clip(value: string, max: number): string {
   const trimmed = value.trim();

@@ -108,13 +108,13 @@ test("sans PermissionRequest (session lancée avant le hook), l'autorisation res
 
 test('le dernier message du tour est gardé, tronqué, puis effacé à la fin de la session', () => {
   session('turn');
-  const long = `Pagination ajoutée. ${'x'.repeat(1000)}`;
+  const long = `Pagination ajoutée. ${'x'.repeat(5000)}`;
   handleHook(manager, 'turn', 'claude', 'Stop', { last_assistant_message: long });
   const idle = db.getSession('turn');
   assert.equal(idle.attentionReason, 'Tour terminé');
   assert.equal(idle.attentionDetail.kind, 'turn');
   assert.ok(idle.attentionDetail.message.startsWith('Pagination ajoutée.'));
-  assert.equal(idle.attentionDetail.message.length, 600);
+  assert.equal(idle.attentionDetail.message.length, 4000);
   assert.ok(idle.attentionDetail.message.endsWith('…'));
 
   manager.finishSession('turn', 0);
