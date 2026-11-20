@@ -22,7 +22,14 @@ import { assertValidSkillExtensions } from './skills.ts';
 import { secretMatches } from './secret-compare.ts';
 import { buildAgentCommand, workspaceArgs, type Tuning } from './agents.ts';
 import { ATTACHMENTS_DIR, INTERNAL_URL, KILL_ON_EXIT, LOG_DIR, ROOT, SESSIONS_DIR } from './config.ts';
-import { CerebroDatabase, resolveSessionDefaults, SessionProtectionError, type StoredSkillExtension } from './db.ts';
+import {
+  CerebroDatabase,
+  OPEN_SUBTASKS_PROJECT_MESSAGE,
+  openSubtasksMessage,
+  resolveSessionDefaults,
+  SessionProtectionError,
+  type StoredSkillExtension,
+} from './db.ts';
 import type { AgentQuestion } from './questions.ts';
 import { archiveSessionWorktree, restoreSessionWorktree } from './worktrees.ts';
 import { createWorkspace, createWorkspaceInContext, joinWorkspace, workspaceAt, workspaceFor } from './provenance.ts';
@@ -1195,6 +1202,9 @@ export class SessionManager {
         'Ce projet contient des sessions protégées. Décochez leur protection avant de le supprimer.',
       );
     }
+    if (projectSessions.some((session) => this.db.openSubtaskCount(session.id) > 0)) {
+      throw new SessionProtectionError(OPEN_SUBTASKS_PROJECT_MESSAGE);
+    }
     if (projectSessions.some((session) => this.deleting.has(session.id))) {
       throw new SessionProtectionError('Suppression déjà en cours pour une session de ce projet.');
     }
@@ -1227,7 +1237,7 @@ export class SessionManager {
     if (this.db.getProject(projectId) === null) return null;
     const inactive = this.db
       .listProjectSessions(projectId)
-      .filter((session) => !session.protected && isDormant(session, Date.now()));
+      .filter((session) => this.deletable(session) && isDormant(session, Date.now()));
     const results = await Promise.allSettled(inactive.map((session) => this.delete(session.id)));
     const failed = results.filter((result) => result.status === 'rejected');
     if (failed.length > 0) {
@@ -1237,13 +1247,18 @@ export class SessionManager {
     return inactive.length;
   }
 
+  /** Bulk deletions skip what a single deletion would refuse: protected sessions and unfinished subtasks. */
+  private deletable(session: Session): boolean {
+    return !session.protected && this.db.openSubtaskCount(session.id) === 0;
+  }
+
   /**
-   * Deletes the sessions of an epic, open ones stopped first; protected ones stay. Returns how many were deleted
+   * Deletes the sessions of an epic, open ones stopped first; protected ones and those with unfinished subtasks stay. Returns how many were deleted
    * and how many protected ones were kept.
    */
   async deleteEpicSessions(epicId: string): Promise<{ deleted: number; kept: number }> {
     const sessions = this.db.listSessions().filter((session) => session.epic?.id === epicId);
-    const deletable = sessions.filter((session) => !session.protected);
+    const deletable = sessions.filter((session) => this.deletable(session));
     const results = await Promise.allSettled(deletable.map((session) => this.delete(session.id)));
     const failed = results.filter((result) => result.status === 'rejected').length;
     if (failed > 0)
@@ -1256,6 +1271,9 @@ export class SessionManager {
     if (session === null) return false;
     if (session.protected)
       throw new SessionProtectionError('Session protégée. Décochez sa protection avant de la supprimer.');
+    // Checked before stopping anything: a refused deletion leaves the session running.
+    const openSubtasks = this.db.openSubtaskCount(id);
+    if (openSubtasks > 0) throw new SessionProtectionError(openSubtasksMessage(openSubtasks));
     if (this.deleting.has(id)) throw new SessionProtectionError('Suppression déjà en cours pour cette session.');
     this.deleting.add(id);
     try {

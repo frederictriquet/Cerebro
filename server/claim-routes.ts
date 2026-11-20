@@ -150,6 +150,8 @@ export function registerClaimRoutes(ctx: RouteContext): void {
       });
       notified = (await typeIntoSession(sessions, session.id, claimMessage(task))) && notified;
     }
+    const updated = db.getSession(session.id);
+    if (updated !== null && result.claimed.length > 0) broadcast({ type: 'session', session: updated });
     return reply.send({ claimed: summary(result.claimed), already: result.already, notified });
   });
 }

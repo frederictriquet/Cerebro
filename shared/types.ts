@@ -427,6 +427,8 @@ export interface Session {
   epic: SessionEpic | null;
   // Findings publiés qui n’ont pas encore été importés dans le backlog.
   pendingFindings: number;
+  // Sous-tâches à faire, en cours ou bloquées : tant qu'il en reste, la session ne peut pas être supprimée.
+  openSubtasks: number;
   // Identifiants des extensions activées pour cette session (reprises comprises).
   extensionIds: string[];
 }
@@ -1029,6 +1031,10 @@ export function parseSession(v: unknown): Session | null {
     pendingFindings:
       typeof v.pendingFindings === 'number' && Number.isSafeInteger(v.pendingFindings) && v.pendingFindings >= 0
         ? v.pendingFindings
+        : 0,
+    openSubtasks:
+      typeof v.openSubtasks === 'number' && Number.isSafeInteger(v.openSubtasks) && v.openSubtasks >= 0
+        ? v.openSubtasks
         : 0,
     extensionIds: Array.isArray(v.extensionIds)
       ? v.extensionIds.filter((item): item is string => typeof item === 'string')

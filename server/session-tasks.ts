@@ -78,6 +78,8 @@ export function registerSessionTaskRoutes(
   app: FastifyInstance,
   db: CerebroDatabase,
   sessionTokenValid: (request: IdRequest) => boolean,
+  // Called after a subtask is created, changed or removed: the session's open count may have changed.
+  onChange: (sessionId: string) => void,
 ): void {
   type Params = { id: string; taskId: string };
   for (const agent of [false, true]) {
@@ -99,11 +101,13 @@ export function registerSessionTaskRoutes(
       const parsed = await badRequest.orError(reply, () => parseFields(request.body, true));
       if (!parsed.ok) return parsed.reply;
       const fields = parsed.value;
-      return reply
-        .code(201)
-        .send(
-          insertSessionTask(db, request.params.id, { title: fields.title!, status: fields.status, note: fields.note }),
-        );
+      const task = insertSessionTask(db, request.params.id, {
+        title: fields.title!,
+        status: fields.status,
+        note: fields.note,
+      });
+      onChange(request.params.id);
+      return reply.code(201).send(task);
     });
     app.patch<{ Params: Params }>(`${base}/:taskId`, options, async (request, reply) => {
       const current = getSessionTask(db, request.params.id, request.params.taskId);
@@ -118,15 +122,16 @@ export function registerSessionTaskRoutes(
         WHERE session_id = ? AND id = ?`,
         )
         .run(next.title, next.status, next.note, next.updatedAt, next.sessionId, next.id);
+      onChange(request.params.id);
       return next;
     });
     app.delete<{ Params: Params }>(`${base}/:taskId`, options, async (request, reply) => {
       const result = db.connection
         .prepare('DELETE FROM session_tasks WHERE session_id = ? AND id = ?')
         .run(request.params.id, request.params.taskId);
-      return result.changes
-        ? reply.code(204).send()
-        : reply.code(404).send({ error: 'Sous-tâche introuvable dans cette session.' });
+      if (!result.changes) return reply.code(404).send({ error: 'Sous-tâche introuvable dans cette session.' });
+      onChange(request.params.id);
+      return reply.code(204).send();
     });
   }
 }

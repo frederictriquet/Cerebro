@@ -67,7 +67,7 @@ function EpicSessions({ group }: { group: Extract<SessionGroup, { kind: 'epic' }
   const running = group.sessions.filter(
     (session) => session.status === 'starting' || session.status === 'running',
   ).length;
-  const deletable = group.sessions.filter((session) => !session.protected).length;
+  const deletable = group.sessions.filter((session) => !session.protected && session.openSubtasks === 0).length;
   const epicActive = run !== null && isActiveRun(run);
   const onDeleteSessions = (): void => {
     setActionError(null);
@@ -120,7 +120,7 @@ function EpicSessions({ group }: { group: Extract<SessionGroup, { kind: 'epic' }
               title={
                 epicActive
                   ? 'Epic en cours : arrêtez-le avant de supprimer ses sessions'
-                  : 'Supprime les sessions non protégées de l’epic ; celles encore ouvertes seront arrêtées. Leurs copies de travail sans rien à conserver sont ensuite nettoyées.'
+                  : 'Supprime les sessions de l’epic ni protégées ni porteuses de sous-tâches non terminées ; celles encore ouvertes seront arrêtées. Leurs copies de travail sans rien à conserver sont ensuite nettoyées.'
               }
             >
               Supprimer les sessions ({deletable})

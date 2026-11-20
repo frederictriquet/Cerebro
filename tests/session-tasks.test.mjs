@@ -13,7 +13,7 @@ process.env.CEREBRO_DATA_DIR = join(root, 'data');
 process.env.CEREBRO_BIND_TOKEN = 'browser-token';
 delete process.env.CEREBRO_SLACK_TOKEN;
 delete process.env.CEREBRO_SLACK_USER;
-const { CerebroDatabase } = await import('../server/db.ts');
+const { CerebroDatabase, SessionProtectionError } = await import('../server/db.ts');
 const { SessionManager } = await import('../server/sessions.ts');
 const { UpdateManager } = await import('../server/updates.ts');
 const { PeerSync } = await import('../server/peers.ts');
@@ -164,6 +164,11 @@ test('session tasks: CRUD, validation, authentication, persistence and lifecycle
     assert.equal((await send('DELETE', item)).statusCode, 204);
     assert.equal((await send('GET', item)).statusCode, 404);
     assert.equal((await send('DELETE', item)).statusCode, 404);
+    const refused = await send('DELETE', '/api/sessions/first', undefined, auth);
+    assert.equal(refused.statusCode, 409, 'an unfinished subtask forbids deleting the session');
+    assert.match(refused.json().error, /1 sous-tâche non terminée/);
+    assert.throws(() => db.deleteSession('first'), SessionProtectionError);
+    db.connection.prepare(`UPDATE session_tasks SET status = 'cancelled' WHERE session_id = ?`).run('first');
     db.deleteSession('first');
     assert.equal(
       db.connection.prepare('SELECT count(*) AS n FROM session_tasks WHERE session_id = ?').get('first').n,
@@ -174,6 +179,8 @@ test('session tasks: CRUD, validation, authentication, persistence and lifecycle
       await send('POST', '/api/session-tasks/second', { title: 'Other' }, { 'x-cerebro-token': 'second-token' })
     ).json();
     assert.ok(other.id);
+    assert.throws(() => db.deleteProject(project.id), SessionProtectionError);
+    db.connection.prepare(`UPDATE session_tasks SET status = 'done' WHERE id = ?`).run(other.id);
     db.deleteProject(project.id);
     assert.equal(db.connection.prepare('SELECT count(*) AS n FROM session_tasks').get().n, 0);
   } finally {

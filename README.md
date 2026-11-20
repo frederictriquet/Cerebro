@@ -529,7 +529,11 @@ Statuts : `todo`, `in_progress`, `blocked`, `done`, `cancelled`. Les éléments
 terminés restent visibles ; un objectif abandonné peut être marqué `cancelled`
 avec sa raison. La suppression sert notamment aux doublons ou erreurs de saisie.
 Les données survivent à l'arrêt, la reprise et au redémarrage du serveur, et sont
-supprimées avec la session. Aucune fin de tour ni sortie de processus ne change
+supprimées avec la session. Une session qui a encore une sous-tâche `todo`,
+`in_progress` ou `blocked` ne peut pas être supprimée, ni son projet : passez ces
+sous-tâches à `done` ou `cancelled` d'abord. Son bouton de suppression est grisé
+et son infobulle donne le nombre de sous-tâches restantes. Le nettoyage des sessions inactives
+et la suppression des sessions d'un epic les conservent. Aucune fin de tour ni sortie de processus ne change
 automatiquement leur statut. Le suivi reflète les mises à jour explicites de
 l'agent ou de l'utilisateur.
 

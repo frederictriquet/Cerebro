@@ -47,6 +47,15 @@ import { isRecord } from './util.ts';
 
 export class SessionProtectionError extends Error {}
 
+export function openSubtasksMessage(count: number): string {
+  const plural = count > 1 ? 's' : '';
+  const pronoun = count > 1 ? 'les' : 'la';
+  return `Session avec ${count} sous-tâche${plural} non terminée${plural}. Passez-${pronoun} à « Terminée » ou « Annulée » avant de supprimer la session.`;
+}
+
+export const OPEN_SUBTASKS_PROJECT_MESSAGE =
+  'Ce projet contient des sessions avec des sous-tâches non terminées. Terminez-les ou annulez-les avant de le supprimer.';
+
 type TodoRow = Omit<TodoItem, 'done'> & { done: number };
 const TODO_COLUMNS = 'id, text, done, created_at AS createdAt, updated_at AS updatedAt';
 const todoFromRow = (row: TodoRow): TodoItem => ({ ...row, done: row.done === 1 });
@@ -110,6 +119,7 @@ interface SessionRow {
   epic_id: string | null;
   resolved_epic_title: string | null;
   pending_findings: number;
+  open_subtasks: number;
   extension_ids: string | null;
 }
 
@@ -412,7 +422,9 @@ function worktreeFromWorkspace(data: string | null): SessionWorktree | null {
 
 const SESSION_SELECT = `SELECT s.*, w.data AS workspace, COALESCE(e.title, s.epic_title) AS resolved_epic_title,
   (SELECT COALESCE(SUM(r.finding_count - (SELECT COUNT(*) FROM finding_imports i WHERE i.report_id = r.id)), 0)
-    FROM review_reports r WHERE r.session_id = s.id) AS pending_findings
+    FROM review_reports r WHERE r.session_id = s.id) AS pending_findings,
+  (SELECT COUNT(*) FROM session_tasks t
+    WHERE t.session_id = s.id AND t.status IN ('todo', 'in_progress', 'blocked')) AS open_subtasks
   FROM sessions s LEFT JOIN session_workspaces w ON w.session_id = s.id
   LEFT JOIN epics e ON e.id = s.epic_id AND e.project_id = s.project_id`;
 
@@ -450,6 +462,7 @@ function sessionFromRow(row: SessionRow): Session {
     worktree: worktreeFromWorkspace(row.workspace),
     epic: row.epic_id && row.resolved_epic_title !== null ? { id: row.epic_id, title: row.resolved_epic_title } : null,
     pendingFindings: row.pending_findings,
+    openSubtasks: Number(row.open_subtasks),
     extensionIds: parseStringIds(row.extension_ids),
   };
 }
@@ -1318,6 +1331,9 @@ export class CerebroDatabase {
         'Ce projet contient des sessions protégées. Décochez leur protection avant de le supprimer.',
       );
     }
+    if (this.listProjectSessions(id).some((session) => this.openSubtaskCount(session.id) > 0)) {
+      throw new SessionProtectionError(OPEN_SUBTASKS_PROJECT_MESSAGE);
+    }
     return this.transaction(() => {
       this.connection.prepare('DELETE FROM council_runs WHERE project_id = ?').run(id);
       this.connection.prepare('DELETE FROM operation_results WHERE project_id = ?').run(id);
@@ -1373,6 +1389,7 @@ export class CerebroDatabase {
       worktree: null,
       epic: epic ? { id: epic.id, title: epic.title } : null,
       pendingFindings: 0,
+      openSubtasks: 0,
       extensionIds,
     };
     this.connection
@@ -1478,10 +1495,23 @@ export class CerebroDatabase {
     });
   }
 
+  /** Subtasks still todo, in progress or blocked: they forbid deleting their session. */
+  openSubtaskCount(sessionId: string): number {
+    const row = this.connection
+      .prepare(
+        `SELECT COUNT(*) AS count FROM session_tasks
+        WHERE session_id = ? AND status IN ('todo', 'in_progress', 'blocked')`,
+      )
+      .get(sessionId) as { count: number };
+    return Number(row.count);
+  }
+
   deleteSession(id: string): boolean {
     if (this.getSession(id)?.protected) {
       throw new SessionProtectionError('Session protégée. Décochez sa protection avant de la supprimer.');
     }
+    const open = this.openSubtaskCount(id);
+    if (open > 0) throw new SessionProtectionError(openSubtasksMessage(open));
     return Number(this.connection.prepare('DELETE FROM sessions WHERE id = ?').run(id).changes) > 0;
   }
 

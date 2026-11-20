@@ -387,7 +387,10 @@ export async function buildServer(
     epicWorkspaces,
     broadcast,
   });
-  registerSessionTaskRoutes(app, db, context.sessionTokenValid);
+  registerSessionTaskRoutes(app, db, context.sessionTokenValid, (sessionId) => {
+    const session = db.getSession(sessionId);
+    if (session !== null) broadcast({ type: 'session', session });
+  });
   registerTranscriptRoutes(app);
   registerWeeklyMetricsRoutes(app);
   registerSystemRoutes(context);

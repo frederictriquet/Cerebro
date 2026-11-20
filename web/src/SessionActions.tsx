@@ -1,6 +1,7 @@
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { ResumeIcon, StopIcon, TrashIcon } from './SessionIcons.tsx';
 import { SESSION_PROTECTED_HINT } from './SessionProtection.tsx';
+import { plural } from './format.ts';
 import type { Session } from '../../shared/types.ts';
 import { RELEASE_HINT, removedCopyNotice } from './WorktreeLabel.tsx';
 
@@ -33,6 +34,12 @@ export function SessionActions({
   const killTitle = isolated ? `Arrête la conversation. ${RELEASE_HINT}` : undefined;
   const resumeTitle = removedCopyNotice(session.worktree) ?? undefined;
   const canResume = session.status === 'exited' && session.agentSessionId;
+  // Même refus que le serveur : rien à supprimer tant qu'une sous-tâche reste à faire, en cours ou bloquée.
+  const deleteBlocked = session.protected
+    ? SESSION_PROTECTED_HINT
+    : session.openSubtasks > 0
+      ? openSubtasksHint(session.openSubtasks)
+      : null;
   return (
     <>
       {session.status !== 'exited' ? (
@@ -80,14 +87,16 @@ export function SessionActions({
         key={session.id}
         className={icons ? 'icon-btn danger' : undefined}
         iconLabel={icons ? 'Supprimer' : undefined}
-        disabled={session.protected}
-        title={
-          session.protected ? SESSION_PROTECTED_HINT : (deleteHint ?? (icons ? 'Supprimer la conversation' : undefined))
-        }
+        disabled={deleteBlocked !== null}
+        title={deleteBlocked ?? deleteHint ?? (icons ? 'Supprimer la conversation' : undefined)}
         onAction={onDelete}
       >
         {icons ? <TrashIcon /> : 'Supprimer'}
       </DelayedActionButton>
     </>
   );
+}
+
+export function openSubtasksHint(count: number): string {
+  return `${plural(count, 'sous-tâche non terminée', 'sous-tâches non terminées')}. Passez-${count > 1 ? 'les' : 'la'} à « Terminée » ou « Annulée » avant de supprimer la session.`;
 }

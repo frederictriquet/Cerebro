@@ -182,7 +182,7 @@ export function ProjectView({ projectId }: { projectId: string }) {
                 {dormantCount > 0 ? (
                   <DelayedActionButton
                     onAction={onPurge}
-                    title="Supprime les sessions non protégées inactives depuis plus d'une heure ; celles encore ouvertes seront arrêtées"
+                    title="Supprime les sessions inactives depuis plus d'une heure, ni protégées ni porteuses de sous-tâches non terminées ; celles encore ouvertes seront arrêtées"
                   >
                     Purger les sessions en sommeil ({dormantCount})
                   </DelayedActionButton>
