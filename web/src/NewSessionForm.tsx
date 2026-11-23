@@ -16,6 +16,7 @@ import { ExtensionLaunchPicker } from './ExtensionControls.tsx';
 import { LlmSelector, llmChoices } from './LlmSelector.tsx';
 import { readDraft, writeDraft } from './drafts.ts';
 import { errorMessage, MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from './format.ts';
+import { ModeText } from './ModeIcon.tsx';
 import { useStore } from './store.tsx';
 import {
   DEFAULT_SESSION_DEFAULTS,
@@ -300,7 +301,7 @@ export function NewSessionForm({
             value={mode}
             options={MODE_CHOICES.map((m) => ({
               value: m,
-              label: MODE_CHIP[m],
+              label: <ModeText mode={m} text={MODE_CHIP[m]} />,
               title: MODE_DESCRIPTION[m],
               danger: m === 'bypass',
             }))}

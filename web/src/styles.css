@@ -2129,6 +2129,18 @@ label.block {
   flex-shrink: 0;
 }
 
+.mode-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+}
+
+.mode-icon {
+  flex-shrink: 0;
+  width: 0.85em;
+  height: 0.85em;
+}
+
 .pill.status.running,
 .pill.task-status.started {
   color: var(--running);

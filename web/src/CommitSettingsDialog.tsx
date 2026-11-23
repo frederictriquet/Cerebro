@@ -6,6 +6,7 @@ import { useStore } from './store.tsx';
 import { LlmSelector, type LlmSelection } from './LlmSelector.tsx';
 import { ChoiceGroup } from './ChoiceGroup.tsx';
 import { MODE_CHIP, MODE_DESCRIPTION } from './format.ts';
+import { ModeText } from './ModeIcon.tsx';
 import { MODE_CHOICES, normalizeMode, type Project, type ResolutionSettings } from '../../shared/types.ts';
 import './automatic-commits.css';
 
@@ -81,7 +82,7 @@ export function CommitSettingsDialog({
                 disabled={busy}
                 options={MODE_CHOICES.map((mode) => ({
                   value: mode,
-                  label: MODE_CHIP[mode],
+                  label: <ModeText mode={mode} text={MODE_CHIP[mode]} />,
                   title: MODE_DESCRIPTION[mode],
                   danger: mode === 'bypass',
                 }))}

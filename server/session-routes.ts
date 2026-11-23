@@ -14,7 +14,12 @@ import { findPeerName } from './peer-name.ts';
 import { interpretAnswer } from './questions.ts';
 import { answerQuestions, typeIntoSession } from './session-input.ts';
 import { getSessionTask, sessionTaskPrompt } from './session-tasks.ts';
-import { defaultTranscriptRoots, readSessionTranscript, transcriptContext } from './transcripts.ts';
+import {
+  defaultTranscriptRoots,
+  readSessionRequests,
+  readSessionTranscript,
+  transcriptContext,
+} from './transcripts.ts';
 import { WorktreeError } from './worktrees.ts';
 import { normalizeMode } from '../shared/types.ts';
 import { asRecord, errorMessage } from './util.ts';
@@ -123,6 +128,13 @@ export function registerSessionRoutes(ctx: RouteContext): void {
     const session = requireSession(request, reply);
     if (session === null) return reply;
     return transcriptContext(session, await readSessionTranscript(session), COUNCIL_CONTEXT_FROM_SESSION);
+  });
+
+  // Requests sent to the agent, newest first, for the mobile « Demandes » tab. [SPEC: vue mobile, écran de session]
+  app.get<{ Params: { id: string } }>('/api/sessions/:id/requests', async (request, reply) => {
+    const session = requireSession(request, reply);
+    if (session === null) return reply;
+    return readSessionRequests(session);
   });
 
   // Nom à donner à `SendMessage` pour écrire à cette session depuis une autre session Claude.

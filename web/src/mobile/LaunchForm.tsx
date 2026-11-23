@@ -5,6 +5,7 @@ import { ChoiceGroup } from '../ChoiceGroup.tsx';
 import { ExtensionLaunchPicker } from '../ExtensionControls.tsx';
 import { errorMessage, MODE_CHIP, MODE_DESCRIPTION, WORKSPACE_TARGET } from '../format.ts';
 import { LlmSelector, type LlmSelection } from '../LlmSelector.tsx';
+import { ModeText } from '../ModeIcon.tsx';
 import { go } from '../route.ts';
 import { useStore } from '../store.tsx';
 import { WorkspaceModeControl } from '../WorkspaceModeControl.tsx';
@@ -91,7 +92,7 @@ export function LaunchForm({ project }: { project: Project }) {
               disabled={busy}
               options={MODE_CHOICES.map((m) => ({
                 value: m,
-                label: MODE_CHIP[m],
+                label: <ModeText mode={m} text={MODE_CHIP[m]} />,
                 title: MODE_DESCRIPTION[m],
                 danger: m === 'bypass',
               }))}

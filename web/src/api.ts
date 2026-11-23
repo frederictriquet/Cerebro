@@ -25,7 +25,7 @@ import {
   type TrustFoldersSettings,
   type WatchDelivery,
 } from '../../shared/machine.ts';
-import { boolean, object, parser, string, type Parser } from '../../shared/parse.ts';
+import { array, boolean, object, parser, string, type Parser } from '../../shared/parse.ts';
 import { parseGlobalBacklog, parseGlobalEpic, parseGlobalTask, type GlobalBacklog } from '../../shared/backlog.ts';
 import {
   parseCouncilRun,
@@ -459,6 +459,20 @@ const parseSessionTranscript = parser(
 // Conversation d'une session mise en forme pour le contexte d'un council.
 export function getSessionTranscript(sessionId: string): Promise<SessionTranscript> {
   return apiParsed(apiPath`/api/sessions/${sessionId}/transcript`, parseSessionTranscript);
+}
+
+export interface SessionRequests {
+  /** Newest first. */
+  requests: string[];
+  // false: transcript not found, only the launch prompt is known.
+  complete: boolean;
+}
+
+const parseSessionRequests = parser(object<SessionRequests>({ requests: array(string), complete: boolean }));
+
+// Requests sent to a session's agent, for the mobile « Demandes » tab. [SPEC: vue mobile, écran de session]
+export function getSessionRequests(sessionId: string): Promise<SessionRequests> {
+  return apiParsed(apiPath`/api/sessions/${sessionId}/requests`, parseSessionRequests);
 }
 
 // Backlog global : idées sans projet, dispatchées ensuite dans le projet choisi.

@@ -994,3 +994,48 @@
 .m-swipe-viewport .md .md-table * {
   touch-action: pan-x pan-y pinch-zoom;
 }
+
+/* « Demandes » tab of the session screen. [SPEC: vue mobile, écran de session] */
+.m-requests {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.m-request {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+}
+
+.m-request-text {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.m-request-text.clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
+.m-request-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.m-request-actions:empty {
+  display: none;
+}

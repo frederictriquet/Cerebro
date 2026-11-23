@@ -96,12 +96,13 @@ export function displayStatus(
   return isDormant(session, now) ? 'dormant' : session.status;
 }
 
+// Text only: the marker is drawn by ModeIcon (ModeIcon.tsx).
 export const MODE_LABEL: Record<Mode, string> = {
-  auto: '⏵⏵ auto mode on',
+  auto: 'auto mode on',
   default: 'default (config de l’agent)',
-  acceptEdits: '⏵⏵ accept edits on',
-  plan: '⏸ plan mode on',
-  bypass: '⏵⏵ bypass permissions on',
+  acceptEdits: 'accept edits on',
+  plan: 'plan mode on',
+  bypass: 'bypass permissions on',
 };
 
 export function isAwaiting(session: Pick<Session, 'attention' | 'status'>): boolean {
@@ -136,10 +137,10 @@ export function attentionCounts(
 }
 
 export const MODE_CHIP: Record<ModeChoice, string> = {
-  auto: '⏵⏵ auto',
-  acceptEdits: '⏵⏵ accept edits',
-  plan: '⏸ plan',
-  bypass: '⏵⏵ bypass',
+  auto: 'auto',
+  acceptEdits: 'accept edits',
+  plan: 'plan',
+  bypass: 'bypass',
 };
 
 export const MODE_DESCRIPTION: Record<ModeChoice, string> = {

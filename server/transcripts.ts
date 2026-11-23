@@ -85,10 +85,11 @@ function claudeMessages(text: string): TranscriptMessage[] {
       seen.add(record.uuid);
     }
     const message = asRecord(record.message);
-    if (record.type === 'user' && message?.role === 'user')
-      return texts(message.content, ['text'])
-        .filter((entry) => !CLAUDE_INJECTED.test(entry.trimStart()))
-        .map((entry) => ({ role: 'user', text: entry }));
+    // One entry per record: a request made of several text blocks stays one request.
+    if (record.type === 'user' && message?.role === 'user') {
+      const parts = texts(message.content, ['text']).filter((entry) => !CLAUDE_INJECTED.test(entry.trimStart()));
+      return parts.length === 0 ? [] : [{ role: 'user', text: parts.join('\n\n') }];
+    }
     if (record.type === 'assistant' && message?.role === 'assistant')
       return texts(message.content, ['text']).map((entry) => ({ role: 'assistant', text: entry }));
     return [];
@@ -118,11 +119,12 @@ function codexMessages(text: string): TranscriptMessage[] {
 // Seuls les messages `user` numérotés (`prompt_index`) viennent de l'utilisateur, dans <user_query>.
 function grokMessages(text: string): TranscriptMessage[] {
   return records(text).flatMap((record): TranscriptMessage[] => {
-    if (record.type === 'user' && typeof record.prompt_index === 'number')
-      return texts(record.content, ['text']).map((entry) => ({
-        role: 'user',
-        text: entry.replace(/^\s*<user_query>\s*([\s\S]*?)\s*<\/user_query>\s*$/, '$1'),
-      }));
+    if (record.type === 'user' && typeof record.prompt_index === 'number') {
+      const parts = texts(record.content, ['text']).map((entry) =>
+        entry.replace(/^\s*<user_query>\s*([\s\S]*?)\s*<\/user_query>\s*$/, '$1'),
+      );
+      return parts.length === 0 ? [] : [{ role: 'user', text: parts.join('\n\n') }];
+    }
     if (record.type === 'assistant' && typeof record.content === 'string')
       return [{ role: 'assistant', text: record.content }];
     return [];
@@ -197,16 +199,56 @@ export async function findTranscript(
   return newest(rollouts.filter((path) => path.endsWith(`-${agentSessionId}.jsonl`)));
 }
 
+// [SPEC: vue mobile, écran de session] Requests listed by the « Demandes » tab.
+export const REQUESTS_MAX = 20;
+
+/**
+ * Messages the user sent to the agent, newest first, at most `max`. Unlike parseTranscript, consecutive requests stay
+ * apart: two instructions sent while the agent was working are two entries.
+ */
+export function userRequests(agent: Agent, text: string, max = REQUESTS_MAX): string[] {
+  return PARSERS[agent](text)
+    .filter((message) => message.role === 'user')
+    .map((message) => message.text.trim())
+    .filter((request) => request !== '')
+    .slice(-max)
+    .reverse();
+}
+
+/** Transcript file of a Cerebro session, read whole; null when it is missing or unreadable. */
+async function readTranscriptFile(
+  session: Pick<Session, 'agent' | 'agentSessionId'>,
+  roots?: TranscriptRoots,
+): Promise<string | null> {
+  if (session.agentSessionId === null) return null;
+  const path = await findTranscript(session.agent, session.agentSessionId, roots);
+  if (path === null) return null;
+  return readFile(path, 'utf8').catch(() => null);
+}
+
+/**
+ * Requests of a session for the mobile « Demandes » tab. Without a transcript (`complete: false`), only the launch
+ * prompt is known.
+ */
+export async function readSessionRequests(
+  session: Pick<Session, 'agent' | 'agentSessionId' | 'prompt'>,
+  roots?: TranscriptRoots,
+): Promise<{ requests: string[]; complete: boolean }> {
+  const text = await readTranscriptFile(session, roots);
+  if (text !== null) return { requests: userRequests(session.agent, text), complete: true };
+  const prompt = session.prompt.trim();
+  return { requests: prompt === '' ? [] : [prompt], complete: false };
+}
+
 /** Messages d'une session Cerebro, null si son transcript est introuvable ou illisible. */
 export async function readSessionTranscript(
   session: Pick<Session, 'agent' | 'agentSessionId'>,
   roots?: TranscriptRoots,
 ): Promise<TranscriptMessage[] | null> {
-  if (session.agentSessionId === null) return null;
-  const path = await findTranscript(session.agent, session.agentSessionId, roots);
-  if (path === null) return null;
+  const text = await readTranscriptFile(session, roots);
+  if (text === null) return null;
   try {
-    return parseTranscript(session.agent, await readFile(path, 'utf8'));
+    return parseTranscript(session.agent, text);
   } catch {
     return null;
   }

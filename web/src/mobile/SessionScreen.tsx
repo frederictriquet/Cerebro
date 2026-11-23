@@ -4,7 +4,7 @@
  * du téléphone par POST /api/sessions/:id/resize à l'ouverture, au retour au premier plan, à chaque envoi et
  * quand le cadre change de largeur ; le desktop la reprend dès qu'on y clique ou tape.
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
 import { AgentLabel } from '../AgentLabel.tsx';
 import { AttentionDetail, EpicStepValidation } from '../AttentionDetail.tsx';
 import { api, apiPath, uploadImage } from '../api.ts';
@@ -21,6 +21,7 @@ import { useLatest } from '../use-latest.ts';
 import { parseScreenLines, type Session } from '../../../shared/types.ts';
 import { quickKeyGroups, type QuickKey } from './keys.ts';
 import { SessionCommit } from './MobileGit.tsx';
+import { SessionRequests } from './SessionRequests.tsx';
 import { SwipeTabs, type SwipeTab } from './SwipeTabs.tsx';
 
 const SCREEN_LINES = 120;
@@ -37,7 +38,7 @@ const PROBE_TEXT = '0123456789';
 const MIN_COLS = 20;
 const MIN_ROWS = 5;
 
-type SessionTab = 'reply' | 'terminal';
+type SessionTab = 'reply' | 'terminal' | 'requests';
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -91,11 +92,19 @@ function ScreenText({ lines }: { lines: string[] }) {
 function InstructionForm({
   sessionId,
   send,
+  text,
+  setText,
+  fieldRef,
+  onSent,
 }: {
   sessionId: string;
   send: (data: string, failure: string) => Promise<boolean>;
+  /** Owned by the screen, so the « Demandes » tab can reuse a request in it. */
+  text: string;
+  setText: (change: (text: string) => string) => void;
+  fieldRef: RefObject<HTMLTextAreaElement | null>;
+  onSent: () => void;
 }) {
-  const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const mounted = useRef(true);
@@ -129,10 +138,11 @@ function InstructionForm({
     try {
       // Text and images are kept if sending fails; no Enter without the text.
       if (!(await send(images.expand(value), 'Envoi impossible'))) return;
-      setText('');
+      setText(() => '');
       images.reset();
       await delay(ENTER_DELAY_MS);
       await send('\r', 'Texte envoyé, mais Entrée non envoyée');
+      onSent();
     } finally {
       if (mounted.current) setSending(false);
     }
@@ -142,6 +152,7 @@ function InstructionForm({
     <form className="m-instruction-form" onSubmit={(event) => void onSubmit(event)}>
       <div className="m-instruction">
         <textarea
+          ref={fieldRef}
           className="m-textarea"
           rows={2}
           value={text}
@@ -190,6 +201,21 @@ function SessionDetail({ session }: { session: Session }) {
   const hasReply = pending || detail?.kind === 'turn';
   // [SPEC: vue mobile, écran de session] Opens on « Réponse » when there is something to read or answer there.
   const [tab, setTab] = useState<SessionTab>(() => (exited || hasReply ? 'reply' : 'terminal'));
+  const [draft, setDraft] = useState('');
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+  // Each instruction sent from here reloads « Demandes »; a status change covers the other sources.
+  const [sentCount, setSentCount] = useState(0);
+
+  // [SPEC: vue mobile, écran de session] Added after a draft in progress, never in place of it.
+  const reuse = (request: string): void => {
+    setDraft((current) => (current.trim() === '' ? request : `${current.trimEnd()}\n\n${request}`));
+    window.setTimeout(() => {
+      const field = fieldRef.current;
+      if (field === null) return;
+      field.focus();
+      field.setSelectionRange(field.value.length, field.value.length);
+    }, 0);
+  };
 
   useEffect(() => {
     mounted.current = true;
@@ -412,6 +438,19 @@ function SessionDetail({ session }: { session: Session }) {
   const tabs: SwipeTab<SessionTab>[] = [
     { id: 'reply', label: 'Réponse', content: reply, className: 'm-reply' },
     { id: 'terminal', label: 'Terminal', content: terminal, className: 'm-session-terminal' },
+    {
+      id: 'requests',
+      label: 'Demandes',
+      className: 'm-reply',
+      content: (
+        <SessionRequests
+          sessionId={id}
+          active={tab === 'requests'}
+          refreshKey={`${session.status}:${sentCount}`}
+          onReuse={exited ? null : reuse}
+        />
+      ),
+    },
   ];
 
   return (
@@ -439,14 +478,24 @@ function SessionDetail({ session }: { session: Session }) {
       ) : null}
       {readError === null ? null : <p className="m-form-error">Lecture de l'écran impossible : {readError}</p>}
       <SwipeTabs label="Session" idPrefix="m-session" tabs={tabs} value={tab} onChange={setTab} />
-      {exited ? null : <InstructionForm sessionId={id} send={send} />}
+      {exited ? null : (
+        <InstructionForm
+          sessionId={id}
+          send={send}
+          text={draft}
+          setText={setDraft}
+          fieldRef={fieldRef}
+          onSent={() => setSentCount((count) => count + 1)}
+        />
+      )}
     </div>
   );
 }
 
 /**
- * Écran d'une session : état, onglets « Réponse » (question, autorisation ou dernier message, commit / push, arrêt) et
- * « Terminal » (écran et touches), consigne fixée en bas. [SPEC: vue mobile, écran de session]
+ * Écran d'une session : état, onglets « Réponse » (question, autorisation ou dernier message, commit / push, arrêt),
+ * « Terminal » (écran et touches) et « Demandes » (messages envoyés à l'agent), consigne fixée en bas.
+ * [SPEC: vue mobile, écran de session]
  */
 export function SessionScreen({ sessionId }: { sessionId: string }) {
   const { sessions, loaded } = useStore();

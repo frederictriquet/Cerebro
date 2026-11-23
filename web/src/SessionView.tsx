@@ -19,6 +19,7 @@ import { SessionGitActions } from './GitActions.tsx';
 import { SessionActions } from './SessionActions.tsx';
 import { SessionCouncilButton } from './SessionCouncil.tsx';
 import { SlackWatches } from './SlackWatches.tsx';
+import { ModeText } from './ModeIcon.tsx';
 import { SessionMeta, attentionTone } from './SessionMeta.tsx';
 import { SessionPeerName } from './SessionPeerName.tsx';
 import { SessionPin } from './SessionPin.tsx';
@@ -485,7 +486,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               status={shown}
               beforeStatus={
                 <>
-                  <span className="pill">{MODE_LABEL[session.mode]}</span>
+                  <span className="pill">
+                    <ModeText mode={session.mode} text={MODE_LABEL[session.mode]} />
+                  </span>
                   {session.model !== null ? (
                     <span className="pill">
                       {agents.find((a) => a.agent === session.agent)?.models.find((m) => m.value === session.model)
