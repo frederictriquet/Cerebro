@@ -3,12 +3,27 @@ import { api, apiParsed, apiPath } from './api.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
 import { errorMessage, plural, pluralize, SESSION_TASK_STATUS_LABEL } from './format.ts';
 import { usePolling } from './polling.tsx';
+import { readJson, writeJson } from './storage.ts';
 import './session-tasks.css';
-import { parseSessionTasks, type SessionTask, type SessionTaskStatus } from '../../shared/backlog.ts';
+import {
+  parseSessionTasks,
+  SESSION_TASK_STATUSES,
+  type SessionTask,
+  type SessionTaskStatus,
+} from '../../shared/backlog.ts';
 import type { Status } from '../../shared/types.ts';
 
 // « à faire » et « en cours » sont invariables ; les autres états s'accordent avec le nombre.
 const INVARIABLE: readonly SessionTaskStatus[] = ['todo', 'in_progress'];
+
+// Catégories masquées dans la liste, mémorisées par ce navigateur pour toutes les sessions.
+const HIDDEN_KEY = 'cerebro.sessionTasksHidden';
+
+function readHidden(): ReadonlySet<SessionTaskStatus> {
+  const stored = readJson(HIDDEN_KEY);
+  if (!Array.isArray(stored)) return new Set();
+  return new Set(SESSION_TASK_STATUSES.filter((status) => stored.includes(status)));
+}
 
 export function sessionTasksState(tasks: readonly SessionTask[]): SessionTaskStatus | 'empty' {
   for (const status of ['blocked', 'in_progress', 'todo'] as const) {
@@ -95,7 +110,7 @@ export function SessionTasksPanel({
   const [editing, setEditing] = useState<SessionTask | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [hidden, setHidden] = useState<ReadonlySet<SessionTaskStatus>>(new Set());
+  const [hidden, setHidden] = useState<ReadonlySet<SessionTaskStatus>>(readHidden);
   const [title, setTitle] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -132,13 +147,14 @@ export function SessionTasksPanel({
   });
   const visibleTasks = tasks.filter((task) => !hidden.has(task.status));
   const hiddenCount = tasks.length - visibleTasks.length;
-  const toggleHidden = (status: SessionTaskStatus): void =>
-    setHidden((previous) => {
-      const next = new Set(previous);
-      if (next.has(status)) next.delete(status);
-      else next.add(status);
-      return next;
-    });
+  const toggleHidden = (status: SessionTaskStatus): void => {
+    const next = new Set(hidden);
+    if (next.has(status)) next.delete(status);
+    else next.add(status);
+    setHidden(next);
+    const failure = writeJson(HIDDEN_KEY, next.size ? [...next] : null);
+    if (failure) setSaveError(`Choix d’affichage non mémorisé : ${failure}`);
+  };
   return (
     <div className="session-tasks">
       <div className="session-tasks-toolbar">
