@@ -61,18 +61,41 @@
   gap: 3px 10px;
   font-size: 11px;
 }
-.session-task-counts span {
+.session-task-counts > span {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   color: var(--task-color);
 }
-.session-task-counts span::before {
+.session-task-counts > span[data-hidden] {
+  opacity: 0.5;
+}
+.session-task-counts > span::before {
   content: '';
   width: 5px;
   height: 5px;
   border-radius: 50%;
   background: var(--task-color);
+}
+.session-task-eye {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.session-task-eye:hover {
+  background: color-mix(in srgb, var(--task-color) 15%, transparent);
+}
+.session-task-eye:focus-visible {
+  outline: 1px solid var(--task-color);
+}
+.session-task-hidden {
+  margin: 4px 0 0;
+  font-size: 11px;
 }
 .session-tasks-tools {
   display: flex;

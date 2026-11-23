@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, apiParsed, apiPath } from './api.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
-import { errorMessage, plural, SESSION_TASK_STATUS_LABEL } from './format.ts';
+import { errorMessage, plural, pluralize, SESSION_TASK_STATUS_LABEL } from './format.ts';
 import { usePolling } from './polling.tsx';
 import './session-tasks.css';
 import { parseSessionTasks, type SessionTask, type SessionTaskStatus } from '../../shared/backlog.ts';
@@ -95,6 +95,7 @@ export function SessionTasksPanel({
   const [editing, setEditing] = useState<SessionTask | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [hidden, setHidden] = useState<ReadonlySet<SessionTaskStatus>>(new Set());
   const [title, setTitle] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -129,17 +130,59 @@ export function SessionTasksPanel({
     const label = SESSION_TASK_STATUS_LABEL[status].toLowerCase();
     return plural(count, label, INVARIABLE.includes(status) ? label : undefined);
   });
+  const visibleTasks = tasks.filter((task) => !hidden.has(task.status));
+  const hiddenCount = tasks.length - visibleTasks.length;
+  const toggleHidden = (status: SessionTaskStatus): void =>
+    setHidden((previous) => {
+      const next = new Set(previous);
+      if (next.has(status)) next.delete(status);
+      else next.add(status);
+      return next;
+    });
   return (
     <div className="session-tasks">
       <div className="session-tasks-toolbar">
         <h2>Sous-tâches</h2>
         {loaded ? (
           <span className="session-task-counts">
-            {counts.map(({ status }, index) => (
-              <span key={status} data-state={status}>
-                {summary[index]}
-              </span>
-            ))}
+            {counts.map(({ status }, index) => {
+              const isHidden = hidden.has(status);
+              const singular = SESSION_TASK_STATUS_LABEL[status].toLowerCase();
+              const label = pluralize(2, singular, INVARIABLE.includes(status) ? singular : undefined);
+              return (
+                <span key={status} data-state={status} data-hidden={isHidden || undefined}>
+                  {summary[index]}
+                  <button
+                    type="button"
+                    className="session-task-eye"
+                    aria-pressed={!isHidden}
+                    aria-label={`${isHidden ? 'Afficher' : 'Masquer'} les sous-tâches ${label}`}
+                    title={isHidden ? 'Afficher' : 'Masquer'}
+                    onClick={() => toggleHidden(status)}
+                  >
+                    <svg
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.7"
+                      strokeLinecap="round"
+                      aria-hidden="true"
+                    >
+                      {isHidden ? (
+                        <path d="M3 3l18 18M10.6 5.1A10 10 0 0 1 12 5c6 0 10 7 10 7a17 17 0 0 1-3.2 3.9M6.6 6.6A17 17 0 0 0 2 12s4 7 10 7a10 10 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+                      ) : (
+                        <>
+                          <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z" />
+                          <circle cx="12" cy="12" r="3" />
+                        </>
+                      )}
+                    </svg>
+                  </button>
+                </span>
+              );
+            })}
           </span>
         ) : null}
         <div className="session-tasks-tools">
@@ -250,8 +293,11 @@ export function SessionTasksPanel({
           </div>
         </form>
       ) : null}
+      {hiddenCount > 0 ? (
+        <p className="hint session-task-hidden">{plural(hiddenCount, 'sous-tâche masquée', 'sous-tâches masquées')}</p>
+      ) : null}
       <ol className="session-task-list">
-        {tasks.map((task) => (
+        {visibleTasks.map((task) => (
           <li key={task.id} className={`session-task ${task.status}`} data-state={task.status}>
             <div className="session-task-heading">
               <select
