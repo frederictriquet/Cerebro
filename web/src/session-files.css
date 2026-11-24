@@ -1,0 +1,202 @@
+/* « Fichiers » panel, left of the session terminal. [SPEC: Interface › Vue session desktop, panneau « Fichiers »] */
+.session-files {
+  position: relative;
+  flex: 0 0 40%;
+  min-width: 240px;
+  max-width: 70%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.session-files-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.session-files-search {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-files-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.session-files-path:hover {
+  border-color: var(--line);
+  background: var(--bg-2);
+}
+
+.session-files-list,
+.session-files-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.session-files-list {
+  padding: 4px 0;
+}
+
+.session-files-list .form-error,
+.session-files-list .empty-hint,
+.session-files-view .form-error,
+.session-files-view .empty-hint {
+  margin: 8px 12px;
+}
+
+.session-files-list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-files-list li button {
+  display: block;
+  width: 100%;
+  padding: 3px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.session-files-list li button:hover,
+.session-files-list li button:focus-visible {
+  outline: none;
+  background: var(--bg-hover);
+}
+
+.session-files-list li button.active {
+  color: var(--accent);
+}
+
+.file-lines {
+  padding: 8px 12px 8px 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* The number comes from ::before so that it never enters the selected text. */
+.file-line {
+  position: relative;
+  min-height: 1.55em;
+  padding-left: 6ch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.file-line::before {
+  content: attr(data-line);
+  position: absolute;
+  left: 0;
+  width: 4.5ch;
+  color: var(--muted);
+  text-align: right;
+  user-select: none;
+  opacity: 0.7;
+}
+
+/* Positioned against the panel, not the scrolling view: it stays visible while the file scrolls. */
+.session-files-quote {
+  top: 56px;
+  right: 20px;
+}
+
+.session-files-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  z-index: 6;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.session-files-resizer:hover,
+.session-files-resizer:focus-visible,
+.session-files-resizer.dragging {
+  outline: none;
+  background: linear-gradient(to right, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px);
+}
+
+body.session-files-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.session-files-resizing .term-wrap {
+  pointer-events: none;
+}
+
+@media (max-width: 800px) {
+  .session-files,
+  .session-files-toggle {
+    display: none;
+  }
+}
+
+/* Rendered Markdown: every block carries its source line (`data-line`), shown in the same gutter. */
+.file-rendered {
+  position: relative;
+  padding: 8px 12px 8px 6ch;
+}
+
+.file-rendered [data-line]::before {
+  content: attr(data-line);
+  position: absolute;
+  left: 0;
+  width: 4.5ch;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: normal;
+  text-align: right;
+  user-select: none;
+  opacity: 0.7;
+}
+
+/* A code block numbers its lines and a table its block: the fence and the rows stay unnumbered. */
+.file-rendered pre::before,
+.file-rendered tr::before {
+  content: none;
+}
+
+.file-markdown h1 {
+  font-size: 18px;
+}
+
+.file-markdown h2 {
+  font-size: 16px;
+}
+
+.file-markdown h1,
+.file-markdown h2 {
+  margin: 1rem 0 8px;
+}

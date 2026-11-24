@@ -1039,3 +1039,37 @@
 .m-request-actions:empty {
   display: none;
 }
+
+/* « Fichiers » tab: the bar stays on top, the list or the file scrolls, « Citer » sits at the bottom of the tab.
+   [SPEC: vue mobile, écran de session] */
+.m-files {
+  display: flex;
+  flex-direction: column;
+}
+
+.m-files .session-files-bar {
+  padding: 8px 0;
+}
+
+.m-files .session-files-search,
+.m-files .session-files-path,
+.m-files .btn {
+  min-height: 36px;
+  font-size: 14px;
+}
+
+.m-files .session-files-list,
+.m-files .session-files-view {
+  overscroll-behavior: contain;
+}
+
+.m-files .session-files-list li button {
+  padding: 9px 12px;
+  font-size: 13px;
+}
+
+.m-files .session-files-quote {
+  top: auto;
+  bottom: 12px;
+  right: 0;
+}

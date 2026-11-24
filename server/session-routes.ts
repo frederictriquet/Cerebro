@@ -4,7 +4,8 @@ import { basename, join } from 'node:path';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ATTACHMENTS_DIR } from './config.ts';
 import { importFindings, listReports } from './findings.ts';
-import { sessionProvenance } from './provenance.ts';
+import { sessionProvenance, workspaceFor } from './provenance.ts';
+import { listSessionFiles, readSessionFile, SessionFileError } from './session-files.ts';
 import { sessionGitContext } from './session-git.ts';
 import { startingResolutionPrompt } from './starting-resolution.ts';
 import { conflictResolutionPrompt } from './conflict-resolution.ts';
@@ -21,7 +22,7 @@ import {
   transcriptContext,
 } from './transcripts.ts';
 import { WorktreeError } from './worktrees.ts';
-import { normalizeMode } from '../shared/types.ts';
+import { normalizeMode, type Session } from '../shared/types.ts';
 import { asRecord, errorMessage } from './util.ts';
 import { error, routeErrors, statusCodeOf } from './routes-util.ts';
 import { badRequest, orError, sendSocket, type RouteContext } from './route-context.ts';
@@ -48,6 +49,7 @@ const MAX_INLINE_COUNCIL_REPORT_BYTES = 100 * 1024;
 const COUNCIL_CONTEXT_FROM_SESSION = MAX_CONTEXT_LENGTH - 10_000;
 
 const worktreeConflict = routeErrors(statusCodeOf(WorktreeError, 409));
+const sessionFiles = routeErrors(statusCodeOf(SessionFileError, 500));
 
 // Saves a pasted image under DATA_DIR/attachments/<owner>/ and returns its absolute path,
 // which the agent can read (Claude/Codex turn an image path in the prompt into an attachment).
@@ -136,6 +138,33 @@ export function registerSessionRoutes(ctx: RouteContext): void {
     if (session === null) return reply;
     return readSessionRequests(session);
   });
+
+  // Working folder of a session: its isolated copy, else the project folder; never the project folder
+  // in place of a removed copy, which would show another branch's files. [SPEC: fichiers du dossier de travail]
+  const sessionFolder = (session: Session): string => {
+    const workspace = workspaceFor(db, session.id);
+    if (workspace?.removedAt) throw new SessionFileError('La copie de travail de cette session a été supprimée.', 409);
+    const project = db.getProject(session.projectId);
+    if (project === null) throw new SessionFileError('Projet de la session introuvable.', 404);
+    return workspace?.path ?? project.path;
+  };
+  app.get<{ Params: { id: string } }>('/api/sessions/:id/files', async (request, reply) => {
+    const session = requireSession(request, reply);
+    if (session === null) return reply;
+    return sessionFiles.attempt(reply, () => listSessionFiles(sessionFolder(session)));
+  });
+  app.get<{ Params: { id: string }; Querystring: { path?: string; known?: string } }>(
+    '/api/sessions/:id/file',
+    async (request, reply) => {
+      const session = requireSession(request, reply);
+      if (session === null) return reply;
+      const { path, known } = request.query;
+      if (typeof path !== 'string' || path === '') return error(reply, 400, 'Paramètre path attendu.');
+      return sessionFiles.attempt(reply, () =>
+        readSessionFile(sessionFolder(session), path, typeof known === 'string' ? known : undefined),
+      );
+    },
+  );
 
   // Nom à donner à `SendMessage` pour écrire à cette session depuis une autre session Claude.
   app.get<{ Params: { id: string } }>('/api/sessions/:id/peer-name', async (request, reply) => {

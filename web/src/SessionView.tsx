@@ -1,4 +1,6 @@
-import { ResizeIcon } from './SessionIcons.tsx';
+import { FilesIcon, ResizeIcon } from './SessionIcons.tsx';
+import { SessionFilesPanel } from './SessionFiles.tsx';
+import { appendToMessage } from './session-files.ts';
 import { ClaimTaskButton, SessionBacklogPanel, useSessionBacklogTasks } from './ClaimControls.tsx';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useLatest } from './use-latest.ts';
@@ -28,6 +30,7 @@ import { go, href, parseHash, replaceRoute } from './route.ts';
 import { sessionIsWatched } from './notify.ts';
 import { useNow, usePolling } from './polling.tsx';
 import { StatusDot } from './StatusDot.tsx';
+import { useStoredFlag } from './storage.ts';
 import { SessionTasksPanel, useSessionTasks, sessionTasksState } from './SessionTasks.tsx';
 import { useStore } from './store.tsx';
 import { ErrorBoundary } from './ErrorBoundary.tsx';
@@ -269,10 +272,15 @@ function QuickReply({
   sessionId,
   disabled,
   send,
+  insert,
+  onInserted,
 }: {
   sessionId: string;
   disabled: boolean;
   send: (data: string) => boolean;
+  // Text appended by the « Fichiers » panel, consumed at once: `onInserted` clears it.
+  insert: string | null;
+  onInserted: () => void;
 }) {
   const [text, setText] = useState('');
   const [note, setNote] = useState<string | null>(null);
@@ -281,6 +289,20 @@ function QuickReply({
   const fileRef = useRef<HTMLInputElement>(null);
   const mounted = useRef(true);
   const disabledRef = useLatest(disabled);
+
+  // [SPEC: Interface › Vue session desktop, panneau « Fichiers »] quote appended, caret at the end for the request.
+  useEffect(() => {
+    if (insert === null) return;
+    setText((current) => appendToMessage(current, insert));
+    setNote(null);
+    onInserted();
+    requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  }, [insert, onInserted]);
 
   useEffect(() => {
     mounted.current = true;
@@ -402,6 +424,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     return api.sendInput(data);
   }, []);
   const [hasSelection, setHasSelection] = useState(false);
+  const [filesOpen, setFilesOpen] = useStoredFlag('cerebro.sessionFilesOpen', false);
+  const [quoteInsert, setQuoteInsert] = useState<string | null>(null);
+  const clearQuoteInsert = useCallback(() => setQuoteInsert(null), []);
   // Texte capturé au clic : la sélection xterm peut changer pendant que la modale est ouverte.
   const [selectionAction, setSelectionAction] = useState<{ kind: 'session' | 'task'; text: string } | null>(null);
   const openSelection = (kind: 'session' | 'task'): void => {
@@ -554,6 +579,16 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           </p>
         </div>
         <div className="session-toggles">
+          <button
+            type="button"
+            className={`icon-btn session-files-toggle${filesOpen ? ' active' : ''}`}
+            aria-pressed={filesOpen}
+            aria-label="Fichiers"
+            title="Fichiers : lire les fichiers du dossier de la session à côté du terminal"
+            onClick={() => setFilesOpen(!filesOpen)}
+          >
+            <FilesIcon />
+          </button>
           <SessionPeerName key={session.id} session={session} onError={setError} />
           <SessionCouncilButton session={session} onError={setError} />
           <SessionGitActions sessionId={session.id} part="review" />
@@ -642,6 +677,11 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       ) : null}
       {/* Findings à droite du terminal : il garde sa hauteur ; le panneau se replie en languette. */}
       <div className="session-body">
+        {filesOpen ? (
+          <ErrorBoundary zone="Fichiers" resetKey={session.id}>
+            <SessionFilesPanel key={session.id} sessionId={session.id} live={live} onCite={setQuoteInsert} />
+          </ErrorBoundary>
+        ) : null}
         <div className="term-wrap">
           <Term
             key={`${session.id}:${live ? 'live' : 'exited'}`}
@@ -720,7 +760,14 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           onClose={() => setSelectionAction(null)}
         />
       ) : null}
-      <QuickReply key={session.id} sessionId={session.id} disabled={!live} send={send} />
+      <QuickReply
+        key={session.id}
+        sessionId={session.id}
+        disabled={!live}
+        send={send}
+        insert={quoteInsert}
+        onInserted={clearQuoteInsert}
+      />
     </div>
   );
 }

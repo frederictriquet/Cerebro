@@ -18,6 +18,8 @@ import { StatusDot } from '../StatusDot.tsx';
 import { useStore } from '../store.tsx';
 import { Markdown } from '../Markdown.tsx';
 import { useLatest } from '../use-latest.ts';
+import { SessionFilesBrowser } from '../SessionFiles.tsx';
+import { appendToMessage } from '../session-files.ts';
 import { parseScreenLines, type Session } from '../../../shared/types.ts';
 import { quickKeyGroups, type QuickKey } from './keys.ts';
 import { SessionCommit } from './MobileGit.tsx';
@@ -38,7 +40,7 @@ const PROBE_TEXT = '0123456789';
 const MIN_COLS = 20;
 const MIN_ROWS = 5;
 
-type SessionTab = 'reply' | 'terminal' | 'requests';
+type SessionTab = 'reply' | 'terminal' | 'requests' | 'files';
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -206,15 +208,23 @@ function SessionDetail({ session }: { session: Session }) {
   // Each instruction sent from here reloads « Demandes »; a status change covers the other sources.
   const [sentCount, setSentCount] = useState(0);
 
-  // [SPEC: vue mobile, écran de session] Added after a draft in progress, never in place of it.
-  const reuse = (request: string): void => {
-    setDraft((current) => (current.trim() === '' ? request : `${current.trimEnd()}\n\n${request}`));
+  const focusDraftEnd = (): void => {
     window.setTimeout(() => {
       const field = fieldRef.current;
       if (field === null) return;
       field.focus();
       field.setSelectionRange(field.value.length, field.value.length);
     }, 0);
+  };
+  // [SPEC: vue mobile, écran de session] Added after a draft in progress, never in place of it.
+  const reuse = (request: string): void => {
+    setDraft((current) => (current.trim() === '' ? request : `${current.trimEnd()}\n\n${request}`));
+    focusDraftEnd();
+  };
+  // [SPEC: vue mobile, écran de session] « Fichiers »: the quote follows the draft after one space, as on desktop.
+  const cite = (quote: string): void => {
+    setDraft((current) => appendToMessage(current, quote));
+    focusDraftEnd();
   };
 
   useEffect(() => {
@@ -451,6 +461,21 @@ function SessionDetail({ session }: { session: Session }) {
         />
       ),
     },
+    {
+      id: 'files',
+      label: 'Fichiers',
+      className: 'm-files',
+      content: (
+        <SessionFilesBrowser
+          sessionId={id}
+          live={!exited}
+          active={tab === 'files'}
+          focusSearch={false}
+          onCite={cite}
+          citeLabel="Citer dans la consigne"
+        />
+      ),
+    },
   ];
 
   return (
@@ -494,7 +519,8 @@ function SessionDetail({ session }: { session: Session }) {
 
 /**
  * Écran d'une session : état, onglets « Réponse » (question, autorisation ou dernier message, commit / push, arrêt),
- * « Terminal » (écran et touches) et « Demandes » (messages envoyés à l'agent), consigne fixée en bas.
+ * « Terminal » (écran et touches), « Demandes » (messages envoyés à l'agent) et « Fichiers » (dossier de la session),
+ * consigne fixée en bas.
  * [SPEC: vue mobile, écran de session]
  */
 export function SessionScreen({ sessionId }: { sessionId: string }) {
