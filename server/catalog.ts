@@ -13,6 +13,11 @@ import { errorMessage, isRecord } from './util.ts';
 const execFileAsync = promisify(execFile);
 const DISCOVERY_TIMEOUT_MS = 20_000;
 const REFRESH_MS = 60 * 60 * 1000;
+// A model listed by an earlier successful discovery stays offered while later ones omit it (a CLI sometimes drops a
+// model from one answer). It is removed once absent from this many consecutive successful discoveries: 3 hours with
+// the hourly refresh, sooner when `GET /api/agents?refresh=1` triggers extra discoveries. A failed discovery counts
+// for nothing, a model listed again resets its count.
+const MISSES_BEFORE_REMOVAL = 3;
 
 // Choix proposés à la création d'une session. `efforts` : ceux du modèle par défaut de l'agent.
 export interface AgentCatalog {
@@ -213,7 +218,9 @@ async function discoverCodex(): Promise<AgentCatalog> {
   return { models, efforts: fallbackDefault.efforts, defaultModel: fallbackDefault.value };
 }
 
-const DISCOVERERS: Partial<Record<Agent, () => Promise<AgentCatalog>>> = {
+type Discoverers = Partial<Record<Agent, () => Promise<AgentCatalog>>>;
+
+const DISCOVERERS: Discoverers = {
   claude: discoverClaude,
   codex: discoverCodex,
   grok: discoverGrok,
@@ -233,10 +240,36 @@ export class Catalog {
   // Découverte lancée au moins une fois (démarrage du serveur) ; agents dont le catalogue réel est connu.
   private refreshed = false;
   private readonly discovered = new Set<Agent>();
+  // Per agent: consecutive successful discoveries that omitted each kept model (see MISSES_BEFORE_REMOVAL).
+  private readonly misses = new Map<Agent, Map<string, number>>();
+  private readonly discoverers: Discoverers;
 
-  /** `known`: lists replacing the fallback of some agents, as a discovery would. */
-  constructor(known: Partial<Record<Agent, AgentCatalog>> = {}) {
+  /**
+   * `known`: lists replacing the fallback of some agents, as a discovery would.
+   * `discoverers`: discovery per agent, the installed CLIs by default (replaced in tests).
+   */
+  constructor(known: Partial<Record<Agent, AgentCatalog>> = {}, discoverers: Discoverers = DISCOVERERS) {
     this.catalogs = { ...FALLBACK, ...known };
+    this.discoverers = discoverers;
+  }
+
+  // New answer first in CLI order, then the previously discovered models it omits, until MISSES_BEFORE_REMOVAL.
+  // The fallback and `known` lists are not discoveries: nothing of them is kept.
+  private merge(agent: Agent, next: AgentCatalog): AgentCatalog {
+    const counts = this.misses.get(agent) ?? new Map<string, number>();
+    const previous = this.discovered.has(agent) ? this.catalogs[agent].models : [];
+    const listed = new Set(next.models.map((m) => m.value));
+    const kept: ModelChoice[] = [];
+    const nextCounts = new Map<string, number>();
+    for (const model of previous) {
+      if (listed.has(model.value)) continue;
+      const count = (counts.get(model.value) ?? 0) + 1;
+      if (count >= MISSES_BEFORE_REMOVAL) continue;
+      kept.push(model);
+      nextCounts.set(model.value, count);
+    }
+    this.misses.set(agent, nextCounts);
+    return { ...next, models: [...next.models, ...kept] };
   }
 
   refresh(): Promise<void> {
@@ -246,12 +279,12 @@ export class Catalog {
     this.pending ??= getAgentAvailability(true)
       .then((availability) =>
         Promise.all(
-          Object.entries(DISCOVERERS)
+          Object.entries(this.discoverers)
             .filter(([agent]) => availability.some((a) => a.agent === agent && a.available))
             .map(([agent, discover]) =>
               discover()
                 .then((catalog) => {
-                  this.catalogs[agent as Agent] = catalog;
+                  this.catalogs[agent as Agent] = this.merge(agent as Agent, catalog);
                   this.discovered.add(agent as Agent);
                 })
                 .catch((error: unknown) => {
