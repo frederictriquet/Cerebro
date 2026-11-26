@@ -324,8 +324,9 @@ export class SlackWatcher {
 
   /**
    * Types the session's pending messages as one prompt; while the session runs, the agent queues it for after its
-   * turn. A dialog waiting for an answer is never dismissed for them: they wait for it to close. Once the session
-   * has ended, or if typing fails, they go through the ended delivery instead.
+   * turn. A dialog waiting for an answer is never dismissed for them: they wait for it to close. A prompt being
+   * typed by the user is never mixed with them either: they wait for it to be sent. Once the session has ended, or
+   * if typing fails, they go through the ended delivery instead.
    */
   private async flush(sessionId: string): Promise<void> {
     const queue = this.pending.get(sessionId);
@@ -338,7 +339,8 @@ export class SlackWatcher {
       this.pending.delete(sessionId);
       return;
     }
-    if (status === 'starting' || status === 'waiting') return;
+    if (status === 'starting' || status === 'waiting' || (status !== 'exited' && this.sessions.hasDraft(sessionId)))
+      return;
     this.pending.delete(sessionId);
     if (
       status !== 'exited' &&

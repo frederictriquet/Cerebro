@@ -257,6 +257,43 @@ test('une session en attente reçoit les messages à la fermeture du dialogue, u
   assert.match(posts()[0].body.text, /trop tard/);
 });
 
+test('une saisie en cours de l’utilisateur retarde l’injection jusqu’à son envoi', async () => {
+  watch('live');
+  threads.set(`C1:${ROOT}`, [{ ts: ts(1), text: 'pendant la frappe', user: 'UALICE' }]);
+  for (const status of ['idle', 'running']) {
+    db.updateSession('live', { status });
+    manager.writeUserInput('live', 'mon prompt');
+    typed.length = 0;
+    watcher.polledAt.clear();
+    await watcher.poll();
+    assert.deepEqual(typed, [], `brouillon non mélangé à l’injection (${status})`);
+    manager.writeUserInput('live', ' en cours\r');
+    typed.length = 0;
+    await watcher.poll();
+    assert.match(typed[0]?.data ?? '', /pendant la frappe/, `injection après l’envoi du prompt (${status})`);
+    threads.get(`C1:${ROOT}`).push({ ts: ts(2), text: 'pendant la frappe', user: 'UALICE' });
+  }
+});
+
+test('brouillon : paste, séquences d’échappement, Ctrl+C et abandon', async () => {
+  const { draftChange, DRAFT_IDLE_MS } = await import('../server/sessions.ts');
+  assert.equal(draftChange('\x1b[200~ligne 1\rligne 2\x1b[201~'), 'draft', 'Entrée collée ≠ envoi');
+  assert.equal(draftChange('\x1b[I'), 'none', 'rapport de focus');
+  assert.equal(draftChange('\x1b[A'), 'none', 'flèche');
+  assert.equal(draftChange('\x7f'), 'edit');
+  assert.equal(draftChange('\x1b]11;rgb:1e1e/1e1e/1e1e\x07'), 'none', 'réponse OSC du terminal');
+  assert.equal(draftChange('\x1bP>|xterm.js(5.5.0)\x1b\\'), 'none', 'réponse DCS du terminal');
+  assert.equal(draftChange('\x1b\r'), 'none', 'Alt+Entrée : nouvelle ligne, pas un envoi');
+  assert.equal(draftChange('texte\x03'), 'submit', 'Ctrl+C vide la saisie');
+  assert.equal(draftChange('\rsuite'), 'draft');
+  manager.writeUserInput('live', 'a');
+  assert.ok(manager.hasDraft('live'));
+  manager.draftAt.set('live', Date.now() - DRAFT_IDLE_MS);
+  assert.equal(manager.hasDraft('live'), false, 'brouillon abandonné');
+  manager.writeUserInput('live', '\x7f');
+  assert.equal(manager.hasDraft('live'), false, 'Retour arrière sans brouillon');
+});
+
 test('budget de lecture du jeton user et intervalle par surveillance respectés', async () => {
   await settings({ watchIntervalSec: 60 });
   const all = Array.from({ length: WATCH_CALLS_PER_MINUTE + 10 }, (_, i) => watch('live', { channel: `C${i}` }));

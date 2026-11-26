@@ -401,7 +401,9 @@ section « Fils surveillés » :
 Au moins un mode reste coché pour une session active. Pour une session
 terminée, aucun mode coché signifie que les messages sont ignorés. Si la session
 attend une réponse à une question ou à une confirmation, l'injection attend la
-fermeture du dialogue au lieu de l'interrompre. Si la session se termine
+fermeture du dialogue au lieu de l'interrompre. De même, si un prompt est en
+cours de saisie dans le terminal, l'injection attend son envoi (Entrée ou
+Ctrl+C) ; un brouillon resté 60 s sans frappe ne la retient plus. Si la session se termine
 entre-temps, ou si la saisie échoue, le message suit la remise prévue pour les
 sessions terminées. Une surveillance survit à la fin de sa session : aucune
 réponse tardive n'est perdue jusqu'à son expiration. Les modes DM et

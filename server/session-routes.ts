@@ -415,7 +415,7 @@ export function registerSessionRoutes(ctx: RouteContext): void {
     if (session === null) return reply;
     const body = asRecord(request.body);
     if (body === null || typeof body.data !== 'string') return error(reply, 400, 'Le champ data est requis');
-    if (session.status === 'exited' || !sessions.writeInput(session.id, body.data)) {
+    if (session.status === 'exited' || !sessions.writeUserInput(session.id, body.data)) {
       return error(reply, 409, "La session n'est pas active");
     }
     return reply.code(204).send();
@@ -555,7 +555,7 @@ export function registerSessionRoutes(ctx: RouteContext): void {
         const message: unknown = JSON.parse(raw.toString());
         const record = asRecord(message);
         if (record?.type === 'input' && typeof record.data === 'string') {
-          sessions.writeInput(id, record.data);
+          sessions.writeUserInput(id, record.data);
         } else if (record?.type === 'resize' && typeof record.cols === 'number' && typeof record.rows === 'number') {
           sessions.resize(id, record.cols, record.rows, record.force === true);
         }

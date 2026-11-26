@@ -119,6 +119,26 @@ interface Runtime {
 }
 
 const IDLE_DELAY_MS = 20_000;
+/** A draft left untouched this long no longer holds back automatic input (a typed then erased line). */
+export const DRAFT_IDLE_MS = 60_000;
+const BRACKETED_PASTE = /\x1b\[200~[\s\S]*?\x1b\[201~/g;
+// Terminal replies (OSC colors, DCS version), CSI and SS3 sequences (arrows, focus reports, mouse events) and
+// Alt+key, Alt+Enter included (a new line in the composer). None of them types or sends text.
+const ESCAPE_SEQUENCE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[\s\S]*?\x1b\\|\x1b(?:\[[0-?]*[ -/]*[@-~]|O.|[\s\S])?/g;
+
+/**
+ * How a human keystroke chunk changes the composer draft: 'submit' when it ends with Enter or Ctrl+C (which
+ * clears Claude Code's input), 'draft' when text follows, 'edit' for control keys only (Backspace...).
+ * Enter inside a bracketed paste is pasted text, not a submission.
+ */
+export function draftChange(data: string): 'submit' | 'draft' | 'edit' | 'none' {
+  const plain = data.replace(BRACKETED_PASTE, 'p').replace(ESCAPE_SEQUENCE, '');
+  if (plain === '') return 'none';
+  const cut = Math.max(plain.lastIndexOf('\r'), plain.lastIndexOf('\x03'));
+  const tail = plain.slice(cut + 1);
+  if ([...tail].some((char) => char >= ' ' && char !== '\x7f')) return 'draft';
+  return cut >= 0 ? 'submit' : 'edit';
+}
 /** Reason of the fallback idle state: the screen went quiet, nothing reported an end of turn. */
 export const HEURISTIC_IDLE_REASON = 'Inactif (heuristique)';
 /**
@@ -244,6 +264,8 @@ export class SessionManager {
   private readonly permissionRequests = new Map<string, { tool: string | null; summary: string | null }>();
   /** Free-text question sent by the agent (`cerebro-notify --ask`), unanswered yet. */
   private readonly askedQuestions = new Map<string, string>();
+  /** Last human keystroke of an unsent draft, per session (see writeUserInput). */
+  private readonly draftAt = new Map<string, number>();
   private readonly eventListeners = new Set<(event: SessionEvent) => void>();
   private shuttingDown = false;
   /** The session's process really stopped, or the session was deleted: its isolated copy may now be unused. */
@@ -1070,6 +1092,26 @@ export class SessionManager {
     if (changed === null) return null;
     for (const session of changed) this.emit({ type: 'session', session });
     return changed.at(-1) ?? null;
+  }
+
+  /**
+   * Keystrokes of a person (web terminal, mobile keys), as opposed to text Cerebro types itself: they are
+   * tracked so that automatic input does not land in, and submit, a prompt being written.
+   */
+  writeUserInput(id: string, data: string): boolean {
+    const change = draftChange(data);
+    if (change === 'submit') this.draftAt.delete(id);
+    else if (change === 'draft' || (change === 'edit' && this.draftAt.has(id))) this.draftAt.set(id, Date.now());
+    return this.writeInput(id, data);
+  }
+
+  /** A person is writing a prompt in the session: typed text not yet sent, last touched under DRAFT_IDLE_MS ago. */
+  hasDraft(id: string): boolean {
+    const at = this.draftAt.get(id);
+    if (at === undefined) return false;
+    if (Date.now() - at < DRAFT_IDLE_MS) return true;
+    this.draftAt.delete(id);
+    return false;
   }
 
   writeInput(id: string, data: string): boolean {
