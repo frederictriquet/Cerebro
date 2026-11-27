@@ -4160,6 +4160,24 @@ a.btn:hover {
   font-size: 11px;
 }
 
+/* Dans le panneau de la vue session : le panneau porte déjà fond, bordure et défilement. */
+.slack-watches.compact.in-drawer {
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.session-drawer .slack-watches .slack-toggle {
+  align-items: center;
+  margin-top: 0;
+}
+
+.session-drawer .slack-watches .slack-toggle input {
+  margin: 0;
+}
+
 .peer-conflict {
   margin: 8px 0 0;
   padding: 8px 10px;

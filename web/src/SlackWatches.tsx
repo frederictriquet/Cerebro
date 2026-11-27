@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type FormEvent } from 'react';
+import { useEffect, useId, useState, type Dispatch, type FormEvent, type SetStateAction } from 'react';
 import { addSlackWatch, getSlackWatches, removeSlackWatch, setSlackWatchDelivery, setSlackWatchLabel } from './api.ts';
 import { useAsyncAction } from './async-action.ts';
 import { DelayedActionButton } from './DelayedActionButton.tsx';
@@ -147,24 +147,78 @@ function AddSlackWatchForm({
   );
 }
 
-/**
- * Fils et canaux Slack surveillés pour `sessions` (cerebro-slack-watch, surveillance après un post), relus à chaque
- * changement diffusé par le serveur. Un fil s'ajoute aussi par son lien Slack. Rien n'est affiché sans jeton
- * utilisateur, ni sans surveillance ou session en cours.
- */
-export function SlackWatches({ sessions, showSession }: { sessions: Session[]; showSession: boolean }) {
-  const { slackWatchesVersion, connected, projects } = useStore();
-  const now = useNow();
+export interface SlackWatchState {
+  list: SlackWatchList | null;
+  setList: Dispatch<SetStateAction<SlackWatchList | null>>;
+  error: string | null;
+  setError: (error: string | null) => void;
+}
+
+/** Surveillances Slack de la machine, relues à chaque changement diffusé par le serveur et à chaque reconnexion. */
+export function useSlackWatchList(): SlackWatchState {
+  const { slackWatchesVersion, connected } = useStore();
   const [list, setList] = useState<SlackWatchList | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Une reconnexion peut avoir manqué des diffusions : la liste est aussi relue à ce moment.
+  useEffect(() => {
+    let cancelled = false;
+    void getSlackWatches()
+      .then((value) => {
+        if (cancelled) return;
+        setList(value);
+        setError(null);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(errorMessage(err, 'Surveillances Slack indisponibles'));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slackWatchesVersion, connected]);
+  return { list, setList, error, setError };
+}
+
+/**
+ * Surveillances de `sessions` et sessions en cours qui peuvent en recevoir (jeton utilisateur présent). `visible` :
+ * le panneau a quelque chose à montrer (une surveillance, une session où en ajouter une, ou une erreur).
+ */
+export function slackWatchSummary(
+  { list, error }: SlackWatchState,
+  sessions: Session[],
+): { shown: SlackWatchInfo[]; running: Session[]; visible: boolean } {
+  const ids = new Set(sessions.map((session) => session.id));
+  const shown = (list?.watches ?? []).filter((watch) => ids.has(watch.sessionId));
+  const running = list?.enabled ? sessions.filter((session) => session.status !== 'exited') : [];
+  return { shown, running, visible: shown.length > 0 || running.length > 0 || error !== null };
+}
+
+/**
+ * Fils et canaux Slack surveillés pour `sessions` (cerebro-slack-watch, surveillance après un post). Un fil s'ajoute
+ * aussi par son lien Slack. Rien n'est affiché sans jeton utilisateur, ni sans surveillance ou session en cours.
+ * `inDrawer` : affiché dans le panneau de la vue session, ouvert par sa pastille ; il ne se replie donc pas.
+ */
+export function SlackWatchesPanel({
+  state,
+  sessions,
+  showSession,
+  inDrawer = false,
+}: {
+  state: SlackWatchState;
+  sessions: Session[];
+  showSession: boolean;
+  inDrawer?: boolean;
+}) {
+  const { projects } = useStore();
+  const now = useNow();
+  const { list, setList, error, setError } = state;
   // Repli mémorisé par ce navigateur, séparément pour la vue projet et la vue session.
-  const [collapsed, setCollapsed] = useStoredFlag(
+  const [storedCollapsed, setCollapsed] = useStoredFlag(
     `cerebro.slackWatchesCollapsed.${showSession ? 'project' : 'session'}`,
     false,
   );
+  const collapsed = !inDrawer && storedCollapsed;
   const listId = useId();
   const [adding, setAdding] = useState(false);
-  const watches = list?.watches ?? [];
   const setWatches = (update: (watches: SlackWatchInfo[]) => SlackWatchInfo[]) =>
     setList((current) => (current === null ? current : { ...current, watches: update(current.watches) }));
   // Retirée aussitôt de la liste : la diffusion du serveur peut manquer pendant une reconnexion.
@@ -214,27 +268,9 @@ export function SlackWatches({ sessions, showSession }: { sessions: Session[]; s
     },
   );
 
-  // Une reconnexion peut avoir manqué des diffusions : la liste est aussi relue à ce moment.
-  useEffect(() => {
-    let cancelled = false;
-    void getSlackWatches()
-      .then((value) => {
-        if (cancelled) return;
-        setList(value);
-        setError(null);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(errorMessage(err, 'Surveillances Slack indisponibles'));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [slackWatchesVersion, connected]);
-
   const byId = new Map(sessions.map((session) => [session.id, session]));
-  const shown = watches.filter((watch) => byId.has(watch.sessionId));
-  const running = list?.enabled ? sessions.filter((session) => session.status !== 'exited') : [];
-  if (shown.length === 0 && running.length === 0 && error === null) return null;
+  const { shown, running, visible } = slackWatchSummary(state, sessions);
+  if (!visible) return null;
   // Relue sans attendre la diffusion du serveur, qui peut manquer pendant une reconnexion.
   const reload = async (): Promise<void> => {
     setList(await getSlackWatches());
@@ -242,21 +278,30 @@ export function SlackWatches({ sessions, showSession }: { sessions: Session[]; s
   };
 
   return (
-    <section className={`card slack-watches${showSession ? '' : ' compact'}`} aria-label="Fils Slack surveillés">
+    <section
+      className={`card slack-watches${showSession ? '' : ' compact'}${inDrawer ? ' in-drawer' : ''}`}
+      aria-label="Fils Slack surveillés"
+    >
       <h2>
-        <button
-          type="button"
-          className="slack-watches-toggle"
-          aria-expanded={!collapsed}
-          aria-controls={listId}
-          title={collapsed ? 'Afficher les fils surveillés' : 'Replier les fils surveillés'}
-          onClick={() => setCollapsed(!collapsed)}
-        >
-          <span className="task-caret" aria-hidden="true">
-            {collapsed ? '▸' : '▾'}
+        {inDrawer ? (
+          <span>
+            Fils Slack surveillés <span className="pill">{shown.length}</span>
           </span>
-          Fils Slack surveillés <span className="pill">{shown.length}</span>
-        </button>
+        ) : (
+          <button
+            type="button"
+            className="slack-watches-toggle"
+            aria-expanded={!collapsed}
+            aria-controls={listId}
+            title={collapsed ? 'Afficher les fils surveillés' : 'Replier les fils surveillés'}
+            onClick={() => setCollapsed(!collapsed)}
+          >
+            <span className="task-caret" aria-hidden="true">
+              {collapsed ? '▸' : '▾'}
+            </span>
+            Fils Slack surveillés <span className="pill">{shown.length}</span>
+          </button>
+        )}
         {running.length > 0 && !adding ? (
           <button
             type="button"
@@ -378,4 +423,10 @@ export function SlackWatches({ sessions, showSession }: { sessions: Session[]; s
       </ul>
     </section>
   );
+}
+
+/** Panneau autonome (vue projet) : il charge lui-même les surveillances. */
+export function SlackWatches({ sessions, showSession }: { sessions: Session[]; showSession: boolean }) {
+  const state = useSlackWatchList();
+  return <SlackWatchesPanel state={state} sessions={sessions} showSession={showSession} />;
 }

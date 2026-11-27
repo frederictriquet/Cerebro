@@ -376,8 +376,9 @@ postés après l'ajout sont remis ; `--since <ts>` remet aussi ceux postés depu
 cet horodatage. `--label` ajoute un libellé aux messages remis, `--deliver`
 remplace les modes de remise de la session active pour cette surveillance.
 Cette remise propre se règle aussi dans la carte « Fils Slack surveillés »
-(cases Injecter, DM, Notification de chaque fil ; « Par défaut » revient aux
-réglages du panneau Slack).
+de la vue projet, ou dans le panneau qu'ouvre la pastille « Fils Slack » de
+l'en-tête d'une session (cases Injecter, DM, Notification de chaque fil ;
+« Par défaut » revient aux réglages du panneau Slack).
 Ajouter à nouveau une surveillance existante la renouvelle et met à jour son
 libellé et sa remise. `remove` accepte l'identifiant affiché par `list`, le
 `ts` du fil, le canal (pour un niveau principal) ou le permalien.

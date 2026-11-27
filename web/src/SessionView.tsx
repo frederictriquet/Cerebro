@@ -20,7 +20,7 @@ import {
 import { SessionGitActions } from './GitActions.tsx';
 import { SessionActions } from './SessionActions.tsx';
 import { SessionCouncilButton } from './SessionCouncil.tsx';
-import { SlackWatches } from './SlackWatches.tsx';
+import { SlackWatchesPanel, slackWatchSummary, useSlackWatchList } from './SlackWatches.tsx';
 import { ModeText } from './ModeIcon.tsx';
 import { SessionMeta, attentionTone } from './SessionMeta.tsx';
 import { SessionPeerName } from './SessionPeerName.tsx';
@@ -40,7 +40,7 @@ import { SessionEpicBadge } from './SessionEpicBadge.tsx';
 import { parseSavedReports, type SavedReport } from '../../shared/backlog.ts';
 import { parseProvenance, type Provenance } from '../../shared/git.ts';
 
-type SessionDrawer = 'provenance' | 'findings' | 'tasks' | 'backlog' | null;
+type SessionDrawer = 'provenance' | 'findings' | 'tasks' | 'backlog' | 'slack' | null;
 
 function useFindingsReports(sessionId: string) {
   const [reports, setReports] = useState<SavedReport[]>([]);
@@ -438,6 +438,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const sessionTasks = useSessionTasks(sessionId);
   const taskState = sessionTasksState(sessionTasks.tasks);
   const backlogTasks = useSessionBacklogTasks(sessionId);
+  const slackWatches = useSlackWatchList();
   const [drawer, setDrawer] = useState<SessionDrawer>(null);
   const showDrawer = (next: SessionDrawer): void => {
     const route = parseHash(window.location.hash);
@@ -495,6 +496,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   }
 
   const shown = displayStatus(session, now);
+  const slack = slackWatchSummary(slackWatches, [session]);
   const copyNotice = removedCopyNotice(session.worktree);
 
   return (
@@ -561,6 +563,18 @@ export function SessionView({ sessionId }: { sessionId: string }) {
                       onClick={() => toggleDrawer('backlog')}
                     >
                       Backlog · {backlogTasks.filter((task) => task.status === 'done').length}/{backlogTasks.length}
+                    </button>
+                  ) : null}
+                  {slack.visible ? (
+                    <button
+                      type="button"
+                      className={`pill pill-toggle${drawer === 'slack' ? ' active' : ''}`}
+                      aria-expanded={drawer === 'slack'}
+                      title="Fils et canaux Slack surveillés pour cette session"
+                      onClick={() => toggleDrawer('slack')}
+                    >
+                      Fils Slack · {slack.shown.length}
+                      {slackWatches.error ? ' · indisponible' : ''}
                     </button>
                   ) : null}
                 </>
@@ -651,10 +665,10 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           onToggle={() => toggleDrawer('findings')}
         />
       </ErrorBoundary>
-      <ErrorBoundary zone="Fils Slack surveillés" resetKey={session.id}>
-        <SlackWatches sessions={[session]} showSession={false} />
-      </ErrorBoundary>
-      {drawer === 'tasks' || drawer === 'provenance' || drawer === 'backlog' ? (
+      {drawer === 'tasks' ||
+      drawer === 'provenance' ||
+      drawer === 'backlog' ||
+      (drawer === 'slack' && slack.visible) ? (
         <section className="session-drawer">
           <button
             type="button"
@@ -669,6 +683,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
               <SessionTasksPanel key={session.id} {...sessionTasks} sessionStatus={session.status} />
             ) : drawer === 'backlog' ? (
               <SessionBacklogPanel session={session} tasks={backlogTasks} />
+            ) : drawer === 'slack' ? (
+              <SlackWatchesPanel state={slackWatches} sessions={[session]} showSession={false} inDrawer />
             ) : (
               <ProvenancePanel {...provenance} />
             )}
